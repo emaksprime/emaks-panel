@@ -1,4 +1,4 @@
-FROM composer:2.8 AS vendor
+﻿FROM composer:2.8 AS vendor
 
 WORKDIR /app
 
@@ -13,16 +13,15 @@ RUN composer install \
 COPY . .
 RUN composer dump-autoload --optimize --no-dev
 
-FROM node:22-alpine AS frontend
+FROM dunglas/frankenphp:1-php8.4-alpine AS frontend
 
 WORKDIR /app
 
-COPY package.json .npmrc ./
-RUN npm install
+RUN apk add --no-cache nodejs npm
 
-COPY resources ./resources
-COPY public ./public
-COPY components.json tsconfig.json vite.config.ts ./
+COPY --from=vendor /app /app
+
+RUN npm install
 RUN npm run build
 
 FROM dunglas/frankenphp:1-php8.4-alpine
