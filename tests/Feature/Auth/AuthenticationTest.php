@@ -4,8 +4,6 @@ namespace Tests\Feature\Auth;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\RateLimiter;
-use Illuminate\Support\Str;
 use Laravel\Fortify\Features;
 use Tests\TestCase;
 
@@ -86,7 +84,12 @@ class AuthenticationTest extends TestCase
     {
         $user = User::factory()->create();
 
-        RateLimiter::increment(Str::transliterate(Str::lower($user->username).'|127.0.0.1'), amount: 5);
+        for ($attempts = 0; $attempts < 5; $attempts++) {
+            $this->post(route('login.store'), [
+                'username' => $user->username,
+                'password' => 'wrong-password',
+            ]);
+        }
 
         $response = $this->post(route('login.store'), [
             'username' => $user->username,
