@@ -1,4 +1,4 @@
-﻿FROM composer:2.8 AS vendor
+FROM composer:2.8 AS vendor
 
 WORKDIR /app
 
@@ -54,5 +54,8 @@ ENV APP_URL=https://dashboard.emaksprime.com.tr
 ENV PORT=8080
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
+    CMD wget -qO- http://127.0.0.1:8080/up >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["start-container"]
