@@ -43,8 +43,8 @@ trait ProfileValidationRules
             'string',
             'max:255',
             $userId === null
-                ? Rule::unique('panel.users', 'username')
-                : Rule::unique('panel.users', 'username')->ignore($userId),
+                ? Rule::unique(User::class, 'username')
+                : Rule::unique(User::class, 'username')->ignore($userId),
         ];
     }
 }
