@@ -8,7 +8,7 @@ if [ -z "${APP_KEY:-}" ]; then
     exit 1
 fi
 
-php artisan optimize:clear
+CACHE_STORE=array php artisan optimize:clear
 
 if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
     php artisan migrate --force
