@@ -5,6 +5,7 @@ namespace Tests\Feature\Auth;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
 use Laravel\Fortify\Features;
 use Tests\TestCase;
 
@@ -24,7 +25,7 @@ class AuthenticationTest extends TestCase
         $user = User::factory()->create();
 
         $response = $this->post(route('login.store'), [
-            'email' => $user->email,
+            'username' => $user->username,
             'password' => 'password',
         ]);
 
@@ -50,7 +51,7 @@ class AuthenticationTest extends TestCase
         ])->save();
 
         $response = $this->post(route('login'), [
-            'email' => $user->email,
+            'username' => $user->username,
             'password' => 'password',
         ]);
 
@@ -64,7 +65,7 @@ class AuthenticationTest extends TestCase
         $user = User::factory()->create();
 
         $this->post(route('login.store'), [
-            'email' => $user->email,
+            'username' => $user->username,
             'password' => 'wrong-password',
         ]);
 
@@ -85,10 +86,10 @@ class AuthenticationTest extends TestCase
     {
         $user = User::factory()->create();
 
-        RateLimiter::increment(md5('login'.implode('|', [$user->email, '127.0.0.1'])), amount: 5);
+        RateLimiter::increment(Str::transliterate(Str::lower($user->username).'|127.0.0.1'), amount: 5);
 
         $response = $this->post(route('login.store'), [
-            'email' => $user->email,
+            'username' => $user->username,
             'password' => 'wrong-password',
         ]);
 
