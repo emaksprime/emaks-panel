@@ -1,5 +1,6 @@
 import { Head, Link } from '@inertiajs/react';
 import { ArrowRight, Database, ShieldCheck } from 'lucide-react';
+import { createElement } from 'react';
 import { panelIcon } from '@/lib/panel-icons';
 import type {
     PanelButtonData,
@@ -43,14 +44,16 @@ function ActionButton({ button }: { button: PanelButtonData }) {
     );
 }
 
+function PanelPageIcon({ name }: { name?: string | null }) {
+    return createElement(panelIcon(name), { className: 'size-5' });
+}
+
 export default function PanelPage({
     page,
     metrics,
     dataSources,
     permissions,
 }: PanelPageProps) {
-    const PageIcon = panelIcon(page.icon);
-
     return (
         <>
             <Head title={page.title} />
@@ -60,7 +63,7 @@ export default function PanelPage({
                     <div>
                         <div className="flex items-center gap-3">
                             <span className="grid size-11 place-items-center rounded-lg bg-slate-900 text-white">
-                                <PageIcon className="size-5" />
+                                <PanelPageIcon name={page.icon} />
                             </span>
                             <div>
                                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
