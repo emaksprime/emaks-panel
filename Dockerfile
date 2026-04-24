@@ -1,4 +1,4 @@
-﻿FROM composer:2.8 AS vendor
+FROM composer:2.8 AS vendor
 
 WORKDIR /app
 
@@ -19,7 +19,15 @@ WORKDIR /app
 
 RUN apk add --no-cache nodejs npm
 
-COPY --from=vendor /app /app
+COPY --from=vendor /app/vendor ./vendor
+COPY app ./app
+COPY bootstrap ./bootstrap
+COPY config ./config
+COPY database ./database
+COPY public ./public
+COPY resources ./resources
+COPY routes ./routes
+COPY artisan composer.json components.json package.json tsconfig.json vite.config.ts .npmrc ./
 
 RUN npm install
 RUN npm run build

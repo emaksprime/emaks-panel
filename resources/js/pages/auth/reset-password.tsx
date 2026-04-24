@@ -5,7 +5,20 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
-import { update } from '@/routes/password';
+import * as passwordRoutes from '@/routes/password';
+
+type OptionalFormRoutes = Record<
+    string,
+    | {
+          form: () => {
+              action: string;
+              method: 'get' | 'post' | 'put' | 'patch' | 'delete';
+          };
+      }
+    | undefined
+>;
+
+const optionalPasswordRoutes = passwordRoutes as unknown as OptionalFormRoutes;
 
 type Props = {
     token: string;
@@ -18,7 +31,10 @@ export default function ResetPassword({ token, email }: Props) {
             <Head title="Reset password" />
 
             <Form
-                {...update.form()}
+                {...(optionalPasswordRoutes.update?.form() ?? {
+                    action: '/reset-password',
+                    method: 'post',
+                })}
                 transform={(data) => ({ ...data, token, email })}
                 resetOnSuccess={['password', 'password_confirmation']}
             >

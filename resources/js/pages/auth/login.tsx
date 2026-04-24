@@ -7,9 +7,15 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
-import { register } from '@/routes';
+import * as routes from '@/routes';
 import { store } from '@/routes/login';
-import { request } from '@/routes/password';
+import * as passwordRoutes from '@/routes/password';
+
+type LinkHref = Parameters<typeof TextLink>[0]['href'];
+type OptionalUrlRoutes = Record<string, (() => LinkHref) | undefined>;
+
+const optionalRoutes = routes as unknown as OptionalUrlRoutes;
+const optionalPasswordRoutes = passwordRoutes as unknown as OptionalUrlRoutes;
 
 type Props = {
     status?: string;
@@ -54,7 +60,10 @@ export default function Login({
                                     <Label htmlFor="password">Password</Label>
                                     {canResetPassword && (
                                         <TextLink
-                                            href={request()}
+                                            href={
+                                                optionalPasswordRoutes.request?.() ??
+                                                '/forgot-password'
+                                            }
                                             className="ml-auto text-sm"
                                             tabIndex={5}
                                         >
@@ -97,7 +106,13 @@ export default function Login({
                         {canRegister && (
                             <div className="text-center text-sm text-muted-foreground">
                                 Don't have an account?{' '}
-                                <TextLink href={register()} tabIndex={5}>
+                                <TextLink
+                                    href={
+                                        optionalRoutes.register?.() ??
+                                        '/register'
+                                    }
+                                    tabIndex={5}
+                                >
                                     Sign up
                                 </TextLink>
                             </div>

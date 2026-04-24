@@ -7,7 +7,20 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { login } from '@/routes';
-import { email } from '@/routes/password';
+import * as passwordRoutes from '@/routes/password';
+
+type OptionalFormRoutes = Record<
+    string,
+    | {
+          form: () => {
+              action: string;
+              method: 'get' | 'post' | 'put' | 'patch' | 'delete';
+          };
+      }
+    | undefined
+>;
+
+const optionalPasswordRoutes = passwordRoutes as unknown as OptionalFormRoutes;
 
 export default function ForgotPassword({ status }: { status?: string }) {
     return (
@@ -21,7 +34,12 @@ export default function ForgotPassword({ status }: { status?: string }) {
             )}
 
             <div className="space-y-6">
-                <Form {...email.form()}>
+                <Form
+                    {...(optionalPasswordRoutes.email?.form() ?? {
+                        action: '/forgot-password',
+                        method: 'post',
+                    })}
+                >
                     {({ processing, errors }) => (
                         <>
                             <div className="grid gap-2">
