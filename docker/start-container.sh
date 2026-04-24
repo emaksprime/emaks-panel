@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -eu
+set -u
 
 cd /app
 
@@ -8,24 +8,36 @@ if [ -z "${APP_KEY:-}" ]; then
     exit 1
 fi
 
+run_artisan() {
+    if ! php artisan "$@"; then
+        echo "WARN: php artisan $* failed; continuing container startup." >&2
+    fi
+}
+
+run_artisan_array_cache() {
+    if ! CACHE_STORE=array php artisan "$@"; then
+        echo "WARN: CACHE_STORE=array php artisan $* failed; continuing container startup." >&2
+    fi
+}
+
 # First boot can run before database-backed cache/session tables exist.
-# Do not let cache cleanup kill the container before migrations create them.
-php artisan config:clear || true
-php artisan route:clear || true
-php artisan view:clear || true
-CACHE_STORE=array php artisan cache:clear || true
-php artisan optimize:clear || true
+# Avoid database-backed cache during cleanup so migrations get a chance to run.
+run_artisan_array_cache config:clear
+run_artisan_array_cache route:clear
+run_artisan_array_cache view:clear
+run_artisan_array_cache cache:clear
+run_artisan_array_cache optimize:clear
 
 if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
-    php artisan migrate --force --no-interaction
+    run_artisan migrate --force --no-interaction
 fi
 
 if [ "${RUN_PANEL_SEED:-true}" = "true" ]; then
-    php artisan db:seed --class=PanelMetadataSeeder --force --no-interaction
+    run_artisan db:seed --class=PanelMetadataSeeder --force --no-interaction
 fi
 
-php artisan config:cache
-php artisan route:cache
-php artisan view:cache
+run_artisan config:cache
+run_artisan route:cache
+run_artisan view:cache
 
 exec frankenphp run --config /etc/caddy/Caddyfile
