@@ -17,8 +17,7 @@ class PanelPageController extends Controller
         private readonly PanelDataSourceManager $dataSources,
         private readonly AuditLogger $auditLogger,
         private readonly SalesMainPageService $salesMain,
-    ) {
-    }
+    ) {}
 
     public function dashboard(Request $request): Response
     {

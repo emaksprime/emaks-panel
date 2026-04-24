@@ -67,8 +67,8 @@ class PanelAccessService
                 ->where('can_view', true)
                 ->pluck('resource_code'))
             ->merge(UserAccess::query()
-            ->where('user_id', $user->id)
-            ->pluck('resource_code'))
+                ->where('user_id', $user->id)
+                ->pluck('resource_code'))
             ->filter()
             ->unique()
             ->values();

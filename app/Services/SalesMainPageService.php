@@ -7,6 +7,7 @@ use App\Models\Page;
 use App\Models\PageConfig;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Carbon\WeekDay;
 use Illuminate\Support\Collection;
 use RuntimeException;
 
@@ -16,8 +17,7 @@ class SalesMainPageService
         private readonly PanelNavigationService $navigation,
         private readonly PanelDataSourceManager $dataSources,
         private readonly PanelAccessService $access,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -288,7 +288,7 @@ class SalesMainPageService
             'day' => $today->format('Y-m-d'),
             'month' => ($isStart ? $today->startOfMonth() : $today)->format('Y-m-d'),
             'year' => ($isStart ? $today->startOfYear() : $today)->format('Y-m-d'),
-            default => ($isStart ? $today->startOfWeek(\Carbon\WeekDay::Monday) : $today)->format('Y-m-d'),
+            default => ($isStart ? $today->startOfWeek(WeekDay::Monday) : $today)->format('Y-m-d'),
         };
     }
 

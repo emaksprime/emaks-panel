@@ -11,8 +11,7 @@ class EnsurePanelUserCanAccess
 {
     public function __construct(
         private readonly PanelAccessService $access,
-    ) {
-    }
+    ) {}
 
     public function handle(Request $request, Closure $next, string $resourceCode): Response
     {

@@ -15,7 +15,7 @@ class PanelDataSourceManager
 
     public function __construct()
     {
-        $this->register(new MssqlDataSourceExecutor());
+        $this->register(new MssqlDataSourceExecutor);
     }
 
     public function register(DataSourceExecutor $executor): void

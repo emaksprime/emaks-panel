@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
 use App\Models\DataSource;
 use App\Models\MenuGroup;
 use App\Models\Page;
@@ -21,8 +22,7 @@ class AdminController extends Controller
 {
     public function __construct(
         private readonly AuditLogger $auditLogger,
-    ) {
-    }
+    ) {}
 
     public function overview(): JsonResponse
     {
@@ -31,7 +31,7 @@ class AdminController extends Controller
                 'users' => User::query()->count(),
                 'pages' => Page::query()->count(),
                 'datasources' => DataSource::query()->count(),
-                'logs' => \App\Models\AuditLog::query()->count(),
+                'logs' => AuditLog::query()->count(),
             ],
             'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description']),
         ]);
@@ -207,7 +207,7 @@ class AdminController extends Controller
     public function logs(): JsonResponse
     {
         return response()->json([
-            'logs' => \App\Models\AuditLog::query()
+            'logs' => AuditLog::query()
                 ->orderByDesc('created_at')
                 ->limit(200)
                 ->get(),
