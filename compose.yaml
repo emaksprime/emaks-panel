@@ -1,0 +1,64 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: emaksprime/emaks-panel:local
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      APP_NAME: "${APP_NAME:-Emaks Prime Panel}"
+      APP_ENV: "${APP_ENV:-production}"
+      APP_DEBUG: "${APP_DEBUG:-false}"
+      APP_KEY: "${APP_KEY:?APP_KEY is required}"
+      APP_URL: "${APP_URL:-https://dashboard.emaksprime.com.tr}"
+      LOG_CHANNEL: "${LOG_CHANNEL:-stack}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      DB_CONNECTION: "pgsql"
+      DB_HOST: "${DB_HOST:-postgres}"
+      DB_PORT: "${DB_PORT:-5432}"
+      DB_DATABASE: "${DB_DATABASE:-emaks_panel}"
+      DB_USERNAME: "${DB_USERNAME:-emaks_panel}"
+      DB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
+      DB_SSLMODE: "${DB_SSLMODE:-prefer}"
+      SESSION_DRIVER: "${SESSION_DRIVER:-database}"
+      SESSION_DOMAIN: "${SESSION_DOMAIN:-.emaksprime.com.tr}"
+      SESSION_SECURE_COOKIE: "${SESSION_SECURE_COOKIE:-true}"
+      CACHE_STORE: "${CACHE_STORE:-database}"
+      QUEUE_CONNECTION: "${QUEUE_CONNECTION:-database}"
+      PANEL_BRAND: "${PANEL_BRAND:-Emaks Prime Panel}"
+      PANEL_DEFAULT_ROLE: "${PANEL_DEFAULT_ROLE:-admin}"
+      PANEL_BOOTSTRAP_ADMIN_USERNAME: "${PANEL_BOOTSTRAP_ADMIN_USERNAME:-}"
+      PANEL_BOOTSTRAP_ADMIN_PASSWORD: "${PANEL_BOOTSTRAP_ADMIN_PASSWORD:-}"
+      PANEL_BOOTSTRAP_ADMIN_NAME: "${PANEL_BOOTSTRAP_ADMIN_NAME:-Panel Administrator}"
+      PANEL_BOOTSTRAP_ADMIN_REP_CODE: "${PANEL_BOOTSTRAP_ADMIN_REP_CODE:-0003}"
+      RUN_MIGRATIONS: "${RUN_MIGRATIONS:-true}"
+      RUN_PANEL_SEED: "${RUN_PANEL_SEED:-true}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/up >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${DB_DATABASE:-emaks_panel}"
+      POSTGRES_USER: "${DB_USERNAME:-emaks_panel}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
