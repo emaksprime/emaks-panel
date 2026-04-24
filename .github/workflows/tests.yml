@@ -75,6 +75,11 @@ jobs:
           DB_DATABASE: emaks_panel
           DB_USERNAME: emaks_panel
           DB_PASSWORD: secret
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGDATABASE: emaks_panel
+          PGUSER: emaks_panel
+          PGPASSWORD: secret
           DB_SSLMODE: prefer
           CACHE_STORE: array
           SESSION_DRIVER: array
