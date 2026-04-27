@@ -189,6 +189,10 @@ class PanelNavigationService
             'brand' => config('panel.brand'),
             'environment' => app()->environment(),
             'host' => parse_url((string) config('app.url'), PHP_URL_HOST),
+            'publicUrl' => config('panel.public_url'),
+            'apiBaseUrl' => config('panel.api_base_url'),
+            'webhookBaseUrl' => config('panel.webhook_base_url'),
+            'workflowUrls' => config('panel.workflow_urls'),
             'generatedAt' => now()->toIso8601String(),
         ];
     }
