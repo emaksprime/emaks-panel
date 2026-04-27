@@ -43,6 +43,11 @@ class PanelMetadataSeederTest extends TestCase
             'active' => true,
         ]);
 
+        $this->assertDatabaseHas('panel.pages', [
+            'code' => 'sales_representatives',
+            'active' => false,
+        ]);
+
         $this->assertGreaterThanOrEqual(20, Page::query()->count());
         $this->assertGreaterThanOrEqual(10, DataSource::query()->count());
     }

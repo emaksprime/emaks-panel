@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\PageConfigController;
 use App\Http\Controllers\Api\CariBilgiDataController;
+use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\HomeController;
@@ -20,6 +21,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         Route::get('pages/{code}/config', PageConfigController::class)->name('api.pages.config');
         Route::post('data/sales-main', SalesMainDataController::class)->name('api.data.sales-main');
         Route::post('data/cari-bilgi', CariBilgiDataController::class)->name('api.data.cari-bilgi');
+        Route::post('data/{code}', PageDataController::class)
+            ->where('code', '[A-Za-z0-9_-]+')
+            ->name('api.data.page');
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {
             Route::get('overview', [\App\Http\Controllers\Api\AdminController::class, 'overview']);
