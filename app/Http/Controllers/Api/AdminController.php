@@ -69,20 +69,20 @@ class AdminController extends Controller
     public function saveUser(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'id' => ['nullable', 'integer', 'exists:panel.users,id'],
+            'id' => ['nullable', 'integer', Rule::exists(User::class, 'id')],
             'username' => [
                 'required',
                 'string',
                 'max:255',
-                Rule::unique('panel.users', 'username')->ignore($request->integer('id')),
+                Rule::unique(User::class, 'username')->ignore($request->integer('id')),
             ],
             'full_name' => ['required', 'string', 'max:255'],
             'password' => [$request->filled('id') ? 'nullable' : 'required', 'string', 'min:8'],
-            'role_code' => ['required', Rule::exists('panel.roles', 'code')],
+            'role_code' => ['required', Rule::exists(Role::class, 'code')],
             'temsilci_kodu' => ['nullable', 'string', 'max:32'],
             'aktif' => ['boolean'],
             'access' => ['array'],
-            'access.*' => ['string', Rule::exists('panel.resources', 'code')],
+            'access.*' => ['string', Rule::exists(Resource::class, 'code')],
         ]);
 
         $payload = [

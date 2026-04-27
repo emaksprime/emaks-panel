@@ -6,6 +6,7 @@ use App\Concerns\PasswordValidationRules;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Laravel\Fortify\Contracts\CreatesNewUsers;
 
 class CreateNewUser implements CreatesNewUsers
@@ -20,7 +21,7 @@ class CreateNewUser implements CreatesNewUsers
     public function create(array $input): User
     {
         Validator::make($input, [
-            'username' => ['required', 'string', 'max:255', 'unique:panel.users,username'],
+            'username' => ['required', 'string', 'max:255', Rule::unique(User::class, 'username')],
             'full_name' => ['required', 'string', 'max:255'],
             'password' => $this->passwordRules(),
         ])->validate();
