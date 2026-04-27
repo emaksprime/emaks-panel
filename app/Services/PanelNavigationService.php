@@ -79,6 +79,7 @@ class PanelNavigationService
             'slug' => $page->code,
             'routePath' => $page->route,
             'component' => $page->component,
+            'layoutType' => $page->layout_type ?? 'module',
             'description' => $page->description,
             'icon' => $page->icon,
             'heroEyebrow' => $page->pageConfig?->layout_json['heroEyebrow'] ?? null,
@@ -92,6 +93,9 @@ class PanelNavigationService
                     'variant' => $button->variant,
                     'actionType' => $button->action_type,
                     'actionTarget' => $button->action_target,
+                    'position' => $button->position ?? 'page_top',
+                    'confirmationRequired' => (bool) ($button->confirmation_required ?? false),
+                    'confirmationText' => $button->confirmation_text,
                     'canExecute' => $button->resource_code === null || $this->access->userCanAccess($user, $button->resource_code),
                     'icon' => null,
                 ])

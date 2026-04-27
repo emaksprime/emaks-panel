@@ -20,6 +20,7 @@ class Page extends Model
         'name',
         'route',
         'component',
+        'layout_type',
         'icon',
         'parent_id',
         'description',

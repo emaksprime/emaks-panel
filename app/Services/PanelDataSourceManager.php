@@ -38,7 +38,7 @@ class PanelDataSourceManager
                 'slug' => $dataSource->code,
                 'driver' => $dataSource->db_type,
                 'target' => $dataSource->connection_meta['target'] ?? null,
-                'status' => $dataSource->active ? 'active' : 'inactive',
+                'status' => $dataSource->active ? 'aktif' : 'pasif',
                 'description' => $dataSource->description,
                 'database' => $dataSource->connection_meta['database'] ?? null,
                 'host' => $dataSource->connection_meta['host'] ?? null,

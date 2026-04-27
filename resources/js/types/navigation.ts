@@ -36,6 +36,9 @@ export type PanelButtonData = {
     variant: string;
     actionType: string;
     actionTarget: string | null;
+    position?: string | null;
+    confirmationRequired?: boolean;
+    confirmationText?: string | null;
     canExecute: boolean;
     icon?: string | null;
 };
@@ -46,6 +49,7 @@ export type PanelPagePayload = {
     slug: string;
     routePath: string;
     component: string;
+    layoutType?: 'admin' | 'module' | string;
     description?: string | null;
     icon?: string | null;
     heroEyebrow?: string | null;

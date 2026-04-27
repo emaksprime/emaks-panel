@@ -50,7 +50,7 @@ export function AppSidebar() {
                         Metadata
                     </p>
                     <p className="mt-2">
-                        {panelNavigation.meta.environment} - {panelNavigation.groups.length} menu groups
+                        {panelNavigation.meta.environment} - {panelNavigation.groups.length} menü grubu
                     </p>
                 </div>
                 <NavUser />

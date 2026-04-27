@@ -54,6 +54,8 @@ export default function PanelPage({
     dataSources,
     permissions,
 }: PanelPageProps) {
+    const isModule = page.layoutType === 'module';
+
     return (
         <>
             <Head title={page.title} />
@@ -77,6 +79,11 @@ export default function PanelPage({
                         <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-600">
                             {page.description}
                         </p>
+                        {isModule && (
+                            <div className="mt-4 inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                                Canlı veri kaynağı henüz bağlanmadı.
+                            </div>
+                        )}
                     </div>
 
                     <div className="flex flex-wrap items-start gap-2">
@@ -86,7 +93,7 @@ export default function PanelPage({
                     </div>
                 </section>
 
-                <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {!isModule && <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                     {metrics.map((metric) => (
                         <article key={metric.label} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
@@ -98,13 +105,23 @@ export default function PanelPage({
                             <p className="mt-2 text-sm text-slate-500">{metric.hint}</p>
                         </article>
                     ))}
-                </section>
+                </section>}
 
-                <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+                {isModule && (
+                    <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+                        <h2 className="text-lg font-semibold text-slate-950">Veri bağlantısı bekleniyor</h2>
+                        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                            Bu modül için canlı veri kaynağı henüz bağlanmadı. Endpoint ve metadata tanımı
+                            Yönetim Paneli altındaki Veri Kaynakları ekranından hazırlanacak.
+                        </p>
+                    </section>
+                )}
+
+                {!isModule && <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
                     <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                         <div className="mb-4 flex items-center gap-2">
                             <Database className="size-5 text-slate-500" />
-                            <h2 className="font-semibold text-slate-950">Datasource registry</h2>
+                            <h2 className="font-semibold text-slate-950">Veri Kaynakları</h2>
                         </div>
                         <div className="grid gap-2">
                             {dataSources.map((source) => (
@@ -130,20 +147,20 @@ export default function PanelPage({
                         </div>
                         <div className="grid gap-3">
                             <div>
-                                <p className="text-sm text-slate-500">Granted resources</p>
+                                <p className="text-sm text-slate-500">Tanımlı kaynaklar</p>
                                 <strong className="text-3xl font-semibold text-slate-950">
                                     {permissions.grantedResources}
                                 </strong>
                             </div>
                             <div>
-                                <p className="text-sm text-slate-500">Executable buttons</p>
+                                <p className="text-sm text-slate-500">Çalıştırılabilir butonlar</p>
                                 <strong className="text-3xl font-semibold text-slate-950">
                                     {permissions.canExecuteButtons}
                                 </strong>
                             </div>
                         </div>
                     </div>
-                </section>
+                </section>}
             </main>
         </>
     );

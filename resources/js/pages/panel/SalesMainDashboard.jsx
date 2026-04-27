@@ -2,7 +2,6 @@ import { Head } from '@inertiajs/react';
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
-import { TopNav } from '@/components/sales-main/TopNav.jsx';
 import { DateRangeFilter } from '@/components/sales-main/DateRangeFilter.jsx';
 import { ManagementScopeFilter } from '@/components/sales-main/ManagementScopeFilter.jsx';
 import { KpiCards } from '@/components/sales-main/KpiCards.jsx';
@@ -61,7 +60,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     return (
         <>
-            <Head title="Sales Main" />
+            <Head title="Satış Yönetimi" />
             <main className="grid gap-5 p-4 md:p-6">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -74,6 +73,9 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         <p className="mt-1 max-w-3xl text-sm text-slate-600">
                             {config?.page?.description}
                         </p>
+                        <div className="mt-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                            {data?.queryMeta?.notice ?? 'Önizleme verisi - canlı veri bağlı değil'}
+                        </div>
                     </div>
                     <button
                         type="button"
@@ -84,8 +86,6 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         Yenile
                     </button>
                 </div>
-
-                <TopNav items={config?.topNav ?? []} activeHref="/sales/main" />
 
                 <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                     <div className="flex flex-wrap items-center justify-between gap-3">

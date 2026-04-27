@@ -83,7 +83,7 @@ class SalesMainPageService
         $previewPayload = collect($source->preview_payload[$filters['detail_type']] ?? []);
 
         if ($previewPayload->isEmpty()) {
-            throw new RuntimeException('Sales Main preview payload is not configured in panel.data_sources.');
+            throw new RuntimeException('Satış Yönetimi önizleme verisi panel.data_sources içinde tanımlı değil.');
         }
 
         $groupRows = $previewPayload
@@ -133,7 +133,7 @@ class SalesMainPageService
                     'raw' => $konsinye,
                 ],
                 [
-                    'label' => 'Aktif Scope',
+                    'label' => 'Aktif Kapsam',
                     'value' => $scope['label'],
                     'raw' => $scope['key'],
                 ],
@@ -180,6 +180,8 @@ class SalesMainPageService
                 'dataSource' => $source->code,
                 'driver' => $source->db_type,
                 'status' => $source->active ? 'active' : 'inactive',
+                'mode' => 'preview',
+                'notice' => 'Önizleme verisi; canlı veri kaynağı henüz bağlı değil.',
                 'whitelistedParameters' => $whitelistedParameters,
             ],
             'navigation' => $this->navigation->sharedForUser($user, $page->route),
