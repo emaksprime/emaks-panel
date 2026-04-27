@@ -13,7 +13,16 @@ export async function apiRequest(path, options = {}) {
 
     if (!response.ok) {
         const detail = await response.text();
-        throw new Error(detail || `Request failed with ${response.status}`);
+        let message = detail;
+
+        try {
+            const parsed = JSON.parse(detail);
+            message = parsed.message || detail;
+        } catch {
+            message = detail;
+        }
+
+        throw new Error(message || `Request failed with ${response.status}`);
     }
 
     return response.json();

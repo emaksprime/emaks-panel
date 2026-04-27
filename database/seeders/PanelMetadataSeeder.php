@@ -179,7 +179,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'sales_main_dashboard'],
             [
                 'name' => 'Satış Yönetimi Dashboard',
-                'db_type' => 'mssql',
+                'db_type' => 'n8n_json',
                 'query_template' => <<<'SQL'
 DECLARE @date_from DATE = '{{date_from}}';
 DECLARE @date_to DATE = '{{date_to}}';
@@ -190,9 +190,12 @@ DECLARE @rep_code NVARCHAR(20) = '{{rep_code}}';
 SQL,
                 'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
                 'connection_meta' => [
-                    'target' => 'sales.main',
-                    'database' => 'LOGO',
-                    'host' => 'mssql.internal',
+                    'driver' => 'n8n_json',
+                    'method' => 'POST',
+                    'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
+                    'response_rows_key' => 'rows',
+                    'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
+                    'sql_policy' => 'unchanged',
                 ],
                 'preview_payload' => [
                     'cari' => [
@@ -345,9 +348,9 @@ SQL,
         $n8nConnectionMeta = [
             'driver' => 'n8n_json',
             'method' => 'POST',
-            'endpoint_url' => '',
+            'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
             'response_rows_key' => 'rows',
-            'source_workflow' => '',
+            'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
             'sql_policy' => 'unchanged',
         ];
 

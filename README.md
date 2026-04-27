@@ -91,6 +91,8 @@ SESSION_SECURE_COOKIE=true
 
 PANEL_BRAND="Emaks Prime Panel"
 PANEL_DEFAULT_ROLE=admin
+PANEL_N8N_GATEWAY_URL=
+PANEL_N8N_TOKEN=
 PANEL_BOOTSTRAP_ADMIN_USERNAME=
 PANEL_BOOTSTRAP_ADMIN_PASSWORD=
 PANEL_BOOTSTRAP_ADMIN_NAME="Panel Administrator"
@@ -116,6 +118,17 @@ PRIMECRM_LAUNCH_MODE=external
 ```
 
 Paneldeki Satış, Stok, Sipariş, Cari ve Proforma modülleri bu URL üzerinden PrimeCRM ekranlarına yönlendirme ve sonraki fazdaki API köprüsü için hazırlanmıştır.
+
+## n8n data gateway
+
+Canlı panel verisi Laravel container içinde MSSQL bağlantısı açmadan n8n gateway üzerinden alınır. Coolify ortamında şu değerler secret olarak girilmelidir:
+
+```env
+PANEL_N8N_GATEWAY_URL=https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1
+PANEL_N8N_TOKEN=
+```
+
+`PANEL_N8N_TOKEN` repoya yazılmamalıdır. Laravel, gateway çağrılarında `x-panel-token` header değerini kullanır.
 
 ## Coolify deploy
 
