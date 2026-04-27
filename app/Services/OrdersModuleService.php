@@ -4,30 +4,24 @@ namespace App\Services;
 
 class OrdersModuleService
 {
+    public function __construct(
+        private readonly PrimeCrmIntegrationService $primeCrm,
+    ) {
+    }
+
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function alinan(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('orders_alinan');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function verilen(): array
     {
-        return $this->placeholder();
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function placeholder(): array
-    {
-        return [
-            'mode' => 'placeholder',
-            'message' => 'Canlı veri kaynağı henüz bağlanmadı.',
-        ];
+        return $this->primeCrm->placeholder('orders_verilen');
     }
 }

@@ -4,38 +4,32 @@ namespace App\Services;
 
 class ProformaModuleService
 {
+    public function __construct(
+        private readonly PrimeCrmIntegrationService $primeCrm,
+    ) {
+    }
+
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function list(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('proforma');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function createDraft(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('proforma_create');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function detail(): array
     {
-        return $this->placeholder();
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function placeholder(): array
-    {
-        return [
-            'mode' => 'placeholder',
-            'message' => 'Canlı veri kaynağı henüz bağlanmadı.',
-        ];
+        return $this->primeCrm->placeholder('proforma_detail');
     }
 }

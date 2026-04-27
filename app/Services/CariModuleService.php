@@ -4,46 +4,40 @@ namespace App\Services;
 
 class CariModuleService
 {
+    public function __construct(
+        private readonly PrimeCrmIntegrationService $primeCrm,
+    ) {
+    }
+
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function list(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('cari');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function balance(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('cari_balance');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function detail(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('cari_detail');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function statement(): array
     {
-        return $this->placeholder();
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function placeholder(): array
-    {
-        return [
-            'mode' => 'placeholder',
-            'message' => 'Canlı veri kaynağı henüz bağlanmadı.',
-        ];
+        return $this->primeCrm->placeholder('cari_detail');
     }
 }

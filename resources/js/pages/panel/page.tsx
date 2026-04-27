@@ -5,6 +5,7 @@ import { panelIcon } from '@/lib/panel-icons';
 import type {
     PanelButtonData,
     PanelDataSourceSummary,
+    PanelExternalIntegration,
     PanelMetric,
     PanelPagePayload,
 } from '@/types';
@@ -17,6 +18,7 @@ type PanelPageProps = {
         grantedResources: number;
         canExecuteButtons: number;
     };
+    integration?: PanelExternalIntegration | null;
 };
 
 function ActionButton({ button }: { button: PanelButtonData }) {
@@ -53,6 +55,7 @@ export default function PanelPage({
     metrics,
     dataSources,
     permissions,
+    integration,
 }: PanelPageProps) {
     const isModule = page.layoutType === 'module';
 
@@ -144,6 +147,41 @@ export default function PanelPage({
                                 Yönetim Paneli altındaki Veri Kaynakları ekranından hazırlanacak.
                             </p>
                         </section>
+
+                        {integration && (
+                            <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm lg:grid-cols-[1fr_auto] lg:items-center">
+                                <div>
+                                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                                        Harici Servis Entegrasyonu
+                                    </p>
+                                    <h2 className="mt-2 text-lg font-semibold text-slate-950">
+                                        PrimeCRM bağlantısı
+                                    </h2>
+                                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                                        {integration.message} Bu ekran Laravel içine gömülmedi; Coolify üzerindeki ayrı PrimeCRM servisine yönlendirme ve ileride API köprüsü için hazırlanmıştır.
+                                    </p>
+                                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
+                                        <span className="rounded-full bg-slate-100 px-3 py-1">Sağlayıcı: {integration.provider}</span>
+                                        <span className="rounded-full bg-slate-100 px-3 py-1">Yol: {integration.path}</span>
+                                        {integration.capability && <span className="rounded-full bg-slate-100 px-3 py-1">Yetki: {integration.capability}</span>}
+                                    </div>
+                                </div>
+                                {integration.enabled && integration.externalUrl ? (
+                                    <a
+                                        href={integration.externalUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex justify-center rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white"
+                                    >
+                                        PrimeCRM ekranını aç
+                                    </a>
+                                ) : (
+                                    <span className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
+                                        {integration.externalUrl ? 'PRIMECRM_ENABLED bekleniyor' : 'PRIMECRM_BASE_URL bekleniyor'}
+                                    </span>
+                                )}
+                            </section>
+                        )}
                     </>
                 )}
 

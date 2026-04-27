@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\AuditLogger;
 use App\Services\PanelDataSourceManager;
 use App\Services\PanelNavigationService;
+use App\Services\PrimeCrmIntegrationService;
 use App\Services\SalesMainPageService;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -17,6 +18,7 @@ class PanelPageController extends Controller
         private readonly PanelDataSourceManager $dataSources,
         private readonly AuditLogger $auditLogger,
         private readonly SalesMainPageService $salesMain,
+        private readonly PrimeCrmIntegrationService $primeCrm,
     ) {
     }
 
@@ -87,6 +89,7 @@ class PanelPageController extends Controller
                     fn (array $button) => ($button['canExecute'] ?? false) === true
                 )),
             ],
+            'integration' => $this->primeCrm->forPageCode($page->code),
         ];
 
         if ($page->code === 'sales_main') {

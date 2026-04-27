@@ -95,9 +95,27 @@ PANEL_BOOTSTRAP_ADMIN_USERNAME=
 PANEL_BOOTSTRAP_ADMIN_PASSWORD=
 PANEL_BOOTSTRAP_ADMIN_NAME="Panel Administrator"
 PANEL_BOOTSTRAP_ADMIN_REP_CODE=0003
+
+PRIMECRM_ENABLED=false
+PRIMECRM_BASE_URL=
+PRIMECRM_LAUNCH_MODE=external
 ```
 
 `PANEL_BOOTSTRAP_ADMIN_PASSWORD` sadece Coolify environment variable olarak girilmeli, `.env` disinda hicbir yere yazilmamalidir. Seeder bu degerler varsa ilk admin kullanicisini olusturur ve tum `resource_code` erisimlerini atar.
+
+## PrimeCRM entegrasyonu
+
+PrimeCRM bu repoya gomulmez ve ASP.NET/IIS dosyalari tasinmaz. Ayrı bir Coolify servisi olarak deploy edilir; Emaks Panel sadece `PRIMECRM_BASE_URL` ile harici modül yollarını bilir.
+
+Coolify tarafında PrimeCRM servisi hazır olduğunda panel container environment değerleri:
+
+```env
+PRIMECRM_ENABLED=true
+PRIMECRM_BASE_URL=https://primecrm.emaksprime.com.tr
+PRIMECRM_LAUNCH_MODE=external
+```
+
+Paneldeki Satış, Stok, Sipariş, Cari ve Proforma modülleri bu URL üzerinden PrimeCRM ekranlarına yönlendirme ve sonraki fazdaki API köprüsü için hazırlanmıştır.
 
 ## Coolify deploy
 

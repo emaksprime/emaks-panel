@@ -80,6 +80,17 @@ export type PanelDataSourceSummary = {
     host?: string | null;
 };
 
+export type PanelExternalIntegration = {
+    provider: string;
+    label: string;
+    capability?: string | null;
+    path: string;
+    externalUrl?: string | null;
+    enabled: boolean;
+    launchMode: string;
+    message: string;
+};
+
 export type PanelNavigationPayload = {
     groups: PanelNavigationGroup[];
     currentPage: PanelPagePayload | null;

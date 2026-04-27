@@ -4,38 +4,32 @@ namespace App\Services;
 
 class StockModuleService
 {
+    public function __construct(
+        private readonly PrimeCrmIntegrationService $primeCrm,
+    ) {
+    }
+
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function list(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('stock');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function critical(): array
     {
-        return $this->placeholder();
+        return $this->primeCrm->placeholder('stock_critical');
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     public function warehouse(): array
     {
-        return $this->placeholder();
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function placeholder(): array
-    {
-        return [
-            'mode' => 'placeholder',
-            'message' => 'Canlı veri kaynağı henüz bağlanmadı.',
-        ];
+        return $this->primeCrm->placeholder('stock_warehouse');
     }
 }
