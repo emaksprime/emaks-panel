@@ -34,6 +34,12 @@ class AdminController extends Controller
                 'logs' => \App\Models\AuditLog::query()->count(),
             ],
             'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description']),
+            'urls' => [
+                'publicUrl' => config('panel.public_url'),
+                'apiBaseUrl' => config('panel.api_base_url'),
+                'webhookBaseUrl' => config('panel.webhook_base_url'),
+                'workflowUrls' => config('panel.workflow_urls'),
+            ],
         ]);
     }
 
