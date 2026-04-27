@@ -10,13 +10,16 @@ import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 
 export default function SalesMainDashboard({ salesMainConfig, salesMainData, integration }) {
     const [config] = useState(salesMainConfig);
+    const today = new Date().toISOString().slice(0, 10);
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
     const [data, setData] = useState(salesMainData);
     const [filters, setFilters] = useState(() => ({
-        date_from: salesMainData?.filters?.dateFrom,
-        date_to: salesMainData?.filters?.dateTo,
+        date_from: salesMainData?.filters?.dateFrom ?? monthStart,
+        date_to: salesMainData?.filters?.dateTo ?? today,
         grain: salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
         detail_type: salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
         scope_key: salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
+        bypass_cache: false,
     }));
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
@@ -38,7 +41,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData, int
                 }
             } catch (caught) {
                 if (active) {
-                    setError(caught instanceof Error ? caught.message : 'Veri alinamadi');
+                    setError(caught instanceof Error ? caught.message : 'Veri alınamadı.');
                 }
             } finally {
                 if (active) {
@@ -79,7 +82,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData, int
                     </div>
                     <button
                         type="button"
-                        onClick={() => updateFilters({ ...filters })}
+                        onClick={() => updateFilters({ bypass_cache: !filters.bypass_cache })}
                         className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm"
                     >
                         <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />

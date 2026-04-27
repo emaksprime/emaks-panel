@@ -317,7 +317,7 @@ BEGIN
     ORDER BY siralama_1 ASC, CASE satir_tipi WHEN N'GRUP' THEN 0 WHEN N'CARI' THEN 1 WHEN N'URUN' THEN 2 ELSE 3 END ASC, siralama_2 ASC;
 END
 SQL_SALES_MAIN_DASHBOARD,
-                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
                 'connection_meta' => $connectionMeta,
                 'preview_payload' => [],
                 'active' => true,
@@ -325,5 +325,51 @@ SQL_SALES_MAIN_DASHBOARD,
                 'description' => 'Ana satış yönetimi için eski çalışan Sales TEST sorgusu.',
             ],
         );
+
+        foreach ($this->metadataOnlySources() as $index => $source) {
+            DataSource::query()->updateOrCreate(
+                ['code' => $source['code']],
+                [
+                    'name' => $source['name'],
+                    'db_type' => 'n8n_json',
+                    'query_template' => '',
+                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+                    'connection_meta' => [
+                        ...$connectionMeta,
+                        'query_status' => 'missing',
+                        'reference' => $source['reference'],
+                    ],
+                    'preview_payload' => [
+                        'mode' => 'query_missing',
+                        'message' => 'Gercek sorgu PrimeCRM referansindan dogrulanip Admin > Veri Kaynaklari ekranindan eklenecek.',
+                    ],
+                    'active' => true,
+                    'sort_order' => 30 + $index,
+                    'description' => $source['description'],
+                ],
+            );
+        }
+    }
+
+    /**
+     * @return array<int, array<string, string>>
+     */
+    private function metadataOnlySources(): array
+    {
+        return [
+            ['code' => 'sales_online_perakende_detail', 'name' => 'Online / Perakende Detay', 'reference' => 'SALES_ONLINE_PERAKENDE_DETAY_V1.json', 'description' => 'Online / Perakende satış datası; gerçek sorgu metadata ekranından yönetilir.'],
+            ['code' => 'sales_bayi_proje_detail', 'name' => 'Bayi / Proje Detay', 'reference' => 'SALES_BAYI_PROJE_DETAY_V1.json', 'description' => 'Bayi / Proje satış datası; gerçek sorgu metadata ekranından yönetilir.'],
+            ['code' => 'stock_dashboard', 'name' => 'Stok Listesi', 'reference' => 'StockService.cs, Views/Stock/Index.cshtml', 'description' => 'PrimeCRM stok listesi mantığına göre n8n datasource kaydı.'],
+            ['code' => 'stock_critical', 'name' => 'Kritik Stoklar', 'reference' => 'StockService.cs', 'description' => 'Kritik stok görünümü için n8n datasource kaydı.'],
+            ['code' => 'stock_warehouse', 'name' => 'Depo / Raf Durumu', 'reference' => 'StockService.cs', 'description' => 'Depo ve raf durumları için n8n datasource kaydı.'],
+            ['code' => 'orders_alinan', 'name' => 'Alınan Siparişler', 'reference' => 'OrderService.cs, Orders/Alinan.cshtml', 'description' => 'Alınan sipariş listesi için n8n datasource kaydı.'],
+            ['code' => 'orders_verilen', 'name' => 'Verilen Siparişler', 'reference' => 'OrderService.cs, Orders/Verilen.cshtml', 'description' => 'Verilen sipariş listesi için n8n datasource kaydı.'],
+            ['code' => 'cari_list', 'name' => 'Müşteri Listesi', 'reference' => 'CariService.cs, Cari/Index.cshtml', 'description' => 'Cari arama ve müşteri listesi için n8n datasource kaydı.'],
+            ['code' => 'cari_balance', 'name' => 'Cari Bakiye', 'reference' => 'CariBalanceController.cs, CariBalance/Index.cshtml', 'description' => 'Cari bakiye özeti için n8n datasource kaydı.'],
+            ['code' => 'cari_statement', 'name' => 'Cari Ekstre', 'reference' => 'CariService.cs, Cari/Detail.cshtml', 'description' => 'Cari hareket ve ekstre satırları için n8n datasource kaydı.'],
+            ['code' => 'cari_document_detail', 'name' => 'Cari Evrak Detayı', 'reference' => 'Cari/DocumentDetail.cshtml', 'description' => 'Cari evrak detayı için n8n datasource kaydı.'],
+            ['code' => 'proforma_list', 'name' => 'Proforma Listesi', 'reference' => 'ProformaService.cs, Proforma/Index.cshtml', 'description' => 'Proforma liste ekranı için n8n datasource kaydı.'],
+            ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'reference' => 'ProformaService.cs, Proforma/Detail.cshtml', 'description' => 'Proforma detay ve print görünümü için n8n datasource kaydı.'],
+        ];
     }
 }

@@ -75,6 +75,9 @@ class PanelPageDataService
             ...$filters,
             'rep_code' => trim((string) ($user->temsilci_kodu ?? '')) ?: null,
             'role_code' => $user->role_code,
+            'search' => $filters['search'] ?? null,
+            'page' => $filters['page'] ?? 1,
+            'bypass_cache' => (bool) ($filters['bypass_cache'] ?? false),
         ];
 
         $allowed = $source->allowed_params ?? [];
@@ -84,7 +87,7 @@ class PanelPageDataService
         }
 
         return collect($payload)
-            ->only([...$allowed, 'role_code'])
+            ->only([...$allowed, 'role_code', 'bypass_cache'])
             ->all();
     }
 
@@ -128,7 +131,7 @@ class PanelPageDataService
 
     /**
      * @param  array<string, mixed>  $input
-     * @return array<string, string>
+     * @return array<string, mixed>
      */
     private function normalizeFilters(array $input): array
     {
@@ -146,6 +149,9 @@ class PanelPageDataService
                 ? (string) ($input['detail_type'] ?? 'cari')
                 : 'cari',
             'scope_key' => (string) ($input['scope_key'] ?? 'all'),
+            'search' => (string) ($input['search'] ?? ''),
+            'page' => (string) max(1, (int) ($input['page'] ?? 1)),
+            'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
         ];
     }
 
@@ -164,7 +170,7 @@ class PanelPageDataService
     }
 
     /**
-     * @param  array<string, string>  $filters
+     * @param  array<string, mixed>  $filters
      * @return array<string, mixed>
      */
     private function emptyDataset(Page $page, array $filters, string $notice): array

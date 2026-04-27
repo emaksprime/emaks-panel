@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\DataSource;
+use App\Models\DataSourceCache;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -20,6 +21,12 @@ class N8nPanelDataGateway
         $token = (string) config('panel.n8n_token');
         $rowsKey = trim((string) ($connectionMeta['response_rows_key'] ?? 'rows')) ?: 'rows';
         $queryTemplate = $this->runnableQueryTemplate($dataSource);
+        $cacheKey = $this->cacheKey($sourceCode, $filters);
+        $bypassCache = (bool) ($filters['bypass_cache'] ?? false);
+
+        if (! $bypassCache && $cached = $this->cachedResponse($cacheKey)) {
+            return $cached;
+        }
 
         if ($url === '') {
             throw new RuntimeException('n8n gateway endpoint_url veya PANEL_N8N_GATEWAY_URL tanimli degil.');
@@ -81,17 +88,25 @@ class N8nPanelDataGateway
             throw new RuntimeException('n8n gateway gecerli JSON donmedi.');
         }
 
+        if (($json['ok'] ?? true) === false) {
+            throw new RuntimeException((string) ($json['error'] ?? 'n8n gateway veri istegini isleyemedi.'));
+        }
+
         $rows = data_get($json, $rowsKey, $json['rows'] ?? []);
 
         if (! is_array($rows)) {
             throw new RuntimeException('n8n gateway yanitinda rows alani dizi degil.');
         }
 
-        return [
+        $result = [
             'rows' => array_values(array_filter($rows, 'is_array')),
             'meta' => is_array($json['meta'] ?? null) ? $json['meta'] : [],
             'request' => is_array($json['request'] ?? null) ? $json['request'] : $payload,
         ];
+
+        $this->storeCache($cacheKey, $sourceCode, $payload, $result);
+
+        return $result;
     }
 
     /**
@@ -138,5 +153,78 @@ class N8nPanelDataGateway
         }
 
         return preg_match('/\b(SELECT|WITH|EXEC)\b/i', $template) === 1 ? $template : '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    private function cacheKey(string $sourceCode, array $filters): string
+    {
+        $payload = collect($filters)
+            ->except(['bypass_cache'])
+            ->sortKeys()
+            ->all();
+
+        return hash('sha256', $sourceCode.'|'.json_encode($payload));
+    }
+
+    /**
+     * @return array{rows: array<int, array<string, mixed>>, meta: array<string, mixed>, request: array<string, mixed>}|null
+     */
+    private function cachedResponse(string $cacheKey): ?array
+    {
+        $cached = DataSourceCache::query()
+            ->where('cache_key', $cacheKey)
+            ->where('expires_at', '>', now())
+            ->first();
+
+        if (! $cached || ! is_array($cached->response_payload)) {
+            return null;
+        }
+
+        return [
+            'rows' => is_array($cached->response_payload['rows'] ?? null) ? $cached->response_payload['rows'] : [],
+            'meta' => [
+                ...(is_array($cached->response_payload['meta'] ?? null) ? $cached->response_payload['meta'] : []),
+                'cache' => 'hit',
+            ],
+            'request' => is_array($cached->response_payload['request'] ?? null) ? $cached->response_payload['request'] : [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $requestPayload
+     * @param  array<string, mixed>  $responsePayload
+     */
+    private function storeCache(string $cacheKey, string $sourceCode, array $requestPayload, array $responsePayload): void
+    {
+        DataSourceCache::query()->updateOrCreate(
+            ['cache_key' => $cacheKey],
+            [
+                'source_code' => $sourceCode,
+                'request_payload' => $requestPayload,
+                'response_payload' => [
+                    ...$responsePayload,
+                    'meta' => [
+                        ...(is_array($responsePayload['meta'] ?? null) ? $responsePayload['meta'] : []),
+                        'cache' => 'stored',
+                    ],
+                ],
+                'expires_at' => now()->addMinutes($this->ttlMinutes($sourceCode)),
+            ],
+        );
+    }
+
+    private function ttlMinutes(string $sourceCode): int
+    {
+        if (str_starts_with($sourceCode, 'cari_')) {
+            return 10;
+        }
+
+        if (str_starts_with($sourceCode, 'stock_')) {
+            return 10;
+        }
+
+        return 5;
     }
 }
