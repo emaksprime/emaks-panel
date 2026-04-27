@@ -168,10 +168,10 @@ class AdminController extends Controller
     public function savePage(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'id' => ['nullable', 'integer', 'exists:panel.pages,id'],
-            'code' => ['required', 'string', 'max:128', Rule::unique('panel.pages', 'code')->ignore($request->integer('id'))],
+            'id' => ['nullable', 'integer', Rule::exists(Page::class, 'id')],
+            'code' => ['required', 'string', 'max:128', Rule::unique(Page::class, 'code')->ignore($request->integer('id'))],
             'name' => ['required', 'string', 'max:255'],
-            'route' => ['required', 'string', 'max:255', Rule::unique('panel.pages', 'route')->ignore($request->integer('id'))],
+            'route' => ['required', 'string', 'max:255', Rule::unique(Page::class, 'route')->ignore($request->integer('id'))],
             'icon' => ['nullable', 'string', 'max:80'],
             'resource_code' => ['nullable', 'string', 'max:128'],
             'component' => ['required', 'string', 'max:255'],
@@ -179,7 +179,7 @@ class AdminController extends Controller
             'description' => ['nullable', 'string'],
             'page_order' => ['integer', 'min:0'],
             'active' => ['boolean'],
-            'menu_group_id' => ['nullable', 'integer', 'exists:panel.menu_groups,id'],
+            'menu_group_id' => ['nullable', 'integer', Rule::exists(MenuGroup::class, 'id')],
             'menu_label' => ['nullable', 'string', 'max:255'],
             'menu_visible' => ['boolean'],
             'menu_sort_order' => ['integer', 'min:0'],
@@ -226,9 +226,9 @@ class AdminController extends Controller
     public function saveButton(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'id' => ['nullable', 'integer', 'exists:panel.buttons,id'],
-            'page_id' => ['required', 'integer', 'exists:panel.pages,id'],
-            'code' => ['required', 'string', 'max:128', Rule::unique('panel.buttons', 'code')->ignore($request->integer('id'))],
+            'id' => ['nullable', 'integer', Rule::exists(Button::class, 'id')],
+            'page_id' => ['required', 'integer', Rule::exists(Page::class, 'id')],
+            'code' => ['required', 'string', 'max:128', Rule::unique(Button::class, 'code')->ignore($request->integer('id'))],
             'label' => ['required', 'string', 'max:255'],
             'resource_code' => ['nullable', 'string', 'max:128'],
             'variant' => ['required', Rule::in(['primary', 'secondary', 'danger', 'ghost'])],
@@ -279,8 +279,8 @@ class AdminController extends Controller
     public function saveDataSource(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'id' => ['nullable', 'integer', 'exists:panel.data_sources,id'],
-            'code' => ['required', 'string', 'max:128', Rule::unique('panel.data_sources', 'code')->ignore($request->integer('id'))],
+            'id' => ['nullable', 'integer', Rule::exists(DataSource::class, 'id')],
+            'code' => ['required', 'string', 'max:128', Rule::unique(DataSource::class, 'code')->ignore($request->integer('id'))],
             'name' => ['required', 'string', 'max:255'],
             'db_type' => ['required', Rule::in(['mssql', 'postgres', 'n8n_json', 'static_preview'])],
             'query_template' => ['nullable', 'string'],
