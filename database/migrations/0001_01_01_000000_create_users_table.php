@@ -12,7 +12,15 @@ return new class extends Migration
      */
     public function up(): void
     {
-        DB::statement('CREATE SCHEMA IF NOT EXISTS panel');
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            try {
+                DB::statement("ATTACH DATABASE ':memory:' AS panel");
+            } catch (Throwable) {
+                //
+            }
+        } else {
+            DB::statement('CREATE SCHEMA IF NOT EXISTS panel');
+        }
 
         Schema::create('panel.users', function (Blueprint $table) {
             $table->id();
