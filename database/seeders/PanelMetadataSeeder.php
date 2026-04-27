@@ -301,14 +301,14 @@ SQL,
                         'resource_code' => $resource->code,
                     ],
                     [
-                'can_view' => match ($role->code) {
-                    'admin' => true,
-                    'manager' => true,
-                    'sales' => in_array($resource->code, ['dashboard', 'sales_main', 'sales_online', 'sales_bayi'], true),
-                    'stock' => in_array($resource->code, ['dashboard', 'stock', 'orders'], true),
-                    default => false,
-                },
-                'can_execute' => $role->code === 'admin',
+                        'can_view' => match ($role->code) {
+                            'admin' => true,
+                            'manager' => true,
+                            'sales' => in_array($resource->code, ['dashboard', 'sales_main', 'sales_online', 'sales_bayi'], true),
+                            'stock' => in_array($resource->code, ['dashboard', 'stock', 'orders'], true),
+                            default => false,
+                        },
+                        'can_execute' => $role->code === 'admin',
                     ],
                 );
             }

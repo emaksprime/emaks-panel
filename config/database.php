@@ -3,6 +3,8 @@
 use Illuminate\Support\Str;
 use Pdo\Mysql;
 
+$envOr = static fn (string $key, mixed $default = null): mixed => filled(env($key)) ? env($key) : $default;
+
 return [
 
     /*
@@ -86,12 +88,12 @@ return [
 
         'pgsql' => [
             'driver' => 'pgsql',
-            'url' => env('DATABASE_URL', env('DB_URL')),
-            'host' => env('PGHOST', env('DB_HOST', '127.0.0.1')),
-            'port' => env('PGPORT', env('DB_PORT', '5432')),
-            'database' => env('PGDATABASE', env('DB_DATABASE', 'laravel')),
-            'username' => env('PGUSER', env('DB_USERNAME', 'root')),
-            'password' => env('PGPASSWORD', env('DB_PASSWORD', '')),
+            'url' => $envOr('DATABASE_URL', env('DB_URL')),
+            'host' => $envOr('PGHOST', env('DB_HOST', '127.0.0.1')),
+            'port' => $envOr('PGPORT', env('DB_PORT', '5432')),
+            'database' => $envOr('PGDATABASE', env('DB_DATABASE', 'laravel')),
+            'username' => $envOr('PGUSER', env('DB_USERNAME', 'root')),
+            'password' => $envOr('PGPASSWORD', env('DB_PASSWORD', '')),
             'charset' => env('DB_CHARSET', 'utf8'),
             'prefix' => '',
             'prefix_indexes' => true,

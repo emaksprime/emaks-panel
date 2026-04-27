@@ -12,8 +12,7 @@ class PanelNavigationService
 {
     public function __construct(
         private readonly PanelAccessService $access,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
