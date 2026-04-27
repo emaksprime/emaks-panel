@@ -53,6 +53,7 @@ class FortifyServiceProvider extends ServiceProvider
             'status' => $request->session()->get('status'),
         ]));
 
+        Fortify::confirmPasswordView(fn () => Inertia::render('auth/confirm-password'));
         Fortify::twoFactorChallengeView(fn () => Inertia::render('auth/two-factor-challenge'));
     }
 

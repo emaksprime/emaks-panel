@@ -31,6 +31,7 @@ class UserFactory extends Factory
             'role_code' => 'sales',
             'temsilci_kodu' => null,
             'aktif' => true,
+            'email_verified_at' => now(),
             'remember_token' => Str::random(10),
             'two_factor_secret' => null,
             'two_factor_recovery_codes' => null,
