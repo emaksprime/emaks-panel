@@ -56,6 +56,10 @@ class HandleInertiaRequests extends Middleware
                 'brand' => config('panel.brand'),
                 'host' => parse_url((string) config('app.url'), PHP_URL_HOST),
                 'environment' => app()->environment(),
+                'publicUrl' => config('panel.public_url'),
+                'apiBaseUrl' => config('panel.api_base_url'),
+                'webhookBaseUrl' => config('panel.webhook_base_url'),
+                'workflowUrls' => config('panel.workflow_urls'),
             ],
         ];
     }
