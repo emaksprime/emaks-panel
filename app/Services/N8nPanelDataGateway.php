@@ -33,6 +33,8 @@ class N8nPanelDataGateway
             'detail_type' => $filters['detail_type'] ?? null,
             'scope_key' => $filters['scope_key'] ?? null,
             'rep_code' => $filters['rep_code'] ?? null,
+            'search' => $filters['search'] ?? null,
+            'limit' => $filters['limit'] ?? null,
         ];
 
         try {

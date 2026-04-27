@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\AuditLogger;
+use App\Services\CariBilgiPageService;
 use App\Services\PanelDataSourceManager;
 use App\Services\PanelNavigationService;
 use App\Services\PrimeCrmIntegrationService;
@@ -20,6 +21,7 @@ class PanelPageController extends Controller
         private readonly PanelDataSourceManager $dataSources,
         private readonly AuditLogger $auditLogger,
         private readonly SalesMainPageService $salesMain,
+        private readonly CariBilgiPageService $cariBilgi,
         private readonly PrimeCrmIntegrationService $primeCrm,
     ) {
     }
@@ -109,6 +111,11 @@ class PanelPageController extends Controller
                 $sharedProps['salesMainData'] = $this->emptySalesMainDataset($exception->getMessage());
                 $sharedProps['salesMainError'] = $exception->getMessage();
             }
+        }
+
+        if ($page->code === 'cari_bilgi') {
+            $sharedProps['cariBilgiConfig'] = $this->cariBilgi->config($user);
+            $sharedProps['cariBilgiData'] = $this->cariBilgi->dataset($user);
         }
 
         return Inertia::render($page->component, $sharedProps);

@@ -25,8 +25,20 @@ class PanelMetadataSeederTest extends TestCase
             'layout_type' => 'admin',
         ]);
 
+        $this->assertDatabaseHas('panel.pages', [
+            'code' => 'cari_bilgi',
+            'route' => '/finance/cari-bilgi',
+            'component' => 'panel/cari-bilgi',
+        ]);
+
         $this->assertDatabaseHas('panel.data_sources', [
             'code' => 'sales_main_dashboard',
+            'db_type' => 'n8n_json',
+            'active' => true,
+        ]);
+
+        $this->assertDatabaseHas('panel.data_sources', [
+            'code' => 'cari_bilgi_dashboard',
             'db_type' => 'n8n_json',
             'active' => true,
         ]);
