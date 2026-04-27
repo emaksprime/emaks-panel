@@ -67,9 +67,8 @@ class FortifyServiceProvider extends ServiceProvider
 
         RateLimiter::for('login', function (Request $request) {
             $username = (string) $request->input(Fortify::username(), $request->input('email'));
-            $throttleKey = md5('login'.implode('|', [$username, $request->ip()]));
 
-            return Limit::perMinute(5)->by($throttleKey);
+            return Limit::perMinute(5)->by(implode('|', [$username, $request->ip()]));
         });
     }
 }
