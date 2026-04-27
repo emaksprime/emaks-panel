@@ -31,13 +31,25 @@ class PanelMetadataSeeder extends Seeder
 
         $resources = collect([
             ['code' => 'dashboard', 'name' => 'Yönetim Özeti', 'type' => 'page'],
-            ['code' => 'sales_main', 'name' => 'Satış Yönetimi', 'type' => 'page'],
+            ['code' => 'sales_main', 'name' => 'Genel Satış', 'type' => 'page'],
             ['code' => 'sales_main_all', 'name' => 'Satış Yönetimi Tüm Kapsamlar', 'type' => 'scope'],
             ['code' => 'sales_online', 'name' => 'Online / Perakende', 'type' => 'page'],
             ['code' => 'sales_bayi', 'name' => 'Bayi / Proje', 'type' => 'page'],
-            ['code' => 'stock', 'name' => 'Stok Yönetimi', 'type' => 'page'],
+            ['code' => 'sales_representatives', 'name' => 'Satış Temsilcisi Görünümü', 'type' => 'page'],
+            ['code' => 'stock', 'name' => 'Stok Listesi', 'type' => 'page'],
+            ['code' => 'stock_critical', 'name' => 'Kritik Stoklar', 'type' => 'page'],
+            ['code' => 'stock_warehouse', 'name' => 'Depo / Raf Durumu', 'type' => 'page'],
             ['code' => 'finance_cari_durum', 'name' => 'Cari Durum', 'type' => 'page'],
             ['code' => 'orders', 'name' => 'Sipariş Yönetimi', 'type' => 'page'],
+            ['code' => 'orders_alinan', 'name' => 'Alınan Siparişler', 'type' => 'page'],
+            ['code' => 'orders_verilen', 'name' => 'Verilen Siparişler', 'type' => 'page'],
+            ['code' => 'cari', 'name' => 'Cari Liste', 'type' => 'page'],
+            ['code' => 'cari_balance', 'name' => 'Cari Bakiye', 'type' => 'page'],
+            ['code' => 'cari_detail', 'name' => 'Cari Detay ve Ekstre', 'type' => 'page'],
+            ['code' => 'proforma', 'name' => 'Proforma Liste', 'type' => 'page'],
+            ['code' => 'proforma_create', 'name' => 'Proforma Oluştur', 'type' => 'page'],
+            ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'type' => 'page'],
+            ['code' => 'proforma_edit', 'name' => 'Proforma Düzenle', 'type' => 'page'],
             ['code' => 'admin_panel', 'name' => 'Yönetim Paneli', 'type' => 'page'],
             ['code' => 'admin_users', 'name' => 'Kullanıcılar', 'type' => 'page'],
             ['code' => 'admin_pages', 'name' => 'Sayfalar', 'type' => 'page'],
@@ -48,49 +60,79 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'sales_bayi_proje_detail', 'name' => 'Bayi / Proje Veri Kaynağı', 'type' => 'data_source'],
             ['code' => 'sales_online_perakende_detail', 'name' => 'Online / Perakende Veri Kaynağı', 'type' => 'data_source'],
             ['code' => 'orders_dashboard', 'name' => 'Sipariş Veri Kaynağı', 'type' => 'data_source'],
+            ['code' => 'cari_list', 'name' => 'Cari Liste Veri Kaynağı', 'type' => 'data_source'],
+            ['code' => 'cari_statement', 'name' => 'Cari Ekstre Veri Kaynağı', 'type' => 'data_source'],
+            ['code' => 'proforma_list', 'name' => 'Proforma Liste Veri Kaynağı', 'type' => 'data_source'],
         ])->mapWithKeys(fn (array $resource) => [
             $resource['code'] => Resource::query()->updateOrCreate(['code' => $resource['code']], $resource),
         ]);
 
         $groups = collect([
             ['code' => 'executive', 'name' => 'Yönetim', 'icon' => 'layout-grid', 'menu_order' => 10, 'active' => true],
-            ['code' => 'sales', 'name' => 'Satış', 'icon' => 'chart-column', 'menu_order' => 20, 'active' => true],
-            ['code' => 'operations', 'name' => 'Operasyon', 'icon' => 'boxes', 'menu_order' => 30, 'active' => true],
-            ['code' => 'administration', 'name' => 'Sistem Yönetimi', 'icon' => 'shield', 'menu_order' => 40, 'active' => true],
+            ['code' => 'sales', 'name' => 'Satış Yönetimi', 'icon' => 'chart-column', 'menu_order' => 20, 'active' => true],
+            ['code' => 'stock', 'name' => 'Stok Yönetimi', 'icon' => 'boxes', 'menu_order' => 30, 'active' => true],
+            ['code' => 'orders', 'name' => 'Sipariş Yönetimi', 'icon' => 'shopping-cart', 'menu_order' => 40, 'active' => true],
+            ['code' => 'cari', 'name' => 'Cari Yönetimi', 'icon' => 'wallet', 'menu_order' => 50, 'active' => true],
+            ['code' => 'proforma', 'name' => 'Proforma', 'icon' => 'folder-kanban', 'menu_order' => 60, 'active' => true],
+            ['code' => 'administration', 'name' => 'Sistem Yönetimi', 'icon' => 'shield', 'menu_order' => 70, 'active' => true],
         ])->mapWithKeys(fn (array $group) => [
             $group['code'] => MenuGroup::query()->updateOrCreate(['code' => $group['code']], $group),
         ]);
 
         $pages = collect([
             ['code' => 'dashboard', 'name' => 'Yönetim Özeti', 'route' => '/dashboard', 'component' => 'panel/page', 'layout_type' => 'admin', 'icon' => 'layout-grid', 'description' => 'Genel yönetim ve metadata özet görünümü', 'resource_code' => 'dashboard', 'page_order' => 10, 'active' => true],
-            ['code' => 'sales_main', 'name' => 'Satış Yönetimi', 'route' => '/sales/main', 'component' => 'panel/sales-main', 'layout_type' => 'module', 'icon' => 'chart-column', 'description' => 'Ana satış dashboardu ve yönetim kapsamları', 'resource_code' => 'sales_main', 'page_order' => 20, 'active' => true],
+            ['code' => 'sales_main', 'name' => 'Genel Satış', 'route' => '/sales/main', 'component' => 'panel/sales-main', 'layout_type' => 'module', 'icon' => 'chart-column', 'description' => 'Ana satış dashboardu ve yönetim kapsamları', 'resource_code' => 'sales_main', 'page_order' => 20, 'active' => true],
             ['code' => 'sales_online', 'name' => 'Online / Perakende', 'route' => '/sales/online', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'signal', 'description' => 'Online ve perakende satış görünümü', 'resource_code' => 'sales_online', 'page_order' => 30, 'active' => true],
             ['code' => 'sales_bayi', 'name' => 'Bayi / Proje', 'route' => '/sales/bayi', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'store', 'description' => 'Bayi ve proje satış görünümü', 'resource_code' => 'sales_bayi', 'page_order' => 40, 'active' => true],
-            ['code' => 'stock', 'name' => 'Stok Yönetimi', 'route' => '/stock', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Stok yönetim görünümü', 'resource_code' => 'stock', 'page_order' => 50, 'active' => true],
-            ['code' => 'finance_cari_durum', 'name' => 'Cari Durum', 'route' => '/finance/cari-durum', 'component' => 'panel/page', 'layout_type' => 'admin', 'icon' => 'wallet', 'description' => 'Cari durum ve finans yönetim görünümü', 'resource_code' => 'finance_cari_durum', 'page_order' => 60, 'active' => true],
-            ['code' => 'orders', 'name' => 'Sipariş Yönetimi', 'route' => '/orders', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'shopping-cart', 'description' => 'Sipariş operasyonları', 'resource_code' => 'orders', 'page_order' => 70, 'active' => true],
-            ['code' => 'admin_panel', 'name' => 'Yönetim Paneli', 'route' => '/admin', 'component' => 'panel/admin/index', 'layout_type' => 'admin', 'icon' => 'shield', 'description' => 'Panel yönetim merkezi', 'resource_code' => 'admin_panel', 'page_order' => 80, 'active' => true],
-            ['code' => 'admin_users', 'name' => 'Kullanıcılar', 'route' => '/admin/users', 'component' => 'panel/admin/users', 'layout_type' => 'admin', 'icon' => 'users', 'description' => 'Kullanıcı, rol ve erişim yönetimi', 'resource_code' => 'admin_users', 'page_order' => 81, 'active' => true],
-            ['code' => 'admin_pages', 'name' => 'Sayfalar', 'route' => '/admin/pages', 'component' => 'panel/admin/pages', 'layout_type' => 'admin', 'icon' => 'panel-left', 'description' => 'Menü, route ve sayfa konfigürasyonu', 'resource_code' => 'admin_pages', 'page_order' => 82, 'active' => true],
-            ['code' => 'admin_datasources', 'name' => 'Veri Kaynakları', 'route' => '/admin/datasources', 'component' => 'panel/admin/datasources', 'layout_type' => 'admin', 'icon' => 'database', 'description' => 'MSSQL, Postgres ve workflow metadata yönetimi', 'resource_code' => 'admin_datasources', 'page_order' => 83, 'active' => true],
-            ['code' => 'admin_logs', 'name' => 'Loglar', 'route' => '/admin/logs', 'component' => 'panel/admin/logs', 'layout_type' => 'admin', 'icon' => 'scroll-text', 'description' => 'Aksiyon ve audit log kayıtları', 'resource_code' => 'admin_logs', 'page_order' => 84, 'active' => true],
+            ['code' => 'sales_representatives', 'name' => 'Satış Temsilcisi Görünümü', 'route' => '/sales/representatives', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'users', 'description' => 'Temsilci bazlı satış kapsamları bu ekranda yönetilir.', 'resource_code' => 'sales_representatives', 'page_order' => 50, 'active' => true],
+            ['code' => 'stock', 'name' => 'Stok Listesi', 'route' => '/stock', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Stok listesi ve ürün izleme ekranı.', 'resource_code' => 'stock', 'page_order' => 60, 'active' => true],
+            ['code' => 'stock_critical', 'name' => 'Kritik Stoklar', 'route' => '/stock/critical', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Kritik stok seviyeleri ve uyarı listesi burada hazırlanır.', 'resource_code' => 'stock_critical', 'page_order' => 61, 'active' => true],
+            ['code' => 'stock_warehouse', 'name' => 'Depo / Raf Durumu', 'route' => '/stock/warehouse', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Depo, raf ve lokasyon durumu bu modül altında izlenir.', 'resource_code' => 'stock_warehouse', 'page_order' => 62, 'active' => true],
+            ['code' => 'orders', 'name' => 'Sipariş Yönetimi', 'route' => '/orders', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'shopping-cart', 'description' => 'Sipariş operasyonları için genel görünüm.', 'resource_code' => 'orders', 'page_order' => 70, 'active' => true],
+            ['code' => 'orders_alinan', 'name' => 'Alınan Siparişler', 'route' => '/orders/alinan', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'shopping-cart', 'description' => 'Müşterilerden alınan siparişler bu ekranda listelenecek.', 'resource_code' => 'orders_alinan', 'page_order' => 71, 'active' => true],
+            ['code' => 'orders_verilen', 'name' => 'Verilen Siparişler', 'route' => '/orders/verilen', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'shopping-cart', 'description' => 'Tedarikçi ve üretim tarafına verilen siparişler burada izlenecek.', 'resource_code' => 'orders_verilen', 'page_order' => 72, 'active' => true],
+            ['code' => 'cari', 'name' => 'Cari Yönetimi', 'route' => '/cari', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'wallet', 'description' => 'Cari liste, bakiye ve ekstre işlemleri bu modül altında yönetilir.', 'resource_code' => 'cari', 'page_order' => 80, 'active' => true],
+            ['code' => 'cari_balance', 'name' => 'Cari Bakiye', 'route' => '/cari/balance', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'wallet', 'description' => 'Cari bakiye izleme ve risk görünümü için placeholder ekran.', 'resource_code' => 'cari_balance', 'page_order' => 81, 'active' => true],
+            ['code' => 'cari_detail', 'name' => 'Cari Detay ve Ekstre', 'route' => '/cari/detail', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'wallet', 'description' => 'Cari detay ve ekstre kırılımları bu ekranda hazırlanacak.', 'resource_code' => 'cari_detail', 'page_order' => 82, 'active' => true],
+            ['code' => 'proforma', 'name' => 'Proforma Liste', 'route' => '/proforma', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Proforma kayıtlarının listeleneceği operasyon ekranı.', 'resource_code' => 'proforma', 'page_order' => 90, 'active' => true],
+            ['code' => 'proforma_create', 'name' => 'Proforma Oluştur', 'route' => '/proforma/create', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Yeni proforma taslakları için hazırlık ekranı.', 'resource_code' => 'proforma_create', 'page_order' => 91, 'active' => true],
+            ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'route' => '/proforma/detail', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Proforma detay görüntüleme iskeleti.', 'resource_code' => 'proforma_detail', 'page_order' => 92, 'active' => true],
+            ['code' => 'proforma_edit', 'name' => 'Proforma Düzenle', 'route' => '/proforma/edit', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Proforma düzenleme akışı için placeholder ekran.', 'resource_code' => 'proforma_edit', 'page_order' => 93, 'active' => true],
+            ['code' => 'finance_cari_durum', 'name' => 'Cari Durum', 'route' => '/finance/cari-durum', 'component' => 'panel/page', 'layout_type' => 'admin', 'icon' => 'wallet', 'description' => 'Cari durum ve finans yönetim görünümü', 'resource_code' => 'finance_cari_durum', 'page_order' => 100, 'active' => true],
+            ['code' => 'admin_panel', 'name' => 'Yönetim Paneli', 'route' => '/admin', 'component' => 'panel/admin/index', 'layout_type' => 'admin', 'icon' => 'shield', 'description' => 'Panel yönetim merkezi', 'resource_code' => 'admin_panel', 'page_order' => 110, 'active' => true],
+            ['code' => 'admin_users', 'name' => 'Kullanıcılar', 'route' => '/admin/users', 'component' => 'panel/admin/users', 'layout_type' => 'admin', 'icon' => 'users', 'description' => 'Kullanıcı, rol ve erişim yönetimi', 'resource_code' => 'admin_users', 'page_order' => 111, 'active' => true],
+            ['code' => 'admin_pages', 'name' => 'Sayfalar', 'route' => '/admin/pages', 'component' => 'panel/admin/pages', 'layout_type' => 'admin', 'icon' => 'panel-left', 'description' => 'Menü, route ve sayfa konfigürasyonu', 'resource_code' => 'admin_pages', 'page_order' => 112, 'active' => true],
+            ['code' => 'admin_datasources', 'name' => 'Veri Kaynakları', 'route' => '/admin/datasources', 'component' => 'panel/admin/datasources', 'layout_type' => 'admin', 'icon' => 'database', 'description' => 'MSSQL, Postgres ve workflow metadata yönetimi', 'resource_code' => 'admin_datasources', 'page_order' => 113, 'active' => true],
+            ['code' => 'admin_logs', 'name' => 'Loglar', 'route' => '/admin/logs', 'component' => 'panel/admin/logs', 'layout_type' => 'admin', 'icon' => 'scroll-text', 'description' => 'Aksiyon ve audit log kayıtları', 'resource_code' => 'admin_logs', 'page_order' => 114, 'active' => true],
         ])->mapWithKeys(fn (array $page) => [
             $page['code'] => Page::query()->updateOrCreate(['code' => $page['code']], $page),
         ]);
 
         $menuItems = [
             ['menu_group' => 'executive', 'page' => 'dashboard', 'label' => 'Yönetim Özeti', 'icon' => 'layout-grid', 'sort_order' => 10],
-            ['menu_group' => 'sales', 'page' => 'sales_main', 'label' => 'Satış Yönetimi', 'icon' => 'chart-column', 'sort_order' => 20],
+            ['menu_group' => 'sales', 'page' => 'sales_main', 'label' => 'Genel Satış', 'icon' => 'chart-column', 'sort_order' => 20],
             ['menu_group' => 'sales', 'page' => 'sales_online', 'label' => 'Online / Perakende', 'icon' => 'signal', 'sort_order' => 30],
             ['menu_group' => 'sales', 'page' => 'sales_bayi', 'label' => 'Bayi / Proje', 'icon' => 'store', 'sort_order' => 40],
-            ['menu_group' => 'operations', 'page' => 'stock', 'label' => 'Stok Yönetimi', 'icon' => 'boxes', 'sort_order' => 50],
-            ['menu_group' => 'operations', 'page' => 'orders', 'label' => 'Sipariş Yönetimi', 'icon' => 'shopping-cart', 'sort_order' => 60],
-            ['menu_group' => 'executive', 'page' => 'finance_cari_durum', 'label' => 'Cari Durum', 'icon' => 'wallet', 'sort_order' => 70],
-            ['menu_group' => 'administration', 'page' => 'admin_panel', 'label' => 'Yönetim Paneli', 'icon' => 'shield', 'sort_order' => 80],
-            ['menu_group' => 'administration', 'page' => 'admin_users', 'label' => 'Kullanıcılar', 'icon' => 'users', 'sort_order' => 81],
-            ['menu_group' => 'administration', 'page' => 'admin_pages', 'label' => 'Sayfalar', 'icon' => 'panel-left', 'sort_order' => 82],
-            ['menu_group' => 'administration', 'page' => 'admin_datasources', 'label' => 'Veri Kaynakları', 'icon' => 'database', 'sort_order' => 83],
-            ['menu_group' => 'administration', 'page' => 'admin_logs', 'label' => 'Loglar', 'icon' => 'scroll-text', 'sort_order' => 84],
+            ['menu_group' => 'sales', 'page' => 'sales_representatives', 'label' => 'Satış Temsilcisi Görünümü', 'icon' => 'users', 'sort_order' => 50],
+            ['menu_group' => 'stock', 'page' => 'stock', 'label' => 'Stok Listesi', 'icon' => 'boxes', 'sort_order' => 60],
+            ['menu_group' => 'stock', 'page' => 'stock_critical', 'label' => 'Kritik Stoklar', 'icon' => 'boxes', 'sort_order' => 61],
+            ['menu_group' => 'stock', 'page' => 'stock_warehouse', 'label' => 'Depo / Raf Durumu', 'icon' => 'boxes', 'sort_order' => 62],
+            ['menu_group' => 'orders', 'page' => 'orders', 'label' => 'Sipariş Yönetimi', 'icon' => 'shopping-cart', 'sort_order' => 70],
+            ['menu_group' => 'orders', 'page' => 'orders_alinan', 'label' => 'Alınan Siparişler', 'icon' => 'shopping-cart', 'sort_order' => 71],
+            ['menu_group' => 'orders', 'page' => 'orders_verilen', 'label' => 'Verilen Siparişler', 'icon' => 'shopping-cart', 'sort_order' => 72],
+            ['menu_group' => 'cari', 'page' => 'cari', 'label' => 'Cari Liste', 'icon' => 'wallet', 'sort_order' => 80],
+            ['menu_group' => 'cari', 'page' => 'cari_balance', 'label' => 'Cari Bakiye', 'icon' => 'wallet', 'sort_order' => 81],
+            ['menu_group' => 'cari', 'page' => 'cari_detail', 'label' => 'Cari Detay / Ekstre', 'icon' => 'wallet', 'sort_order' => 82],
+            ['menu_group' => 'proforma', 'page' => 'proforma', 'label' => 'Proforma Liste', 'icon' => 'folder-kanban', 'sort_order' => 90],
+            ['menu_group' => 'proforma', 'page' => 'proforma_create', 'label' => 'Proforma Oluştur', 'icon' => 'folder-kanban', 'sort_order' => 91],
+            ['menu_group' => 'proforma', 'page' => 'proforma_detail', 'label' => 'Proforma Detay', 'icon' => 'folder-kanban', 'sort_order' => 92],
+            ['menu_group' => 'proforma', 'page' => 'proforma_edit', 'label' => 'Proforma Düzenle', 'icon' => 'folder-kanban', 'sort_order' => 93],
+            ['menu_group' => 'executive', 'page' => 'finance_cari_durum', 'label' => 'Cari Durum', 'icon' => 'wallet', 'sort_order' => 100],
+            ['menu_group' => 'administration', 'page' => 'admin_panel', 'label' => 'Yönetim Paneli', 'icon' => 'shield', 'sort_order' => 110],
+            ['menu_group' => 'administration', 'page' => 'admin_users', 'label' => 'Kullanıcılar', 'icon' => 'users', 'sort_order' => 111],
+            ['menu_group' => 'administration', 'page' => 'admin_pages', 'label' => 'Sayfalar / Butonlar', 'icon' => 'panel-left', 'sort_order' => 112],
+            ['menu_group' => 'administration', 'page' => 'admin_datasources', 'label' => 'Veri Kaynakları', 'icon' => 'database', 'sort_order' => 113],
+            ['menu_group' => 'administration', 'page' => 'admin_logs', 'label' => 'Loglar', 'icon' => 'scroll-text', 'sort_order' => 114],
         ];
 
         foreach ($menuItems as $item) {
@@ -190,10 +232,21 @@ SQL,
             [
                 'layout_json' => [
                     'heroEyebrow' => 'Satış kontrol merkezi',
+                    'previewNotice' => 'Önizleme verisi; canlı endpoint henüz bağlanmadı.',
+                    'moduleTabs' => [
+                        ['label' => 'Tümü', 'href' => '/sales/main'],
+                        ['label' => 'Ümit Yıldız', 'href' => '/sales/main'],
+                        ['label' => 'Salih İmal', 'href' => '/sales/main'],
+                        ['label' => 'Online / Perakende', 'href' => '/sales/online'],
+                        ['label' => 'Bayi / Proje', 'href' => '/sales/bayi'],
+                        ['label' => 'Temsilci Görünümü', 'href' => '/sales/representatives'],
+                    ],
                     'topNav' => [
                         ['key' => 'sales', 'label' => 'Satış Yönetimi', 'href' => '/sales/main'],
                         ['key' => 'stock', 'label' => 'Stok Yönetimi', 'href' => '/stock'],
                         ['key' => 'orders', 'label' => 'Sipariş Yönetimi', 'href' => '/orders'],
+                        ['key' => 'cari', 'label' => 'Cari Yönetimi', 'href' => '/cari'],
+                        ['key' => 'proforma', 'label' => 'Proforma', 'href' => '/proforma'],
                     ],
                 ],
                 'filters_json' => [
@@ -289,6 +342,113 @@ SQL,
             );
         }
 
+        $n8nConnectionMeta = [
+            'driver' => 'n8n_json',
+            'method' => 'POST',
+            'endpoint_url' => '',
+            'response_rows_key' => 'rows',
+            'source_workflow' => '',
+            'sql_policy' => 'unchanged',
+        ];
+
+        foreach ([
+            ['code' => 'sales_online_perakende_detail', 'name' => 'Online / Perakende Detay', 'description' => 'Online ve perakende satış workflow metadata kaydı.'],
+            ['code' => 'sales_bayi_proje_detail', 'name' => 'Bayi / Proje Detay', 'description' => 'Bayi ve proje satış workflow metadata kaydı.'],
+            ['code' => 'stock_dashboard', 'name' => 'Stok Dashboard', 'description' => 'Stok modülü için n8n JSON metadata kaydı.'],
+            ['code' => 'stock_critical', 'name' => 'Kritik Stoklar', 'description' => 'Kritik stoklar için placeholder veri kaynağı.'],
+            ['code' => 'stock_warehouse', 'name' => 'Depo / Raf Durumu', 'description' => 'Depo ve raf durumu için placeholder veri kaynağı.'],
+            ['code' => 'orders_alinan', 'name' => 'Alınan Siparişler', 'description' => 'Alınan siparişler için placeholder veri kaynağı.'],
+            ['code' => 'orders_verilen', 'name' => 'Verilen Siparişler', 'description' => 'Verilen siparişler için placeholder veri kaynağı.'],
+            ['code' => 'cari_list', 'name' => 'Cari Liste', 'description' => 'Cari liste için placeholder veri kaynağı.'],
+            ['code' => 'cari_balance', 'name' => 'Cari Bakiye', 'description' => 'Cari bakiye için placeholder veri kaynağı.'],
+            ['code' => 'cari_statement', 'name' => 'Cari Ekstre', 'description' => 'Cari ekstre için placeholder veri kaynağı.'],
+            ['code' => 'proforma_list', 'name' => 'Proforma Liste', 'description' => 'Proforma liste için placeholder veri kaynağı.'],
+            ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'description' => 'Proforma detay için placeholder veri kaynağı.'],
+        ] as $index => $sourceDefinition) {
+            DataSource::query()->updateOrCreate(
+                ['code' => $sourceDefinition['code']],
+                [
+                    'name' => $sourceDefinition['name'],
+                    'db_type' => 'n8n_json',
+                    'query_template' => '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.',
+                    'allowed_params' => ['date_from', 'date_to', 'grain', 'scope_key', 'rep_code'],
+                    'connection_meta' => $n8nConnectionMeta,
+                    'preview_payload' => [
+                        'mode' => 'placeholder',
+                        'message' => 'Canlı veri kaynağı henüz bağlanmadı.',
+                    ],
+                    'active' => true,
+                    'sort_order' => 30 + $index,
+                    'description' => $sourceDefinition['description'],
+                ],
+            );
+        }
+
+        $tabs = [
+            'sales' => [
+                ['label' => 'Tümü', 'href' => '/sales/main'],
+                ['label' => 'Ümit Yıldız', 'href' => '/sales/main'],
+                ['label' => 'Salih İmal', 'href' => '/sales/main'],
+                ['label' => 'Online / Perakende', 'href' => '/sales/online'],
+                ['label' => 'Bayi / Proje', 'href' => '/sales/bayi'],
+                ['label' => 'Temsilci Görünümü', 'href' => '/sales/representatives'],
+            ],
+            'stock' => [
+                ['label' => 'Stok Listesi', 'href' => '/stock'],
+                ['label' => 'Kritik Stoklar', 'href' => '/stock/critical'],
+                ['label' => 'Depo / Raf Durumu', 'href' => '/stock/warehouse'],
+            ],
+            'orders' => [
+                ['label' => 'Sipariş Yönetimi', 'href' => '/orders'],
+                ['label' => 'Alınan Siparişler', 'href' => '/orders/alinan'],
+                ['label' => 'Verilen Siparişler', 'href' => '/orders/verilen'],
+            ],
+            'cari' => [
+                ['label' => 'Cari Liste', 'href' => '/cari'],
+                ['label' => 'Cari Bakiye', 'href' => '/cari/balance'],
+                ['label' => 'Cari Detay', 'href' => '/cari/detail'],
+                ['label' => 'Cari Ekstre', 'href' => '/cari/detail'],
+            ],
+            'proforma' => [
+                ['label' => 'Proforma Liste', 'href' => '/proforma'],
+                ['label' => 'Proforma Oluştur', 'href' => '/proforma/create'],
+                ['label' => 'Proforma Detay', 'href' => '/proforma/detail'],
+                ['label' => 'Proforma Düzenle', 'href' => '/proforma/edit'],
+            ],
+        ];
+
+        foreach ([
+            'sales_online' => ['eyebrow' => 'Satış Yönetimi', 'tabs' => 'sales', 'datasource' => 'sales_online_perakende_detail'],
+            'sales_bayi' => ['eyebrow' => 'Satış Yönetimi', 'tabs' => 'sales', 'datasource' => 'sales_bayi_proje_detail'],
+            'sales_representatives' => ['eyebrow' => 'Satış Yönetimi', 'tabs' => 'sales', 'datasource' => 'sales_main_dashboard'],
+            'stock' => ['eyebrow' => 'Stok Yönetimi', 'tabs' => 'stock', 'datasource' => 'stock_dashboard'],
+            'stock_critical' => ['eyebrow' => 'Stok Yönetimi', 'tabs' => 'stock', 'datasource' => 'stock_critical'],
+            'stock_warehouse' => ['eyebrow' => 'Stok Yönetimi', 'tabs' => 'stock', 'datasource' => 'stock_warehouse'],
+            'orders' => ['eyebrow' => 'Sipariş Yönetimi', 'tabs' => 'orders', 'datasource' => 'orders_alinan'],
+            'orders_alinan' => ['eyebrow' => 'Sipariş Yönetimi', 'tabs' => 'orders', 'datasource' => 'orders_alinan'],
+            'orders_verilen' => ['eyebrow' => 'Sipariş Yönetimi', 'tabs' => 'orders', 'datasource' => 'orders_verilen'],
+            'cari' => ['eyebrow' => 'Cari Yönetimi', 'tabs' => 'cari', 'datasource' => 'cari_list'],
+            'cari_balance' => ['eyebrow' => 'Cari Yönetimi', 'tabs' => 'cari', 'datasource' => 'cari_balance'],
+            'cari_detail' => ['eyebrow' => 'Cari Yönetimi', 'tabs' => 'cari', 'datasource' => 'cari_statement'],
+            'proforma' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_list'],
+            'proforma_create' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_list'],
+            'proforma_detail' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_detail'],
+            'proforma_edit' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_detail'],
+        ] as $pageCode => $configDefinition) {
+            PageConfig::query()->updateOrCreate(
+                ['page_code' => $pageCode],
+                [
+                    'layout_json' => [
+                        'heroEyebrow' => $configDefinition['eyebrow'],
+                        'previewNotice' => 'Canlı veri kaynağı henüz bağlanmadı.',
+                        'moduleTabs' => $tabs[$configDefinition['tabs']],
+                    ],
+                    'filters_json' => [],
+                    'datasource_id' => DataSource::query()->where('code', $configDefinition['datasource'])->value('id'),
+                ],
+            );
+        }
+
         foreach (['admin_panel', 'admin_users', 'admin_pages', 'admin_datasources', 'admin_logs'] as $pageCode) {
             PageConfig::query()->updateOrCreate(
                 ['page_code' => $pageCode],
@@ -308,14 +468,35 @@ SQL,
                         'resource_code' => $resource->code,
                     ],
                     [
-                'can_view' => match ($role->code) {
-                    'admin' => true,
-                    'manager' => true,
-                    'sales' => in_array($resource->code, ['dashboard', 'sales_main', 'sales_online', 'sales_bayi'], true),
-                    'stock' => in_array($resource->code, ['dashboard', 'stock', 'orders'], true),
-                    default => false,
-                },
-                'can_execute' => $role->code === 'admin',
+                        'can_view' => match ($role->code) {
+                            'admin' => true,
+                            'manager' => true,
+                            'sales' => in_array($resource->code, [
+                                'dashboard',
+                                'sales_main',
+                                'sales_online',
+                                'sales_bayi',
+                                'sales_representatives',
+                                'cari',
+                                'cari_balance',
+                                'cari_detail',
+                                'proforma',
+                                'proforma_create',
+                                'proforma_detail',
+                                'proforma_edit',
+                            ], true),
+                            'stock' => in_array($resource->code, [
+                                'dashboard',
+                                'stock',
+                                'stock_critical',
+                                'stock_warehouse',
+                                'orders',
+                                'orders_alinan',
+                                'orders_verilen',
+                            ], true),
+                            default => false,
+                        },
+                        'can_execute' => $role->code === 'admin',
                     ],
                 );
             }

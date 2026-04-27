@@ -16,6 +16,13 @@ const blank = {
     sort_order: 0,
 };
 
+const dbTypeLabels = {
+    mssql: 'Microsoft SQL Server (mssql)',
+    postgres: 'PostgreSQL (postgres)',
+    n8n_json: 'n8n JSON Webhook (n8n_json)',
+    static_preview: 'Statik Önizleme (static_preview)',
+};
+
 function pretty(value) {
     return JSON.stringify(value ?? {}, null, 2);
 }
@@ -100,7 +107,7 @@ export default function AdminDataSources() {
 
                 <form onSubmit={save} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                     <div>
-                        <h2 className="text-lg font-semibold text-slate-950">Datasource Düzenle</h2>
+                        <h2 className="text-lg font-semibold text-slate-950">Veri Kaynağı Düzenle</h2>
                         <p className="mt-1 text-sm text-slate-500">
                             Canlı endpoint çağrısı bu aşamada yoktur; sadece panel.data_sources metadata kaydı yönetilir.
                         </p>
@@ -122,7 +129,7 @@ export default function AdminDataSources() {
                         <label className="grid gap-1 text-sm font-semibold text-slate-700">
                             Veri tipi
                             <select className="rounded-xl border border-slate-200 px-3 py-2 font-normal" value={form.db_type} onChange={(event) => setForm({ ...form, db_type: event.target.value })}>
-                                {['mssql', 'postgres', 'n8n_json', 'static_preview'].map((type) => <option key={type} value={type}>{type}</option>)}
+                                {['mssql', 'postgres', 'n8n_json', 'static_preview'].map((type) => <option key={type} value={type}>{dbTypeLabels[type]}</option>)}
                             </select>
                         </label>
                         <label className="grid gap-1 text-sm font-semibold text-slate-700">
@@ -131,19 +138,19 @@ export default function AdminDataSources() {
                         </label>
                     </div>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                        Allowed params
+                        İzinli Parametreler (allowed_params)
                         <input className="rounded-xl border border-slate-200 px-3 py-2 font-normal" placeholder="date_from, date_to, rep_code" value={allowedParamsText} onChange={(event) => setAllowedParamsText(event.target.value)} />
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                        Query template / SQL metni
+                        SQL / Sorgu Metni
                         <textarea className="min-h-64 rounded-xl border border-slate-200 bg-slate-950 px-3 py-3 font-mono text-xs text-slate-100" value={form.query_template} onChange={(event) => setForm({ ...form, query_template: event.target.value })} />
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                        Connection meta JSON
+                        Bağlantı Ayarları JSON
                         <textarea className="min-h-44 rounded-xl border border-slate-200 px-3 py-3 font-mono text-xs" value={connectionMetaText} onChange={(event) => setConnectionMetaText(event.target.value)} />
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                        Preview payload JSON
+                        Önizleme Verisi JSON
                         <textarea className="min-h-44 rounded-xl border border-slate-200 px-3 py-3 font-mono text-xs" value={previewPayloadText} onChange={(event) => setPreviewPayloadText(event.target.value)} />
                     </label>
                     <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm font-semibold text-slate-700">

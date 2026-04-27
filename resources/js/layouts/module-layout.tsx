@@ -11,9 +11,11 @@ import {
 import type { SharedPageProps } from '@/types';
 
 const moduleItems = [
-    { label: 'Satış Yönetimi', href: '/sales/main', match: ['/sales/main', '/sales/online', '/sales/bayi'] },
-    { label: 'Stok Yönetimi', href: '/stock', match: ['/stock'] },
-    { label: 'Sipariş Yönetimi', href: '/orders', match: ['/orders'] },
+    { label: 'Satış Yönetimi', href: '/sales/main', match: ['/sales/main', '/sales/online', '/sales/bayi', '/sales/representatives'] },
+    { label: 'Stok Yönetimi', href: '/stock', match: ['/stock', '/stock/critical', '/stock/warehouse'] },
+    { label: 'Sipariş Yönetimi', href: '/orders', match: ['/orders', '/orders/alinan', '/orders/verilen'] },
+    { label: 'Cari Yönetimi', href: '/cari', match: ['/cari', '/cari/balance', '/cari/detail'] },
+    { label: 'Proforma', href: '/proforma', match: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'] },
 ];
 
 export default function ModuleLayout({ children }: { children: React.ReactNode }) {

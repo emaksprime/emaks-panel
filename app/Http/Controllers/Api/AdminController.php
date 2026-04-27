@@ -283,7 +283,7 @@ class AdminController extends Controller
             'code' => ['required', 'string', 'max:128', Rule::unique('panel.data_sources', 'code')->ignore($request->integer('id'))],
             'name' => ['required', 'string', 'max:255'],
             'db_type' => ['required', Rule::in(['mssql', 'postgres', 'n8n_json', 'static_preview'])],
-            'query_template' => ['required', 'string'],
+            'query_template' => ['nullable', 'string'],
             'allowed_params' => ['array'],
             'connection_meta' => ['array'],
             'preview_payload' => ['array'],
@@ -294,6 +294,7 @@ class AdminController extends Controller
 
         $sourcePayload = [
             ...$data,
+            'query_template' => $data['query_template'] ?? '',
             'active' => (bool) ($data['active'] ?? true),
         ];
 
@@ -303,10 +304,12 @@ class AdminController extends Controller
             ? tap(DataSource::query()->findOrFail($data['id']))->update($sourcePayload)
             : DataSource::query()->create($sourcePayload);
 
-        Resource::query()->updateOrCreate(
-            ['code' => $source->code],
-            ['name' => $source->name, 'type' => 'data_source', 'active' => $source->active],
-        );
+        if (! Page::query()->where('code', $source->code)->exists()) {
+            Resource::query()->updateOrCreate(
+                ['code' => $source->code],
+                ['name' => $source->name, 'type' => 'data_source', 'active' => $source->active],
+            );
+        }
 
         $this->auditLogger->log($request->user(), 'admin.datasource.save', ['data_source_code' => $source->code], $request);
 

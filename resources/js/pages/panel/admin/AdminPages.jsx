@@ -147,9 +147,9 @@ export default function AdminPages() {
                         ['code', 'Kod'],
                         ['name', 'Sayfa adı'],
                         ['route', 'Route'],
-                        ['icon', 'Icon'],
-                        ['resource_code', 'Resource code'],
-                        ['component', 'Component'],
+                        ['icon', 'İkon'],
+                        ['resource_code', 'Kaynak Kodu (resource_code)'],
+                        ['component', 'React Component'],
                     ].map(([field, label]) => (
                         <label key={field} className="grid gap-1 text-sm font-semibold text-slate-700">
                             {label}

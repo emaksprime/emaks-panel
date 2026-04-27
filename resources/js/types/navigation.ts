@@ -53,6 +53,11 @@ export type PanelPagePayload = {
     description?: string | null;
     icon?: string | null;
     heroEyebrow?: string | null;
+    previewNotice?: string | null;
+    moduleTabs?: Array<{
+        label: string;
+        href: string;
+    }>;
     buttons: PanelButtonData[];
 };
 

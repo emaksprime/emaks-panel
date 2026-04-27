@@ -83,6 +83,8 @@ class PanelNavigationService
             'description' => $page->description,
             'icon' => $page->icon,
             'heroEyebrow' => $page->pageConfig?->layout_json['heroEyebrow'] ?? null,
+            'previewNotice' => $page->pageConfig?->layout_json['previewNotice'] ?? null,
+            'moduleTabs' => $page->pageConfig?->layout_json['moduleTabs'] ?? [],
             'buttons' => $page->buttons
                 ->filter(fn (Button $button) => $button->is_visible)
                 ->filter(fn (Button $button) => $button->resource_code === null || $this->access->userCanAccess($user, $button->resource_code))
