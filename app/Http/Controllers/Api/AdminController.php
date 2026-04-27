@@ -14,15 +14,18 @@ use App\Models\Role;
 use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\AuditLogger;
+use App\Services\PanelDataSourceManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 class AdminController extends Controller
 {
     public function __construct(
         private readonly AuditLogger $auditLogger,
+        private readonly PanelDataSourceManager $dataSourceManager,
     ) {
     }
 
@@ -314,6 +317,49 @@ class AdminController extends Controller
         $this->auditLogger->log($request->user(), 'admin.datasource.save', ['data_source_code' => $source->code], $request);
 
         return $this->dataSources();
+    }
+
+    public function testDataSource(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'code' => ['required', 'string', Rule::exists(DataSource::class, 'code')],
+            'date_from' => ['nullable', 'date_format:Y-m-d'],
+            'date_to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:date_from'],
+            'grain' => ['nullable', 'in:day,week,month,year'],
+            'detail_type' => ['nullable', 'in:cari,urun'],
+            'scope_key' => ['nullable', 'string', 'max:80'],
+            'search' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $source = DataSource::query()->where('code', $data['code'])->firstOrFail();
+
+        try {
+            $result = $this->dataSourceManager->execute($source, [
+                ...$data,
+                'bypass_cache' => true,
+                'limit' => 5,
+            ]);
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'ok' => false,
+                'message' => 'Veri kaynagi test istegi basarisiz oldu.',
+                'detail' => $exception->getMessage(),
+            ], 502);
+        }
+
+        $rows = is_array($result['rows'] ?? null) ? array_values($result['rows']) : [];
+
+        $this->auditLogger->log($request->user(), 'admin.datasource.test', ['data_source_code' => $source->code], $request);
+
+        return response()->json([
+            'ok' => true,
+            'status' => 'basarili',
+            'rows_count' => count($rows),
+            'first_5_rows' => array_slice($rows, 0, 5),
+            'meta' => $result['meta'] ?? [],
+        ]);
     }
 
     public function logs(): JsonResponse

@@ -22,15 +22,22 @@ export default function Login({
 }: Props) {
     return (
         <>
-            <Head title="Log in" />
+            <Head title="Giriş" />
 
             <Form
                 {...store.form()}
                 resetOnSuccess={['password']}
-                className="flex flex-col gap-6"
+                className="flex flex-col gap-6 rounded-[1.75rem] border border-slate-200 bg-white/95 p-6 shadow-2xl shadow-slate-950/10 backdrop-blur"
             >
                 {({ processing, errors }) => (
                     <>
+                        <div className="grid justify-items-center gap-3 text-center">
+                            <img src="/assets/primecrm/emaks-prime.png" alt="Emaks Prime" className="h-16 object-contain" />
+                            <div>
+                                <h1 className="text-2xl font-semibold text-slate-950">Emaks Prime Panel</h1>
+                                <p className="mt-1 text-sm text-slate-500">CRM, stok, sipariş, satış ve proforma yönetimi</p>
+                            </div>
+                        </div>
                         <div className="grid gap-6">
                             <div className="grid gap-2">
                                 <Label htmlFor="username">Kullanici adi</Label>
@@ -49,14 +56,14 @@ export default function Login({
 
                             <div className="grid gap-2">
                                 <div className="flex items-center">
-                                    <Label htmlFor="password">Password</Label>
+                                    <Label htmlFor="password">Şifre</Label>
                                     {canResetPassword && (
                                         <TextLink
                                             href="/forgot-password"
                                             className="ml-auto text-sm"
                                             tabIndex={5}
                                         >
-                                            Forgot password?
+                                            Şifremi unuttum
                                         </TextLink>
                                     )}
                                 </div>
@@ -66,7 +73,7 @@ export default function Login({
                                     required
                                     tabIndex={2}
                                     autoComplete="current-password"
-                                    placeholder="Password"
+                                    placeholder="Şifre"
                                 />
                                 <InputError message={errors.password} />
                             </div>
@@ -77,7 +84,7 @@ export default function Login({
                                     name="remember"
                                     tabIndex={3}
                                 />
-                                <Label htmlFor="remember">Remember me</Label>
+                                <Label htmlFor="remember">Beni hatırla</Label>
                             </div>
 
                             <Button
@@ -88,15 +95,15 @@ export default function Login({
                                 data-test="login-button"
                             >
                                 {processing && <Spinner />}
-                                Log in
+                                Giriş yap
                             </Button>
                         </div>
 
                         {canRegister && (
                             <div className="text-center text-sm text-muted-foreground">
-                                Don't have an account?{' '}
+                                Hesabınız yok mu?{' '}
                                 <TextLink href="/register" tabIndex={5}>
-                                    Sign up
+                                    Kayıt ol
                                 </TextLink>
                             </div>
                         )}

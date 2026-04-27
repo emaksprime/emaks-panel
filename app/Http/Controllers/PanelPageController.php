@@ -11,7 +11,6 @@ use App\Services\SalesMainPageService;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
-use RuntimeException;
 use Throwable;
 
 class PanelPageController extends Controller
@@ -39,6 +38,7 @@ class PanelPageController extends Controller
     private function renderForPath(Request $request, string $path): Response
     {
         $user = $request->user();
+        $path = $this->canonicalPanelPath($path);
         $page = $this->navigation->resolveVisiblePage($user, $path);
 
         abort_if($page === null, 404);
@@ -105,12 +105,7 @@ class PanelPageController extends Controller
                 $sharedProps['salesMainError'] = $exception->getMessage();
             }
 
-            try {
-                $sharedProps['salesMainData'] = $this->salesMain->dataset($user);
-            } catch (RuntimeException $exception) {
-                $sharedProps['salesMainData'] = $this->emptySalesMainDataset($exception->getMessage());
-                $sharedProps['salesMainError'] = $exception->getMessage();
-            }
+            $sharedProps['salesMainData'] = $this->emptySalesMainDataset('Veri client-side API ile yuklenecek.');
         }
 
         if ($page->code === 'cari_bilgi') {
@@ -119,6 +114,27 @@ class PanelPageController extends Controller
         }
 
         return Inertia::render($page->component, $sharedProps);
+    }
+
+    private function canonicalPanelPath(string $path): string
+    {
+        if ($path === '/crm/customers') {
+            return '/cari';
+        }
+
+        if ($path === '/crm/customers/balance') {
+            return '/cari/balance';
+        }
+
+        if (preg_match('#^/proforma/[^/]+/edit$#', $path) === 1) {
+            return '/proforma/edit';
+        }
+
+        if (preg_match('#^/proforma/[^/]+$#', $path) === 1) {
+            return '/proforma/detail';
+        }
+
+        return $path;
     }
 
     /**

@@ -6,7 +6,7 @@ const blank = {
     id: null,
     code: '',
     name: '',
-    db_type: 'mssql',
+    db_type: 'n8n_json',
     query_template: '',
     allowed_params: [],
     connection_meta: {},
@@ -42,9 +42,12 @@ export default function AdminDataSources() {
     const [connectionMetaText, setConnectionMetaText] = useState('{}');
     const [previewPayloadText, setPreviewPayloadText] = useState('{}');
     const [status, setStatus] = useState('');
+    const [error, setError] = useState('');
+    const [testing, setTesting] = useState(false);
+    const [testResult, setTestResult] = useState(null);
 
     useEffect(() => {
-        apiRequest('/api/admin/datasources').then(setData);
+        void apiRequest('/api/admin/datasources').then(setData);
     }, []);
 
     const edit = (source) => {
@@ -53,27 +56,64 @@ export default function AdminDataSources() {
         setConnectionMetaText(pretty(source.connection_meta));
         setPreviewPayloadText(pretty(source.preview_payload));
         setStatus('');
+        setError('');
+        setTestResult(null);
     };
 
     const save = async (event) => {
         event.preventDefault();
-        const payload = {
-            ...form,
-            sort_order: Number(form.sort_order ?? 0),
-            allowed_params: allowedParamsText.split(',').map((item) => item.trim()).filter(Boolean),
-            connection_meta: parseJson(connectionMetaText, {}),
-            preview_payload: parseJson(previewPayloadText, {}),
-        };
-        const next = await apiRequest('/api/admin/datasources', {
-            method: 'POST',
-            body: JSON.stringify(payload),
-        });
-        setData(next);
-        setForm(blank);
-        setAllowedParamsText('');
-        setConnectionMetaText('{}');
-        setPreviewPayloadText('{}');
-        setStatus('Veri kaynağı metadata kaydedildi.');
+        setError('');
+        setStatus('');
+
+        try {
+            const payload = {
+                ...form,
+                sort_order: Number(form.sort_order ?? 0),
+                allowed_params: allowedParamsText.split(',').map((item) => item.trim()).filter(Boolean),
+                connection_meta: parseJson(connectionMetaText, {}),
+                preview_payload: parseJson(previewPayloadText, {}),
+            };
+            const next = await apiRequest('/api/admin/datasources', {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+            setData(next);
+            setForm(blank);
+            setAllowedParamsText('');
+            setConnectionMetaText('{}');
+            setPreviewPayloadText('{}');
+            setStatus('Veri kaynağı metadata kaydedildi.');
+        } catch (caught) {
+            setError(caught instanceof SyntaxError ? `JSON parse hatası: ${caught.message}` : (caught.message ?? 'Veri kaynağı kaydedilemedi.'));
+        }
+    };
+
+    const testSource = async () => {
+        if (!form.code) {
+            setError('Test için önce bir veri kaynağı seçin veya kod girin.');
+            return;
+        }
+
+        setTesting(true);
+        setError('');
+        setTestResult(null);
+
+        try {
+            const result = await apiRequest('/api/admin/datasources/test', {
+                method: 'POST',
+                body: JSON.stringify({
+                    code: form.code,
+                    grain: 'week',
+                    detail_type: 'cari',
+                    scope_key: 'all',
+                }),
+            });
+            setTestResult(result);
+        } catch (caught) {
+            setError(caught.message ?? 'Veri kaynağı test edilemedi.');
+        } finally {
+            setTesting(false);
+        }
     };
 
     return (
@@ -81,6 +121,12 @@ export default function AdminDataSources() {
             {status && (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
                     {status}
+                </div>
+            )}
+
+            {error && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                    {error}
                 </div>
             )}
 
@@ -109,7 +155,7 @@ export default function AdminDataSources() {
                     <div>
                         <h2 className="text-lg font-semibold text-slate-950">Veri Kaynağı Düzenle</h2>
                         <p className="mt-1 text-sm text-slate-500">
-                            Canlı endpoint çağrısı bu aşamada yoktur; sadece panel.data_sources metadata kaydı yönetilir.
+                            Kaydet, Test Et ve Önizleme akışı panel.data_sources metadata kaydı üzerinden çalışır.
                         </p>
                     </div>
 
@@ -139,7 +185,7 @@ export default function AdminDataSources() {
                     </div>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
                         İzinli Parametreler (allowed_params)
-                        <input className="rounded-xl border border-slate-200 px-3 py-2 font-normal" placeholder="date_from, date_to, rep_code" value={allowedParamsText} onChange={(event) => setAllowedParamsText(event.target.value)} />
+                        <input className="rounded-xl border border-slate-200 px-3 py-2 font-normal" placeholder="date_from, date_to, rep_code, search" value={allowedParamsText} onChange={(event) => setAllowedParamsText(event.target.value)} />
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
                         SQL / Sorgu Metni
@@ -157,7 +203,25 @@ export default function AdminDataSources() {
                         <input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} />
                         Aktif
                     </label>
-                    <button className="rounded-xl bg-slate-950 px-3 py-3 font-semibold text-white">Veri Kaynağını Kaydet</button>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                        <button className="rounded-xl bg-slate-950 px-3 py-3 font-semibold text-white">Veri Kaynağını Kaydet</button>
+                        <button type="button" onClick={testSource} disabled={testing} className="rounded-xl border border-slate-200 bg-white px-3 py-3 font-semibold text-slate-700 disabled:opacity-60">
+                            {testing ? 'Test ediliyor...' : 'Test Et'}
+                        </button>
+                    </div>
+                    {testResult && (
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <strong className="text-sm text-slate-950">Önizleme</strong>
+                                <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                                    {testResult.rows_count ?? 0} satır
+                                </span>
+                            </div>
+                            <pre className="mt-3 max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+                                {JSON.stringify(testResult.first_5_rows ?? [], null, 2)}
+                            </pre>
+                        </div>
+                    )}
                 </form>
             </section>
         </AdminFrame>

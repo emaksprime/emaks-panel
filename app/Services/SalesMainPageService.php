@@ -77,6 +77,9 @@ class SalesMainPageService
             'detail_type' => $filters['detail_type'],
             'scope_key' => $scope['key'],
             'rep_code' => $effectiveRepresentativeCode,
+            'search' => $input['search'] ?? null,
+            'page' => $input['page'] ?? 1,
+            'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
         ])->only($allowed)->all();
 
         $this->compileTemplate($source, $whitelistedParameters);
@@ -443,6 +446,7 @@ class SalesMainPageService
             'detail_type' => $filters['detail_type'],
             'scope_key' => $scope['key'],
             'rep_code' => $effectiveRepresentativeCode,
+            'bypass_cache' => (bool) ($whitelistedParameters['bypass_cache'] ?? false),
         ], $source);
 
         return $gatewayResult['rows'];

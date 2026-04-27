@@ -23,6 +23,9 @@ class PageDataController extends Controller
             'detail_type' => ['nullable', 'in:cari,urun'],
             'scope_key' => ['nullable', 'string', 'max:80'],
             'rep_code' => ['nullable', 'string', 'max:40'],
+            'search' => ['nullable', 'string', 'max:255'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'bypass_cache' => ['nullable', 'boolean'],
         ]);
 
         try {

@@ -1,6 +1,14 @@
 import { Head, Link } from '@inertiajs/react';
-import { ArrowRight, Database, RefreshCw, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Database, FileText, Plus, ShieldCheck } from 'lucide-react';
 import { createElement, useEffect, useState } from 'react';
+import { DataTable } from '@/components/primecrm/DataTable.jsx';
+import { DetailDrawer } from '@/components/primecrm/DetailDrawer.jsx';
+import { FilterBar } from '@/components/primecrm/FilterBar.jsx';
+import { formatMoney } from '@/components/primecrm/format';
+import { KpiCard } from '@/components/primecrm/KpiCard.jsx';
+import { ModuleShell } from '@/components/primecrm/ModuleShell.jsx';
+import { ProformaCartDrawer } from '@/components/primecrm/ProformaCartDrawer.jsx';
+import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
 import { apiRequest } from '@/lib/api';
 import { panelIcon } from '@/lib/panel-icons';
 import type {
@@ -32,19 +40,32 @@ type ModuleDataResponse = {
     columns: ModuleDataColumn[];
     queryMeta?: {
         dataSource?: string | null;
-        driver?: string | null;
-        mode?: string | null;
         notice?: string | null;
     };
 };
 
 type ModuleDataState = ModuleDataResponse & {
-    pageSlug: string;
+    signature: string;
 };
 
 type ModuleErrorState = {
-    pageSlug: string;
+    signature: string;
     message: string;
+};
+
+const defaultFilters = () => {
+    const today = new Date().toISOString().slice(0, 10);
+
+    return {
+        date_from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+        date_to: today,
+        grain: 'month',
+        detail_type: 'cari',
+        scope_key: 'all',
+        search: '',
+        page: 1,
+        bypass_cache: false,
+    };
 };
 
 function ActionButton({ button }: { button: PanelButtonData }) {
@@ -76,44 +97,129 @@ function PanelPageIcon({ name }: { name?: string | null }) {
     return createElement(panelIcon(name), { className: 'size-5' });
 }
 
-function formatCell(value: unknown): string {
-    if (value === null || value === undefined || value === '') {
-        return '-';
+function moduleKind(slug: string): string {
+    if (slug.startsWith('cari')) {
+        return 'cari';
     }
 
-    if (typeof value === 'number') {
-        return new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 2 }).format(value);
+    if (slug.startsWith('stock')) {
+        return 'stock';
     }
 
-    if (typeof value === 'object') {
-        return JSON.stringify(value);
+    if (slug.startsWith('orders')) {
+        return 'orders';
     }
 
-    return String(value);
+    if (slug.startsWith('proforma')) {
+        return 'proforma';
+    }
+
+    return 'module';
+}
+
+function preferredColumns(kind: string, columns: ModuleDataColumn[]): ModuleDataColumn[] {
+    const byKind: Record<string, string[]> = {
+        cari: ['cari_kodu', 'cari_adi', 'firma_unvani', 'cari_grup', 'bakiye', 'temsilci_kodu'],
+        stock: ['stok_kodu', 'urun_adi', 'stok_adi', 'model', 'kategori_adi', 'miktar', 'depo', 'raf'],
+        orders: ['siparis_tarihi', 'cari_adi', 'urun_adi', 'kalan_miktar', 'birim_fiyat', 'satir_tutari', 'status'],
+        proforma: ['proforma_no', 'cari_adi', 'status', 'created_at', 'toplam', 'genel_toplam'],
+    };
+    const keys = byKind[kind] ?? [];
+    const preferred = keys
+        .map((key) => columns.find((column) => column.key === key))
+        .filter(Boolean) as ModuleDataColumn[];
+
+    return preferred.length > 0 ? preferred : columns.slice(0, 8);
+}
+
+function PrintBrandHeader({ visible }: { visible: boolean }) {
+    if (!visible) {
+        return null;
+    }
+
+    return (
+        <section className="hidden items-center justify-between border-b border-slate-200 pb-5 print:flex">
+            <img src="/assets/primecrm/emaks-prime-pdf-logo.jpg" alt="Emaks Prime" className="h-14 w-auto object-contain" />
+            <div className="text-center">
+                <p className="text-xs font-semibold tracking-[0.2em] text-slate-500 uppercase">Emaks Prime</p>
+                <h2 className="text-xl font-bold text-slate-950">Cari / Proforma Çıktısı</h2>
+            </div>
+            <img src="/assets/primecrm/philips-logo.png" alt="Philips" className="h-10 w-auto object-contain" />
+        </section>
+    );
+}
+
+function ProformaDraftPanel({ slug }: { slug: string }) {
+    if (!['proforma_create', 'proforma_edit'].includes(slug)) {
+        return null;
+    }
+
+    return (
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[1.2fr_0.8fr]">
+            <div>
+                <p className="text-xs font-semibold tracking-[0.18em] text-slate-500 uppercase">Proforma Taslağı</p>
+                <h3 className="mt-2 text-lg font-bold text-slate-950">
+                    Cari seçimi ve ürün satırları
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                    Stok ekranından eklenen ürünler bu akışta proforma satırına dönüştürülecek. Canlı kayıt işlemi için
+                    proforma datasource ve servis endpointi Admin &gt; Veri Kaynakları üzerinden bağlanacak.
+                </p>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    {['Cari Seç', 'Ürün Ekle', 'PDF Önizle'].map((label) => (
+                        <button key={label} type="button" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+            <div className="rounded-2xl bg-slate-950 p-5 text-white">
+                <p className="text-xs font-semibold tracking-[0.18em] text-white/50 uppercase">Toplamlar</p>
+                <dl className="mt-4 grid gap-3 text-sm">
+                    <div className="flex justify-between"><dt>Ara Toplam</dt><dd>0,00 TL</dd></div>
+                    <div className="flex justify-between"><dt>KDV</dt><dd>0,00 TL</dd></div>
+                    <div className="flex justify-between border-t border-white/10 pt-3 text-base font-bold"><dt>Genel Toplam</dt><dd>0,00 TL</dd></div>
+                </dl>
+            </div>
+        </section>
+    );
 }
 
 function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
+    const kind = moduleKind(page.slug);
+    const [filters, setFilters] = useState(defaultFilters);
+    const [debouncedFilters, setDebouncedFilters] = useState(filters);
     const [data, setData] = useState<ModuleDataState | null>(null);
     const [error, setError] = useState<ModuleErrorState | null>(null);
-    const [refreshIndex, setRefreshIndex] = useState(0);
+    const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
+    const [cartOpen, setCartOpen] = useState(false);
+    const [cartItems, setCartItems] = useState<Array<Record<string, unknown>>>([]);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => setDebouncedFilters(filters), 350);
+
+        return () => window.clearTimeout(timer);
+    }, [filters]);
+
+    const signature = `${page.slug}:${JSON.stringify(debouncedFilters)}`;
 
     useEffect(() => {
         let isCurrent = true;
 
         void apiRequest(`/api/data/${page.slug}`, {
             method: 'POST',
-            body: JSON.stringify({ grain: 'week' }),
+            body: JSON.stringify(debouncedFilters),
         })
             .then((response: ModuleDataResponse) => {
                 if (isCurrent) {
-                    setData({ ...response, pageSlug: page.slug });
+                    setData({ ...response, signature });
                 }
             })
             .catch((caught: unknown) => {
                 if (isCurrent) {
                     setError({
-                        pageSlug: page.slug,
-                        message: caught instanceof Error ? caught.message : 'Veri alinirken beklenmeyen bir hata olustu.',
+                        signature,
+                        message: caught instanceof Error ? caught.message : 'Veri alınamadı.',
                     });
                 }
             });
@@ -121,108 +227,94 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
         return () => {
             isCurrent = false;
         };
-    }, [page.slug, refreshIndex]);
+    }, [page.slug, debouncedFilters, signature]);
 
-    const activeData = data?.pageSlug === page.slug ? data : null;
-    const activeError = error?.pageSlug === page.slug ? error.message : null;
+    const activeData = data?.signature === signature ? data : null;
+    const activeError = error?.signature === signature ? error.message : null;
     const rows = activeData?.rows ?? [];
-    const columns = activeData?.columns ?? [];
+    const columns = preferredColumns(kind, activeData?.columns ?? []);
     const hasRows = rows.length > 0 && columns.length > 0;
-    const isLoading = !activeData && !activeError;
+    const loading = !activeData && !activeError;
+
+    const addToCart = (row: Record<string, unknown>) => {
+        setCartItems((current) => [
+            ...current,
+            {
+                stok_kodu: row.stok_kodu ?? row['Stok Kodu'],
+                urun_adi: row.urun_adi ?? row.stok_adi ?? row['Stok Adı'],
+                model: row.model ?? row.model_adi,
+                quantity: 1,
+                unit_price: Number(row.birim_fiyat ?? row.fiyat ?? 0),
+                discount: 0,
+            },
+        ]);
+        setCartOpen(true);
+    };
+
+    const actions = (
+        <>
+            {kind === 'stock' && (
+                <button type="button" onClick={() => setCartOpen(true)} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950">
+                    <Plus className="size-4" />
+                    Proforma Sepeti ({cartItems.length})
+                </button>
+            )}
+            {kind === 'proforma' && (
+                <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950">
+                    <FileText className="size-4" />
+                    PDF / Yazdır
+                </button>
+            )}
+        </>
+    );
 
     return (
-        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                    <div className="flex flex-wrap items-center gap-3">
-                        <h2 className="text-lg font-semibold text-slate-950">Canli Veri</h2>
-                        <span className={[
-                            'rounded-full border px-3 py-1 text-xs font-semibold',
-                            error
-                                ? 'border-red-200 bg-red-50 text-red-700'
-                                : hasRows
-                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                  : 'border-amber-200 bg-amber-50 text-amber-700',
-                        ].join(' ')}
-                        >
-                            {activeError ? 'Gateway hatasi' : (activeData?.queryMeta?.notice ?? page.previewNotice ?? 'Veri yukleniyor')}
-                        </span>
-                    </div>
-                    <p className="mt-2 text-sm text-slate-500">
-                        Veri n8n gateway uzerinden okunur; SQL metni sadece panel.data_sources metadata kaydinda tutulur.
-                    </p>
-                </div>
+        <ModuleShell page={page} badge={activeData?.queryMeta?.notice ?? 'n8n gateway'} actions={actions}>
+            <FilterBar
+                filters={filters}
+                setFilters={setFilters}
+                mode={kind}
+                loading={loading}
+                onRefresh={() => setFilters((current) => ({ ...current, bypass_cache: !current.bypass_cache }))}
+            />
 
-                <button
-                    type="button"
-                    onClick={() => {
-                        setData(null);
-                        setError(null);
-                        setRefreshIndex((current) => current + 1);
-                    }}
-                    disabled={isLoading}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm disabled:opacity-60"
-                >
-                    <RefreshCw className={['size-4', isLoading ? 'animate-spin' : ''].join(' ')} />
-                    Yenile
-                </button>
-            </div>
+            <PrintBrandHeader visible={kind === 'cari' || kind === 'proforma'} />
+            <ProformaDraftPanel slug={page.slug} />
 
-            {activeError && (
-                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
-                    {activeError}
-                </div>
-            )}
+            <section className="grid gap-3 md:grid-cols-3">
+                <KpiCard label="Kayıt" value={String(rows.length)} hint={activeData?.queryMeta?.dataSource ?? page.slug} />
+                <KpiCard label="Kaynak" value={activeData?.queryMeta?.dataSource ?? '-'} hint="panel.data_sources metadata" />
+                <KpiCard label="Sepet" value={kind === 'stock' ? String(cartItems.length) : '-'} hint={kind === 'stock' ? formatMoney(cartItems.reduce((sum, item) => sum + Number(item.quantity || 1) * Number(item.unit_price || 0), 0)) : 'İlgili modül aksiyonu'} />
+            </section>
 
-            {!activeError && isLoading && (
-                <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-6 text-sm font-semibold text-slate-500">
-                    Veri kaynagi okunuyor...
-                </div>
-            )}
-
-            {!activeError && !isLoading && !hasRows && (
-                <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-6">
-                    <h3 className="font-semibold text-amber-800">Canli veri kaynagi bos dondu</h3>
-                    <p className="mt-2 max-w-2xl text-sm leading-6 text-amber-700">
-                        Bu ekran n8n gateway'e baglandi ama rows alaninda gosterilecek veri gelmedi. Veri Kaynaklari
-                        ekranindan endpoint, source_code ve sorgu metadata kaydini kontrol edebilirsin.
-                    </p>
-                </div>
-            )}
-
+            <ErrorBanner message={activeError} />
+            <LoadingOverlay show={loading} />
+            {!loading && !activeError && !hasRows && <EmptyState title="Canlı veri bulunamadı" description="Veri kaynağı rows alanını boş döndürdü veya gerçek sorgu henüz tanımlı değil." />}
             {hasRows && (
-                <div className="mt-6 overflow-hidden rounded-lg border border-slate-200">
-                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                        <span>{rows.length} satir</span>
-                        <span>{activeData?.queryMeta?.dataSource ?? page.slug}</span>
-                    </div>
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-slate-200 text-sm">
-                            <thead className="bg-slate-50">
-                                <tr>
-                                    {columns.map((column) => (
-                                        <th key={column.key} className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600">
-                                            {column.label}
-                                        </th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100 bg-white">
-                                {rows.slice(0, 200).map((row, index) => (
-                                    <tr key={`${page.slug}-${index}`} className="hover:bg-slate-50">
-                                        {columns.map((column) => (
-                                            <td key={`${column.key}-${index}`} className="whitespace-nowrap px-4 py-3 text-slate-700">
-                                                {formatCell(row[column.key])}
-                                            </td>
-                                        ))}
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                <DataTable
+                    columns={columns}
+                    rows={rows}
+                    onRowClick={setSelected}
+                    rowActions={kind === 'stock' ? (row) => (
+                        <button type="button" onClick={() => addToCart(row)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white">
+                            Ekle
+                        </button>
+                    ) : undefined}
+                />
             )}
-        </section>
+
+            <DetailDrawer
+                title={String(selected?.cari_adi ?? selected?.urun_adi ?? selected?.proforma_no ?? selected?.stok_kodu ?? 'Kayıt detayı')}
+                item={selected}
+                onClose={() => setSelected(null)}
+                actions={kind === 'cari' ? (
+                    <button type="button" onClick={() => window.print()} className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white">
+                        Ekstre PDF / Yazdır
+                    </button>
+                ) : null}
+            />
+            <ProformaCartDrawer open={cartOpen} items={cartItems} setItems={setCartItems} onClose={() => setCartOpen(false)} />
+        </ModuleShell>
     );
 }
 
@@ -231,7 +323,6 @@ export default function PanelPage({
     metrics,
     dataSources,
     permissions,
-    integration,
 }: PanelPageProps) {
     const isModule = page.layoutType === 'module';
 
@@ -239,166 +330,70 @@ export default function PanelPage({
         <>
             <Head title={page.title} />
 
-            <main className="grid gap-5 p-4 md:p-6">
-                <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[1fr_auto]">
-                    <div>
-                        <div className="flex items-center gap-3">
-                            <span className="grid size-11 place-items-center rounded-lg bg-slate-900 text-white">
-                                <PanelPageIcon name={page.icon} />
-                            </span>
-                            <div>
-                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                    {page.heroEyebrow ?? page.routePath}
-                                </p>
-                                <h1 className="text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">
-                                    {page.title}
-                                </h1>
-                            </div>
-                        </div>
-                        <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-600">
-                            {page.description}
-                        </p>
-                        {isModule && (
-                            <div className="mt-4 inline-flex rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700">
-                                n8n gateway veri modu
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="flex flex-wrap items-start gap-2">
-                        {page.buttons.map((button) => (
-                            <ActionButton key={button.id} button={button} />
-                        ))}
-                    </div>
-                </section>
-
-                {!isModule && (
-                    <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                        {metrics.map((metric) => (
-                            <article key={metric.label} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                    {metric.label}
-                                </p>
-                                <strong className="mt-3 block text-2xl font-semibold text-slate-950">
-                                    {metric.value}
-                                </strong>
-                                <p className="mt-2 text-sm text-slate-500">{metric.hint}</p>
-                            </article>
-                        ))}
-                    </section>
-                )}
-
-                {isModule && (
-                    <>
-                        {page.moduleTabs && page.moduleTabs.length > 0 && (
-                            <section className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-                                {page.moduleTabs.map((tab) => {
-                                    const active = tab.href === page.routePath;
-
-                                    return (
-                                        <Link
-                                            key={`${tab.label}-${tab.href}`}
-                                            href={tab.href}
-                                            className={[
-                                                'rounded-full border px-4 py-2 text-sm font-semibold transition',
-                                                active
-                                                    ? 'border-slate-950 bg-slate-950 text-white'
-                                                    : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-400 hover:text-slate-950',
-                                            ].join(' ')}
-                                        >
-                                            {tab.label}
-                                        </Link>
-                                    );
-                                })}
-                            </section>
-                        )}
-
-                        <ModuleDataPanel page={page} />
-
-                        {integration && (
-                            <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm lg:grid-cols-[1fr_auto] lg:items-center">
+            {isModule ? (
+                <ModuleDataPanel page={page} />
+            ) : (
+                <main className="grid gap-5 p-4 md:p-6">
+                    <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[1fr_auto]">
+                        <div>
+                            <div className="flex items-center gap-3">
+                                <span className="grid size-11 place-items-center rounded-lg bg-slate-900 text-white">
+                                    <PanelPageIcon name={page.icon} />
+                                </span>
                                 <div>
                                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                        Harici Servis Entegrasyonu
+                                        {page.heroEyebrow ?? page.routePath}
                                     </p>
-                                    <h2 className="mt-2 text-lg font-semibold text-slate-950">
-                                        PrimeCRM baglantisi
-                                    </h2>
-                                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                                        {integration.message} Bu ekran Laravel icine gomulmedi; Coolify uzerindeki ayri PrimeCRM servisine yonlendirme ve ileride API koprusu icin hazirlanmistir.
-                                    </p>
-                                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
-                                        <span className="rounded-full bg-slate-100 px-3 py-1">Saglayici: {integration.provider}</span>
-                                        <span className="rounded-full bg-slate-100 px-3 py-1">Yol: {integration.path}</span>
-                                        {integration.capability && <span className="rounded-full bg-slate-100 px-3 py-1">Yetki: {integration.capability}</span>}
-                                    </div>
+                                    <h1 className="text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">
+                                        {page.title}
+                                    </h1>
                                 </div>
-                                {integration.enabled && integration.externalUrl ? (
-                                    <a
-                                        href={integration.externalUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="inline-flex justify-center rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white"
-                                    >
-                                        PrimeCRM ekranini ac
-                                    </a>
-                                ) : (
-                                    <span className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
-                                        {integration.externalUrl ? 'PRIMECRM_ENABLED bekleniyor' : 'PRIMECRM_BASE_URL bekleniyor'}
-                                    </span>
-                                )}
-                            </section>
-                        )}
-                    </>
-                )}
+                            </div>
+                            <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-600">
+                                {page.description}
+                            </p>
+                        </div>
+                        <div className="flex flex-wrap items-start gap-2">
+                            {page.buttons.map((button) => (
+                                <ActionButton key={button.id} button={button} />
+                            ))}
+                        </div>
+                    </section>
 
-                {!isModule && (
+                    <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        {metrics.map((metric) => (
+                            <KpiCard key={metric.label} label={metric.label} value={metric.value} hint={metric.hint} />
+                        ))}
+                    </section>
+
                     <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
                         <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                             <div className="mb-4 flex items-center gap-2">
                                 <Database className="size-5 text-slate-500" />
-                                <h2 className="font-semibold text-slate-950">Veri Kaynaklari</h2>
+                                <h2 className="font-semibold text-slate-950">Veri Kaynakları</h2>
                             </div>
                             <div className="grid gap-2">
                                 {dataSources.map((source) => (
                                     <div key={source.id} className="grid gap-1 rounded-md border border-slate-200 p-3">
-                                        <div className="flex items-center justify-between gap-3">
-                                            <strong className="text-slate-950">{source.name}</strong>
-                                            <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                                {source.status}
-                                            </span>
-                                        </div>
-                                        <p className="text-sm text-slate-500">
-                                            {source.driver} - {source.database ?? 'metadata'}
-                                        </p>
+                                        <strong className="text-slate-950">{source.name}</strong>
+                                        <p className="text-sm text-slate-500">{source.driver} - {source.database ?? 'metadata'}</p>
                                     </div>
                                 ))}
                             </div>
                         </div>
-
                         <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                             <div className="mb-4 flex items-center gap-2">
                                 <ShieldCheck className="size-5 text-slate-500" />
-                                <h2 className="font-semibold text-slate-950">Yetki ozeti</h2>
+                                <h2 className="font-semibold text-slate-950">Yetki Özeti</h2>
                             </div>
-                            <div className="grid gap-3">
-                                <div>
-                                    <p className="text-sm text-slate-500">Tanimli kaynaklar</p>
-                                    <strong className="text-3xl font-semibold text-slate-950">
-                                        {permissions.grantedResources}
-                                    </strong>
-                                </div>
-                                <div>
-                                    <p className="text-sm text-slate-500">Calistirilabilir butonlar</p>
-                                    <strong className="text-3xl font-semibold text-slate-950">
-                                        {permissions.canExecuteButtons}
-                                    </strong>
-                                </div>
+                            <KpiCard label="Tanımlı kaynaklar" value={String(permissions.grantedResources)} />
+                            <div className="mt-3">
+                                <KpiCard label="Çalıştırılabilir butonlar" value={String(permissions.canExecuteButtons)} />
                             </div>
                         </div>
                     </section>
-                )}
-            </main>
+                </main>
+            )}
         </>
     );
 }
