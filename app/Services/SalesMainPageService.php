@@ -443,7 +443,7 @@ class SalesMainPageService
             'detail_type' => $filters['detail_type'],
             'scope_key' => $scope['key'],
             'rep_code' => $effectiveRepresentativeCode,
-        ]);
+        ], $source);
 
         return $gatewayResult['rows'];
     }

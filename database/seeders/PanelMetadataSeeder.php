@@ -84,7 +84,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'sales_main', 'name' => 'Genel Satış', 'route' => '/sales/main', 'component' => 'panel/sales-main', 'layout_type' => 'module', 'icon' => 'chart-column', 'description' => 'Ana satış dashboardu ve yönetim kapsamları', 'resource_code' => 'sales_main', 'page_order' => 20, 'active' => true],
             ['code' => 'sales_online', 'name' => 'Online / Perakende', 'route' => '/sales/online', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'signal', 'description' => 'Online ve perakende satış görünümü', 'resource_code' => 'sales_online', 'page_order' => 30, 'active' => true],
             ['code' => 'sales_bayi', 'name' => 'Bayi / Proje', 'route' => '/sales/bayi', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'store', 'description' => 'Bayi ve proje satış görünümü', 'resource_code' => 'sales_bayi', 'page_order' => 40, 'active' => true],
-            ['code' => 'sales_representatives', 'name' => 'Satış Temsilcisi Görünümü', 'route' => '/sales/representatives', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'users', 'description' => 'Temsilci bazlı satış kapsamları bu ekranda yönetilir.', 'resource_code' => 'sales_representatives', 'page_order' => 50, 'active' => true],
+            ['code' => 'sales_representatives', 'name' => 'Satış Temsilcisi Görünümü', 'route' => '/sales/representatives', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'users', 'description' => 'Temsilci bazlı satış kapsamları ana Satış Yönetimi kapsam filtresinden yönetilir.', 'resource_code' => 'sales_representatives', 'page_order' => 50, 'active' => false],
             ['code' => 'stock', 'name' => 'Stok Listesi', 'route' => '/stock', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Stok listesi ve ürün izleme ekranı.', 'resource_code' => 'stock', 'page_order' => 60, 'active' => true],
             ['code' => 'stock_critical', 'name' => 'Kritik Stoklar', 'route' => '/stock/critical', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Kritik stok seviyeleri ve uyarı listesi burada hazırlanır.', 'resource_code' => 'stock_critical', 'page_order' => 61, 'active' => true],
             ['code' => 'stock_warehouse', 'name' => 'Depo / Raf Durumu', 'route' => '/stock/warehouse', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Depo, raf ve lokasyon durumu bu modül altında izlenir.', 'resource_code' => 'stock_warehouse', 'page_order' => 62, 'active' => true],
@@ -113,7 +113,6 @@ class PanelMetadataSeeder extends Seeder
             ['menu_group' => 'sales', 'page' => 'sales_main', 'label' => 'Genel Satış', 'icon' => 'chart-column', 'sort_order' => 20],
             ['menu_group' => 'sales', 'page' => 'sales_online', 'label' => 'Online / Perakende', 'icon' => 'signal', 'sort_order' => 30],
             ['menu_group' => 'sales', 'page' => 'sales_bayi', 'label' => 'Bayi / Proje', 'icon' => 'store', 'sort_order' => 40],
-            ['menu_group' => 'sales', 'page' => 'sales_representatives', 'label' => 'Satış Temsilcisi Görünümü', 'icon' => 'users', 'sort_order' => 50],
             ['menu_group' => 'stock', 'page' => 'stock', 'label' => 'Stok Listesi', 'icon' => 'boxes', 'sort_order' => 60],
             ['menu_group' => 'stock', 'page' => 'stock_critical', 'label' => 'Kritik Stoklar', 'icon' => 'boxes', 'sort_order' => 61],
             ['menu_group' => 'stock', 'page' => 'stock_warehouse', 'label' => 'Depo / Raf Durumu', 'icon' => 'boxes', 'sort_order' => 62],
@@ -149,6 +148,11 @@ class PanelMetadataSeeder extends Seeder
                 ],
             );
         }
+
+        Page::query()->where('code', 'sales_representatives')->update(['active' => false]);
+        PageMenu::query()
+            ->where('page_id', $pages['sales_representatives']->id)
+            ->update(['is_visible' => false]);
 
         $buttons = [
             ['page' => 'admin_panel', 'resource_code' => 'admin_users', 'label' => 'Kullanıcılara Git', 'code' => 'admin_panel_users', 'variant' => 'primary', 'action_type' => 'navigate', 'action_target' => '/admin/users', 'position' => 'page_top', 'sort_order' => 10],
@@ -242,7 +246,6 @@ SQL,
                         ['label' => 'Salih İmal', 'href' => '/sales/main'],
                         ['label' => 'Online / Perakende', 'href' => '/sales/online'],
                         ['label' => 'Bayi / Proje', 'href' => '/sales/bayi'],
-                        ['label' => 'Temsilci Görünümü', 'href' => '/sales/representatives'],
                     ],
                     'topNav' => [
                         ['key' => 'sales', 'label' => 'Satış Yönetimi', 'href' => '/sales/main'],
@@ -312,7 +315,7 @@ SQL,
                     'name' => $metadataSource['name'],
                     'db_type' => 'mssql',
                     'query_template' => '-- Query template bu workflow referansindan admin panelde yonetilecek: '.$metadataSource['workflow'],
-                    'allowed_params' => ['date_from', 'date_to', 'grain', 'scope_key', 'rep_code'],
+                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
                     'connection_meta' => [
                         'target' => $metadataSource['target'],
                         'reference_workflow' => $metadataSource['workflow'],
@@ -374,7 +377,7 @@ SQL,
                     'name' => $sourceDefinition['name'],
                     'db_type' => 'n8n_json',
                     'query_template' => '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.',
-                    'allowed_params' => ['date_from', 'date_to', 'grain', 'scope_key', 'rep_code'],
+                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
                     'connection_meta' => $n8nConnectionMeta,
                     'preview_payload' => [
                         'mode' => 'placeholder',
@@ -394,7 +397,6 @@ SQL,
                 ['label' => 'Salih İmal', 'href' => '/sales/main'],
                 ['label' => 'Online / Perakende', 'href' => '/sales/online'],
                 ['label' => 'Bayi / Proje', 'href' => '/sales/bayi'],
-                ['label' => 'Temsilci Görünümü', 'href' => '/sales/representatives'],
             ],
             'stock' => [
                 ['label' => 'Stok Listesi', 'href' => '/stock'],
@@ -423,7 +425,6 @@ SQL,
         foreach ([
             'sales_online' => ['eyebrow' => 'Satış Yönetimi', 'tabs' => 'sales', 'datasource' => 'sales_online_perakende_detail'],
             'sales_bayi' => ['eyebrow' => 'Satış Yönetimi', 'tabs' => 'sales', 'datasource' => 'sales_bayi_proje_detail'],
-            'sales_representatives' => ['eyebrow' => 'Satış Yönetimi', 'tabs' => 'sales', 'datasource' => 'sales_main_dashboard'],
             'stock' => ['eyebrow' => 'Stok Yönetimi', 'tabs' => 'stock', 'datasource' => 'stock_dashboard'],
             'stock_critical' => ['eyebrow' => 'Stok Yönetimi', 'tabs' => 'stock', 'datasource' => 'stock_critical'],
             'stock_warehouse' => ['eyebrow' => 'Stok Yönetimi', 'tabs' => 'stock', 'datasource' => 'stock_warehouse'],
@@ -463,6 +464,8 @@ SQL,
             );
         }
 
+        PageConfig::query()->where('page_code', 'sales_representatives')->delete();
+
         foreach ($resources as $resource) {
             foreach ($roles as $role) {
                 RoleResourcePermission::query()->updateOrCreate(
@@ -479,7 +482,6 @@ SQL,
                                 'sales_main',
                                 'sales_online',
                                 'sales_bayi',
-                                'sales_representatives',
                                 'cari',
                                 'cari_balance',
                                 'cari_detail',

@@ -24,6 +24,6 @@ class N8nJsonDataSourceExecutor implements DataSourceExecutor
      */
     public function execute(DataSource $dataSource, array $payload = []): array
     {
-        return $this->gateway->run($dataSource->code, $payload);
+        return $this->gateway->run($dataSource->code, $payload, $dataSource);
     }
 }
