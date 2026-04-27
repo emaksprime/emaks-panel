@@ -36,6 +36,9 @@ export type PanelButtonData = {
     variant: string;
     actionType: string;
     actionTarget: string | null;
+    position?: string | null;
+    confirmationRequired?: boolean;
+    confirmationText?: string | null;
     canExecute: boolean;
     icon?: string | null;
 };
@@ -46,9 +49,15 @@ export type PanelPagePayload = {
     slug: string;
     routePath: string;
     component: string;
+    layoutType?: 'admin' | 'module' | string;
     description?: string | null;
     icon?: string | null;
     heroEyebrow?: string | null;
+    previewNotice?: string | null;
+    moduleTabs?: Array<{
+        label: string;
+        href: string;
+    }>;
     buttons: PanelButtonData[];
 };
 
@@ -69,6 +78,17 @@ export type PanelDataSourceSummary = {
     description?: string | null;
     database?: string | null;
     host?: string | null;
+};
+
+export type PanelExternalIntegration = {
+    provider: string;
+    label: string;
+    capability?: string | null;
+    path: string;
+    externalUrl?: string | null;
+    enabled: boolean;
+    launchMode: string;
+    message: string;
 };
 
 export type PanelNavigationPayload = {

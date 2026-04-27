@@ -2,14 +2,13 @@ import { Head } from '@inertiajs/react';
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
-import { TopNav } from '@/components/sales-main/TopNav.jsx';
 import { DateRangeFilter } from '@/components/sales-main/DateRangeFilter.jsx';
 import { ManagementScopeFilter } from '@/components/sales-main/ManagementScopeFilter.jsx';
 import { KpiCards } from '@/components/sales-main/KpiCards.jsx';
 import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 
-export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
+export default function SalesMainDashboard({ salesMainConfig, salesMainData, integration }) {
     const [config] = useState(salesMainConfig);
     const [data, setData] = useState(salesMainData);
     const [filters, setFilters] = useState(() => ({
@@ -61,7 +60,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     return (
         <>
-            <Head title="Sales Main" />
+            <Head title="Satış Yönetimi" />
             <main className="grid gap-5 p-4 md:p-6">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -74,6 +73,9 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         <p className="mt-1 max-w-3xl text-sm text-slate-600">
                             {config?.page?.description}
                         </p>
+                        <div className="mt-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                            {data?.queryMeta?.notice ?? 'Önizleme verisi - canlı veri bağlı değil'}
+                        </div>
                     </div>
                     <button
                         type="button"
@@ -84,8 +86,6 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         Yenile
                     </button>
                 </div>
-
-                <TopNav items={config?.topNav ?? []} activeHref="/sales/main" />
 
                 <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -129,6 +129,34 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                     <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
                         {error}
                     </div>
+                )}
+
+                {integration && (
+                    <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[1fr_auto] lg:items-center">
+                        <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                                Harici Servis Entegrasyonu
+                            </p>
+                            <h2 className="mt-2 text-lg font-semibold text-slate-950">PrimeCRM bağlantısı</h2>
+                            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                                {integration.message} Satış ekranı Laravel içine gömülmedi; Coolify üzerindeki ayrı PrimeCRM servisine yönlendirme ve sonraki fazdaki API köprüsü için hazırlandı.
+                            </p>
+                        </div>
+                        {integration.enabled && integration.externalUrl ? (
+                            <a
+                                href={integration.externalUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex justify-center rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white"
+                            >
+                                PrimeCRM ekranını aç
+                            </a>
+                        ) : (
+                            <span className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
+                                {integration.externalUrl ? 'PRIMECRM_ENABLED bekleniyor' : 'PRIMECRM_BASE_URL bekleniyor'}
+                            </span>
+                        )}
+                    </section>
                 )}
 
                 <KpiCards items={data?.kpis ?? []} />

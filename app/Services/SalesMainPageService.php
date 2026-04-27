@@ -16,6 +16,7 @@ class SalesMainPageService
         private readonly PanelNavigationService $navigation,
         private readonly PanelDataSourceManager $dataSources,
         private readonly PanelAccessService $access,
+        private readonly N8nPanelDataGateway $n8nGateway,
     ) {
     }
 
@@ -80,25 +81,33 @@ class SalesMainPageService
 
         $this->compileTemplate($source, $whitelistedParameters);
 
-        $previewPayload = collect($source->preview_payload[$filters['detail_type']] ?? []);
+        $gatewayResult = null;
+        $rows = $this->usesN8nGateway($source)
+            ? collect($this->fetchN8nRows($source, $filters, $scope, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult))
+            : collect($source->preview_payload[$filters['detail_type']] ?? []);
 
-        if ($previewPayload->isEmpty()) {
-            throw new RuntimeException('Sales Main preview payload is not configured in panel.data_sources.');
+        if ($rows->isEmpty()) {
+            throw new RuntimeException(
+                $this->usesN8nGateway($source)
+                    ? 'n8n gateway rows alanında satış verisi dönmedi.'
+                    : 'Satış Yönetimi önizleme verisi panel.data_sources içinde tanımlı değil.'
+            );
         }
 
-        $groupRows = $previewPayload
+        $groupRows = $rows
             ->where('satir_tipi', 'GRUP')
             ->sortBy('siralama_1')
             ->values();
 
-        $detailRows = $previewPayload
+        $detailRows = $rows
             ->filter(fn (array $row) => ($row['satir_tipi'] ?? null) !== 'GRUP')
             ->values();
 
         $positiveTotal = $groupRows->where('ciro', '>', 0)->sum('ciro');
         $netTotal = $groupRows->sum('ciro');
-        $konsinye = (float) ($previewPayload->first()['konsinye_tutari'] ?? 0);
+        $konsinye = (float) ($rows->first()['konsinye_tutari'] ?? 0);
         $periodLabel = $this->periodLabel($filters['date_from'], $filters['date_to']);
+        $isLive = $this->usesN8nGateway($source);
 
         return [
             'filters' => [
@@ -133,7 +142,7 @@ class SalesMainPageService
                     'raw' => $konsinye,
                 ],
                 [
-                    'label' => 'Aktif Scope',
+                    'label' => 'Aktif Kapsam',
                     'value' => $scope['label'],
                     'raw' => $scope['key'],
                 ],
@@ -180,7 +189,11 @@ class SalesMainPageService
                 'dataSource' => $source->code,
                 'driver' => $source->db_type,
                 'status' => $source->active ? 'active' : 'inactive',
+                'mode' => $isLive ? 'n8n_gateway' : 'preview',
+                'notice' => $isLive ? 'Canlı veri n8n gateway üzerinden alındı.' : 'Önizleme verisi; canlı veri kaynağı henüz bağlı değil.',
                 'whitelistedParameters' => $whitelistedParameters,
+                'gatewayMeta' => $gatewayResult['meta'] ?? null,
+                'gatewayRequest' => $gatewayResult['request'] ?? null,
             ],
             'navigation' => $this->navigation->sharedForUser($user, $page->route),
         ];
@@ -400,6 +413,39 @@ class SalesMainPageService
     private function source(): DataSource
     {
         return DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail();
+    }
+
+    private function usesN8nGateway(DataSource $source): bool
+    {
+        return ($source->connection_meta['driver'] ?? $source->db_type) === 'n8n_json';
+    }
+
+    /**
+     * @param  array<string, string>  $filters
+     * @param  array<string, mixed>  $scope
+     * @param  array<string, mixed>  $whitelistedParameters
+     * @param  array<string, mixed>|null  $gatewayResult
+     * @return array<int, array<string, mixed>>
+     */
+    private function fetchN8nRows(
+        DataSource $source,
+        array $filters,
+        array $scope,
+        ?string $effectiveRepresentativeCode,
+        array $whitelistedParameters,
+        ?array &$gatewayResult,
+    ): array {
+        $gatewayResult = $this->n8nGateway->run($source->code, [
+            ...$whitelistedParameters,
+            'date_from' => $filters['date_from'],
+            'date_to' => $filters['date_to'],
+            'grain' => $filters['grain'],
+            'detail_type' => $filters['detail_type'],
+            'scope_key' => $scope['key'],
+            'rep_code' => $effectiveRepresentativeCode,
+        ]);
+
+        return $gatewayResult['rows'];
     }
 
     /**

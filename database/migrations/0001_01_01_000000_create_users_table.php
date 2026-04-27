@@ -12,7 +12,15 @@ return new class extends Migration
      */
     public function up(): void
     {
-        DB::statement('CREATE SCHEMA IF NOT EXISTS panel');
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            try {
+                DB::statement("ATTACH DATABASE ':memory:' AS panel");
+            } catch (Throwable) {
+                //
+            }
+        } else {
+            DB::statement('CREATE SCHEMA IF NOT EXISTS panel');
+        }
 
         Schema::create('panel.users', function (Blueprint $table) {
             $table->id();
@@ -22,6 +30,7 @@ return new class extends Migration
             $table->string('role_code', 64)->nullable()->index();
             $table->string('temsilci_kodu', 32)->nullable();
             $table->boolean('aktif')->default(true);
+            $table->timestamp('email_verified_at')->nullable();
             $table->timestamp('last_login_at')->nullable();
             $table->rememberToken();
             $table->timestamps();

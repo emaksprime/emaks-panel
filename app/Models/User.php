@@ -13,7 +13,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Hash;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 
-#[Fillable(['username', 'full_name', 'password_hash', 'role_code', 'temsilci_kodu', 'aktif', 'last_login_at'])]
+#[Fillable(['username', 'full_name', 'password_hash', 'role_code', 'temsilci_kodu', 'aktif', 'last_login_at', 'email_verified_at'])]
 #[Hidden(['password_hash', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -38,6 +38,7 @@ class User extends Authenticatable
     {
         return [
             'last_login_at' => 'datetime',
+            'email_verified_at' => 'datetime',
             'aktif' => 'boolean',
             'password_hash' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
@@ -59,6 +60,16 @@ class User extends Authenticatable
         return (string) $this->username;
     }
 
+    public function setNameAttribute(string $name): void
+    {
+        $this->attributes['full_name'] = $name;
+    }
+
+    public function setEmailAttribute(string $email): void
+    {
+        $this->attributes['username'] = $email;
+    }
+
     public function getRepresentativeCodeAttribute(): ?string
     {
         return $this->temsilci_kodu;
@@ -70,6 +81,11 @@ class User extends Authenticatable
     }
 
     public function getAuthPassword(): string
+    {
+        return (string) $this->password_hash;
+    }
+
+    public function getPasswordAttribute(): string
     {
         return (string) $this->password_hash;
     }

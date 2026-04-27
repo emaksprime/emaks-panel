@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Contracts\DataSourceExecutor;
 use App\Models\DataSource;
 use App\Services\DataSources\MssqlDataSourceExecutor;
+use App\Services\DataSources\N8nJsonDataSourceExecutor;
 use Illuminate\Support\Collection;
 use RuntimeException;
 
@@ -13,9 +14,10 @@ class PanelDataSourceManager
     /** @var array<string, DataSourceExecutor> */
     private array $executors = [];
 
-    public function __construct()
+    public function __construct(N8nPanelDataGateway $n8nGateway)
     {
         $this->register(new MssqlDataSourceExecutor());
+        $this->register(new N8nJsonDataSourceExecutor($n8nGateway));
     }
 
     public function register(DataSourceExecutor $executor): void
@@ -38,7 +40,7 @@ class PanelDataSourceManager
                 'slug' => $dataSource->code,
                 'driver' => $dataSource->db_type,
                 'target' => $dataSource->connection_meta['target'] ?? null,
-                'status' => $dataSource->active ? 'active' : 'inactive',
+                'status' => $dataSource->active ? 'aktif' : 'pasif',
                 'description' => $dataSource->description,
                 'database' => $dataSource->connection_meta['database'] ?? null,
                 'host' => $dataSource->connection_meta['host'] ?? null,

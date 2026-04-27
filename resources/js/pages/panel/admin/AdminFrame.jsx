@@ -1,11 +1,11 @@
 import { Head, Link } from '@inertiajs/react';
 
 const tabs = [
-    ['Overview', '/admin'],
-    ['Users', '/admin/users'],
-    ['Pages', '/admin/pages'],
-    ['Datasources', '/admin/datasources'],
-    ['Logs', '/admin/logs'],
+    ['Özet', '/admin'],
+    ['Kullanıcılar', '/admin/users'],
+    ['Sayfalar', '/admin/pages'],
+    ['Veri Kaynakları', '/admin/datasources'],
+    ['Loglar', '/admin/logs'],
 ];
 
 export function AdminFrame({ title, children }) {
@@ -14,7 +14,7 @@ export function AdminFrame({ title, children }) {
             <Head title={title} />
             <main className="grid gap-5 p-4 md:p-6">
                 <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Admin</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Yönetim</p>
                     <h1 className="mt-1 text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">
                         {title}
                     </h1>

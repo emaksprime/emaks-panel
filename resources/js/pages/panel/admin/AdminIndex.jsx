@@ -27,7 +27,7 @@ export default function AdminIndex() {
             <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                        Production URL registry
+                        Üretim URL kayıtları
                     </p>
                     <h2 className="mt-1 text-xl font-semibold text-slate-950">
                         Workflow ve API adresleri

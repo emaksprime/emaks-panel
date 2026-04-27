@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\AuditLogger;
 use App\Services\PanelDataSourceManager;
 use App\Services\PanelNavigationService;
+use App\Services\PrimeCrmIntegrationService;
 use App\Services\SalesMainPageService;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -17,6 +18,7 @@ class PanelPageController extends Controller
         private readonly PanelDataSourceManager $dataSources,
         private readonly AuditLogger $auditLogger,
         private readonly SalesMainPageService $salesMain,
+        private readonly PrimeCrmIntegrationService $primeCrm,
     ) {
     }
 
@@ -55,27 +57,27 @@ class PanelPageController extends Controller
             'page' => $payload,
             'metrics' => [
                 [
-                    'label' => 'Current role',
-                    'value' => $navigation['role']['name'] ?? 'Unassigned',
-                    'hint' => $navigation['role']['isSuperAdmin'] ?? false ? 'Full access model' : 'Scoped resource permissions',
+                    'label' => 'Aktif Rol',
+                    'value' => $navigation['role']['name'] ?? 'Atanmamış',
+                    'hint' => $navigation['role']['isSuperAdmin'] ?? false ? 'Tam yetki modeli' : 'Kapsamlı kaynak yetkileri',
                     'tone' => 'accent',
                 ],
                 [
-                    'label' => 'Visible pages',
+                    'label' => 'Görünen Sayfalar',
                     'value' => (string) collect($navigation['groups'])->sum(fn (array $group) => count($group['items'])),
-                    'hint' => 'Published pages from metadata',
+                    'hint' => 'Metadata üzerinden yayınlanan sayfalar',
                     'tone' => 'default',
                 ],
                 [
-                    'label' => 'Action buttons',
+                    'label' => 'Aksiyon Butonları',
                     'value' => (string) count($payload['buttons']),
-                    'hint' => 'Current page actions from DB',
+                    'hint' => 'Geçerli sayfanın DB kaynaklı aksiyonları',
                     'tone' => 'warning',
                 ],
                 [
-                    'label' => 'Data sources',
+                    'label' => 'Veri Kaynakları',
                     'value' => (string) count($dataSources),
-                    'hint' => 'Managed through metadata registry',
+                    'hint' => 'Metadata kayıtlarından yönetilir',
                     'tone' => 'default',
                 ],
             ],
@@ -87,6 +89,7 @@ class PanelPageController extends Controller
                     fn (array $button) => ($button['canExecute'] ?? false) === true
                 )),
             ],
+            'integration' => $this->primeCrm->forPageCode($page->code),
         ];
 
         if ($page->code === 'sales_main') {

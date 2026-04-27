@@ -20,6 +20,10 @@ class Button extends Model
         'variant',
         'action_type',
         'action_target',
+        'position',
+        'config_json',
+        'confirmation_required',
+        'confirmation_text',
         'sort_order',
         'is_visible',
     ];
@@ -28,6 +32,8 @@ class Button extends Model
     {
         return [
             'is_visible' => 'boolean',
+            'config_json' => 'array',
+            'confirmation_required' => 'boolean',
         ];
     }
 
