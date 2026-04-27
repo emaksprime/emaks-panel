@@ -10,6 +10,8 @@ use App\Services\SalesMainPageService;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
+use RuntimeException;
+use Throwable;
 
 class PanelPageController extends Controller
 {
@@ -93,10 +95,124 @@ class PanelPageController extends Controller
         ];
 
         if ($page->code === 'sales_main') {
-            $sharedProps['salesMainConfig'] = $this->salesMain->config($user);
-            $sharedProps['salesMainData'] = $this->salesMain->dataset($user);
+            try {
+                $sharedProps['salesMainConfig'] = $this->salesMain->config($user);
+            } catch (Throwable $exception) {
+                report($exception);
+                $sharedProps['salesMainConfig'] = $this->fallbackSalesMainConfig();
+                $sharedProps['salesMainError'] = $exception->getMessage();
+            }
+
+            try {
+                $sharedProps['salesMainData'] = $this->salesMain->dataset($user);
+            } catch (RuntimeException $exception) {
+                $sharedProps['salesMainData'] = $this->emptySalesMainDataset($exception->getMessage());
+                $sharedProps['salesMainError'] = $exception->getMessage();
+            }
         }
 
         return Inertia::render($page->component, $sharedProps);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function fallbackSalesMainConfig(): array
+    {
+        return [
+            'page' => [
+                'title' => 'Genel Satış',
+                'description' => 'Ana satış dashboardu ve yönetim kapsamları',
+                'routePath' => '/sales/main',
+                'component' => 'panel/sales-main',
+            ],
+            'topNav' => [],
+            'grains' => [
+                ['key' => 'day', 'label' => 'Günlük'],
+                ['key' => 'week', 'label' => 'Haftalık'],
+                ['key' => 'month', 'label' => 'Aylık'],
+                ['key' => 'year', 'label' => 'Yıllık'],
+            ],
+            'detailModes' => [
+                ['key' => 'cari', 'label' => 'Cari'],
+                ['key' => 'urun', 'label' => 'Ürün'],
+            ],
+            'managementScopes' => [
+                ['key' => 'all', 'label' => 'Tümü', 'note' => 'Tüm satış kapsamı'],
+            ],
+            'defaults' => [
+                'grain' => 'day',
+                'detailType' => 'cari',
+                'scopeKey' => 'all',
+            ],
+            'dataSource' => [
+                'slug' => 'sales_main_dashboard',
+                'status' => 'error',
+                'drivers' => [],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function emptySalesMainDataset(string $message): array
+    {
+        $today = now()->format('Y-m-d');
+
+        return [
+            'filters' => [
+                'dateFrom' => $today,
+                'dateTo' => $today,
+                'grain' => 'day',
+                'detailType' => 'cari',
+                'scopeKey' => 'all',
+                'periodLabel' => now()->format('d.m.Y').' - '.now()->format('d.m.Y'),
+            ],
+            'scope' => [
+                'key' => 'all',
+                'label' => 'Tümü',
+                'note' => 'Canlı veri alınamadı.',
+                'effectiveRepresentativeCode' => null,
+                'canSeeAll' => true,
+            ],
+            'kpis' => [
+                ['label' => 'Toplam Net Ciro', 'value' => '0,00 TL', 'raw' => 0],
+                ['label' => 'Seçili Dönem', 'value' => now()->format('d.m.Y'), 'raw' => $today],
+                ['label' => 'Konsinye Hariç', 'value' => '0,00 TL', 'raw' => 0],
+                ['label' => 'Aktif Kapsam', 'value' => 'Tümü', 'raw' => 'all'],
+            ],
+            'chart' => [
+                'title' => 'Cari Grup Ciro Dağılımı',
+                'subtitle' => 'Canlı veri alınamadı.',
+                'totalNet' => 0,
+                'konsinyeAmount' => 0,
+                'items' => [],
+            ],
+            'breakdown' => [
+                'mode' => 'cari',
+                'title' => 'Cari Grup -> Cari -> Ürün Kırılımı',
+                'groups' => [],
+            ],
+            'table' => [
+                'columns' => [
+                    ['key' => 'label', 'label' => 'Başlık'],
+                    ['key' => 'quantity', 'label' => 'Adet'],
+                    ['key' => 'amount', 'label' => 'Ciro'],
+                ],
+                'rows' => [],
+            ],
+            'queryMeta' => [
+                'dataSource' => 'sales_main_dashboard',
+                'driver' => 'n8n_json',
+                'status' => 'error',
+                'mode' => 'n8n_gateway_error',
+                'notice' => $message,
+                'whitelistedParameters' => [],
+                'gatewayMeta' => null,
+                'gatewayRequest' => null,
+            ],
+            'navigation' => [],
+        ];
     }
 }
