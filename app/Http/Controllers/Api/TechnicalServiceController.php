@@ -114,7 +114,29 @@ class TechnicalServiceController extends Controller
         $payload = $request->validated();
         $payload['updated_by_user_id'] = $request->user()?->id;
 
+        $scheduleNote = $payload['schedule_note'] ?? null;
+        unset($payload['schedule_note']);
+
+        $previousStatus = $technicalServiceRequest->status;
+        $isScheduling = array_key_exists('scheduled_at', $payload) && ! empty($payload['scheduled_at']);
+
+        if ($isScheduling && empty($payload['status'])) {
+            $payload['status'] = 'Randevulu';
+        }
+
         $technicalServiceRequest->update($payload);
+
+        if ($isScheduling) {
+            $technicalServiceRequest->events()->create([
+                'event_type' => 'scheduled',
+                'title' => 'Randevu planlandı',
+                'note' => $scheduleNote,
+                'from_status' => $previousStatus,
+                'to_status' => $technicalServiceRequest->status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [],
+            ]);
+        }
 
         return response()->json(['request' => $technicalServiceRequest]);
     }

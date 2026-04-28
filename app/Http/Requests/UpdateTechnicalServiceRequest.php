@@ -26,12 +26,14 @@ class UpdateTechnicalServiceRequest extends FormRequest
             'product_model' => ['sometimes', 'nullable', 'string', 'max:255'],
             'serial_number' => ['sometimes', 'nullable', 'string', 'max:255'],
             'service_type' => ['sometimes', 'string', 'max:128'],
+            'status' => ['sometimes', 'string', 'in:Yeni,Atandı,Randevulu,Devam Ediyor,Tamamlandı,İptal'],
             'priority' => ['sometimes', 'string', 'in:Düşük,Orta,Yüksek,Kritik'],
             'risk_level' => ['sometimes', 'string', 'in:Düşük,Orta,Yüksek,Kritik'],
             'scheduled_at' => ['sometimes', 'nullable', 'date'],
             'sla_due_at' => ['sometimes', 'nullable', 'date'],
             'description' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'resolution_notes' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'schedule_note' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'source_channel' => ['sometimes', 'nullable', 'string', 'max:128'],
         ];
     }

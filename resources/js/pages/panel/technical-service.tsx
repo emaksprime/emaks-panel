@@ -158,6 +158,13 @@ export default function TechnicalService() {
   const [assignNote, setAssignNote] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [scheduleHour, setScheduleHour] = useState('')
+  const [scheduleMinute, setScheduleMinute] = useState('')
+  const [scheduleNote, setScheduleNote] = useState('')
+  const [scheduleLoading, setScheduleLoading] = useState(false)
+  const [scheduleError, setScheduleError] = useState<string | null>(null)
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
@@ -326,6 +333,45 @@ export default function TechnicalService() {
     setAssignTechnician('')
     setAssignNote('')
     setAssignError(null)
+  }
+
+  const handleScheduleReset = () => {
+    setScheduleDate('')
+    setScheduleHour('')
+    setScheduleMinute('')
+    setScheduleNote('')
+    setScheduleError(null)
+  }
+
+  const handleScheduleSubmit = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    setScheduleLoading(true)
+    setScheduleError(null)
+
+    try {
+      const scheduledAt = `${scheduleDate}T${scheduleHour}:${scheduleMinute}:00`
+
+      await apiRequest(`/api/technical-service/requests/${selectedId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          scheduled_at: scheduledAt,
+          schedule_note: scheduleNote || null,
+        }),
+      })
+
+      setScheduleDialogOpen(false)
+      handleScheduleReset()
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setScheduleError(caught instanceof Error ? caught.message : 'Randevu planlama işlemi başarısız oldu.')
+    } finally {
+      setScheduleLoading(false)
+    }
   }
 
   const handleAssignSubmit = async () => {
@@ -585,6 +631,104 @@ export default function TechnicalService() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          <Dialog open={scheduleDialogOpen} onOpenChange={(open) => {
+            setScheduleDialogOpen(open)
+            if (!open) handleScheduleReset()
+          }}>
+            <DialogContent className="max-w-lg">
+              <DialogClose asChild>
+                <button
+                  type="button"
+                  className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
+                >
+                  ×
+                </button>
+              </DialogClose>
+              <DialogHeader>
+                <DialogTitle>Randevu planla</DialogTitle>
+                <DialogDescription>
+                  Seçili talebe randevu tarihi ve saati girin, isteğe bağlı not ekleyin.
+                </DialogDescription>
+              </DialogHeader>
+
+              {scheduleError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {scheduleError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-4 pt-2">
+                <div className="grid gap-2 text-sm font-medium text-slate-700">
+                  <label>Randevu tarihi</label>
+                  <Input
+                    type="date"
+                    value={scheduleDate}
+                    onChange={(event) => setScheduleDate(event.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2 text-sm font-medium text-slate-700 sm:grid-cols-[1fr_1fr]">
+                  <label className="grid gap-2">
+                    Saat
+                    <select
+                      value={scheduleHour}
+                      onChange={(event) => setScheduleHour(event.target.value)}
+                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    >
+                      <option value="">Saat</option>
+                      {Array.from({ length: 24 }, (_, index) => {
+                        const value = String(index).padStart(2, '0')
+                        return (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        )
+                      })}
+                    </select>
+                  </label>
+                  <label className="grid gap-2">
+                    Dakika
+                    <select
+                      value={scheduleMinute}
+                      onChange={(event) => setScheduleMinute(event.target.value)}
+                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    >
+                      <option value="">Dakika</option>
+                      {['00', '15', '30', '45'].map((minute) => (
+                        <option key={minute} value={minute}>
+                          {minute}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Not / açıklama
+                  <textarea
+                    value={scheduleNote}
+                    onChange={(event) => setScheduleNote(event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    placeholder="Not / açıklama"
+                  />
+                </label>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <DialogClose asChild>
+                  <Button variant="secondary" type="button" onClick={handleScheduleReset}>
+                    İptal
+                  </Button>
+                </DialogClose>
+                <Button
+                  type="button"
+                  onClick={handleScheduleSubmit}
+                  disabled={scheduleLoading || !scheduleDate || !scheduleHour || !scheduleMinute}
+                >
+                  {scheduleLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
 
         <ServiceSummaryCards items={summaryItems} />
@@ -638,6 +782,7 @@ export default function TechnicalService() {
                 loading={detailLoading}
                 error={detailError}
                 onAssign={() => setAssignDialogOpen(true)}
+                onSchedule={() => setScheduleDialogOpen(true)}
               />
             ) : (
               <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
