@@ -153,6 +153,7 @@ class SalesMainPageService
                     ? 'Ürün ve model bazlı payların dağılımı.'
                     : 'Satış gruplarının toplam ciro içindeki payları.',
                 'totalNet' => $netTotal,
+                'totalNetLabel' => $this->money($netTotal),
                 'konsinyeAmount' => $konsinye,
                 'items' => $groupRows->map(function (array $row, int $index) use ($positiveTotal) {
                     $amount = (float) $row['ciro'];
@@ -174,12 +175,12 @@ class SalesMainPageService
             ],
             'breakdown' => [
                 'mode' => $filters['detail_type'],
-                'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Kırılımı' : 'Satış Detayı',
+                'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Özeti' : 'Satış Detayı',
                 'groups' => $this->breakdownGroups($filters['detail_type'], $groupRows, $detailRows),
             ],
             'table' => [
                 'columns' => [
-                    ['key' => 'label', 'label' => 'Baslik'],
+                    ['key' => 'label', 'label' => 'Başlık'],
                     ['key' => 'quantity', 'label' => 'Adet'],
                     ['key' => 'amount', 'label' => 'Ciro'],
                 ],

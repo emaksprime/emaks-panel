@@ -25,7 +25,7 @@ export function SalesPieChart({ chart }) {
         });
 
     return (
-        <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:grid-cols-[300px_minmax(0,1fr)]">
             <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">
                     {chart?.title}
@@ -61,11 +61,20 @@ export function SalesPieChart({ chart }) {
                             </circle>
                         ))}
                     </svg>
-                    <div className="absolute size-[46%] rounded-full border border-slate-100 bg-white/95 shadow-inner" aria-hidden="true" />
+                    <div className="absolute grid size-[50%] place-items-center rounded-full border border-slate-100 bg-white/95 text-center shadow-inner">
+                        <div className="px-3">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                Toplam Ciro
+                            </p>
+                            <p className="mt-1 text-sm font-bold text-slate-950 sm:text-base">
+                                {chart?.totalNetLabel ?? '-'}
+                            </p>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <div className="grid min-w-0 content-start gap-3">
+            <div className="grid min-w-0 content-start gap-3 lg:grid-cols-2">
                 {items.map((item) => (
                     <div key={item.label} className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-slate-100 px-3 py-2 transition hover:border-blue-100 hover:bg-blue-50/40">
                         <span className="size-3 rounded-sm" style={{ backgroundColor: item.color }} />
