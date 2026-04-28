@@ -3,7 +3,7 @@ import { Input } from '@/components/ui/input'
 import type { ServiceFilters, ServiceStatus, ServiceType } from './types'
 
 const serviceTypes: (ServiceType | '')[] = ['', 'Montaj', 'Arıza', 'Kontrol']
-const statuses: (ServiceStatus | '')[] = ['', 'Yeni', 'Atandı', 'Randevulu', 'Devam Ediyor', 'Tamamlandı']
+const statuses: (ServiceStatus | '')[] = ['', 'Yeni', 'Atandı', 'Randevulu', 'Devam Ediyor', 'Tamamlandı', 'İptal']
 
 export function ServiceFilters({
   filters,

@@ -1,11 +1,26 @@
 import { Head } from '@inertiajs/react'
 import { useMemo, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import Heading from '@/components/heading'
 import { ServiceSummaryCards } from '@/components/technical-service/ServiceSummaryCards'
 import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
 import type { ServiceFilters as FilterState, ServiceRequest, SummaryItem } from '@/components/technical-service/types'
+
+type NewRequestForm = {
+  customer: string
+  phone: string
+  city: string
+  district: string
+  address: string
+  product: string
+  serialNumber: string
+  serviceType: string
+  notes: string
+}
 
 const requests: ServiceRequest[] = [
   {
@@ -20,6 +35,7 @@ const requests: ServiceRequest[] = [
     serialNumber: 'SN12345678',
     channel: 'Yetkili Servis',
     serviceType: 'Montaj',
+    priority: 'Orta',
     technician: 'Usta Mehmet',
     appointment: '14 Mayıs 2026, 13:30',
     status: 'Randevulu',
@@ -40,6 +56,7 @@ const requests: ServiceRequest[] = [
     serialNumber: 'SN87654321',
     channel: 'Çağrı Merkezi',
     serviceType: 'Arıza',
+    priority: 'Yüksek',
     technician: 'Çilingir Hasan',
     appointment: '14 Mayıs 2026, 09:00',
     status: 'Devam Ediyor',
@@ -60,6 +77,7 @@ const requests: ServiceRequest[] = [
     serialNumber: 'SN11223344',
     channel: 'Online',
     serviceType: 'Kontrol',
+    priority: 'Düşük',
     technician: 'Usta Ayşe',
     appointment: '15 Mayıs 2026, 11:00',
     status: 'Atandı',
@@ -80,6 +98,7 @@ const requests: ServiceRequest[] = [
     serialNumber: 'SN55667788',
     channel: 'Yetkili Servis',
     serviceType: 'Arıza',
+    priority: 'Orta',
     technician: 'Usta Hasan',
     appointment: '16 Mayıs 2026, 14:30',
     status: 'Yeni',
@@ -87,6 +106,48 @@ const requests: ServiceRequest[] = [
     address: 'Gürsu Mah. Atatürk Cad. No: 17',
     notes: 'Kapanmama sorunu.',
     riskLevel: 'Orta',
+  },
+  {
+    id: 'req-005',
+    mrn: 'MRN-1005',
+    customer: 'Ege Teknik Servis',
+    phone: '+90 536 444 55 66',
+    city: 'Antalya',
+    district: 'Muratpaşa',
+    product: 'Philips DDL630',
+    model: 'DDL630',
+    serialNumber: 'SN99887766',
+    channel: 'Çağrı Merkezi',
+    serviceType: 'Arıza',
+    priority: 'Kritik',
+    technician: 'Atanmadı',
+    appointment: '17 Mayıs 2026, 10:00',
+    status: 'Yeni',
+    sla: '18 saat',
+    address: 'Çarşı Mah. 2059 Sk. No: 7',
+    notes: 'Buzdolabı soğutmuyor.',
+    riskLevel: 'Kritik',
+  },
+  {
+    id: 'req-006',
+    mrn: 'MRN-1006',
+    customer: 'Pera Yapı',
+    phone: '+90 532 111 22 33',
+    city: 'İstanbul',
+    district: 'Şişli',
+    product: 'Emaks Prime XT',
+    model: 'Prime XT',
+    serialNumber: 'SN00998877',
+    channel: 'Müşteri',
+    serviceType: 'Montaj',
+    priority: 'Düşük',
+    technician: 'Usta Ali',
+    appointment: '18 Mayıs 2026, 15:45',
+    status: 'İptal',
+    sla: 'N/A',
+    address: 'Halaskargazi Cad. No: 12',
+    notes: 'Müşteri iptal etti.',
+    riskLevel: 'Düşük',
   },
 ]
 
@@ -96,9 +157,23 @@ const initialFilters: FilterState = {
   status: '',
 }
 
+const initialRequestForm: NewRequestForm = {
+  customer: '',
+  phone: '',
+  city: '',
+  district: '',
+  address: '',
+  product: '',
+  serialNumber: '',
+  serviceType: '',
+  notes: '',
+}
+
 export default function TechnicalService() {
   const [filters, setFilters] = useState<FilterState>(initialFilters)
   const [selectedId, setSelectedId] = useState(requests[0].id)
+  const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [createForm, setCreateForm] = useState<NewRequestForm>(initialRequestForm)
 
   const filteredRequests = useMemo(() => {
     return requests.filter((request) => {
@@ -114,12 +189,15 @@ export default function TechnicalService() {
     })
   }, [filters])
 
-  const selectedRequest = requests.find((request) => request.id === selectedId) ?? requests[0]
+  const selectedRequest =
+    filteredRequests.find((request) => request.id === selectedId) ??
+    filteredRequests[0] ??
+    requests[0]
 
   const summaryItems: SummaryItem[] = [
     {
       label: 'Açık Talep',
-      value: String(requests.filter((request) => request.status !== 'Tamamlandı').length),
+      value: String(requests.filter((request) => request.status !== 'Tamamlandı' && request.status !== 'İptal').length),
       tone: 'accent',
       description: 'Henüz tamamlanmamış teknik servis talepleri',
     },
@@ -131,9 +209,9 @@ export default function TechnicalService() {
     },
     {
       label: 'SLA Riski',
-      value: String(requests.filter((request) => request.riskLevel === 'Yüksek').length),
+      value: String(requests.filter((request) => request.riskLevel === 'Yüksek' || request.riskLevel === 'Kritik').length),
       tone: 'warning',
-      description: 'SLA süresi yüksek riskli talepler',
+      description: 'Yüksek ve kritik SLA riski olan talepler',
     },
     {
       label: 'Tamamlanan İş',
@@ -141,7 +219,26 @@ export default function TechnicalService() {
       tone: 'default',
       description: 'Bugüne kadar kapatılmış talepler',
     },
+    {
+      label: 'Atanmamış Talep',
+      value: String(requests.filter((request) => request.technician === 'Atanmadı').length),
+      tone: 'default',
+      description: 'Usta atanmamış talepler',
+    },
   ]
+
+  const handleCreateChange = (field: keyof NewRequestForm, value: string) => {
+    setCreateForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleCreateReset = () => {
+    setCreateForm(initialRequestForm)
+  }
+
+  const handleCreateSubmit = () => {
+    setIsDialogOpen(false)
+    handleCreateReset()
+  }
 
   return (
     <>
@@ -155,6 +252,119 @@ export default function TechnicalService() {
               description="Montaj ve servis taleplerini takip edin, SLA uyarılarını izleyin ve talep detaylarını görüntüleyin."
             />
           </div>
+          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+            <DialogTrigger asChild>
+              <Button type="button">Yeni Servis Talebi</Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Yeni Servis Talebi</DialogTitle>
+                <DialogDescription>
+                  Buradaki form şimdilik dummy veridir; talep kaydı lokal olarak yapılmayacaktır.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 pt-2">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Müşteri adı
+                    <Input
+                      value={createForm.customer}
+                      onChange={(event) => handleCreateChange('customer', event.target.value)}
+                      placeholder="Müşteri adı"
+                    />
+                  </label>
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Telefon
+                    <Input
+                      value={createForm.phone}
+                      onChange={(event) => handleCreateChange('phone', event.target.value)}
+                      placeholder="Telefon"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    İl
+                    <Input
+                      value={createForm.city}
+                      onChange={(event) => handleCreateChange('city', event.target.value)}
+                      placeholder="İl"
+                    />
+                  </label>
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    İlçe
+                    <Input
+                      value={createForm.district}
+                      onChange={(event) => handleCreateChange('district', event.target.value)}
+                      placeholder="İlçe"
+                    />
+                  </label>
+                </div>
+
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Adres
+                  <textarea
+                    value={createForm.address}
+                    onChange={(event) => handleCreateChange('address', event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    placeholder="Adres"
+                  />
+                </label>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Ürün
+                    <Input
+                      value={createForm.product}
+                      onChange={(event) => handleCreateChange('product', event.target.value)}
+                      placeholder="Ürün"
+                    />
+                  </label>
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Seri No
+                    <Input
+                      value={createForm.serialNumber}
+                      onChange={(event) => handleCreateChange('serialNumber', event.target.value)}
+                      placeholder="Seri No"
+                    />
+                  </label>
+                </div>
+
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Servis Tipi
+                  <select
+                    value={createForm.serviceType}
+                    onChange={(event) => handleCreateChange('serviceType', event.target.value)}
+                    className="border-input h-9 rounded-md border bg-transparent px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  >
+                    <option value="">Seçiniz</option>
+                    <option value="Montaj">Montaj</option>
+                    <option value="Arıza">Arıza</option>
+                    <option value="Kontrol">Kontrol</option>
+                  </select>
+                </label>
+
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Not
+                  <textarea
+                    value={createForm.notes}
+                    onChange={(event) => handleCreateChange('notes', event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    placeholder="Talep notu"
+                  />
+                </label>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" type="button" onClick={() => setIsDialogOpen(false)}>
+                  İptal
+                </Button>
+                <Button type="button" onClick={handleCreateSubmit}>
+                  Kaydet
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
 
         <ServiceSummaryCards items={summaryItems} />

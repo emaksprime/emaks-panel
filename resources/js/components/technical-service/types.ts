@@ -1,6 +1,9 @@
 export type ServiceType = 'Montaj' | 'Arıza' | 'Kontrol'
 
-export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 'Tamamlandı'
+export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 'Tamamlandı' | 'İptal'
+
+export type ServicePriority = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
+export type ServiceRiskLevel = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
 
 export type ServiceRequest = {
   id: string
@@ -12,6 +15,7 @@ export type ServiceRequest = {
   product: string
   serialNumber: string
   serviceType: ServiceType
+  priority: ServicePriority
   technician: string
   appointment: string
   status: ServiceStatus
@@ -20,7 +24,7 @@ export type ServiceRequest = {
   model: string
   channel: string
   notes: string
-  riskLevel: 'Yüksek' | 'Orta' | 'Düşük'
+  riskLevel: ServiceRiskLevel
 }
 
 export type ServiceFilters = {

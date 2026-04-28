@@ -1,5 +1,52 @@
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { ServiceRequest } from './types'
+
+const statusVariant = (status: ServiceRequest['status']) => {
+  switch (status) {
+    case 'Yeni':
+      return 'secondary'
+    case 'Atandı':
+      return 'default'
+    case 'Randevulu':
+      return 'warning'
+    case 'Devam Ediyor':
+      return 'accent'
+    case 'Tamamlandı':
+      return 'positive'
+    case 'İptal':
+      return 'destructive'
+    default:
+      return 'default'
+  }
+}
+
+const riskVariant = (risk: ServiceRequest['riskLevel']) => {
+  switch (risk) {
+    case 'Kritik':
+      return 'destructive'
+    case 'Yüksek':
+      return 'warning'
+    case 'Orta':
+      return 'default'
+    default:
+      return 'secondary'
+  }
+}
+
+const priorityVariant = (priority: ServiceRequest['priority']) => {
+  switch (priority) {
+    case 'Kritik':
+      return 'destructive'
+    case 'Yüksek':
+      return 'warning'
+    case 'Orta':
+      return 'default'
+    default:
+      return 'secondary'
+  }
+}
 
 const timelineItems = [
   { step: 'Talep alındı', time: '09:15', note: 'Teknik servis ekibi talebi aldı.' },
@@ -11,11 +58,17 @@ export function ServiceRequestDetails({ request }: { request: ServiceRequest }) 
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm">
       <CardHeader className="space-y-3 px-6 py-6">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Seçili MRN</p>
-          <CardTitle className="mt-2 text-xl text-slate-950">{request.mrn}</CardTitle>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Seçili MRN</p>
+            <CardTitle className="mt-2 text-xl text-slate-950">{request.mrn}</CardTitle>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={statusVariant(request.status)}>{request.status}</Badge>
+            <Badge variant={priorityVariant(request.priority)}>{request.priority}</Badge>
+          </div>
         </div>
-        <p className="text-sm text-slate-600">{request.customer} için teknik servis ve montaj bilgisi.</p>
+        <p className="text-sm text-slate-600">{request.customer} için servis, randevu ve SLA detaylarını takip edin.</p>
       </CardHeader>
 
       <CardContent className="space-y-6 px-6 pb-6">
@@ -33,7 +86,7 @@ export function ServiceRequestDetails({ request }: { request: ServiceRequest }) 
         </section>
 
         <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Cihaz Özeti</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Cihaz / Seri No</p>
           <div className="grid gap-2 text-sm text-slate-700">
             <div className="flex justify-between">
               <span className="font-semibold">Ürün</span>
@@ -47,28 +100,21 @@ export function ServiceRequestDetails({ request }: { request: ServiceRequest }) 
               <span className="font-semibold">Seri No</span>
               <span>{request.serialNumber}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="font-semibold">Kanal</span>
-              <span>{request.channel}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="font-semibold">Servis Tipi</span>
-              <span>{request.serviceType}</span>
-            </div>
           </div>
         </section>
 
-        <section className="grid gap-3 rounded-2xl border border-slate-200 p-4">
-          <div className="flex items-center justify-between gap-4">
+        <section className="grid gap-4 rounded-2xl border border-slate-200 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Usta / Çilingir</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{request.technician}</p>
             </div>
-            <div className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700">
-              {request.status}
+            <div className="flex items-center gap-2">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Servis Tipi</p>
+              <Badge variant="secondary">{request.serviceType}</Badge>
             </div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-3">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Randevu</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{request.appointment}</p>
@@ -76,9 +122,17 @@ export function ServiceRequestDetails({ request }: { request: ServiceRequest }) 
             <div className="rounded-2xl border border-slate-200 bg-white p-3">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">SLA</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{request.sla}</p>
-              <p className="mt-1 text-xs text-slate-500">Risk: {request.riskLevel}</p>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs text-slate-500">Risk</span>
+                <Badge variant={riskVariant(request.riskLevel)}>{request.riskLevel}</Badge>
+              </div>
             </div>
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Notlar</p>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{request.notes}</p>
         </section>
 
         <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -94,6 +148,13 @@ export function ServiceRequestDetails({ request }: { request: ServiceRequest }) 
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="grid gap-3 sm:grid-cols-2">
+          <Button type="button">Usta Ata</Button>
+          <Button variant="outline" type="button">Randevu Planla</Button>
+          <Button variant="secondary" type="button">WhatsApp Link Gönder</Button>
+          <Button variant="destructive" type="button">Talebi Kapat</Button>
         </section>
       </CardContent>
     </Card>
