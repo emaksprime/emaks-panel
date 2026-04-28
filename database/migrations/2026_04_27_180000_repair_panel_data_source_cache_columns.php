@@ -94,7 +94,37 @@ SQL);
 
         DB::statement(<<<'SQL'
 DO $$
+DECLARE
+    primary_constraint text;
+    primary_is_id boolean := false;
 BEGIN
+    SELECT conname
+    INTO primary_constraint
+    FROM pg_constraint
+    WHERE conrelid = 'panel.data_source_cache'::regclass
+      AND contype = 'p'
+    LIMIT 1;
+
+    IF primary_constraint IS NOT NULL THEN
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_attribute a
+              ON a.attrelid = c.conrelid
+             AND a.attnum = ANY(c.conkey)
+            WHERE c.conrelid = 'panel.data_source_cache'::regclass
+              AND c.conname = primary_constraint
+              AND c.contype = 'p'
+              AND array_length(c.conkey, 1) = 1
+              AND a.attname = 'id'
+        )
+        INTO primary_is_id;
+
+        IF NOT primary_is_id THEN
+            EXECUTE format('ALTER TABLE panel.data_source_cache DROP CONSTRAINT %I', primary_constraint);
+        END IF;
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
