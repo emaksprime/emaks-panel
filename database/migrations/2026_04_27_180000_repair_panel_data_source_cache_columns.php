@@ -20,6 +20,7 @@ SQL);
 
         DB::statement(<<<'SQL'
 ALTER TABLE panel.data_source_cache
+    ADD COLUMN IF NOT EXISTS id bigserial,
     ADD COLUMN IF NOT EXISTS cache_key varchar(128),
     ADD COLUMN IF NOT EXISTS source_code varchar(128),
     ADD COLUMN IF NOT EXISTS request_payload json,
@@ -30,8 +31,39 @@ ALTER TABLE panel.data_source_cache
 SQL);
 
         DB::statement(<<<'SQL'
+UPDATE panel.data_source_cache
+SET id = nextval(pg_get_serial_sequence('panel.data_source_cache', 'id'))
+WHERE id IS NULL
+SQL);
+
+        DB::statement(<<<'SQL'
 DELETE FROM panel.data_source_cache
 WHERE cache_key IS NULL
+SQL);
+
+        DB::statement(<<<'SQL'
+DELETE FROM panel.data_source_cache stale
+USING (
+    SELECT id, row_number() OVER (PARTITION BY cache_key ORDER BY id) AS row_number
+    FROM panel.data_source_cache
+    WHERE cache_key IS NOT NULL
+) duplicates
+WHERE stale.id = duplicates.id
+  AND duplicates.row_number > 1
+SQL);
+
+        DB::statement(<<<'SQL'
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'panel.data_source_cache'::regclass
+          AND contype = 'p'
+    ) THEN
+        ALTER TABLE panel.data_source_cache ADD PRIMARY KEY (id);
+    END IF;
+END $$;
 SQL);
 
         DB::statement(<<<'SQL'

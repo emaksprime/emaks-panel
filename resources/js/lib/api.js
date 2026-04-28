@@ -13,16 +13,21 @@ export async function apiRequest(path, options = {}) {
 
     if (!response.ok) {
         const detail = await response.text();
-        let message = detail;
+        let message = 'Veri alınamadı. Lütfen tekrar deneyin.';
 
         try {
             const parsed = JSON.parse(detail);
-            message = parsed.message || detail;
+            if (response.status < 500) {
+                message = parsed.message || parsed.error || message;
+            }
         } catch {
-            message = detail;
+            // Keep raw Cloudflare/proxy HTML or JSON-like text out of the UI.
         }
 
-        throw new Error(message || `Request failed with ${response.status}`);
+        const error = new Error(message);
+        error.status = response.status;
+        error.detail = detail;
+        throw error;
     }
 
     return response.json();
