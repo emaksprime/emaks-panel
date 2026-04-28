@@ -31,9 +31,49 @@ ALTER TABLE panel.data_source_cache
 SQL);
 
         DB::statement(<<<'SQL'
-UPDATE panel.data_source_cache
-SET id = nextval(pg_get_serial_sequence('panel.data_source_cache', 'id'))
-WHERE id IS NULL
+DO $$
+DECLARE
+    cache_sequence regclass;
+    max_cache_id bigint;
+    has_cache_rows boolean;
+BEGIN
+    cache_sequence := pg_get_serial_sequence('panel.data_source_cache', 'id')::regclass;
+
+    IF cache_sequence IS NULL THEN
+        CREATE SEQUENCE IF NOT EXISTS panel.data_source_cache_id_seq;
+        ALTER SEQUENCE panel.data_source_cache_id_seq OWNED BY panel.data_source_cache.id;
+        ALTER TABLE panel.data_source_cache
+            ALTER COLUMN id SET DEFAULT nextval('panel.data_source_cache_id_seq'::regclass);
+        cache_sequence := 'panel.data_source_cache_id_seq'::regclass;
+    END IF;
+
+    SELECT COALESCE(MAX(id), 1), MAX(id) IS NOT NULL
+    INTO max_cache_id, has_cache_rows
+    FROM panel.data_source_cache;
+
+    PERFORM setval(cache_sequence, max_cache_id, has_cache_rows);
+
+    UPDATE panel.data_source_cache
+    SET id = nextval(cache_sequence)
+    WHERE id IS NULL;
+
+    WITH duplicate_ids AS (
+        SELECT ctid, row_number() OVER (PARTITION BY id ORDER BY ctid) AS row_number
+        FROM panel.data_source_cache
+        WHERE id IS NOT NULL
+    )
+    UPDATE panel.data_source_cache cache
+    SET id = nextval(cache_sequence)
+    FROM duplicate_ids
+    WHERE cache.ctid = duplicate_ids.ctid
+      AND duplicate_ids.row_number > 1;
+
+    SELECT COALESCE(MAX(id), 1), MAX(id) IS NOT NULL
+    INTO max_cache_id, has_cache_rows
+    FROM panel.data_source_cache;
+
+    PERFORM setval(cache_sequence, max_cache_id, has_cache_rows);
+END $$;
 SQL);
 
         DB::statement(<<<'SQL'
