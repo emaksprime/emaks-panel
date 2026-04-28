@@ -1,14 +1,23 @@
 import { Head, Link } from '@inertiajs/react';
 import { ArrowRight, Database, FileText, Plus, ShieldCheck } from 'lucide-react';
 import { createElement, useEffect, useState } from 'react';
+import { CustomerDetailDrawer } from '@/components/primecrm/CustomerDetailDrawer.jsx';
 import { DataTable } from '@/components/primecrm/DataTable.jsx';
 import { DetailDrawer } from '@/components/primecrm/DetailDrawer.jsx';
 import { FilterBar } from '@/components/primecrm/FilterBar.jsx';
-import { formatMoney } from '@/components/primecrm/format';
 import { KpiCard } from '@/components/primecrm/KpiCard.jsx';
 import { ModuleShell } from '@/components/primecrm/ModuleShell.jsx';
 import { ProformaCartDrawer } from '@/components/primecrm/ProformaCartDrawer.jsx';
 import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
+import {
+    detailTitle,
+    friendlyEmptyMessage,
+    moduleKindFromPage,
+    pageCopy,
+    preferredColumns,
+    summaryCards,
+    valueFrom,
+} from '@/components/primecrm/module-data.js';
 import { apiRequest } from '@/lib/api';
 import { panelIcon } from '@/lib/panel-icons';
 import type {
@@ -65,6 +74,11 @@ const defaultFilters = () => {
         search: '',
         page: 1,
         bypass_cache: false,
+        group: '',
+        balance_type: '',
+        warehouse: '',
+        stock_state: '',
+        order_status: '',
     };
 };
 
@@ -97,41 +111,6 @@ function PanelPageIcon({ name }: { name?: string | null }) {
     return createElement(panelIcon(name), { className: 'size-5' });
 }
 
-function moduleKind(slug: string): string {
-    if (slug.startsWith('cari')) {
-        return 'cari';
-    }
-
-    if (slug.startsWith('stock')) {
-        return 'stock';
-    }
-
-    if (slug.startsWith('orders')) {
-        return 'orders';
-    }
-
-    if (slug.startsWith('proforma')) {
-        return 'proforma';
-    }
-
-    return 'module';
-}
-
-function preferredColumns(kind: string, columns: ModuleDataColumn[]): ModuleDataColumn[] {
-    const byKind: Record<string, string[]> = {
-        cari: ['cari_kodu', 'cari_adi', 'firma_unvani', 'cari_grup', 'bakiye', 'temsilci_kodu'],
-        stock: ['stok_kodu', 'urun_adi', 'stok_adi', 'model', 'kategori_adi', 'miktar', 'depo', 'raf'],
-        orders: ['siparis_tarihi', 'cari_adi', 'urun_adi', 'kalan_miktar', 'birim_fiyat', 'satir_tutari', 'status'],
-        proforma: ['proforma_no', 'cari_adi', 'status', 'created_at', 'toplam', 'genel_toplam'],
-    };
-    const keys = byKind[kind] ?? [];
-    const preferred = keys
-        .map((key) => columns.find((column) => column.key === key))
-        .filter(Boolean) as ModuleDataColumn[];
-
-    return preferred.length > 0 ? preferred : columns.slice(0, 8);
-}
-
 function PrintBrandHeader({ visible }: { visible: boolean }) {
     if (!visible) {
         return null;
@@ -157,13 +136,12 @@ function ProformaDraftPanel({ slug }: { slug: string }) {
     return (
         <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[1.2fr_0.8fr]">
             <div>
-                <p className="text-xs font-semibold tracking-[0.18em] text-slate-500 uppercase">Proforma Taslağı</p>
+                <p className="text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">Proforma Taslağı</p>
                 <h3 className="mt-2 text-lg font-bold text-slate-950">
                     Cari seçimi ve ürün satırları
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Stok ekranından eklenen ürünler bu akışta proforma satırına dönüştürülecek. Canlı kayıt işlemi için
-                    proforma datasource ve servis endpointi Admin &gt; Veri Kaynakları üzerinden bağlanacak.
+                    Stok ekranından eklenen ürünler proforma satırlarına dönüştürülür. Cari seçimi, fiyat, iskonto ve not alanları yazdırma öncesi kontrol edilir.
                 </p>
                 <div className="mt-4 grid gap-3 md:grid-cols-3">
                     {['Cari Seç', 'Ürün Ekle', 'PDF Önizle'].map((label) => (
@@ -173,12 +151,13 @@ function ProformaDraftPanel({ slug }: { slug: string }) {
                     ))}
                 </div>
             </div>
-            <div className="rounded-2xl bg-slate-950 p-5 text-white">
-                <p className="text-xs font-semibold tracking-[0.18em] text-white/50 uppercase">Toplamlar</p>
+            <div className="rounded-2xl border border-blue-100 bg-blue-50 p-5">
+                <p className="text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">Toplamlar</p>
                 <dl className="mt-4 grid gap-3 text-sm">
                     <div className="flex justify-between"><dt>Ara Toplam</dt><dd>0,00 TL</dd></div>
+                    <div className="flex justify-between"><dt>İskonto</dt><dd>0,00 TL</dd></div>
                     <div className="flex justify-between"><dt>KDV</dt><dd>0,00 TL</dd></div>
-                    <div className="flex justify-between border-t border-white/10 pt-3 text-base font-bold"><dt>Genel Toplam</dt><dd>0,00 TL</dd></div>
+                    <div className="flex justify-between border-t border-blue-200 pt-3 text-base font-bold"><dt>Genel Toplam</dt><dd>0,00 TL</dd></div>
                 </dl>
             </div>
         </section>
@@ -186,7 +165,14 @@ function ProformaDraftPanel({ slug }: { slug: string }) {
 }
 
 function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
-    const kind = moduleKind(page.slug);
+    const kind = moduleKindFromPage(page);
+    const copy = pageCopy(page, kind);
+    const displayPage = {
+        ...page,
+        title: copy.title,
+        description: copy.description,
+        heroEyebrow: copy.eyebrow,
+    };
     const [filters, setFilters] = useState(defaultFilters);
     const [debouncedFilters, setDebouncedFilters] = useState(filters);
     const [data, setData] = useState<ModuleDataState | null>(null);
@@ -213,6 +199,7 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
             .then((response: ModuleDataResponse) => {
                 if (isCurrent) {
                     setData({ ...response, signature });
+                    setError(null);
                 }
             })
             .catch((caught: unknown) => {
@@ -232,16 +219,17 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
     const activeData = data?.signature === signature ? data : null;
     const activeError = error?.signature === signature ? error.message : null;
     const rows = activeData?.rows ?? [];
-    const columns = preferredColumns(kind, activeData?.columns ?? []);
+    const columns = preferredColumns(kind, page, activeData?.columns ?? []);
     const hasRows = rows.length > 0 && columns.length > 0;
     const loading = !activeData && !activeError;
+    const cards = summaryCards(kind, page, rows, cartItems);
 
     const addToCart = (row: Record<string, unknown>) => {
         setCartItems((current) => [
             ...current,
             {
-                stok_kodu: row.stok_kodu ?? row['Stok Kodu'],
-                urun_adi: row.urun_adi ?? row.stok_adi ?? row['Stok Adı'],
+                stok_kodu: valueFrom(row, 'stokKodu'),
+                urun_adi: valueFrom(row, 'urunAdi'),
                 model: row.model ?? row.model_adi,
                 quantity: 1,
                 unit_price: Number(row.birim_fiyat ?? row.fiyat ?? 0),
@@ -254,13 +242,13 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
     const actions = (
         <>
             {kind === 'stock' && (
-                <button type="button" onClick={() => setCartOpen(true)} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950">
+                <button type="button" onClick={() => setCartOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:border-blue-200 hover:bg-blue-100">
                     <Plus className="size-4" />
                     Proforma Sepeti ({cartItems.length})
                 </button>
             )}
             {kind === 'proforma' && (
-                <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950">
+                <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:border-blue-200 hover:bg-blue-100">
                     <FileText className="size-4" />
                     PDF / Yazdır
                 </button>
@@ -269,7 +257,7 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
     );
 
     return (
-        <ModuleShell page={page} badge={activeData?.queryMeta?.notice ?? 'n8n gateway'} actions={actions}>
+        <ModuleShell page={displayPage} badge={hasRows ? 'Canlı veri' : null} actions={actions}>
             <FilterBar
                 filters={filters}
                 setFilters={setFilters}
@@ -281,38 +269,42 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
             <PrintBrandHeader visible={kind === 'cari' || kind === 'proforma'} />
             <ProformaDraftPanel slug={page.slug} />
 
-            <section className="grid gap-3 md:grid-cols-3">
-                <KpiCard label="Kayıt" value={String(rows.length)} hint={activeData?.queryMeta?.dataSource ?? page.slug} />
-                <KpiCard label="Kaynak" value={activeData?.queryMeta?.dataSource ?? '-'} hint="panel.data_sources metadata" />
-                <KpiCard label="Sepet" value={kind === 'stock' ? String(cartItems.length) : '-'} hint={kind === 'stock' ? formatMoney(cartItems.reduce((sum, item) => sum + Number(item.quantity || 1) * Number(item.unit_price || 0), 0)) : 'İlgili modül aksiyonu'} />
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {cards.map((card) => (
+                    <KpiCard key={card.label} label={card.label} value={card.value} hint={card.hint} />
+                ))}
             </section>
 
             <ErrorBanner message={activeError} />
             <LoadingOverlay show={loading} />
-            {!loading && !activeError && !hasRows && <EmptyState title="Canlı veri bulunamadı" description="Veri kaynağı rows alanını boş döndürdü veya gerçek sorgu henüz tanımlı değil." />}
+            {!loading && !activeError && !hasRows && <EmptyState title="Canlı veri bulunamadı" description={friendlyEmptyMessage(kind)} />}
             {hasRows && (
                 <DataTable
                     columns={columns}
                     rows={rows}
                     onRowClick={setSelected}
                     rowActions={kind === 'stock' ? (row) => (
-                        <button type="button" onClick={() => addToCart(row)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white">
+                        <button type="button" onClick={() => addToCart(row)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-800">
                             Ekle
                         </button>
                     ) : undefined}
                 />
             )}
 
-            <DetailDrawer
-                title={String(selected?.cari_adi ?? selected?.urun_adi ?? selected?.proforma_no ?? selected?.stok_kodu ?? 'Kayıt detayı')}
-                item={selected}
-                onClose={() => setSelected(null)}
-                actions={kind === 'cari' ? (
-                    <button type="button" onClick={() => window.print()} className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white">
-                        Ekstre PDF / Yazdır
-                    </button>
-                ) : null}
-            />
+            {kind === 'cari' ? (
+                <CustomerDetailDrawer item={selected} onClose={() => setSelected(null)} />
+            ) : (
+                <DetailDrawer
+                    title={detailTitle(kind, selected)}
+                    item={selected}
+                    onClose={() => setSelected(null)}
+                    actions={kind === 'proforma' ? (
+                        <button type="button" onClick={() => window.print()} className="rounded-xl bg-blue-700 px-4 py-3 text-sm font-semibold text-white">
+                            PDF / Yazdır
+                        </button>
+                    ) : null}
+                />
+            )}
             <ProformaCartDrawer open={cartOpen} items={cartItems} setItems={setCartItems} onClose={() => setCartOpen(false)} />
         </ModuleShell>
     );

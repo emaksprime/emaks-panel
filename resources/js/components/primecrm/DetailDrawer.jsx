@@ -1,6 +1,12 @@
 import { X } from 'lucide-react';
 import { formatCell } from './format';
 
+function labelFor(key) {
+    return String(key)
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (letter) => letter.toLocaleUpperCase('tr-TR'));
+}
+
 export function DetailDrawer({ title, item, onClose, actions }) {
     if (!item) {
         return null;
@@ -20,8 +26,8 @@ export function DetailDrawer({ title, item, onClose, actions }) {
             <div className="mt-5 grid gap-2">
                 {Object.entries(item).slice(0, 24).map(([key, value]) => (
                     <div key={key} className="grid gap-1 rounded-xl border border-slate-100 bg-slate-50 p-3">
-                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">{key.replaceAll('_', ' ')}</span>
-                        <strong className="break-words text-sm font-semibold text-slate-800">{formatCell(value)}</strong>
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">{labelFor(key)}</span>
+                        <strong className="break-words text-sm font-semibold text-slate-800">{formatCell(value, { key, label: labelFor(key) })}</strong>
                     </div>
                 ))}
             </div>
