@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Page;
+use App\Services\PanelAccessService;
 use App\Services\PanelPageDataService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -10,11 +12,23 @@ use RuntimeException;
 
 class PageDataController extends Controller
 {
-    public function __invoke(Request $request, string $code, PanelPageDataService $pageData): JsonResponse
+    public function __invoke(
+        Request $request,
+        string $code,
+        PanelPageDataService $pageData,
+        PanelAccessService $access,
+    ): JsonResponse
     {
         $user = $request->user();
 
         abort_if($user === null, 403);
+
+        $page = Page::query()
+            ->where('code', str_replace('-', '_', $code))
+            ->where('active', true)
+            ->firstOrFail();
+
+        abort_unless($access->userCanAccess($user, $page->resource_code ?? $page->code), 403);
 
         $validated = $request->validate([
             'date_from' => ['nullable', 'date_format:Y-m-d'],

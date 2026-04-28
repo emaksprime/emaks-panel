@@ -97,7 +97,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
 
     public function test_unauthorized_page_and_data_api_are_blocked(): void
     {
-        $user = User::factory()->create(['role_code' => 'stock']);
+        $user = User::factory()->create(['role_code' => 'viewer']);
 
         $this->actingAs($user)->get('/sales/main')->assertForbidden();
         $this->actingAs($user)->postJson('/api/data/sales_main')->assertForbidden();
