@@ -11,7 +11,7 @@ export function SalesPieChart({ chart }) {
         .join(', ');
 
     return (
-        <section className="grid gap-5 rounded-lg border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[260px_1fr]">
+        <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[250px_minmax(0,1fr)]">
             <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
                     {chart?.title}
@@ -21,24 +21,20 @@ export function SalesPieChart({ chart }) {
                     className="mx-auto mt-5 grid aspect-square w-full max-w-[220px] place-items-center rounded-full"
                     style={{ background: `conic-gradient(${segments || '#e2e8f0 0% 100%'})` }}
                 >
-                    <div className="grid size-[58%] place-items-center rounded-full bg-white text-center shadow-inner">
-                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                            Net
-                        </span>
-                    </div>
+                    <div className="size-[58%] rounded-full bg-white shadow-inner" />
                 </div>
             </div>
 
-            <div className="grid content-start gap-3">
+            <div className="grid min-w-0 content-start gap-3">
                 {items.map((item) => (
-                    <div key={item.label} className="grid grid-cols-[12px_1fr_auto] items-center gap-3">
+                    <div key={item.label} className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-slate-100 px-3 py-2">
                         <span className="size-3 rounded-sm" style={{ backgroundColor: item.color }} />
-                        <div>
-                            <p className="font-medium text-slate-900">{item.label}</p>
+                        <div className="min-w-0">
+                            <p className="truncate font-medium text-slate-900" title={item.label}>{item.label}</p>
                             <p className="text-sm text-slate-500">{item.quantityLabel} adet</p>
                         </div>
-                        <div className="text-right">
-                            <p className="font-semibold text-slate-950">{item.amountLabel}</p>
+                        <div className="min-w-[112px] text-right">
+                            <p className="whitespace-nowrap font-semibold text-slate-950">{item.amountLabel}</p>
                             <p className="text-sm text-slate-500">%{item.percentage}</p>
                         </div>
                     </div>

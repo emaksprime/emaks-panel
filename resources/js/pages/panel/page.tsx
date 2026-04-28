@@ -254,13 +254,13 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
     const actions = (
         <>
             {kind === 'stock' && (
-                <button type="button" onClick={() => setCartOpen(true)} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950">
+                <button type="button" onClick={() => setCartOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:border-blue-200 hover:bg-blue-100">
                     <Plus className="size-4" />
                     Proforma Sepeti ({cartItems.length})
                 </button>
             )}
             {kind === 'proforma' && (
-                <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950">
+                <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:border-blue-200 hover:bg-blue-100">
                     <FileText className="size-4" />
                     PDF / Yazdır
                 </button>
@@ -269,7 +269,7 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
     );
 
     return (
-        <ModuleShell page={page} badge={activeData?.queryMeta?.notice ?? 'n8n gateway'} actions={actions}>
+        <ModuleShell page={page} badge={activeData?.queryMeta?.notice ?? 'Canlı veri'} actions={actions}>
             <FilterBar
                 filters={filters}
                 setFilters={setFilters}
@@ -282,21 +282,21 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
             <ProformaDraftPanel slug={page.slug} />
 
             <section className="grid gap-3 md:grid-cols-3">
-                <KpiCard label="Kayıt" value={String(rows.length)} hint={activeData?.queryMeta?.dataSource ?? page.slug} />
-                <KpiCard label="Kaynak" value={activeData?.queryMeta?.dataSource ?? '-'} hint="panel.data_sources metadata" />
-                <KpiCard label="Sepet" value={kind === 'stock' ? String(cartItems.length) : '-'} hint={kind === 'stock' ? formatMoney(cartItems.reduce((sum, item) => sum + Number(item.quantity || 1) * Number(item.unit_price || 0), 0)) : 'İlgili modül aksiyonu'} />
+                <KpiCard label="Kayıt" value={String(rows.length)} hint="Listelenen satır" />
+                <KpiCard label="Veri Kaynağı" value={activeData?.queryMeta?.dataSource ?? '-'} hint="Tanımlı kaynak" />
+                <KpiCard label="Sepet" value={kind === 'stock' ? String(cartItems.length) : '-'} hint={kind === 'stock' ? formatMoney(cartItems.reduce((sum, item) => sum + Number(item.quantity || 1) * Number(item.unit_price || 0), 0)) : 'Modül aksiyonu'} />
             </section>
 
             <ErrorBanner message={activeError} />
             <LoadingOverlay show={loading} />
-            {!loading && !activeError && !hasRows && <EmptyState title="Canlı veri bulunamadı" description="Veri kaynağı rows alanını boş döndürdü veya gerçek sorgu henüz tanımlı değil." />}
+            {!loading && !activeError && !hasRows && <EmptyState title="Canlı veri bulunamadı" description="Seçili filtreler için kayıt bulunamadı. Filtreleri değiştirip tekrar deneyebilirsiniz." />}
             {hasRows && (
                 <DataTable
                     columns={columns}
                     rows={rows}
                     onRowClick={setSelected}
                     rowActions={kind === 'stock' ? (row) => (
-                        <button type="button" onClick={() => addToCart(row)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white">
+                        <button type="button" onClick={() => addToCart(row)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-800">
                             Ekle
                         </button>
                     ) : undefined}

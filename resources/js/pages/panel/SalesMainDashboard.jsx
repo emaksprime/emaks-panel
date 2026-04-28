@@ -8,7 +8,7 @@ import { KpiCards } from '@/components/sales-main/KpiCards.jsx';
 import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 
-export default function SalesMainDashboard({ salesMainConfig, salesMainData, integration }) {
+export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const [config] = useState(salesMainConfig);
     const today = new Date().toISOString().slice(0, 10);
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
@@ -64,56 +64,68 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData, int
     return (
         <>
             <Head title="Satış Yönetimi" />
-            <main className="grid gap-5 p-4 md:p-6">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+            <main className="grid gap-5 bg-[#f3f7fb] p-4 md:p-6">
+                <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
-                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                            {config?.page?.routePath}
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">
+                            Emaks Prime
                         </p>
-                        <h1 className="mt-1 text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">
+                        <h1 className="mt-2 text-3xl font-semibold text-slate-950 [font-family:var(--font-display)]">
                             {config?.page?.title}
                         </h1>
-                        <p className="mt-1 max-w-3xl text-sm text-slate-600">
+                        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                             {config?.page?.description}
                         </p>
-                        <div className="mt-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-                            {data?.queryMeta?.notice ?? 'Önizleme verisi - canlı veri bağlı değil'}
-                        </div>
+                        {data?.queryMeta?.notice && (
+                            <div className="mt-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                                {data.queryMeta.notice}
+                            </div>
+                        )}
                     </div>
                     <button
                         type="button"
                         onClick={() => updateFilters({ bypass_cache: !filters.bypass_cache })}
-                        className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm"
+                        className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-white px-4 py-3 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50"
                     >
                         <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
                         Yenile
                     </button>
                 </div>
 
-                <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                        <ManagementScopeFilter
-                            scopes={config?.managementScopes ?? []}
-                            activeKey={filters.scope_key}
-                            onChange={updateFilters}
-                            loading={loading}
-                        />
-                        <div className="flex rounded-md border border-slate-200 bg-slate-50 p-1">
-                            {(config?.detailModes ?? []).map((mode) => (
-                                <button
-                                    key={mode.key}
-                                    type="button"
-                                    onClick={() => updateFilters({ detail_type: mode.key })}
-                                    className={[
-                                        'rounded px-3 py-2 text-sm font-semibold transition',
-                                        filters.detail_type === mode.key
-                                            ? 'bg-white text-slate-950 shadow-sm'
-                                            : 'text-slate-500 hover:text-slate-900',
-                                    ].join(' ')}
-                                >
-                                    {mode.label}
-                                </button>
-                            ))}
+                <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div className="grid gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                Kapsam
+                            </span>
+                            <ManagementScopeFilter
+                                scopes={config?.managementScopes ?? []}
+                                activeKey={filters.scope_key}
+                                onChange={updateFilters}
+                                loading={loading}
+                            />
+                        </div>
+                        <div className="grid gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                Detay Tipi
+                            </span>
+                            <div className="flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+                                {(config?.detailModes ?? []).map((mode) => (
+                                    <button
+                                        key={mode.key}
+                                        type="button"
+                                        onClick={() => updateFilters({ detail_type: mode.key })}
+                                        className={[
+                                            'rounded-lg px-3 py-2 text-sm font-semibold transition',
+                                            filters.detail_type === mode.key
+                                                ? 'bg-white text-blue-700 shadow-sm'
+                                                : 'text-slate-500 hover:text-slate-900',
+                                        ].join(' ')}
+                                    >
+                                        {mode.label}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                     </div>
                     <DateRangeFilter
@@ -129,37 +141,9 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData, int
                 </section>
 
                 {error && (
-                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
+                    <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
                         {error}
                     </div>
-                )}
-
-                {integration && (
-                    <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[1fr_auto] lg:items-center">
-                        <div>
-                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                Harici Servis Entegrasyonu
-                            </p>
-                            <h2 className="mt-2 text-lg font-semibold text-slate-950">PrimeCRM bağlantısı</h2>
-                            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                                {integration.message} Satış ekranı Laravel içine gömülmedi; Coolify üzerindeki ayrı PrimeCRM servisine yönlendirme ve sonraki fazdaki API köprüsü için hazırlandı.
-                            </p>
-                        </div>
-                        {integration.enabled && integration.externalUrl ? (
-                            <a
-                                href={integration.externalUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex justify-center rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white"
-                            >
-                                PrimeCRM ekranını aç
-                            </a>
-                        ) : (
-                            <span className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
-                                {integration.externalUrl ? 'PRIMECRM_ENABLED bekleniyor' : 'PRIMECRM_BASE_URL bekleniyor'}
-                            </span>
-                        )}
-                    </section>
                 )}
 
                 <KpiCards items={data?.kpis ?? []} />

@@ -5,11 +5,7 @@ export function ErrorBanner({ message }) {
 
     return (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">
-            Veri alınamadı. Lütfen filtreleri veya veri kaynağını kontrol edin.
-            <details className="mt-2 font-normal">
-                <summary className="cursor-pointer font-semibold">Teknik detay</summary>
-                <pre className="mt-2 whitespace-pre-wrap text-xs">{message}</pre>
-            </details>
+            Veri alınamadı. Lütfen filtreleri kontrol edip tekrar deneyin.
         </div>
     );
 }
