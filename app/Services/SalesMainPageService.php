@@ -23,14 +23,16 @@ class SalesMainPageService
     /**
      * @return array<string, mixed>
      */
-    public function config(?User $user): array
+    public function config(?User $user, string $pageCode = 'sales_main'): array
     {
-        $page = $this->page();
+        $page = $this->page($pageCode);
         $pageConfig = $this->pageConfig();
         $layout = $pageConfig->layout_json ?? [];
         $filters = $pageConfig->filters_json ?? [];
         $scopes = $this->visibleScopes($user, collect($filters['managementScopes'] ?? []));
-        $scope = $scopes->first();
+        $defaultScopeKey = $this->defaultScopeKeyForPage($pageCode);
+        $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $defaultScopeKey)
+            ?? $scopes->first();
         $source = $this->sourceForScope($scope ?? ['key' => 'all']) ?? $pageConfig->dataSource ?? $this->source();
 
         return [
@@ -43,7 +45,13 @@ class SalesMainPageService
             'topNav' => $layout['topNav'] ?? [],
             'grains' => $filters['grains'] ?? [],
             'detailModes' => $filters['detailModes'] ?? [],
-            'managementScopes' => $scopes->values()->all(),
+            'managementScopes' => $scopes
+                ->values()
+                ->map(fn (array $scope) => [
+                    ...$scope,
+                    'key' => $this->normalizeScopeKey((string) ($scope['key'] ?? '')),
+                ])
+                ->all(),
             'defaults' => [
                 'grain' => $filters['defaults']['grain'] ?? 'week',
                 'detailType' => $filters['defaults']['detailType'] ?? 'cari',
@@ -324,7 +332,9 @@ class SalesMainPageService
 
     private function quantity(float $value): string
     {
-        return number_format($value, 2, ',', '.');
+        $decimals = abs($value - round($value)) < 0.00001 ? 0 : 2;
+
+        return number_format($value, $decimals, ',', '.');
     }
 
     private function palette(int $index): string
@@ -404,9 +414,9 @@ class SalesMainPageService
         ];
     }
 
-    private function page(): Page
+    private function page(string $pageCode = 'sales_main'): Page
     {
-        return Page::query()->where('code', 'sales_main')->firstOrFail();
+        return Page::query()->where('code', $pageCode)->firstOrFail();
     }
 
     private function pageConfig(): PageConfig
@@ -431,6 +441,15 @@ class SalesMainPageService
         };
 
         return DataSource::query()->where('code', $code)->where('active', true)->first();
+    }
+
+    private function defaultScopeKeyForPage(string $pageCode): string
+    {
+        return match ($pageCode) {
+            'sales_online' => 'online_perakende',
+            'sales_bayi' => 'bayi_proje',
+            default => 'all',
+        };
     }
 
     private function usesN8nGateway(DataSource $source): bool

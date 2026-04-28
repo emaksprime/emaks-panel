@@ -18,11 +18,14 @@ const moneyFormatter = new Intl.NumberFormat('tr-TR', {
 });
 
 const numberFormatter = new Intl.NumberFormat('tr-TR', {
-    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
 });
 
-function parseNumeric(value) {
+const quantityFormatter = new Intl.NumberFormat('tr-TR', {
+    maximumFractionDigits: 2,
+});
+
+export function parseNumeric(value) {
     if (value === null || value === undefined || value === '') {
         return null;
     }
@@ -148,7 +151,12 @@ export function isMoneyColumn(column) {
 
     const value = normalizedColumn(column);
 
-    return ['tutar', 'fiyat', 'toplam', 'bakiye', 'ciro', 'borç', 'borc', 'alacak', 'iskonto', 'kdv', 'risk'].some((token) => value.includes(token));
+    if (['miktar', 'adet', 'qty', 'quantity', 'stok'].some((token) => value.includes(token))) {
+        return false;
+    }
+
+    return ['tutar', 'fiyat', 'bakiye', 'ciro', 'borç', 'borc', 'alacak', 'iskonto', 'kdv', 'risk', 'genel_toplam', 'ara_toplam'].some((token) => value.includes(token))
+        || (value.includes('toplam') && !['miktar', 'adet', 'stok'].some((token) => value.includes(token)));
 }
 
 export function isNumberColumn(column) {
@@ -179,6 +187,12 @@ export function formatNumber(value) {
 
 export function formatNumberTR(value) {
     return formatNumber(value);
+}
+
+export function formatQuantity(value) {
+    const parsed = parseNumeric(value);
+
+    return parsed === null ? '-' : quantityFormatter.format(parsed);
 }
 
 export function formatPercent(value) {
@@ -225,7 +239,7 @@ export function formatCell(value, column = null) {
     }
 
     if (column && isNumberColumn(column)) {
-        return formatNumber(value);
+        return formatQuantity(value);
     }
 
     if (typeof value === 'object') {

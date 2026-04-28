@@ -1,0 +1,183 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Page;
+use App\Models\PageConfig;
+use App\Services\SalesMainPageService;
+use Database\Seeders\PanelDataSourcesSeeder;
+use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
+use Database\Seeders\PanelMetadataSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\TestCase;
+
+class PanelModuleDataUiHotfixTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->seed(PanelMetadataSeeder::class);
+        $this->seed(PanelDataSourcesSeeder::class);
+        $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+    }
+
+    public function test_module_pages_use_expected_datasources_and_sales_dashboard_component(): void
+    {
+        $expectedSources = [
+            'sales_online' => 'sales_online_perakende_detail',
+            'sales_bayi' => 'sales_bayi_proje_detail',
+            'stock' => 'stock_dashboard',
+            'orders_alinan' => 'orders_alinan',
+            'orders_verilen' => 'orders_verilen',
+            'cari' => 'customers_list',
+            'cari_balance' => 'customers_balance',
+        ];
+
+        foreach ($expectedSources as $pageCode => $sourceCode) {
+            $config = PageConfig::query()->with('dataSource')->where('page_code', $pageCode)->firstOrFail();
+
+            $this->assertSame($sourceCode, $config->dataSource?->code, "{$pageCode} yanlış veri kaynağına bağlı.");
+        }
+
+        $this->assertSame('panel/sales-main', Page::query()->where('code', 'sales_online')->value('component'));
+        $this->assertSame('panel/sales-main', Page::query()->where('code', 'sales_bayi')->value('component'));
+    }
+
+    public function test_stock_warehouse_is_hidden_from_user_navigation_and_tabs(): void
+    {
+        $stockWarehouse = Page::query()->where('code', 'stock_warehouse')->firstOrFail();
+
+        $this->assertFalse((bool) DB::table('panel.page_menu')->where('page_id', $stockWarehouse->id)->value('is_visible'));
+
+        $stockLayout = json_encode(PageConfig::query()->where('page_code', 'stock')->firstOrFail()->layout_json, JSON_UNESCAPED_UNICODE);
+
+        $this->assertStringNotContainsString('/stock/warehouse', (string) $stockLayout);
+    }
+
+    public function test_frontend_format_helpers_keep_quantity_and_code_columns_clean(): void
+    {
+        [$exitCode, $output, $error] = $this->runNodeModule(<<<'JS'
+            import { formatCell } from './resources/js/components/primecrm/format.js';
+
+            console.log(JSON.stringify({
+                toplam_miktar: formatCell(6, { key: 'toplam_miktar', label: 'Miktar' }),
+                adet: formatCell(100, { key: 'adet', label: 'Adet' }),
+                adet_kusurat: formatCell('1,5', { key: 'adet', label: 'Adet' }),
+                ciro: formatCell(100, { key: 'ciro', label: 'Ciro' }),
+                evrak_no: formatCell(12345, { key: 'evrak_no', label: 'Evrak No' }),
+                siparis_no: formatCell(12345, { key: 'siparis_no', label: 'Sipariş No' }),
+                stok_kodu: formatCell('STK-1', { key: 'stok_kodu', label: 'Stok Kodu' }),
+            }));
+        JS);
+
+        $this->assertSame(0, $exitCode, $error);
+
+        $results = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('6', $results['toplam_miktar']);
+        $this->assertSame('100', $results['adet']);
+        $this->assertSame('1,5', $results['adet_kusurat']);
+        $this->assertSame('100,00 TL', $results['ciro']);
+        $this->assertSame('12345', $results['evrak_no']);
+        $this->assertSame('12345', $results['siparis_no']);
+        $this->assertSame('STK-1', $results['stok_kodu']);
+    }
+
+    public function test_stock_search_and_code_toggle_contract_exists_in_frontend(): void
+    {
+        $moduleData = file_get_contents(resource_path('js/components/primecrm/module-data.js')) ?: '';
+        $panelPage = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
+
+        $this->assertStringContainsString('filterRowsForSearch', $moduleData);
+        $this->assertStringContainsString('normalizeSearchText', $moduleData);
+        $this->assertStringContainsString("'stokKodu'", $moduleData);
+        $this->assertStringContainsString("'urunAdi'", $moduleData);
+        $this->assertStringContainsString("'kategori'", $moduleData);
+        $this->assertStringContainsString('Stok Kodu:', $panelPage);
+        $this->assertStringContainsString('Eye', $panelPage);
+    }
+
+    public function test_sales_online_and_bayi_use_processed_dashboard_config(): void
+    {
+        $service = app(SalesMainPageService::class);
+
+        $online = $service->config(null, 'sales_online');
+        $bayi = $service->config(null, 'sales_bayi');
+
+        $this->assertSame('sales_online_perakende_detail', $online['dataSource']['slug']);
+        $this->assertSame('online_perakende', $online['defaults']['scopeKey']);
+        $this->assertSame('panel/sales-main', $online['page']['component']);
+
+        $this->assertSame('sales_bayi_proje_detail', $bayi['dataSource']['slug']);
+        $this->assertSame('bayi_proje', $bayi['defaults']['scopeKey']);
+        $this->assertSame('panel/sales-main', $bayi['page']['component']);
+    }
+
+    public function test_user_facing_metadata_uses_customer_terminology(): void
+    {
+        $this->assertSame('Müşteri Yönetimi', Page::query()->where('code', 'cari')->value('name'));
+        $this->assertSame('Müşteri Bakiyesi', Page::query()->where('code', 'cari_balance')->value('name'));
+
+        $labels = DB::table('panel.page_menu')->pluck('label')->implode(' ');
+
+        $this->assertStringContainsString('Müşteri Listesi', $labels);
+        $this->assertStringNotContainsString('Cari Yönetimi', $labels);
+    }
+
+    public function test_sales_and_module_frontend_do_not_expose_raw_technical_columns(): void
+    {
+        $salesTable = file_get_contents(resource_path('js/components/sales-main/data-table/DataTable.jsx')) ?: '';
+        $salesBreakdown = file_get_contents(resource_path('js/components/sales-main/SalesBreakdown.jsx')) ?: '';
+        $moduleData = file_get_contents(resource_path('js/components/primecrm/module-data.js')) ?: '';
+        $moduleLayout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
+
+        foreach (['period_label', 'satir_tipi', 'cari_grup_adi', 'cari_kodu', 'satir_adi', 'parent_key', 'siralama_1', 'siralama_2'] as $technicalColumn) {
+            $this->assertStringNotContainsString($technicalColumn, $salesTable);
+            $this->assertStringNotContainsString($technicalColumn, $salesBreakdown);
+        }
+
+        $this->assertStringContainsString("['urunAdi'", $moduleData);
+        $this->assertStringContainsString('Ürün / Model', $moduleData);
+        $this->assertStringContainsString("['miktar', 'Miktar']", $moduleData);
+        $this->assertStringNotContainsString('/stock/warehouse', $moduleLayout);
+        $this->assertStringContainsString('Operasyon Paneli', file_get_contents(resource_path('js/components/app-logo.tsx')) ?: '');
+    }
+
+    /**
+     * @return array{0: int, 1: string, 2: string}
+     */
+    private function runNodeModule(string $script): array
+    {
+        $process = proc_open(
+            'node --input-type=module',
+            [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            base_path(),
+        );
+
+        if (! is_resource($process)) {
+            $this->fail('Node process başlatılamadı.');
+        }
+
+        fwrite($pipes[0], $script);
+        fclose($pipes[0]);
+
+        $output = stream_get_contents($pipes[1]) ?: '';
+        fclose($pipes[1]);
+
+        $error = stream_get_contents($pipes[2]) ?: '';
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($process);
+
+        return [$exitCode, trim($output), trim($error)];
+    }
+}

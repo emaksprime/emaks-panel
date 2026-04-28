@@ -104,16 +104,16 @@ class PanelPageController extends Controller
             'integration' => $this->primeCrm->forPageCode($page->code),
         ];
 
-        if ($page->code === 'sales_main') {
+        if (in_array($page->code, ['sales_main', 'sales_online', 'sales_bayi'], true)) {
             try {
-                $sharedProps['salesMainConfig'] = $this->salesMain->config($user);
+                $sharedProps['salesMainConfig'] = $this->salesMain->config($user, $page->code);
             } catch (Throwable $exception) {
                 report($exception);
                 $sharedProps['salesMainConfig'] = $this->fallbackSalesMainConfig();
                 $sharedProps['salesMainError'] = $exception->getMessage();
             }
 
-            $sharedProps['salesMainData'] = $this->emptySalesMainDataset('Veri client-side API ile yuklenecek.');
+            $sharedProps['salesMainData'] = $this->emptySalesMainDataset('Veri güvenli API ile yüklenecek.');
         }
 
         if ($page->code === 'cari_bilgi') {
@@ -121,7 +121,11 @@ class PanelPageController extends Controller
             $sharedProps['cariBilgiData'] = $this->cariBilgi->dataset($user);
         }
 
-        return Inertia::render($page->component, $sharedProps);
+        $component = in_array($page->code, ['sales_main', 'sales_online', 'sales_bayi'], true)
+            ? 'panel/sales-main'
+            : $page->component;
+
+        return Inertia::render($component, $sharedProps);
     }
 
     private function canonicalPanelPath(string $path): string
@@ -165,8 +169,8 @@ class PanelPageController extends Controller
                 ['key' => 'year', 'label' => 'Yıllık'],
             ],
             'detailModes' => [
-                ['key' => 'cari', 'label' => 'Cari'],
-                ['key' => 'urun', 'label' => 'Ürün'],
+                ['key' => 'cari', 'label' => 'Müşteri Satış Detayı'],
+                ['key' => 'urun', 'label' => 'Ürün Satış Detayı'],
             ],
             'managementScopes' => [
                 ['key' => 'all', 'label' => 'Tümü', 'note' => 'Tüm satış kapsamı'],
@@ -214,7 +218,7 @@ class PanelPageController extends Controller
                 ['label' => 'Aktif Kapsam', 'value' => 'Tümü', 'raw' => 'all'],
             ],
             'chart' => [
-                'title' => 'Cari Grup Ciro Dağılımı',
+                'title' => 'Satış Dağılımı',
                 'subtitle' => 'Canlı veri alınamadı.',
                 'totalNet' => 0,
                 'konsinyeAmount' => 0,
@@ -222,7 +226,7 @@ class PanelPageController extends Controller
             ],
             'breakdown' => [
                 'mode' => 'cari',
-                'title' => 'Cari Grup -> Cari -> Ürün Kırılımı',
+                'title' => 'Satış Detayı',
                 'groups' => [],
             ],
             'table' => [
