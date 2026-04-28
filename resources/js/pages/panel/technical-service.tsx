@@ -244,7 +244,7 @@ export default function TechnicalService() {
     <>
       <Head title="Teknik Servis" />
 
-      <div className="space-y-6 px-4 py-6 md:px-6 lg:px-8">
+      <div className="mx-auto w-full max-w-[2200px] space-y-6 px-4 py-6 md:px-6 lg:px-12">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <Heading
@@ -375,7 +375,7 @@ export default function TechnicalService() {
           onReset={() => setFilters(initialFilters)}
         />
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
           <div className="space-y-4">
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -396,7 +396,9 @@ export default function TechnicalService() {
             />
           </div>
 
-          <ServiceRequestDetails request={selectedRequest} />
+          <div className="xl:self-start xl:sticky xl:top-28 xl:max-w-[400px]">
+            <ServiceRequestDetails request={selectedRequest} />
+          </div>
         </div>
       </div>
     </>

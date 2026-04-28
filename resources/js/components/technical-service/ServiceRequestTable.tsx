@@ -58,21 +58,21 @@ export function ServiceRequestTable({
   return (
     <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+        <table className="table-auto min-w-[1040px] divide-y divide-slate-200 text-left text-sm">
           <thead className="bg-slate-50 text-slate-500">
             <tr>
-              <th className="px-4 py-3 font-semibold">MRN</th>
-              <th className="px-4 py-3 font-semibold">Durum</th>
-              <th className="px-4 py-3 font-semibold">Öncelik</th>
-              <th className="px-4 py-3 font-semibold">Servis Tipi</th>
-              <th className="px-4 py-3 font-semibold">Müşteri</th>
-              <th className="px-4 py-3 font-semibold">Telefon</th>
-              <th className="px-4 py-3 font-semibold">İl / İlçe</th>
-              <th className="px-4 py-3 font-semibold">Ürün</th>
-              <th className="px-4 py-3 font-semibold">Seri No</th>
-              <th className="px-4 py-3 font-semibold">Usta / Çilingir</th>
-              <th className="px-4 py-3 font-semibold">Randevu</th>
-              <th className="px-4 py-3 font-semibold">SLA</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">MRN</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Durum</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Öncelik</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Servis Tipi</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Müşteri</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Telefon</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">İl / İlçe</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Ürün</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Seri No</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Usta / Çilingir</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">Randevu</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em]">SLA</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
@@ -87,22 +87,22 @@ export function ServiceRequestTable({
                   }
                   onClick={() => onSelect(request)}
                 >
-                  <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-700">{request.mrn}</td>
-                  <td className="px-4 py-3">
+                  <td className="min-w-[100px] px-3 py-3 font-mono text-xs font-semibold text-slate-700 whitespace-nowrap">{request.mrn}</td>
+                  <td className="min-w-[80px] px-3 py-3 whitespace-nowrap">
                     <Badge variant={statusVariant(request.status)}>{request.status}</Badge>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="min-w-[80px] px-3 py-3 whitespace-nowrap">
                     <Badge variant={priorityVariant(request.priority)}>{request.priority}</Badge>
                   </td>
-                  <td className="px-4 py-3 text-slate-700">{request.serviceType}</td>
-                  <td className="px-4 py-3 text-slate-900">{request.customer}</td>
-                  <td className="px-4 py-3 text-slate-700">{request.phone}</td>
-                  <td className="px-4 py-3 text-slate-700">{request.city} / {request.district}</td>
-                  <td className="px-4 py-3 text-slate-700">{request.product}</td>
-                  <td className="px-4 py-3 text-slate-700">{request.serialNumber}</td>
-                  <td className="px-4 py-3 text-slate-700">{request.technician}</td>
-                  <td className="px-4 py-3 text-slate-700">{request.appointment}</td>
-                  <td className="px-4 py-3">
+                  <td className="min-w-[100px] px-3 py-3 text-slate-700 whitespace-nowrap">{request.serviceType}</td>
+                  <td className="min-w-[170px] px-3 py-3 text-slate-900 whitespace-nowrap truncate max-w-[170px]">{request.customer}</td>
+                  <td className="min-w-[120px] px-3 py-3 text-slate-700 whitespace-nowrap">{request.phone}</td>
+                  <td className="min-w-[120px] px-3 py-3 text-slate-700 whitespace-nowrap">{request.city} / {request.district}</td>
+                  <td className="min-w-[140px] px-3 py-3 text-slate-700 whitespace-nowrap truncate max-w-[140px]">{request.product}</td>
+                  <td className="min-w-[110px] px-3 py-3 text-slate-700 whitespace-nowrap">{request.serialNumber}</td>
+                  <td className="min-w-[130px] px-3 py-3 text-slate-700 whitespace-nowrap">{request.technician}</td>
+                  <td className="min-w-[140px] px-3 py-3 text-slate-700 whitespace-nowrap">{request.appointment}</td>
+                  <td className="min-w-[120px] px-3 py-3">
                     <div className="flex flex-col gap-1 text-slate-700">
                       <span>{request.sla}</span>
                       <Badge variant={riskVariant(request.riskLevel)}>{request.riskLevel}</Badge>
