@@ -70,6 +70,60 @@ class PanelPageDataService
     }
 
     /**
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    public function datasetForSource(User $user, string $sourceCode, string $resourceCode, array $input = []): array
+    {
+        if (! $this->access->userCanAccess($user, $resourceCode)) {
+            abort(403);
+        }
+
+        $source = DataSource::query()
+            ->where('code', str_replace('-', '_', $sourceCode))
+            ->where('active', true)
+            ->firstOrFail();
+
+        $page = new Page([
+            'code' => $source->code,
+            'name' => $source->name,
+            'route' => '/api/data/'.$source->code,
+            'resource_code' => $resourceCode,
+        ]);
+
+        $filters = $this->normalizeFilters($input);
+
+        if ($source->db_type === 'n8n_json' && trim((string) $source->query_template) === '') {
+            return $this->emptyDataset($page, $filters, $this->missingQueryMessage($page));
+        }
+
+        $payload = $this->payloadFor($source, $filters, $user);
+        $result = $this->dataSources->execute($source, $payload);
+        $rows = $this->rowsFrom($result);
+
+        return [
+            'page' => [
+                'code' => $page->code,
+                'title' => $page->name,
+                'routePath' => $page->route,
+            ],
+            'filters' => $filters,
+            'columns' => $this->columnsFor($rows),
+            'rows' => $rows,
+            'queryMeta' => [
+                'dataSource' => $source->code,
+                'driver' => $source->db_type,
+                'mode' => $source->db_type === 'n8n_json' ? 'live' : $source->db_type,
+                'notice' => $rows === []
+                    ? 'Seçili filtrelerde kayıt bulunamadı.'
+                    : 'Canlı veri alındı.',
+                'gatewayMeta' => $result['meta'] ?? null,
+                'gatewayRequest' => $result['request'] ?? null,
+            ],
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $filters
      * @return array<string, mixed>
      */

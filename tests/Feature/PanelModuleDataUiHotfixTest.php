@@ -4,12 +4,14 @@ namespace Tests\Feature;
 
 use App\Models\Page;
 use App\Models\PageConfig;
+use App\Models\User;
 use App\Services\SalesMainPageService;
 use Database\Seeders\PanelDataSourcesSeeder;
 use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class PanelModuleDataUiHotfixTest extends TestCase
@@ -126,6 +128,51 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertStringContainsString('Müşteri Listesi', $labels);
         $this->assertStringNotContainsString('Cari Yönetimi', $labels);
+    }
+
+    public function test_customer_pages_and_drawer_use_customer_datasources(): void
+    {
+        $this->assertSame(
+            'customers_list',
+            PageConfig::query()->with('dataSource')->where('page_code', 'cari')->firstOrFail()->dataSource?->code,
+        );
+        $this->assertSame(
+            'customers_balance',
+            PageConfig::query()->with('dataSource')->where('page_code', 'cari_balance')->firstOrFail()->dataSource?->code,
+        );
+
+        $drawer = file_get_contents(resource_path('js/components/primecrm/CustomerDetailDrawer.jsx')) ?: '';
+
+        $this->assertStringContainsString('Genel Bilgi', $drawer);
+        $this->assertStringContainsString('Bakiye', $drawer);
+        $this->assertStringContainsString('Ekstre', $drawer);
+        $this->assertStringContainsString('/api/data/customer_detail', $drawer);
+        $this->assertStringContainsString('/api/data/customer_statement', $drawer);
+        $this->assertStringNotContainsString('Evraklar', $drawer);
+    }
+
+    public function test_customer_datasource_codes_can_be_called_without_page_records(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['cari_kodu' => 'M-1', 'cari_adi' => 'Test MÃ¼ÅŸteri'],
+                ],
+            ]),
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'customer']);
+
+        $this->actingAs($user)
+            ->postJson('/api/data/customer_detail', ['customer_code' => 'M-1'])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.dataSource', 'customer_detail');
+
+        $this->actingAs($user)
+            ->postJson('/api/data/customer_statement', ['customer_code' => 'M-1'])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.dataSource', 'customer_statement');
     }
 
     public function test_sales_and_module_frontend_do_not_expose_raw_technical_columns(): void
