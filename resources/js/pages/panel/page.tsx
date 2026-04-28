@@ -11,12 +11,15 @@ import { ProformaCartDrawer } from '@/components/primecrm/ProformaCartDrawer.jsx
 import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
 import {
     detailTitle,
+    filterRowsBySearch,
     friendlyEmptyMessage,
     moduleKindFromPage,
     pageCopy,
     preferredColumns,
     summaryCards,
+    translateModuleTabs,
     valueFrom,
+    visibleRows,
 } from '@/components/primecrm/module-data.js';
 import { apiRequest } from '@/lib/api';
 import { panelIcon } from '@/lib/panel-icons';
@@ -121,7 +124,7 @@ function PrintBrandHeader({ visible }: { visible: boolean }) {
             <img src="/assets/primecrm/emaks-prime-pdf-logo.jpg" alt="Emaks Prime" className="h-14 w-auto object-contain" />
             <div className="text-center">
                 <p className="text-xs font-semibold tracking-[0.2em] text-slate-500 uppercase">Emaks Prime</p>
-                <h2 className="text-xl font-bold text-slate-950">Cari / Proforma Çıktısı</h2>
+                <h2 className="text-xl font-bold text-slate-950">Müşteri / Proforma Çıktısı</h2>
             </div>
             <img src="/assets/primecrm/philips-logo.png" alt="Philips" className="h-10 w-auto object-contain" />
         </section>
@@ -138,13 +141,13 @@ function ProformaDraftPanel({ slug }: { slug: string }) {
             <div>
                 <p className="text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">Proforma Taslağı</p>
                 <h3 className="mt-2 text-lg font-bold text-slate-950">
-                    Cari seçimi ve ürün satırları
+                    Müşteri seçimi ve ürün satırları
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Stok ekranından eklenen ürünler proforma satırlarına dönüştürülür. Cari seçimi, fiyat, iskonto ve not alanları yazdırma öncesi kontrol edilir.
+                    Stok ekranından eklenen ürünler proforma satırlarına dönüştürülür. Müşteri seçimi, fiyat, iskonto ve not alanları yazdırma öncesi kontrol edilir.
                 </p>
                 <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    {['Cari Seç', 'Ürün Ekle', 'PDF Önizle'].map((label) => (
+                    {['Müşteri Seç', 'Ürün Ekle', 'PDF Önizle'].map((label) => (
                         <button key={label} type="button" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
                             {label}
                         </button>
@@ -172,6 +175,7 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
         title: copy.title,
         description: copy.description,
         heroEyebrow: copy.eyebrow,
+        moduleTabs: translateModuleTabs(page.moduleTabs ?? []),
     };
     const [filters, setFilters] = useState(defaultFilters);
     const [debouncedFilters, setDebouncedFilters] = useState(filters);
@@ -218,7 +222,8 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
 
     const activeData = data?.signature === signature ? data : null;
     const activeError = error?.signature === signature ? error.message : null;
-    const rows = activeData?.rows ?? [];
+    const rawRows = visibleRows(activeData?.rows ?? []);
+    const rows = filterRowsBySearch(kind, rawRows, filters.search);
     const columns = preferredColumns(kind, page, activeData?.columns ?? []);
     const hasRows = rows.length > 0 && columns.length > 0;
     const loading = !activeData && !activeError;

@@ -19,6 +19,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
         grain: salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
         detail_type: salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
         scope_key: salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
+        rep_code: salesMainData?.scope?.effectiveRepresentativeCode ?? null,
         bypass_cache: false,
     }));
     const [error, setError] = useState(null);
@@ -78,11 +79,6 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                             {pageDescription}
                         </p>
-                        {data?.queryMeta?.notice && (
-                            <div className="mt-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-                                {data.queryMeta.notice}
-                            </div>
-                        )}
                     </div>
                     <button
                         type="button"
@@ -150,10 +146,8 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
                 <KpiCards items={data?.kpis ?? []} />
 
-                <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                    <SalesPieChart chart={data?.chart} />
-                    <SalesBreakdown breakdown={data?.breakdown} table={data?.table} />
-                </div>
+                <SalesPieChart chart={data?.chart} />
+                <SalesBreakdown breakdown={data?.breakdown} table={data?.table} />
             </main>
         </>
     );

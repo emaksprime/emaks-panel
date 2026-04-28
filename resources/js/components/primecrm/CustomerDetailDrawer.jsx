@@ -31,7 +31,7 @@ export function CustomerDetailDrawer({ item, onClose }) {
         return null;
     }
 
-    const title = valueFrom(item, 'cariAdi') ?? valueFrom(item, 'cariKodu') ?? 'Cari detayı';
+    const title = valueFrom(item, 'cariAdi') ?? valueFrom(item, 'cariKodu') ?? 'Müşteri detayı';
     const balance = numericValue(valueFrom(item, 'bakiye'));
     const debt = numericValue(valueFrom(item, 'borc'));
     const credit = numericValue(valueFrom(item, 'alacak'));
@@ -40,14 +40,14 @@ export function CustomerDetailDrawer({ item, onClose }) {
         <aside className="fixed inset-0 z-50 overflow-y-auto border-l border-slate-200 bg-white p-4 shadow-2xl sm:inset-y-0 sm:left-auto sm:w-full sm:max-w-2xl sm:p-6">
             <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">Cari Detay</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">Müşteri Detayı</p>
                     <h2 className="mt-1 truncate text-2xl font-semibold text-slate-950" title={String(title)}>{title}</h2>
-                    <p className="mt-1 text-sm text-slate-500">{formatCell(valueFrom(item, 'cariKodu'), { key: 'cari_kodu', label: 'Cari Kodu' })}</p>
+                    <p className="mt-1 text-sm text-slate-500">{formatCell(valueFrom(item, 'cariKodu'), { key: 'cari_kodu', label: 'Müşteri Kodu' })}</p>
                 </div>
                 <button
                     type="button"
                     onClick={onClose}
-                    aria-label="Cari detay panelini kapat"
+                    aria-label="Müşteri detay panelini kapat"
                     className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 shadow-sm transition hover:bg-slate-50"
                 >
                     <X className="size-4" />
@@ -87,7 +87,7 @@ export function CustomerDetailDrawer({ item, onClose }) {
                 <div>
                     <h3 className="font-semibold text-slate-950">Son hareketler ve evraklar</h3>
                     <p className="mt-1 text-sm leading-6 text-slate-600">
-                        Detay veri kaynağı henüz tanımlı değil. Satırdaki temel cari bilgileri görüntüleniyor.
+                        Detay veri kaynağı henüz tanımlı değil. Satırdaki temel müşteri bilgileri görüntüleniyor.
                     </p>
                 </div>
                 <div className="flex flex-wrap gap-2">

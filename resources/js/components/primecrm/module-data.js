@@ -37,6 +37,8 @@ const aliases = {
     createdAt: ['created_at', 'tarih', 'Tarih'],
 };
 
+const technicalColumnTokens = ['message', 'query', 'datasource', 'gateway', 'metadata', 'raw_json', 'rows'];
+
 export function valueFrom(row, key) {
     const keys = aliases[key] ?? [key];
     const found = keys.find((candidate) => Object.prototype.hasOwnProperty.call(row, candidate));
@@ -49,6 +51,70 @@ function findColumn(columns, key, label) {
     const found = keys.map((candidate) => columns.find((column) => column.key === candidate)).find(Boolean);
 
     return found ? { ...found, label } : null;
+}
+
+function normalizeSearch(value) {
+    return String(value ?? '')
+        .toLocaleLowerCase('tr-TR')
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '');
+}
+
+function isTechnicalColumn(column) {
+    const value = `${column?.key ?? ''} ${column?.label ?? ''}`.toLocaleLowerCase('tr-TR');
+
+    return technicalColumnTokens.some((token) => value.includes(token));
+}
+
+export function isTechnicalMessageRow(row) {
+    const keys = Object.keys(row ?? {});
+
+    if (keys.length === 0) {
+        return true;
+    }
+
+    const visibleKeys = keys.filter((key) => row[key] !== null && row[key] !== undefined && row[key] !== '');
+    const messageKey = keys.find((key) => key.toLocaleLowerCase('tr-TR') === 'message');
+    const message = messageKey ? String(row[messageKey] ?? '') : '';
+
+    return Boolean(messageKey && visibleKeys.length <= 1)
+        || /query executed successfully|no rows were affected|affected rows/i.test(message);
+}
+
+export function visibleRows(rows = []) {
+    return rows.filter((row) => !isTechnicalMessageRow(row));
+}
+
+export function filterRowsBySearch(kind, rows = [], search = '') {
+    const term = normalizeSearch(search);
+
+    if (!term) {
+        return rows;
+    }
+
+    const fieldsByKind = {
+        stock: ['stokKodu', 'urunAdi', 'kategori', 'depo', 'raf'],
+        cari: ['cariKodu', 'cariAdi', 'cariGrup', 'telefon', 'email', 'il', 'ilce', 'temsilci'],
+        orders: ['evrakNo', 'cariAdi', 'urunAdi', 'durum'],
+        proforma: ['proformaNo', 'cariAdi', 'durum'],
+    };
+
+    const keys = fieldsByKind[kind] ?? [];
+
+    return rows.filter((row) => keys.some((key) => normalizeSearch(valueFrom(row, key)).includes(term)));
+}
+
+export function translateModuleTabs(tabs = []) {
+    const labels = {
+        'Cari Yönetimi': 'Müşteri Yönetimi',
+        'Cari Liste': 'Müşteri Listesi',
+        'Cari Bakiye': 'Müşteri Bakiyesi',
+    };
+
+    return tabs.map((tab) => ({
+        ...tab,
+        label: labels[tab.label] ?? tab.label,
+    }));
 }
 
 export function moduleKindFromPage(page) {
@@ -80,16 +146,16 @@ export function pageCopy(page, kind) {
     if (kind === 'cari') {
         if (routePath.includes('/balance')) {
             return {
-                title: 'Cari Bakiye',
+                title: 'Müşteri Bakiyesi',
                 description: 'Borç, alacak ve net bakiye takibi',
-                eyebrow: 'Cari Yönetimi',
+                eyebrow: 'Müşteri Yönetimi',
             };
         }
 
         return {
-            title: 'Cari Yönetimi',
-            description: 'Müşteri, bayi ve cari hesap listesi',
-            eyebrow: 'Cari Yönetimi',
+            title: 'Müşteri Yönetimi',
+            description: 'Müşteri, bayi ve hesap bilgileri',
+            eyebrow: 'Müşteri Yönetimi',
         };
     }
 
@@ -142,11 +208,12 @@ export function pageCopy(page, kind) {
 
 export function preferredColumns(kind, page, columns) {
     const routePath = page.routePath ?? '';
+    const cleanColumns = columns.filter((column) => !isTechnicalColumn(column));
     const definitions = {
         cari: routePath.includes('/balance')
             ? [
-                ['cariKodu', 'Cari Kodu'],
-                ['cariAdi', 'Cari Adı / Ünvan'],
+                ['cariKodu', 'Müşteri Kodu'],
+                ['cariAdi', 'Müşteri Adı / Ünvan'],
                 ['cariGrup', 'Grup'],
                 ['borc', 'Borç'],
                 ['alacak', 'Alacak'],
@@ -155,8 +222,8 @@ export function preferredColumns(kind, page, columns) {
                 ['sonHareket', 'Son Hareket'],
             ]
             : [
-                ['cariKodu', 'Cari Kodu'],
-                ['cariAdi', 'Cari Adı / Ünvan'],
+                ['cariKodu', 'Müşteri Kodu'],
+                ['cariAdi', 'Müşteri Adı / Ünvan'],
                 ['cariGrup', 'Grup'],
                 ['telefon', 'Telefon'],
                 ['il', 'İl'],
@@ -169,8 +236,6 @@ export function preferredColumns(kind, page, columns) {
             ['stokKodu', 'Stok Kodu'],
             ['urunAdi', 'Ürün / Model'],
             ['kategori', 'Kategori'],
-            ['depo', 'Depo'],
-            ['raf', 'Raf'],
             ['miktar', 'Miktar'],
             ['birim', 'Birim'],
         ],
@@ -189,7 +254,7 @@ export function preferredColumns(kind, page, columns) {
             : [
                 ['siparisTarihi', 'Sipariş Tarihi'],
                 ['evrakNo', 'Evrak No'],
-                ['cariAdi', 'Cari'],
+                ['cariAdi', 'Müşteri'],
                 ['urunAdi', 'Ürün'],
                 ['miktar', 'Sipariş Miktarı'],
                 ['teslim', 'Teslim Edilen'],
@@ -200,7 +265,7 @@ export function preferredColumns(kind, page, columns) {
             ],
         proforma: [
             ['proformaNo', 'Proforma No'],
-            ['cariAdi', 'Cari'],
+            ['cariAdi', 'Müşteri'],
             ['durum', 'Durum'],
             ['createdAt', 'Tarih'],
             ['tutar', 'Genel Toplam'],
@@ -208,10 +273,10 @@ export function preferredColumns(kind, page, columns) {
     };
 
     const preferred = (definitions[kind] ?? [])
-        .map(([key, label]) => findColumn(columns, key, label))
+        .map(([key, label]) => findColumn(cleanColumns, key, label))
         .filter(Boolean);
 
-    return preferred.length > 0 ? preferred : columns.slice(0, 8);
+    return preferred.length > 0 ? preferred : cleanColumns.slice(0, 8);
 }
 
 export function summaryCards(kind, page, rows, cartItems = []) {
@@ -221,7 +286,7 @@ export function summaryCards(kind, page, rows, cartItems = []) {
         const net = rows.reduce((sum, row) => sum + numericValue(valueFrom(row, 'bakiye')), 0);
 
         return [
-            { label: 'Toplam Cari', value: formatCount(rows.length), hint: 'Listelenen kayıt' },
+            { label: 'Toplam Müşteri', value: formatCount(rows.length), hint: 'Listelenen kayıt' },
             { label: 'Borç Bakiyesi', value: formatMoney(borc), hint: 'Pozitif borç toplamı' },
             { label: 'Alacak Bakiyesi', value: formatMoney(alacak), hint: 'Alacak toplamı' },
             { label: 'Net Bakiye', value: formatMoney(net), hint: 'Seçili liste toplamı' },
@@ -277,7 +342,7 @@ export function detailTitle(kind, row) {
     }
 
     if (kind === 'cari') {
-        return String(valueFrom(row, 'cariAdi') ?? valueFrom(row, 'cariKodu') ?? 'Cari detayı');
+        return String(valueFrom(row, 'cariAdi') ?? valueFrom(row, 'cariKodu') ?? 'Müşteri detayı');
     }
 
     if (kind === 'orders') {
@@ -297,19 +362,19 @@ export function detailTitle(kind, row) {
 
 export function friendlyEmptyMessage(kind) {
     if (kind === 'cari') {
-        return 'Cari veri kaynağı henüz tanımlı değil veya seçili filtrelerde kayıt bulunamadı.';
+        return 'Müşteri kaydı bulunamadı.';
     }
 
     if (kind === 'orders') {
-        return 'Sipariş veri kaynağı henüz tanımlı değil veya seçili filtrelerde kayıt bulunamadı.';
+        return 'Sipariş kaydı bulunamadı.';
     }
 
     if (kind === 'proforma') {
-        return 'Proforma veri kaynağı henüz tanımlı değil veya seçili filtrelerde kayıt bulunamadı.';
+        return 'Proforma kaydı bulunamadı.';
     }
 
     if (kind === 'stock') {
-        return 'Stok veri kaynağı henüz tanımlı değil veya seçili filtrelerde kayıt bulunamadı.';
+        return 'Stok kaydı bulunamadı.';
     }
 
     return 'Seçili filtreler için kayıt bulunamadı.';

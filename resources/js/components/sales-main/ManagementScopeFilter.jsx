@@ -1,6 +1,7 @@
-import { router } from '@inertiajs/react';
-
 export function ManagementScopeFilter({ scopes = [], activeKey, onChange, loading }) {
+    const normalizeKey = (key) => String(key ?? '').replaceAll('-', '_');
+    const active = normalizeKey(activeKey);
+
     return (
         <div className="flex flex-wrap gap-2">
             {scopes.map((scope) => (
@@ -9,16 +10,14 @@ export function ManagementScopeFilter({ scopes = [], activeKey, onChange, loadin
                     type="button"
                     disabled={loading}
                     onClick={() => {
-                        if (scope.navigateTo) {
-                            router.visit(scope.navigateTo);
-                            return;
-                        }
-
-                        onChange({ scope_key: scope.key });
+                        onChange({
+                            scope_key: normalizeKey(scope.key),
+                            rep_code: scope.repCode ?? null,
+                        });
                     }}
                     className={[
                         'rounded-xl border px-4 py-2 text-sm font-semibold transition',
-                        activeKey === scope.key
+                        active === normalizeKey(scope.key)
                             ? 'border-blue-700 bg-blue-700 text-white shadow-sm'
                             : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700',
                     ].join(' ')}

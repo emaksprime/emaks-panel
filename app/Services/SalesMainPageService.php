@@ -47,7 +47,7 @@ class SalesMainPageService
             'defaults' => [
                 'grain' => $filters['defaults']['grain'] ?? 'week',
                 'detailType' => $filters['defaults']['detailType'] ?? 'cari',
-                'scopeKey' => $scope['key'] ?? 'all',
+                'scopeKey' => $this->normalizeScopeKey((string) ($scope['key'] ?? 'all')),
             ],
             'dataSource' => [
                 'slug' => $source->code,
@@ -66,6 +66,7 @@ class SalesMainPageService
         $filters = $this->normalizeFilters($input);
         $page = $this->page();
         $scope = $this->resolveScope($user, $filters['scope_key']);
+        $normalizedScopeKey = $this->normalizeScopeKey((string) ($scope['key'] ?? $filters['scope_key']));
         $source = $this->pageConfig()->dataSource ?? $this->source();
 
         $effectiveRepresentativeCode = $this->effectiveRepresentativeCode($user, $scope);
@@ -75,7 +76,7 @@ class SalesMainPageService
             'date_to' => $filters['date_to'],
             'grain' => $filters['grain'],
             'detail_type' => $filters['detail_type'],
-            'scope_key' => $scope['key'],
+            'scope_key' => $normalizedScopeKey,
             'rep_code' => $effectiveRepresentativeCode,
             'search' => $input['search'] ?? null,
             'page' => $input['page'] ?? 1,
@@ -118,11 +119,11 @@ class SalesMainPageService
                 'dateTo' => $filters['date_to'],
                 'grain' => $filters['grain'],
                 'detailType' => $filters['detail_type'],
-                'scopeKey' => $scope['key'],
+                'scopeKey' => $normalizedScopeKey,
                 'periodLabel' => $periodLabel,
             ],
             'scope' => [
-                'key' => $scope['key'],
+                'key' => $normalizedScopeKey,
                 'label' => $scope['label'],
                 'note' => $scope['note'],
                 'effectiveRepresentativeCode' => $effectiveRepresentativeCode,
@@ -147,7 +148,7 @@ class SalesMainPageService
                 [
                     'label' => 'Aktif Kapsam',
                     'value' => $scope['label'],
-                    'raw' => $scope['key'],
+                    'raw' => $normalizedScopeKey,
                 ],
             ],
             'chart' => [
@@ -208,7 +209,8 @@ class SalesMainPageService
     private function resolveScope(?User $user, string $scopeKey): array
     {
         $scopes = $this->visibleScopes($user, collect($this->pageConfig()->filters_json['managementScopes'] ?? []));
-        $scope = $scopes->firstWhere('key', $scopeKey);
+        $normalizedScopeKey = $this->normalizeScopeKey($scopeKey);
+        $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $normalizedScopeKey);
 
         return $scope ?? $scopes->first() ?? [
             'key' => 'all',
@@ -219,6 +221,11 @@ class SalesMainPageService
             'salesView' => 'tumu',
             'allowAll' => true,
         ];
+    }
+
+    private function normalizeScopeKey(string $scopeKey): string
+    {
+        return str_replace('-', '_', $scopeKey);
     }
 
     /**
@@ -290,7 +297,7 @@ class SalesMainPageService
             'date_to' => $dateTo,
             'grain' => $grain,
             'detail_type' => $detailType,
-            'scope_key' => (string) ($input['scope_key'] ?? $defaults['scopeKey'] ?? 'all'),
+            'scope_key' => $this->normalizeScopeKey((string) ($input['scope_key'] ?? $defaults['scopeKey'] ?? 'all')),
         ];
     }
 
@@ -444,7 +451,7 @@ class SalesMainPageService
             'date_to' => $filters['date_to'],
             'grain' => $filters['grain'],
             'detail_type' => $filters['detail_type'],
-            'scope_key' => $scope['key'],
+            'scope_key' => $filters['scope_key'],
             'rep_code' => $effectiveRepresentativeCode,
             'bypass_cache' => (bool) ($whitelistedParameters['bypass_cache'] ?? false),
         ], $source);
