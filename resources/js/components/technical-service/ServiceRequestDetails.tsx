@@ -53,6 +53,7 @@ type ServiceRequestDetailsProps = {
   events: ServiceRequestEvent[]
   loading: boolean
   error?: string | null
+  onAssign?: () => void
 }
 
 const eventTime = (timestamp: string): string => {
@@ -73,6 +74,7 @@ export function ServiceRequestDetails({
   events,
   loading,
   error,
+  onAssign,
 }: ServiceRequestDetailsProps) {
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm">
@@ -187,7 +189,7 @@ export function ServiceRequestDetails({
         </section>
 
         <section className="grid gap-3 sm:grid-cols-2">
-          <Button type="button">Usta Ata</Button>
+          <Button type="button" onClick={() => onAssign?.()}>Usta Ata</Button>
           <Button variant="outline" type="button">Randevu Planla</Button>
           <Button variant="secondary" type="button">WhatsApp Link Gönder</Button>
           <Button variant="destructive" type="button">Talebi Kapat</Button>

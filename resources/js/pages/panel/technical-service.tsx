@@ -1,7 +1,7 @@
 import { Head } from '@inertiajs/react'
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import Heading from '@/components/heading'
 import { apiRequest } from '@/lib/api'
@@ -153,6 +153,11 @@ export default function TechnicalService() {
   const [error, setError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [selectedEvents, setSelectedEvents] = useState<ApiTechnicalServiceEvent[]>([])
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false)
+  const [assignTechnician, setAssignTechnician] = useState('')
+  const [assignNote, setAssignNote] = useState('')
+  const [assignLoading, setAssignLoading] = useState(false)
+  const [assignError, setAssignError] = useState<string | null>(null)
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
@@ -315,6 +320,41 @@ export default function TechnicalService() {
 
   const handleCreateReset = () => {
     setCreateForm(initialRequestForm)
+  }
+
+  const handleAssignReset = () => {
+    setAssignTechnician('')
+    setAssignNote('')
+    setAssignError(null)
+  }
+
+  const handleAssignSubmit = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    setAssignLoading(true)
+    setAssignError(null)
+
+    try {
+      await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({
+          technician_name: assignTechnician,
+          note: assignNote || null,
+        }),
+      })
+
+      setAssignDialogOpen(false)
+      handleAssignReset()
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
+    } finally {
+      setAssignLoading(false)
+    }
   }
 
   const handleCreateSubmit = async () => {
@@ -481,6 +521,70 @@ export default function TechnicalService() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          <Dialog open={assignDialogOpen} onOpenChange={(open) => {
+            setAssignDialogOpen(open)
+            if (!open) handleAssignReset()
+          }}>
+            <DialogContent className="max-w-lg">
+              <DialogClose asChild>
+                <button
+                  type="button"
+                  className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
+                >
+                  ×
+                </button>
+              </DialogClose>
+              <DialogHeader>
+                <DialogTitle>Usta ata</DialogTitle>
+                <DialogDescription>
+                  Seçili talebe bir teknisyen atayın ve dilerseniz not ekleyin.
+                </DialogDescription>
+              </DialogHeader>
+
+              {assignError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {assignError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-4 pt-2">
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Usta / Çilingir adı
+                  <Input
+                    value={assignTechnician}
+                    onChange={(event) => setAssignTechnician(event.target.value)}
+                    placeholder="Usta adı"
+                  />
+                </label>
+
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Not / açıklama
+                  <textarea
+                    value={assignNote}
+                    onChange={(event) => setAssignNote(event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    placeholder="Not / açıklama"
+                  />
+                </label>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <DialogClose asChild>
+                  <Button variant="secondary" type="button" onClick={handleAssignReset}>
+                    İptal
+                  </Button>
+                </DialogClose>
+                <Button
+                  type="button"
+                  onClick={handleAssignSubmit}
+                  disabled={assignLoading || !assignTechnician.trim()}
+                >
+                  {assignLoading ? 'Atanıyor...' : 'Kaydet'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
 
         <ServiceSummaryCards items={summaryItems} />
@@ -533,6 +637,7 @@ export default function TechnicalService() {
                 events={selectedEvents}
                 loading={detailLoading}
                 error={detailError}
+                onAssign={() => setAssignDialogOpen(true)}
               />
             ) : (
               <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
