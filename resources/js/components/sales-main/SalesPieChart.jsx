@@ -1,8 +1,8 @@
 function polarSegment(item, index, offset) {
     const radius = 78;
     const circumference = 2 * Math.PI * radius;
-    const visiblePercentage = Math.max(Number(item.percentage || 0), item.percentage > 0 ? 1.5 : 0);
-    const dash = (visiblePercentage / 100) * circumference;
+    const percentage = Math.max(Number(item.percentage || 0), 0);
+    const dash = (percentage / 100) * circumference;
     const gap = circumference - dash;
 
     return {
@@ -25,7 +25,7 @@ export function SalesPieChart({ chart }) {
         });
 
     return (
-        <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[260px_minmax(0,1fr)]">
+        <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:grid-cols-[260px_minmax(0,1fr)]">
             <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">
                     {chart?.title}
@@ -33,10 +33,11 @@ export function SalesPieChart({ chart }) {
                 <h2 className="mt-2 text-lg font-semibold text-slate-950">{chart?.subtitle}</h2>
                 <div className="relative mx-auto mt-5 grid aspect-square w-full max-w-[230px] place-items-center rounded-full bg-gradient-to-br from-white to-slate-100 shadow-[0_18px_45px_rgba(15,23,42,0.16)]">
                     <svg viewBox="0 0 220 220" className="size-full -rotate-90 drop-shadow-sm" role="img" aria-label={chart?.title ?? 'Satış dağılımı'}>
+                        <title>{chart?.title ?? 'Satış dağılımı'}</title>
                         <defs>
                             {segments.map((item, index) => (
                                 <linearGradient id={item.gradientId} key={item.gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" stopColor={item.color} stopOpacity="0.82" />
+                                    <stop offset="0%" stopColor={item.color} stopOpacity="0.78" />
                                     <stop offset="100%" stopColor={item.color} stopOpacity="1" />
                                 </linearGradient>
                             ))}
@@ -55,14 +56,12 @@ export function SalesPieChart({ chart }) {
                                 strokeDasharray={item.dashArray}
                                 strokeDashoffset={item.dashOffset}
                                 className="transition duration-300 hover:opacity-80"
-                            />
+                            >
+                                <title>{`${item.label}: ${item.amountLabel} - %${item.percentage}`}</title>
+                            </circle>
                         ))}
                     </svg>
-                    <div className="absolute grid size-[46%] place-items-center rounded-full border border-slate-100 bg-white/95 shadow-inner">
-                        <span className="text-center text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                            Dağılım
-                        </span>
-                    </div>
+                    <div className="absolute size-[46%] rounded-full border border-slate-100 bg-white/95 shadow-inner" aria-hidden="true" />
                 </div>
             </div>
 

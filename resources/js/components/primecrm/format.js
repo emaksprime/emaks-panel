@@ -31,15 +31,26 @@ function parseNumeric(value) {
         return Number.isFinite(value) ? value : null;
     }
 
-    const normalized = String(value)
+    let normalized = String(value)
         .trim()
         .replace(/\s/g, '')
-        .replace(/\./g, '')
-        .replace(',', '.')
-        .replace(/[^\d.-]/g, '');
+        .replace(/[^\d,.-]/g, '');
 
-    if (normalized === '' || normalized === '-' || normalized === '.') {
+    if (normalized === '' || normalized === '-' || normalized === '.' || normalized === ',') {
         return null;
+    }
+
+    if (normalized.includes(',')) {
+        normalized = normalized.replace(/\./g, '').replace(',', '.');
+    } else {
+        const dotCount = (normalized.match(/\./g) ?? []).length;
+
+        if (dotCount > 1) {
+            const lastDot = normalized.lastIndexOf('.');
+            const integerPart = normalized.slice(0, lastDot).replace(/\./g, '');
+            const decimalPart = normalized.slice(lastDot + 1);
+            normalized = `${integerPart}.${decimalPart}`;
+        }
     }
 
     const parsed = Number(normalized);
@@ -96,10 +107,32 @@ function normalizedColumn(column) {
     return `${column?.key ?? ''} ${column?.label ?? ''}`.toLocaleLowerCase('tr-TR');
 }
 
-export function isDateColumn(column) {
+export function isCodeColumn(column) {
     const value = normalizedColumn(column);
 
-    return ['tarih', 'date', 'created_at', 'updated_at', 'son_hareket', 'evrak'].some((token) => value.includes(token));
+    return [
+        'cari_kodu',
+        'stok_kodu',
+        'evrak_no',
+        'belge_no',
+        'proforma_no',
+        'sip_evrakno',
+        'kod',
+        'kodu',
+        'code',
+        'no',
+        'id',
+    ].some((token) => value.includes(token));
+}
+
+export function isDateColumn(column) {
+    if (isCodeColumn(column)) {
+        return false;
+    }
+
+    const value = normalizedColumn(column);
+
+    return ['tarih', 'date', 'created_at', 'updated_at', 'son_hareket', 'tahmini', 'teslim_tarihi'].some((token) => value.includes(token));
 }
 
 export function isDateTimeColumn(column) {
@@ -109,12 +142,20 @@ export function isDateTimeColumn(column) {
 }
 
 export function isMoneyColumn(column) {
+    if (isCodeColumn(column)) {
+        return false;
+    }
+
     const value = normalizedColumn(column);
 
     return ['tutar', 'fiyat', 'toplam', 'bakiye', 'ciro', 'borç', 'borc', 'alacak', 'iskonto', 'kdv', 'risk'].some((token) => value.includes(token));
 }
 
 export function isNumberColumn(column) {
+    if (isCodeColumn(column)) {
+        return false;
+    }
+
     const value = normalizedColumn(column);
 
     return isMoneyColumn(column) || ['miktar', 'adet', 'kalan', 'teslim', 'gelen', 'qty', 'quantity'].some((token) => value.includes(token));
@@ -171,6 +212,10 @@ export function formatCell(value, column = null) {
         return '-';
     }
 
+    if (column && isCodeColumn(column)) {
+        return String(value);
+    }
+
     if (column && isDateColumn(column)) {
         return isDateTimeColumn(column) ? formatDateTimeTR(value) : formatDateTR(value);
     }
@@ -180,10 +225,6 @@ export function formatCell(value, column = null) {
     }
 
     if (column && isNumberColumn(column)) {
-        return formatNumber(value);
-    }
-
-    if (typeof value === 'number') {
         return formatNumber(value);
     }
 
