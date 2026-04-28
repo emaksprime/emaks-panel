@@ -4,9 +4,11 @@ namespace Tests\Feature;
 
 use App\Models\DataSource;
 use App\Services\N8nPanelDataGateway;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class N8nPanelDataGatewayTest extends TestCase
@@ -63,5 +65,51 @@ class N8nPanelDataGatewayTest extends TestCase
 
         Http::assertSent(fn (Request $request) => $request['query_template'] === ''
             && $request['data_source']['query_template_available'] === false);
+    }
+
+    public function test_gateway_continues_when_cache_schema_is_incomplete(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['satir_tipi' => 'GRUP', 'ciro' => 1000],
+                ],
+                'meta' => ['source' => 'sales_main_dashboard'],
+            ]),
+        ]);
+
+        Schema::dropIfExists('panel.data_source_cache');
+        Schema::create('panel.data_source_cache', function (Blueprint $table) {
+            $table->id();
+            $table->string('source_code')->nullable();
+            $table->timestamps();
+        });
+
+        try {
+            $source = DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail();
+
+            $result = app(N8nPanelDataGateway::class)->run('sales_main_dashboard', [
+                'date_from' => '2026-04-01',
+                'date_to' => '2026-04-27',
+                'grain' => 'week',
+                'detail_type' => 'cari',
+                'scope_key' => 'all',
+            ], $source);
+
+            $this->assertSame(1000, $result['rows'][0]['ciro']);
+            Http::assertSent(fn (Request $request) => $request['source_code'] === 'sales_main_dashboard');
+        } finally {
+            Schema::dropIfExists('panel.data_source_cache');
+            Schema::create('panel.data_source_cache', function (Blueprint $table) {
+                $table->id();
+                $table->string('cache_key', 128)->unique();
+                $table->string('source_code', 128)->index();
+                $table->json('request_payload')->nullable();
+                $table->json('response_payload')->nullable();
+                $table->timestamp('expires_at')->index();
+                $table->timestamps();
+            });
+        }
     }
 }

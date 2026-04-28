@@ -179,6 +179,10 @@ class PanelMetadataSeeder extends Seeder
             );
         }
 
+        $existingSalesMainQuery = (string) DataSource::query()
+            ->where('code', 'sales_main_dashboard')
+            ->value('query_template');
+
         $dataSource = DataSource::query()->updateOrCreate(
             ['code' => 'sales_main_dashboard'],
             [
@@ -233,6 +237,10 @@ SQL,
                 'description' => 'Satış Yönetimi sayfası için MSSQL metadata kaydı',
             ],
         );
+
+        if (trim($existingSalesMainQuery) !== '') {
+            $dataSource->forceFill(['query_template' => $existingSalesMainQuery])->save();
+        }
 
         PageConfig::query()->updateOrCreate(
             ['page_code' => 'sales_main'],

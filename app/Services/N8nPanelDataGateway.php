@@ -4,8 +4,10 @@ namespace App\Services;
 
 use App\Models\DataSource;
 use App\Models\DataSourceCache;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 class N8nPanelDataGateway
@@ -173,10 +175,19 @@ class N8nPanelDataGateway
      */
     private function cachedResponse(string $cacheKey): ?array
     {
-        $cached = DataSourceCache::query()
-            ->where('cache_key', $cacheKey)
-            ->where('expires_at', '>', now())
-            ->first();
+        try {
+            $cached = DataSourceCache::query()
+                ->where('cache_key', $cacheKey)
+                ->where('expires_at', '>', now())
+                ->first();
+        } catch (QueryException $exception) {
+            Log::warning('Panel datasource cache read skipped because schema is not ready.', [
+                'cache_key' => $cacheKey,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return null;
+        }
 
         if (! $cached || ! is_array($cached->response_payload)) {
             return null;
@@ -198,21 +209,29 @@ class N8nPanelDataGateway
      */
     private function storeCache(string $cacheKey, string $sourceCode, array $requestPayload, array $responsePayload): void
     {
-        DataSourceCache::query()->updateOrCreate(
-            ['cache_key' => $cacheKey],
-            [
-                'source_code' => $sourceCode,
-                'request_payload' => $requestPayload,
-                'response_payload' => [
-                    ...$responsePayload,
-                    'meta' => [
-                        ...(is_array($responsePayload['meta'] ?? null) ? $responsePayload['meta'] : []),
-                        'cache' => 'stored',
+        try {
+            DataSourceCache::query()->updateOrCreate(
+                ['cache_key' => $cacheKey],
+                [
+                    'source_code' => $sourceCode,
+                    'request_payload' => $requestPayload,
+                    'response_payload' => [
+                        ...$responsePayload,
+                        'meta' => [
+                            ...(is_array($responsePayload['meta'] ?? null) ? $responsePayload['meta'] : []),
+                            'cache' => 'stored',
+                        ],
                     ],
+                    'expires_at' => now()->addMinutes($this->ttlMinutes($sourceCode)),
                 ],
-                'expires_at' => now()->addMinutes($this->ttlMinutes($sourceCode)),
-            ],
-        );
+            );
+        } catch (QueryException $exception) {
+            Log::warning('Panel datasource cache write skipped because schema is not ready.', [
+                'source_code' => $sourceCode,
+                'cache_key' => $cacheKey,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     private function ttlMinutes(string $sourceCode): int
