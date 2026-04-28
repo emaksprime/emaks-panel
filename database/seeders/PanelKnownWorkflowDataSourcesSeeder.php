@@ -17,19 +17,19 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
             $this->upsert(
                 'sales_online_perakende_detail',
                 'Online / Perakende Detay',
-                $salesTemplate,
+                $this->salesTemplateWithCustomerGroupScope($salesTemplate, true),
                 ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
-                'Geçici olarak sales_main_dashboard çalışan sorgusuna bağlıdır; SALES_ONLINE_PERAKENDE_DETAY_V1 workflow sorgusu ile değiştirilmeye hazırdır.',
-                'sales_main_dashboard'
+                'SALES_ONLINE_PERAKENDE_DETAY_V1 kapsamı: online/perakende cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
+                'SALES_ONLINE_PERAKENDE_DETAY_V1.json'
             );
 
             $this->upsert(
                 'sales_bayi_proje_detail',
                 'Bayi / Proje Detay',
-                $salesTemplate,
+                $this->salesTemplateWithCustomerGroupScope($salesTemplate, false),
                 ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
-                'Geçici olarak sales_main_dashboard çalışan sorgusuna bağlıdır; SALES_BAYI_PROJE_DETAY_V1 workflow sorgusu ile değiştirilmeye hazırdır.',
-                'sales_main_dashboard'
+                'SALES_BAYI_PROJE_DETAY_V1 kapsamı: online/perakende dışı cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
+                'SALES_BAYI_PROJE_DETAY_V1.json'
             );
         }
 
@@ -245,6 +245,217 @@ SQL_ORDERS_VERILEN,
             'EMAKS PRIME - Siparisler Workflow (TAM FIX) Code - Build SQL Verilen node sorgusu.',
             'EMAKS PRIME - Siparisler Workflow (TAM FIX).json'
         );
+
+        $this->upsert(
+            'customers_list',
+            'Musteri Listesi',
+            <<<'SQL_CUSTOMERS_LIST'
+DECLARE @Search NVARCHAR(255) = N'[[search]]';
+DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+DECLARE @PanelFilter NVARCHAR(50) = N'[[scope_key]]';
+DECLARE @Take int = 200;
+
+WITH CariBaz AS
+(
+    SELECT
+        LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS [musteri_kodu],
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [musteri_adi],
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan2, N''))) AS [firma_unvani_2],
+        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS [grup],
+        LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) AS [temsilci_kodu],
+        LTRIM(RTRIM(ISNULL(cpt.cari_per_adi, N'') + CASE WHEN ISNULL(cpt.cari_per_soyadi, N'') = N'' THEN N'' ELSE N' ' + cpt.cari_per_soyadi END)) AS [temsilci],
+        LTRIM(RTRIM(ISNULL(cari.cari_CepTel, N''))) AS [telefon],
+        LTRIM(RTRIM(ISNULL(cari.cari_EMail, N''))) AS [email],
+        LTRIM(RTRIM(ISNULL(cari.cari_il, N''))) AS [il],
+        LTRIM(RTRIM(ISNULL(cari.cari_ilce, N''))) AS [ilce],
+        CAST(ISNULL(
+            CASE
+                WHEN Cari_F10da_detay = 1 THEN dbo.fn_CariHesapAnaDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+                WHEN Cari_F10da_detay = 2 THEN dbo.fn_CariHesapAlternatifDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+                WHEN Cari_F10da_detay = 3 THEN dbo.fn_CariHesapOrjinalDovizBakiye('',0,cari.cari_kod,'','',0,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+                WHEN Cari_F10da_detay = 4 THEN dbo.fn_CariHareketSayisi(0,cari.cari_kod,'')
+                ELSE 0
+            END, 0) AS decimal(18,2)
+        ) AS [bakiye]
+    FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
+    LEFT OUTER JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK) ON grp.crg_kod = cari.cari_grup_kodu
+    LEFT OUTER JOIN dbo.CARI_PERSONEL_TANIMLARI cpt WITH (NOLOCK) ON cpt.cari_per_kod = cari.cari_temsilci_kodu
+    LEFT OUTER JOIN dbo.vw_Gendata ON 1 = 1
+    WHERE
+        ((cari.cari_kod NOT LIKE N'320%' AND cari.cari_kod NOT LIKE N'331%') OR cari.cari_kod LIKE N'320.ÇLG%')
+        AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        AND (@Search = N'' OR cari.cari_kod LIKE N'%' + @Search + N'%' OR cari.cari_unvan1 LIKE N'%' + @Search + N'%' OR cari.cari_unvan2 LIKE N'%' + @Search + N'%' OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_adi, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_soyadi, N'') LIKE N'%' + @Search + N'%')
+)
+SELECT TOP (@Take)
+    musteri_kodu,
+    musteri_adi,
+    firma_unvani_2,
+    grup,
+    telefon,
+    email,
+    il,
+    ilce,
+    bakiye,
+    temsilci_kodu,
+    temsilci
+FROM CariBaz
+WHERE @PanelFilter = N'' OR @PanelFilter = N'all' OR (@PanelFilter = N'receivable' AND bakiye > 0) OR (@PanelFilter = N'payable' AND bakiye < 0)
+ORDER BY musteri_kodu ASC;
+SQL_CUSTOMERS_LIST,
+            ['search', 'scope_key', 'rep_code', 'page', 'bypass_cache'],
+            'PrimeCRM CariService.SearchAsync musteri liste ve bakiye mantigindan uyarlanan kanonik sorgu.',
+            'CariService.cs'
+        );
+
+        $this->upsert(
+            'customers_balance',
+            'Musteri Bakiye Ozeti',
+            <<<'SQL_CUSTOMERS_BALANCE'
+DECLARE @Search NVARCHAR(255) = N'[[search]]';
+DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+
+WITH CariScope AS
+(
+    SELECT
+        LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS [musteri_kodu],
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [musteri_adi],
+        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS [grup],
+        CAST(ISNULL(
+            CASE
+                WHEN Cari_F10da_detay = 1 THEN dbo.fn_CariHesapAnaDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+                WHEN Cari_F10da_detay = 2 THEN dbo.fn_CariHesapAlternatifDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+                WHEN Cari_F10da_detay = 3 THEN dbo.fn_CariHesapOrjinalDovizBakiye('',0,cari.cari_kod,'','',0,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+                WHEN Cari_F10da_detay = 4 THEN dbo.fn_CariHareketSayisi(0,cari.cari_kod,'')
+                ELSE 0
+            END, 0) AS decimal(18,2)
+        ) AS [net_bakiye]
+    FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
+    LEFT OUTER JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK) ON grp.crg_kod = cari.cari_grup_kodu
+    LEFT OUTER JOIN dbo.CARI_PERSONEL_TANIMLARI cpt WITH (NOLOCK) ON cpt.cari_per_kod = cari.cari_temsilci_kodu
+    LEFT OUTER JOIN dbo.vw_Gendata ON 1 = 1
+    WHERE
+        ((cari.cari_kod NOT LIKE N'320%' AND cari.cari_kod NOT LIKE N'331%') OR cari.cari_kod LIKE N'320.ÇLG%')
+        AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        AND (@Search = N'' OR cari.cari_kod LIKE N'%' + @Search + N'%' OR cari.cari_unvan1 LIKE N'%' + @Search + N'%' OR cari.cari_unvan2 LIKE N'%' + @Search + N'%' OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_adi, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_soyadi, N'') LIKE N'%' + @Search + N'%')
+)
+SELECT
+    musteri_kodu,
+    musteri_adi,
+    grup,
+    CAST(CASE WHEN net_bakiye < 0 THEN ABS(net_bakiye) ELSE 0 END AS decimal(18,2)) AS [borc],
+    CAST(CASE WHEN net_bakiye > 0 THEN net_bakiye ELSE 0 END AS decimal(18,2)) AS [alacak],
+    net_bakiye
+FROM CariScope
+WHERE net_bakiye <> 0
+ORDER BY ABS(net_bakiye) DESC, musteri_kodu ASC;
+SQL_CUSTOMERS_BALANCE,
+            ['search', 'rep_code', 'page', 'bypass_cache'],
+            'PrimeCRM CariService.GetSearchSummaryAsync bakiye hesaplama mantigindan musteri bazli liste sorgusu.',
+            'CariService.cs'
+        );
+
+        $this->upsert(
+            'customer_statement',
+            'Musteri Ekstre',
+            <<<'SQL_CUSTOMER_STATEMENT'
+DECLARE @CustomerCode NVARCHAR(80) = N'[[customer_code]]';
+DECLARE @DateFrom DATE = '[[date_from]]';
+DECLARE @DateTo DATE = '[[date_to]]';
+
+;WITH Hareketler AS
+(
+    SELECT
+        cha.cha_Guid AS [hareket_guid],
+        CAST(cha.cha_tarihi AS date) AS [tarih],
+        LTRIM(RTRIM(ISNULL(cha.cha_evrakno_seri, N''))) AS [evrak_seri],
+        ISNULL(cha.cha_evrakno_sira, 0) AS [evrak_sira],
+        LTRIM(RTRIM(ISNULL(cha.cha_belge_no, N''))) AS [belge_no],
+        LTRIM(RTRIM(ISNULL(cha.cha_aciklama, N''))) AS [aciklama],
+        CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 0 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS [borc],
+        CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 1 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS [alacak],
+        cha.cha_Guid AS SortGuid
+    FROM dbo.CARI_HESAP_HAREKETLERI cha WITH (NOLOCK)
+    WHERE cha.cha_kod = @CustomerCode
+      AND cha.cha_tarihi >= @DateFrom
+      AND cha.cha_tarihi < DATEADD(day, 1, @DateTo)
+)
+SELECT
+    hareket_guid,
+    tarih,
+    evrak_seri,
+    evrak_sira,
+    belge_no,
+    aciklama,
+    borc,
+    alacak,
+    CAST(SUM(borc - alacak) OVER (ORDER BY tarih ASC, SortGuid ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS decimal(18,2)) AS [bakiye]
+FROM Hareketler
+ORDER BY tarih ASC, SortGuid ASC;
+SQL_CUSTOMER_STATEMENT,
+            ['customer_code', 'date_from', 'date_to', 'bypass_cache'],
+            'PrimeCRM CariService.GetStatementRowsAsync ekstre sorgusu.',
+            'CariService.cs'
+        );
+
+        $this->upsert('customer_detail', 'Musteri Detay', '', ['customer_code', 'rep_code', 'bypass_cache'], 'PrimeCRM CariService.GetCariSummaryAsync ile eslenecek detay veri kaynagi. Query template admin panelden tamamlanacak.', 'CariService.cs');
+        $this->upsert('customer_documents', 'Musteri Evrak Detay', '', ['document_id', 'customer_code', 'bypass_cache'], 'PrimeCRM CariService.GetDocumentDetailAsync evrak detay mantigi icin metadata kaydi. Query template admin panelden tamamlanacak.', 'CariService.cs');
+
+        $this->upsert(
+            'proforma_customer_search',
+            'Proforma Musteri Arama',
+            <<<'SQL_PROFORMA_CUSTOMERS'
+DECLARE @search NVARCHAR(255) = N'[[search]]';
+
+SELECT TOP 30
+    cari_kod AS [musteri_kodu],
+    cari_unvan1 AS [musteri_adi],
+    ISNULL(cari_grup_kodu, N'') AS [grup]
+FROM CARI_HESAPLAR WITH (NOLOCK)
+WHERE (@search = N'' OR cari_kod LIKE N'%' + @search + N'%' OR cari_unvan1 LIKE N'%' + @search + N'%')
+ORDER BY cari_unvan1;
+SQL_PROFORMA_CUSTOMERS,
+            ['search', 'bypass_cache'],
+            'PrimeCRM ProformaService.SearchCustomersAsync musteri arama sorgusu.',
+            'ProformaService.cs'
+        );
+
+        $this->upsert(
+            'proforma_stock_search',
+            'Proforma Stok Arama',
+            <<<'SQL_PROFORMA_STOCK'
+DECLARE @search NVARCHAR(255) = N'[[search]]';
+DECLARE @price_list int = TRY_CONVERT(int, NULLIF(N'[[price_list]]', N''));
+
+SELECT TOP 50
+    sto.sto_kod AS [stok_kodu],
+    sto.sto_isim AS [stok_adi],
+    ISNULL(f.sfiyat_fiyati, 0) AS [birim_fiyat]
+FROM STOKLAR sto WITH (NOLOCK)
+OUTER APPLY
+(
+    SELECT TOP 1 sfiyat_fiyati
+    FROM STOK_SATIS_FIYAT_LISTELERI WITH (NOLOCK)
+    WHERE sfiyat_stokkod = sto.sto_kod
+      AND (@price_list IS NULL OR sfiyat_listesirano = @price_list)
+      AND ISNULL(sfiyat_iptal, 0) = 0
+    ORDER BY sfiyat_lastup_date DESC
+) f
+WHERE @search = N'' OR sto.sto_kod LIKE N'%' + @search + N'%' OR sto.sto_isim LIKE N'%' + @search + N'%'
+ORDER BY sto.sto_kod;
+SQL_PROFORMA_STOCK,
+            ['search', 'price_list', 'bypass_cache'],
+            'PrimeCRM ProformaService.GetLinesAsync stok/fiyat arama sorgusu.',
+            'ProformaService.cs'
+        );
+
+        $this->upsert('proforma_list', 'Proforma Liste', '', ['search', 'proforma_no', 'bypass_cache'], 'PrimeCRM ProformaService.List dosya tabanli calisir; panel SQL datasource bulunmadi.', 'ProformaService.cs');
+        $this->upsert('proforma_detail', 'Proforma Detay', '', ['proforma_no', 'bypass_cache'], 'PrimeCRM ProformaService.Find dosya tabanli calisir; panel SQL datasource bulunmadi.', 'ProformaService.cs');
+        $this->upsert('proforma_draft', 'Proforma Taslak', '', ['customer_code', 'items', 'bypass_cache'], 'Proforma taslak akisi frontend localStorage ile korunur; SQL datasource bulunmadi.', 'ProformaService.cs');
+        $this->upsert('proforma_items', 'Proforma Satirlari', '', ['proforma_no', 'bypass_cache'], 'Proforma satir metadata kaydi; SQL datasource bulunmadi.', 'ProformaService.cs');
+        $this->upsert('proforma_price_list', 'Proforma Fiyat Listesi', '', ['customer_code', 'bypass_cache'], 'PrimeCRM ProformaService.GetCariInfoAsync dinamik kolon secimi gerektirir; query template admin panelden tamamlanacak.', 'ProformaService.cs');
+        $this->upsert('proforma_discount_defs', 'Proforma Iskonto Tanimlari', '', ['discount_code', 'bypass_cache'], 'PrimeCRM ProformaService.GetDiscountAsync iskonto mantigi icin metadata kaydi. Query template admin panelden tamamlanacak.', 'ProformaService.cs');
     }
 
     /**
@@ -279,5 +490,21 @@ SQL_ORDERS_VERILEN,
                 'description' => $description,
             ],
         );
+    }
+
+    private function salesTemplateWithCustomerGroupScope(string $template, bool $onlinePerakende): string
+    {
+        $groupCodes = "N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16'";
+        $filter = $onlinePerakende
+            ? "    AND ISNULL(ch.cari_grup_kodu, N'') IN ({$groupCodes})"
+            : "    AND (NULLIF(LTRIM(RTRIM(ISNULL(ch.cari_grup_kodu, N''))), N'') IS NULL OR ch.cari_grup_kodu NOT IN ({$groupCodes}))";
+
+        $needle = "WHERE\n    ABS(c.net_tutar) > 1";
+
+        if (! str_contains($template, $needle) || str_contains($template, '120.01')) {
+            return $template;
+        }
+
+        return str_replace($needle, $needle."\n".$filter, $template);
     }
 }

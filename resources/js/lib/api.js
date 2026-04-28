@@ -17,6 +17,7 @@ export async function apiRequest(path, options = {}) {
 
         try {
             const parsed = JSON.parse(detail);
+
             if (response.status < 500) {
                 message = parsed.message || parsed.error || message;
             }
@@ -27,6 +28,7 @@ export async function apiRequest(path, options = {}) {
         const error = new Error(message);
         error.status = response.status;
         error.detail = detail;
+
         throw error;
     }
 

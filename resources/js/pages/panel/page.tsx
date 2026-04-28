@@ -6,9 +6,6 @@ import { DataTable } from '@/components/primecrm/DataTable.jsx';
 import { DetailDrawer } from '@/components/primecrm/DetailDrawer.jsx';
 import { FilterBar } from '@/components/primecrm/FilterBar.jsx';
 import { KpiCard } from '@/components/primecrm/KpiCard.jsx';
-import { ModuleShell } from '@/components/primecrm/ModuleShell.jsx';
-import { ProformaCartDrawer } from '@/components/primecrm/ProformaCartDrawer.jsx';
-import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
 import {
     detailTitle,
     friendlyEmptyMessage,
@@ -18,6 +15,9 @@ import {
     summaryCards,
     valueFrom,
 } from '@/components/primecrm/module-data.js';
+import { ModuleShell } from '@/components/primecrm/ModuleShell.jsx';
+import { ProformaCartDrawer } from '@/components/primecrm/ProformaCartDrawer.jsx';
+import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
 import { apiRequest } from '@/lib/api';
 import { panelIcon } from '@/lib/panel-icons';
 import type {

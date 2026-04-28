@@ -13,7 +13,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Hash;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 
-#[Fillable(['username', 'full_name', 'password_hash', 'role_code', 'temsilci_kodu', 'aktif', 'last_login_at', 'email_verified_at'])]
+#[Fillable(['username', 'full_name', 'password_hash', 'role_code', 'temsilci_kodu', 'aktif', 'force_password_change', 'last_login_at', 'email_verified_at'])]
 #[Hidden(['password_hash', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -40,6 +40,7 @@ class User extends Authenticatable
             'last_login_at' => 'datetime',
             'email_verified_at' => 'datetime',
             'aktif' => 'boolean',
+            'force_password_change' => 'boolean',
             'password_hash' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
         ];

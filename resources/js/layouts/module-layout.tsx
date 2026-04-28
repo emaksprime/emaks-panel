@@ -1,13 +1,13 @@
 import { Link, usePage } from '@inertiajs/react';
 import { ChevronsUpDown } from 'lucide-react';
 import AppLogo from '@/components/app-logo';
-import { UserInfo } from '@/components/user-info';
-import { UserMenuContent } from '@/components/user-menu-content';
 import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { UserInfo } from '@/components/user-info';
+import { UserMenuContent } from '@/components/user-menu-content';
 import type { SharedPageProps } from '@/types';
 
 const moduleItems = [

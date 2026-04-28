@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Page;
 use App\Services\AuditLogger;
 use App\Services\CariBilgiPageService;
 use App\Services\PanelDataSourceManager;
@@ -41,7 +42,14 @@ class PanelPageController extends Controller
         $path = $this->canonicalPanelPath($path);
         $page = $this->navigation->resolveVisiblePage($user, $path);
 
-        abort_if($page === null, 404);
+        if ($page === null) {
+            $knownPage = Page::query()
+                ->where('route', $path)
+                ->where('active', true)
+                ->first();
+
+            abort($knownPage ? 403 : 404);
+        }
 
         $payload = $this->navigation->pagePayload($page, $user);
         $navigation = $this->navigation->sharedForUser($user, $path);

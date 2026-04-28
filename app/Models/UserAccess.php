@@ -15,7 +15,15 @@ class UserAccess extends Model
     protected $fillable = [
         'user_id',
         'resource_code',
+        'can_view',
     ];
+
+    protected function casts(): array
+    {
+        return [
+            'can_view' => 'boolean',
+        ];
+    }
 
     public function user(): BelongsTo
     {
