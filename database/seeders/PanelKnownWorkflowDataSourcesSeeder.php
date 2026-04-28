@@ -248,7 +248,7 @@ SQL_ORDERS_VERILEN,
 
         $this->upsert(
             'customers_list',
-            'Musteri Listesi',
+            'Müşteri Listesi',
             <<<'SQL_CUSTOMERS_LIST'
 DECLARE @Search NVARCHAR(255) = N'[[search]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
@@ -304,13 +304,13 @@ WHERE @PanelFilter = N'' OR @PanelFilter = N'all' OR (@PanelFilter = N'receivabl
 ORDER BY musteri_kodu ASC;
 SQL_CUSTOMERS_LIST,
             ['search', 'scope_key', 'rep_code', 'page', 'bypass_cache'],
-            'PrimeCRM CariService.SearchAsync musteri liste ve bakiye mantigindan uyarlanan kanonik sorgu.',
+            'PrimeCRM CariService.SearchAsync müşteri liste ve bakiye mantığından uyarlanan kanonik sorgu.',
             'CariService.cs'
         );
 
         $this->upsert(
             'customers_balance',
-            'Musteri Bakiye Ozeti',
+            'Müşteri Bakiye Özeti',
             <<<'SQL_CUSTOMERS_BALANCE'
 DECLARE @Search NVARCHAR(255) = N'[[search]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
@@ -352,13 +352,13 @@ WHERE net_bakiye <> 0
 ORDER BY ABS(net_bakiye) DESC, musteri_kodu ASC;
 SQL_CUSTOMERS_BALANCE,
             ['search', 'rep_code', 'page', 'bypass_cache'],
-            'PrimeCRM CariService.GetSearchSummaryAsync bakiye hesaplama mantigindan musteri bazli liste sorgusu.',
+            'PrimeCRM CariService.GetSearchSummaryAsync bakiye hesaplama mantığından müşteri bazlı liste sorgusu.',
             'CariService.cs'
         );
 
         $this->upsert(
             'customer_statement',
-            'Musteri Ekstre',
+            'Müşteri Ekstre',
             <<<'SQL_CUSTOMER_STATEMENT'
 DECLARE @CustomerCode NVARCHAR(80) = N'[[customer_code]]';
 DECLARE @DateFrom DATE = '[[date_from]]';
@@ -399,12 +399,53 @@ SQL_CUSTOMER_STATEMENT,
             'CariService.cs'
         );
 
-        $this->upsert('customer_detail', 'Musteri Detay', '', ['customer_code', 'rep_code', 'bypass_cache'], 'PrimeCRM CariService.GetCariSummaryAsync ile eslenecek detay veri kaynagi. Query template admin panelden tamamlanacak.', 'CariService.cs');
-        $this->upsert('customer_documents', 'Musteri Evrak Detay', '', ['document_id', 'customer_code', 'bypass_cache'], 'PrimeCRM CariService.GetDocumentDetailAsync evrak detay mantigi icin metadata kaydi. Query template admin panelden tamamlanacak.', 'CariService.cs');
+        $this->upsert(
+            'customer_detail',
+            'Müşteri Detay',
+            <<<'SQL_CUSTOMER_DETAIL'
+DECLARE @CustomerCode NVARCHAR(80) = N'[[customer_code]]';
+DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+
+SELECT TOP 1
+    LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS [musteri_kodu],
+    LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [musteri_adi],
+    LTRIM(RTRIM(ISNULL(cari.cari_unvan2, N''))) AS [firma_unvani_2],
+    LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS [grup],
+    LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) AS [temsilci_kodu],
+    LTRIM(RTRIM(ISNULL(cpt.cari_per_adi, N'') + CASE WHEN ISNULL(cpt.cari_per_soyadi, N'') = N'' THEN N'' ELSE N' ' + cpt.cari_per_soyadi END)) AS [temsilci],
+    LTRIM(RTRIM(ISNULL(cari.cari_CepTel, N''))) AS [telefon],
+    LTRIM(RTRIM(ISNULL(cari.cari_EMail, N''))) AS [email],
+    LTRIM(RTRIM(ISNULL(cari.cari_VergiKimlikNo, N''))) AS [vergi_no],
+    LTRIM(RTRIM(ISNULL(cari.cari_vdaire_adi, N''))) AS [vergi_dairesi],
+    LTRIM(RTRIM(ISNULL(cari.cari_il, N''))) AS [il],
+    LTRIM(RTRIM(ISNULL(cari.cari_ilce, N''))) AS [ilce],
+    CAST(ISNULL(
+        CASE
+            WHEN Cari_F10da_detay = 1 THEN dbo.fn_CariHesapAnaDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+            WHEN Cari_F10da_detay = 2 THEN dbo.fn_CariHesapAlternatifDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+            WHEN Cari_F10da_detay = 3 THEN dbo.fn_CariHesapOrjinalDovizBakiye('',0,cari.cari_kod,'','',0,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
+            WHEN Cari_F10da_detay = 4 THEN dbo.fn_CariHareketSayisi(0,cari.cari_kod,'')
+            ELSE 0
+        END, 0) AS decimal(18,2)
+    ) AS [bakiye]
+FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
+LEFT OUTER JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK) ON grp.crg_kod = cari.cari_grup_kodu
+LEFT OUTER JOIN dbo.CARI_PERSONEL_TANIMLARI cpt WITH (NOLOCK) ON cpt.cari_per_kod = cari.cari_temsilci_kodu
+LEFT OUTER JOIN dbo.vw_Gendata ON 1 = 1
+WHERE
+    LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) = @CustomerCode
+    AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode);
+SQL_CUSTOMER_DETAIL,
+            ['customer_code', 'rep_code', 'bypass_cache'],
+            'PrimeCRM CariService.GetCariSummaryAsync müşteri detay mantığından uyarlanan kanonik sorgu.',
+            'CariService.cs'
+        );
+        $this->upsert('customer_documents', 'Müşteri Evrak Detay', '', ['document_id', 'customer_code', 'bypass_cache'], 'PrimeCRM CariService.GetDocumentDetailAsync evrak detay mantığı için metadata kaydı. Query template admin panelden tamamlanacak.', 'CariService.cs');
 
         $this->upsert(
             'proforma_customer_search',
-            'Proforma Musteri Arama',
+            'Proforma Müşteri Arama',
             <<<'SQL_PROFORMA_CUSTOMERS'
 DECLARE @search NVARCHAR(255) = N'[[search]]';
 
@@ -417,7 +458,7 @@ WHERE (@search = N'' OR cari_kod LIKE N'%' + @search + N'%' OR cari_unvan1 LIKE 
 ORDER BY cari_unvan1;
 SQL_PROFORMA_CUSTOMERS,
             ['search', 'bypass_cache'],
-            'PrimeCRM ProformaService.SearchCustomersAsync musteri arama sorgusu.',
+            'PrimeCRM ProformaService.SearchCustomersAsync müşteri arama sorgusu.',
             'ProformaService.cs'
         );
 
@@ -453,9 +494,56 @@ SQL_PROFORMA_STOCK,
         $this->upsert('proforma_list', 'Proforma Liste', '', ['search', 'proforma_no', 'bypass_cache'], 'PrimeCRM ProformaService.List dosya tabanli calisir; panel SQL datasource bulunmadi.', 'ProformaService.cs');
         $this->upsert('proforma_detail', 'Proforma Detay', '', ['proforma_no', 'bypass_cache'], 'PrimeCRM ProformaService.Find dosya tabanli calisir; panel SQL datasource bulunmadi.', 'ProformaService.cs');
         $this->upsert('proforma_draft', 'Proforma Taslak', '', ['customer_code', 'items', 'bypass_cache'], 'Proforma taslak akisi frontend localStorage ile korunur; SQL datasource bulunmadi.', 'ProformaService.cs');
-        $this->upsert('proforma_items', 'Proforma Satirlari', '', ['proforma_no', 'bypass_cache'], 'Proforma satir metadata kaydi; SQL datasource bulunmadi.', 'ProformaService.cs');
-        $this->upsert('proforma_price_list', 'Proforma Fiyat Listesi', '', ['customer_code', 'bypass_cache'], 'PrimeCRM ProformaService.GetCariInfoAsync dinamik kolon secimi gerektirir; query template admin panelden tamamlanacak.', 'ProformaService.cs');
-        $this->upsert('proforma_discount_defs', 'Proforma Iskonto Tanimlari', '', ['discount_code', 'bypass_cache'], 'PrimeCRM ProformaService.GetDiscountAsync iskonto mantigi icin metadata kaydi. Query template admin panelden tamamlanacak.', 'ProformaService.cs');
+        $this->upsert('proforma_items', 'Proforma Satırları', '', ['proforma_no', 'bypass_cache'], 'Proforma satır metadata kaydı; SQL datasource bulunmadı.', 'ProformaService.cs');
+        $this->upsert(
+            'proforma_price_list',
+            'Proforma Fiyat Listesi',
+            <<<'SQL_PROFORMA_PRICE_LIST'
+DECLARE @CustomerCode NVARCHAR(80) = N'[[customer_code]]';
+DECLARE @PriceColumn sysname =
+    CASE
+        WHEN COL_LENGTH('dbo.CARI_HESAPLAR', 'cari_satis_fiyat_liste_no') IS NOT NULL THEN N'cari_satis_fiyat_liste_no'
+        WHEN COL_LENGTH('dbo.CARI_HESAPLAR', 'cari_fiyat_liste_no') IS NOT NULL THEN N'cari_fiyat_liste_no'
+        WHEN COL_LENGTH('dbo.CARI_HESAPLAR', 'cari_fiyatliste_no') IS NOT NULL THEN N'cari_fiyatliste_no'
+        WHEN COL_LENGTH('dbo.CARI_HESAPLAR', 'cari_satis_fk') IS NOT NULL THEN N'cari_satis_fk'
+        WHEN COL_LENGTH('dbo.CARI_HESAPLAR', 'cari_fiyat_liste') IS NOT NULL THEN N'cari_fiyat_liste'
+        ELSE NULL
+    END;
+DECLARE @Sql nvarchar(max) = N'
+SELECT TOP 1
+    cari.cari_kod AS [musteri_kodu],
+    cari.cari_unvan1 AS [musteri_adi],
+    TRY_CONVERT(int, ' + COALESCE(QUOTENAME(@PriceColumn), N'0') + N') AS [fiyat_liste_no],
+    ISNULL(sfl.sfl_aciklama, N'''') AS [fiyat_liste_adi]
+FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
+LEFT JOIN dbo.STOK_SATIS_FIYAT_LISTE_TANIMLARI sfl WITH (NOLOCK)
+    ON sfl.sfl_sirano = TRY_CONVERT(int, ' + COALESCE(QUOTENAME(@PriceColumn), N'0') + N')
+WHERE cari.cari_kod = @CustomerCode;';
+
+EXEC sp_executesql @Sql, N'@CustomerCode nvarchar(80)', @CustomerCode = @CustomerCode;
+SQL_PROFORMA_PRICE_LIST,
+            ['customer_code', 'bypass_cache'],
+            'PrimeCRM ProformaService.GetCariInfoAsync ve GetFiyatListeAdiAsync mantığından uyarlanan fiyat listesi sorgusu.',
+            'ProformaService.cs'
+        );
+        $this->upsert(
+            'proforma_discount_defs',
+            'Proforma İskonto Tanımları',
+            <<<'SQL_PROFORMA_DISCOUNT_DEFS'
+DECLARE @DiscountCode NVARCHAR(80) = N'[[discount_code]]';
+
+SELECT TOP 1
+    ISNULL(isk_isk1_yuzde, 0) AS [iskonto_1],
+    ISNULL(isk_isk2_yuzde, 0) AS [iskonto_2],
+    ISNULL(isk_isk3_yuzde, 0) AS [iskonto_3]
+FROM dbo.STOK_CARI_ISKONTO_TANIMLARI WITH (NOLOCK)
+WHERE isk_cari_kod = @DiscountCode
+ORDER BY isk_lastup_date DESC;
+SQL_PROFORMA_DISCOUNT_DEFS,
+            ['discount_code', 'bypass_cache'],
+            'PrimeCRM ProformaService.GetDiscountAsync iskonto tanımı sorgusu.',
+            'ProformaService.cs'
+        );
     }
 
     /**

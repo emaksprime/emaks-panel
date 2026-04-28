@@ -2,9 +2,9 @@ import { RefreshCw, Search } from 'lucide-react';
 
 const modeSearchPlaceholder = {
     stock: 'Stok kodu, ürün veya model ara',
-    cari: 'Cari kodu, cari adı, firma ünvanı, telefon veya vergi no ara',
-    orders: 'Cari, ürün, evrak no veya durum ara',
-    proforma: 'Proforma no, cari veya durum ara',
+    cari: 'Müşteri kodu, müşteri adı, firma ünvanı, telefon veya vergi no ara',
+    orders: 'Müşteri, ürün, evrak no veya durum ara',
+    proforma: 'Proforma no, müşteri veya durum ara',
 };
 
 export function FilterBar({ filters, setFilters, onRefresh, loading, mode }) {
@@ -17,7 +17,7 @@ export function FilterBar({ filters, setFilters, onRefresh, loading, mode }) {
                     <input
                         value={filters.search}
                         onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value, page: 1 }))}
-                        placeholder={modeSearchPlaceholder[mode] ?? 'Cari kodu, ünvan, evrak veya ürün ara'}
+                        placeholder={modeSearchPlaceholder[mode] ?? 'Müşteri kodu, ünvan, evrak veya ürün ara'}
                         className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 font-normal text-slate-900 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-50"
                     />
                 </span>

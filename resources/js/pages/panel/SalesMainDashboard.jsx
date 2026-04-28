@@ -24,7 +24,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const pageTitle = 'Satış Yönetimi';
-    const pageDescription = 'Satış performansı ve cari/ürün kırılımı';
+    const pageDescription = 'Satış performansı ve müşteri/ürün özeti';
 
     useEffect(() => {
         let active = true;
@@ -150,7 +150,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
                 <KpiCards items={data?.kpis ?? []} />
 
-                <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+                <div className="grid gap-5">
                     <SalesPieChart chart={data?.chart} />
                     <SalesBreakdown breakdown={data?.breakdown} table={data?.table} />
                 </div>

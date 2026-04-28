@@ -10,10 +10,10 @@ return new class extends Migration
         $now = now();
 
         foreach ([
-            ['code' => 'cari_bilgi', 'name' => 'Musteri Bilgi Sayfa Erisimi', 'type' => 'page'],
-            ['code' => 'finance_cari_bilgi', 'name' => 'Musteri Bilgi', 'type' => 'page'],
-            ['code' => 'finance_cari_bilgi_all', 'name' => 'Musteri Bilgi Tum Cariler', 'type' => 'scope'],
-            ['code' => 'cari_bilgi_dashboard', 'name' => 'Musteri Bilgi Veri Kaynagi', 'type' => 'data_source'],
+            ['code' => 'cari_bilgi', 'name' => 'Müşteri Bilgi Sayfa Erişimi', 'type' => 'page'],
+            ['code' => 'finance_cari_bilgi', 'name' => 'Müşteri Bilgi', 'type' => 'page'],
+            ['code' => 'finance_cari_bilgi_all', 'name' => 'Müşteri Bilgi Tüm Müşteriler', 'type' => 'scope'],
+            ['code' => 'cari_bilgi_dashboard', 'name' => 'Müşteri Bilgi Veri Kaynağı', 'type' => 'data_source'],
         ] as $resource) {
             DB::table('panel.resources')->updateOrInsert(
                 ['code' => $resource['code']],
@@ -37,7 +37,7 @@ return new class extends Migration
                 'layout_type' => 'module',
                 'icon' => 'wallet-cards',
                 'parent_id' => null,
-                'description' => 'Cari bakiye, açık sipariş ve genel durum takibi',
+                'description' => 'Müşteri bakiye, açık sipariş ve genel durum takibi',
                 'page_order' => 101,
                 'active' => true,
                 'updated_at' => $now,
@@ -93,13 +93,13 @@ return new class extends Migration
             ['page_code' => 'cari_bilgi'],
             [
                 'layout_json' => json_encode([
-                    'heroEyebrow' => 'Cari Yönetimi',
-                    'previewNotice' => 'Canlı veri n8n gateway üzerinden alınır.',
+                    'heroEyebrow' => 'Müşteri Yönetimi',
+                    'previewNotice' => 'Canlı veri güvenli servis üzerinden alınır.',
                     'moduleTabs' => [
-                        ['label' => 'Cari Liste', 'href' => '/cari'],
-                        ['label' => 'Cari Bakiye', 'href' => '/cari/balance'],
-                        ['label' => 'Cari Detay', 'href' => '/cari/detail'],
-                        ['label' => 'Cari Ekstre', 'href' => '/cari/detail'],
+                        ['label' => 'Müşteri Listesi', 'href' => '/cari'],
+                        ['label' => 'Müşteri Bakiyesi', 'href' => '/cari/balance'],
+                        ['label' => 'Müşteri Detayı', 'href' => '/cari/detail'],
+                        ['label' => 'Müşteri Ekstre', 'href' => '/cari/detail'],
                         ['label' => 'Müşteri Bilgi', 'href' => '/finance/cari-bilgi'],
                     ],
                 ]),

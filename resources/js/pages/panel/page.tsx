@@ -121,7 +121,7 @@ function PrintBrandHeader({ visible }: { visible: boolean }) {
             <img src="/assets/primecrm/emaks-prime-pdf-logo.jpg" alt="Emaks Prime" className="h-14 w-auto object-contain" />
             <div className="text-center">
                 <p className="text-xs font-semibold tracking-[0.2em] text-slate-500 uppercase">Emaks Prime</p>
-                <h2 className="text-xl font-bold text-slate-950">Cari / Proforma Çıktısı</h2>
+                <h2 className="text-xl font-bold text-slate-950">Müşteri / Proforma Çıktısı</h2>
             </div>
             <img src="/assets/primecrm/philips-logo.png" alt="Philips" className="h-10 w-auto object-contain" />
         </section>
@@ -138,13 +138,13 @@ function ProformaDraftPanel({ slug }: { slug: string }) {
             <div>
                 <p className="text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">Proforma Taslağı</p>
                 <h3 className="mt-2 text-lg font-bold text-slate-950">
-                    Cari seçimi ve ürün satırları
+                    Müşteri seçimi ve ürün satırları
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Stok ekranından eklenen ürünler proforma satırlarına dönüştürülür. Cari seçimi, fiyat, iskonto ve not alanları yazdırma öncesi kontrol edilir.
+                    Stok ekranından eklenen ürünler proforma satırlarına dönüştürülür. Müşteri seçimi, fiyat, iskonto ve not alanları yazdırma öncesi kontrol edilir.
                 </p>
                 <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    {['Cari Seç', 'Ürün Ekle', 'PDF Önizle'].map((label) => (
+                    {['Müşteri Seç', 'Ürün Ekle', 'PDF Önizle'].map((label) => (
                         <button key={label} type="button" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
                             {label}
                         </button>

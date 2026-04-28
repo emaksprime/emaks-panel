@@ -16,6 +16,7 @@ use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -46,9 +47,12 @@ class PanelAuthDatasourceHardeningTest extends TestCase
             'orders_verilen',
             'customers_list',
             'customers_balance',
+            'customer_detail',
             'customer_statement',
             'proforma_customer_search',
             'proforma_stock_search',
+            'proforma_price_list',
+            'proforma_discount_defs',
         ] as $code) {
             $source = DataSource::query()->where('code', $code)->first();
 
@@ -56,9 +60,78 @@ class PanelAuthDatasourceHardeningTest extends TestCase
             $this->assertNotSame('', trim((string) $source->query_template), "Datasource [{$code}] query_template bos olmamali.");
         }
 
-        foreach (['customer_detail', 'customer_documents', 'proforma_list', 'proforma_detail', 'proforma_draft', 'proforma_items'] as $code) {
+        foreach (['customer_documents', 'proforma_list', 'proforma_detail', 'proforma_draft', 'proforma_items'] as $code) {
             $this->assertDatabaseHas('panel.data_sources', ['code' => $code]);
         }
+    }
+
+    public function test_seeded_user_facing_metadata_has_no_mojibake_and_uses_customer_terms(): void
+    {
+        $failPattern = '/[ÃÄÅÂ�]/u';
+
+        foreach ([
+            'panel.roles' => ['name', 'description'],
+            'panel.resources' => ['name'],
+            'panel.menu_groups' => ['name'],
+            'panel.pages' => ['name', 'description'],
+            'panel.page_menu' => ['label'],
+            'panel.buttons' => ['label'],
+            'panel.data_sources' => ['name'],
+        ] as $table => $columns) {
+            DB::table($table)->select($columns)->get()->each(function (object $row) use ($columns, $failPattern, $table): void {
+                foreach ($columns as $column) {
+                    $value = (string) ($row->{$column} ?? '');
+                    $this->assertDoesNotMatchRegularExpression($failPattern, $value, "{$table}.{$column} mojibake içeriyor: {$value}");
+                }
+            });
+        }
+
+        PageConfig::query()->get()->each(function (PageConfig $config) use ($failPattern): void {
+            $layout = json_encode($config->layout_json ?? [], JSON_UNESCAPED_UNICODE);
+            $filters = json_encode($config->filters_json ?? [], JSON_UNESCAPED_UNICODE);
+
+            $this->assertDoesNotMatchRegularExpression($failPattern, (string) $layout, "{$config->page_code} layout_json mojibake içeriyor.");
+            $this->assertDoesNotMatchRegularExpression($failPattern, (string) $filters, "{$config->page_code} filters_json mojibake içeriyor.");
+        });
+
+        $salesConfig = PageConfig::query()->where('page_code', 'sales_main')->firstOrFail();
+        $filtersJson = json_encode($salesConfig->filters_json, JSON_UNESCAPED_UNICODE);
+        $layoutJson = json_encode($salesConfig->layout_json, JSON_UNESCAPED_UNICODE);
+
+        $this->assertStringContainsString('Tümü', (string) $filtersJson);
+        $this->assertStringContainsString('Ümit Yıldız', (string) $filtersJson);
+        $this->assertStringContainsString('Günlük', (string) $filtersJson);
+        $this->assertStringContainsString('Haftalık', (string) $filtersJson);
+        $this->assertStringContainsString('Aylık', (string) $filtersJson);
+        $this->assertStringContainsString('Yıllık', (string) $filtersJson);
+        $this->assertStringContainsString('Müşteri Satış Detayı', (string) $filtersJson);
+        $this->assertStringContainsString('Ürün Satış Detayı', (string) $filtersJson);
+        $this->assertStringContainsString('Müşteri Yönetimi', (string) $layoutJson);
+        $this->assertStringNotContainsString('Cari Yönetimi', (string) $layoutJson);
+
+        $detailModeKeys = collect($salesConfig->filters_json['detailModes'] ?? [])->pluck('key')->all();
+        $this->assertSame(['cari', 'urun'], $detailModeKeys);
+    }
+
+    public function test_sales_preview_payload_keeps_ascii_data_keys(): void
+    {
+        $seederSource = file_get_contents(database_path('seeders/PanelMetadataSeeder.php')) ?: '';
+
+        $this->assertStringContainsString("'satir_tipi'", $seederSource);
+        $this->assertStringContainsString("'satir_adi'", $seederSource);
+        $this->assertStringContainsString("'urun' => [", $seederSource);
+        $this->assertStringNotContainsString("'satır_tipi'", $seederSource);
+        $this->assertStringNotContainsString("'satır_adi'", $seederSource);
+        $this->assertStringNotContainsString("'ürün' => [", $seederSource);
+    }
+
+    public function test_sales_layout_keeps_chart_above_breakdown(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
+
+        $this->assertStringContainsString('<SalesPieChart chart={data?.chart} />', $component);
+        $this->assertStringContainsString('<SalesBreakdown breakdown={data?.breakdown} table={data?.table} />', $component);
+        $this->assertStringNotContainsString('xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]', $component);
     }
 
     public function test_sales_scope_datasource_queries_are_distinct_and_filtered(): void
@@ -140,23 +213,23 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         ]);
 
         $this->assertSame('Ürün Ciro Dağılımı', $urunPayload['chart']['title']);
-        $this->assertSame('Ürün / Müşteri Kırılımı', $urunPayload['breakdown']['title']);
+        $this->assertSame('Ürün / Müşteri Özeti', $urunPayload['breakdown']['title']);
     }
 
-    public function test_empty_customer_and_proforma_queries_return_friendly_messages_without_gateway_call(): void
+    public function test_empty_customer_document_and_proforma_queries_return_friendly_messages_without_gateway_call(): void
     {
-        $customerDetailSource = DataSource::query()->where('code', 'customer_detail')->firstOrFail();
-        $this->assertSame('', trim((string) $customerDetailSource->query_template));
+        $customerDocumentsSource = DataSource::query()->where('code', 'customer_documents')->firstOrFail();
+        $this->assertSame('', trim((string) $customerDocumentsSource->query_template));
 
         Page::query()->updateOrCreate(
-            ['code' => 'customer_detail'],
+            ['code' => 'customer_documents'],
             [
-                'name' => 'Müşteri Detayı',
-                'route' => '/customer/detail',
+                'name' => 'Müşteri Evrakları',
+                'route' => '/customer/documents',
                 'component' => 'panel/page',
                 'layout_type' => 'module',
                 'icon' => 'wallet',
-                'description' => 'Müşteri detay testi',
+                'description' => 'Müşteri evrak testi',
                 'resource_code' => 'customers',
                 'page_order' => 999,
                 'active' => true,
@@ -164,11 +237,11 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         );
 
         PageConfig::query()->updateOrCreate(
-            ['page_code' => 'customer_detail'],
+            ['page_code' => 'customer_documents'],
             [
                 'layout_json' => [],
                 'filters_json' => [],
-                'datasource_id' => $customerDetailSource->id,
+                'datasource_id' => $customerDocumentsSource->id,
             ],
         );
 
@@ -177,7 +250,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         $customer = User::factory()->create(['role_code' => 'customer']);
 
         $this->actingAs($customer)
-            ->postJson('/api/data/customer_detail')
+            ->postJson('/api/data/customer_documents')
             ->assertOk()
             ->assertJsonPath('rows', [])
             ->assertJsonPath('queryMeta.notice', 'Müşteri veri kaynağı henüz tanımlı değil.');
