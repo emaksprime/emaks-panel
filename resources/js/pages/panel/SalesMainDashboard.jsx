@@ -9,7 +9,7 @@ import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 
 export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
-    const [config] = useState(salesMainConfig);
+    const config = salesMainConfig;
     const today = new Date().toISOString().slice(0, 10);
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
     const [data, setData] = useState(salesMainData);
@@ -25,6 +25,15 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const [loading, setLoading] = useState(false);
     const pageTitle = 'Satış Yönetimi';
     const pageDescription = 'Satış performansı ve müşteri/ürün özeti';
+
+    useEffect(() => {
+        setData(salesMainData);
+        setFilters((current) => ({
+            ...current,
+            detail_type: config?.defaults?.detailType ?? current.detail_type,
+            scope_key: config?.defaults?.scopeKey ?? current.scope_key,
+        }));
+    }, [config?.defaults?.detailType, config?.defaults?.scopeKey, salesMainData]);
 
     useEffect(() => {
         let active = true;

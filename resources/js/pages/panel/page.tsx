@@ -1,6 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
-import { ArrowRight, Database, FileText, Plus, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Database, Eye, EyeOff, FileText, Plus, ShieldCheck } from 'lucide-react';
 import { createElement, useEffect, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { CustomerDetailDrawer } from '@/components/primecrm/CustomerDetailDrawer.jsx';
 import { DataTable } from '@/components/primecrm/DataTable.jsx';
 import { DetailDrawer } from '@/components/primecrm/DetailDrawer.jsx';
@@ -8,6 +9,7 @@ import { FilterBar } from '@/components/primecrm/FilterBar.jsx';
 import { KpiCard } from '@/components/primecrm/KpiCard.jsx';
 import {
     detailTitle,
+    filterRowsForSearch,
     friendlyEmptyMessage,
     moduleKindFromPage,
     pageCopy,
@@ -179,7 +181,29 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
     const [error, setError] = useState<ModuleErrorState | null>(null);
     const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
     const [cartOpen, setCartOpen] = useState(false);
-    const [cartItems, setCartItems] = useState<Array<Record<string, unknown>>>([]);
+    const [cartItems, setCartItems] = useState<Array<Record<string, unknown>>>(() => {
+        if (typeof window === 'undefined') {
+            return [];
+        }
+
+        try {
+            const stored = window.localStorage.getItem('emaks_proforma_cart');
+            const parsed = stored ? JSON.parse(stored) : [];
+
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    });
+    const [visibleStockCodes, setVisibleStockCodes] = useState<Set<string>>(new Set());
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        window.localStorage.setItem('emaks_proforma_cart', JSON.stringify(cartItems));
+    }, [cartItems]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => setDebouncedFilters(filters), 350);
@@ -218,7 +242,7 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
 
     const activeData = data?.signature === signature ? data : null;
     const activeError = error?.signature === signature ? error.message : null;
-    const rows = activeData?.rows ?? [];
+    const rows = filterRowsForSearch(kind, activeData?.rows ?? [], filters.search);
     const columns = preferredColumns(kind, page, activeData?.columns ?? []);
     const hasRows = rows.length > 0 && columns.length > 0;
     const loading = !activeData && !activeError;
@@ -237,6 +261,28 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
             },
         ]);
         setCartOpen(true);
+    };
+
+    const toggleStockCode = (event: MouseEvent<HTMLButtonElement>, row: Record<string, unknown>) => {
+        event.stopPropagation();
+        const stockCode = String(valueFrom(row, 'stokKodu') ?? valueFrom(row, 'urunAdi') ?? '');
+
+        setVisibleStockCodes((current) => {
+            const next = new Set(current);
+
+            if (next.has(stockCode)) {
+                next.delete(stockCode);
+            } else {
+                next.add(stockCode);
+            }
+
+            return next;
+        });
+    };
+
+    const addStockToCart = (event: MouseEvent<HTMLButtonElement>, row: Record<string, unknown>) => {
+        event.stopPropagation();
+        addToCart(row);
     };
 
     const actions = (
@@ -283,11 +329,35 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
                     columns={columns}
                     rows={rows}
                     onRowClick={setSelected}
-                    rowActions={kind === 'stock' ? (row) => (
-                        <button type="button" onClick={() => addToCart(row)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-800">
-                            Ekle
-                        </button>
-                    ) : undefined}
+                    rowActions={kind === 'stock' ? (row: Record<string, unknown>) => {
+                        const stockCode = String(valueFrom(row, 'stokKodu') ?? '-');
+                        const key = String(valueFrom(row, 'stokKodu') ?? valueFrom(row, 'urunAdi') ?? '');
+                        const codeVisible = visibleStockCodes.has(key);
+
+                        return (
+                            <div className="flex flex-col items-end gap-2">
+                                <div className="flex items-center justify-end gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={(event) => toggleStockCode(event, row)}
+                                        aria-label={codeVisible ? 'Stok kodunu gizle' : 'Stok kodunu göster'}
+                                        title={codeVisible ? 'Stok kodunu gizle' : 'Stok kodunu göster'}
+                                        className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-blue-200 hover:text-blue-700"
+                                    >
+                                        {codeVisible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                                    </button>
+                                    <button type="button" onClick={(event) => addStockToCart(event, row)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-800">
+                                        Ekle
+                                    </button>
+                                </div>
+                                {codeVisible && (
+                                    <span className="max-w-44 truncate rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600" title={stockCode}>
+                                        Stok Kodu: {stockCode}
+                                    </span>
+                                )}
+                            </div>
+                        );
+                    } : undefined}
                 />
             )}
 
@@ -378,9 +448,9 @@ export default function PanelPage({
                                 <ShieldCheck className="size-5 text-slate-500" />
                                 <h2 className="font-semibold text-slate-950">Yetki Özeti</h2>
                             </div>
-                            <KpiCard label="Tanımlı kaynaklar" value={String(permissions.grantedResources)} />
+                            <KpiCard label="Tanımlı kaynaklar" value={String(permissions.grantedResources)} hint="Erişilebilir kaynak sayısı" />
                             <div className="mt-3">
-                                <KpiCard label="Çalıştırılabilir butonlar" value={String(permissions.canExecuteButtons)} />
+                                <KpiCard label="Çalıştırılabilir butonlar" value={String(permissions.canExecuteButtons)} hint="Yetkili aksiyon sayısı" />
                             </div>
                         </div>
                     </section>

@@ -1,4 +1,4 @@
-import { formatMoney, formatNumber, numericValue } from './format';
+import { formatMoney, formatQuantity, numericValue } from './format';
 
 const countFormatter = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 0 });
 
@@ -44,6 +44,33 @@ export function valueFrom(row, key) {
     return found ? row[found] : undefined;
 }
 
+export function normalizeSearchText(value) {
+    return String(value ?? '')
+        .toLocaleLowerCase('tr-TR')
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .replace(/ı/g, 'i');
+}
+
+const searchAliases = {
+    cari: ['cariKodu', 'cariAdi', 'cariGrup', 'telefon', 'email', 'il', 'ilce', 'temsilci'],
+    stock: ['stokKodu', 'urunAdi', 'kategori', 'depo', 'raf'],
+    orders: ['siparisTarihi', 'evrakNo', 'cariAdi', 'urunAdi', 'durum'],
+    proforma: ['proformaNo', 'cariAdi', 'durum', 'createdAt'],
+};
+
+export function filterRowsForSearch(kind, rows, search) {
+    const needle = normalizeSearchText(search);
+
+    if (!needle) {
+        return rows;
+    }
+
+    const keys = searchAliases[kind] ?? [];
+
+    return rows.filter((row) => keys.some((key) => normalizeSearchText(valueFrom(row, key)).includes(needle)));
+}
+
 function findColumn(columns, key, label) {
     const keys = aliases[key] ?? [key];
     const found = keys.map((candidate) => columns.find((column) => column.key === candidate)).find(Boolean);
@@ -80,16 +107,16 @@ export function pageCopy(page, kind) {
     if (kind === 'cari') {
         if (routePath.includes('/balance')) {
             return {
-                title: 'Cari Bakiye',
+                title: 'Müşteri Bakiyesi',
                 description: 'Borç, alacak ve net bakiye takibi',
-                eyebrow: 'Cari Yönetimi',
+                eyebrow: 'Müşteri Yönetimi',
             };
         }
 
         return {
-            title: 'Cari Yönetimi',
-            description: 'Müşteri, bayi ve cari hesap listesi',
-            eyebrow: 'Cari Yönetimi',
+            title: 'Müşteri Yönetimi',
+            description: 'Müşteri, bayi ve hesap bilgileri',
+            eyebrow: 'Müşteri Yönetimi',
         };
     }
 
@@ -145,8 +172,8 @@ export function preferredColumns(kind, page, columns) {
     const definitions = {
         cari: routePath.includes('/balance')
             ? [
-                ['cariKodu', 'Cari Kodu'],
-                ['cariAdi', 'Cari Adı / Ünvan'],
+                ['cariKodu', 'Müşteri Kodu'],
+                ['cariAdi', 'Müşteri Adı / Ünvan'],
                 ['cariGrup', 'Grup'],
                 ['borc', 'Borç'],
                 ['alacak', 'Alacak'],
@@ -155,8 +182,8 @@ export function preferredColumns(kind, page, columns) {
                 ['sonHareket', 'Son Hareket'],
             ]
             : [
-                ['cariKodu', 'Cari Kodu'],
-                ['cariAdi', 'Cari Adı / Ünvan'],
+                ['cariKodu', 'Müşteri Kodu'],
+                ['cariAdi', 'Müşteri Adı / Ünvan'],
                 ['cariGrup', 'Grup'],
                 ['telefon', 'Telefon'],
                 ['il', 'İl'],
@@ -166,20 +193,15 @@ export function preferredColumns(kind, page, columns) {
                 ['sonHareket', 'Son Hareket'],
             ],
         stock: [
-            ['stokKodu', 'Stok Kodu'],
             ['urunAdi', 'Ürün / Model'],
-            ['kategori', 'Kategori'],
-            ['depo', 'Depo'],
-            ['raf', 'Raf'],
             ['miktar', 'Miktar'],
-            ['birim', 'Birim'],
         ],
         orders: routePath.includes('/verilen')
             ? [
                 ['siparisTarihi', 'Sipariş Tarihi'],
                 ['evrakNo', 'Evrak No'],
                 ['cariAdi', 'Tedarikçi'],
-                ['urunAdi', 'Ürün'],
+                ['urunAdi', 'Ürün / Model'],
                 ['miktar', 'Sipariş Miktarı'],
                 ['teslim', 'Gelen'],
                 ['kalan', 'Kalan'],
@@ -189,8 +211,8 @@ export function preferredColumns(kind, page, columns) {
             : [
                 ['siparisTarihi', 'Sipariş Tarihi'],
                 ['evrakNo', 'Evrak No'],
-                ['cariAdi', 'Cari'],
-                ['urunAdi', 'Ürün'],
+                ['cariAdi', 'Müşteri'],
+                ['urunAdi', 'Ürün / Model'],
                 ['miktar', 'Sipariş Miktarı'],
                 ['teslim', 'Teslim Edilen'],
                 ['kalan', 'Kalan'],
@@ -200,7 +222,7 @@ export function preferredColumns(kind, page, columns) {
             ],
         proforma: [
             ['proformaNo', 'Proforma No'],
-            ['cariAdi', 'Cari'],
+            ['cariAdi', 'Müşteri'],
             ['durum', 'Durum'],
             ['createdAt', 'Tarih'],
             ['tutar', 'Genel Toplam'],
@@ -221,7 +243,7 @@ export function summaryCards(kind, page, rows, cartItems = []) {
         const net = rows.reduce((sum, row) => sum + numericValue(valueFrom(row, 'bakiye')), 0);
 
         return [
-            { label: 'Toplam Cari', value: formatCount(rows.length), hint: 'Listelenen kayıt' },
+            { label: 'Toplam Müşteri', value: formatCount(rows.length), hint: 'Listelenen kayıt' },
             { label: 'Borç Bakiyesi', value: formatMoney(borc), hint: 'Pozitif borç toplamı' },
             { label: 'Alacak Bakiyesi', value: formatMoney(alacak), hint: 'Alacak toplamı' },
             { label: 'Net Bakiye', value: formatMoney(net), hint: 'Seçili liste toplamı' },
@@ -234,7 +256,7 @@ export function summaryCards(kind, page, rows, cartItems = []) {
 
         return [
             { label: 'Kayıt', value: formatCount(rows.length), hint: 'Listelenen ürün' },
-            { label: 'Toplam Stok', value: formatNumber(totalStock), hint: 'Seçili liste miktarı' },
+            { label: 'Toplam Stok', value: formatQuantity(totalStock), hint: 'Seçili liste miktarı' },
             { label: 'Kritik Stok', value: formatCount(criticalCount), hint: 'Düşük miktarlı ürün' },
             { label: 'Proforma Sepeti', value: formatCount(cartItems.length), hint: `${formatMoney(cartItems.reduce((sum, item) => sum + Number(item.quantity || 1) * Number(item.unit_price || 0), 0))}` },
         ];
@@ -246,7 +268,7 @@ export function summaryCards(kind, page, rows, cartItems = []) {
 
         return [
             { label: page.routePath?.includes('/verilen') ? 'Verilen Sipariş' : 'Alınan Sipariş', value: formatCount(rows.length), hint: 'Listelenen satır' },
-            { label: 'Kalan Miktar', value: formatNumber(remaining), hint: 'Açık miktar toplamı' },
+            { label: 'Kalan Miktar', value: formatQuantity(remaining), hint: 'Açık miktar toplamı' },
             { label: 'Toplam Tutar', value: formatMoney(totalAmount), hint: 'Seçili liste toplamı' },
             { label: 'Durum', value: rows.length > 0 ? 'Güncel Liste' : '-', hint: 'Filtre sonucuna göre' },
         ];
@@ -277,7 +299,7 @@ export function detailTitle(kind, row) {
     }
 
     if (kind === 'cari') {
-        return String(valueFrom(row, 'cariAdi') ?? valueFrom(row, 'cariKodu') ?? 'Cari detayı');
+        return String(valueFrom(row, 'cariAdi') ?? valueFrom(row, 'cariKodu') ?? 'Müşteri detayı');
     }
 
     if (kind === 'orders') {
@@ -297,7 +319,7 @@ export function detailTitle(kind, row) {
 
 export function friendlyEmptyMessage(kind) {
     if (kind === 'cari') {
-        return 'Cari veri kaynağı henüz tanımlı değil veya seçili filtrelerde kayıt bulunamadı.';
+        return 'Müşteri kaydı bulunamadı.';
     }
 
     if (kind === 'orders') {

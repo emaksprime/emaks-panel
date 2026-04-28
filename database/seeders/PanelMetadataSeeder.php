@@ -103,8 +103,8 @@ class PanelMetadataSeeder extends Seeder
         $pages = collect([
             ['code' => 'dashboard', 'name' => 'Yönetim Özeti', 'route' => '/dashboard', 'component' => 'panel/page', 'layout_type' => 'admin', 'icon' => 'layout-grid', 'description' => 'Genel yönetim ve metadata özet görünümü', 'resource_code' => 'dashboard', 'page_order' => 10, 'active' => true],
             ['code' => 'sales_main', 'name' => 'Genel Satış', 'route' => '/sales/main', 'component' => 'panel/sales-main', 'layout_type' => 'module', 'icon' => 'chart-column', 'description' => 'Ana satış dashboardu ve yönetim kapsamları', 'resource_code' => 'sales_main', 'page_order' => 20, 'active' => true],
-            ['code' => 'sales_online', 'name' => 'Online / Perakende', 'route' => '/sales/online', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'signal', 'description' => 'Online ve perakende satış görünümü', 'resource_code' => 'sales_online', 'page_order' => 30, 'active' => true],
-            ['code' => 'sales_bayi', 'name' => 'Bayi / Proje', 'route' => '/sales/bayi', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'store', 'description' => 'Bayi ve proje satış görünümü', 'resource_code' => 'sales_bayi', 'page_order' => 40, 'active' => true],
+            ['code' => 'sales_online', 'name' => 'Online / Perakende', 'route' => '/sales/online', 'component' => 'panel/sales-main', 'layout_type' => 'module', 'icon' => 'signal', 'description' => 'Online ve perakende satış görünümü', 'resource_code' => 'sales_online', 'page_order' => 30, 'active' => true],
+            ['code' => 'sales_bayi', 'name' => 'Bayi / Proje', 'route' => '/sales/bayi', 'component' => 'panel/sales-main', 'layout_type' => 'module', 'icon' => 'store', 'description' => 'Bayi ve proje satış görünümü', 'resource_code' => 'sales_bayi', 'page_order' => 40, 'active' => true],
             ['code' => 'sales_representatives', 'name' => 'Satış Temsilcisi Görünümü', 'route' => '/sales/representatives', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'users', 'description' => 'Temsilci bazlı satış kapsamları ana Satış Yönetimi kapsam filtresinden yönetilir.', 'resource_code' => 'sales_representatives', 'page_order' => 50, 'active' => false],
             ['code' => 'stock', 'name' => 'Stok Listesi', 'route' => '/stock', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Stok listesi ve ürün izleme ekranı.', 'resource_code' => 'stock', 'page_order' => 60, 'active' => true],
             ['code' => 'stock_critical', 'name' => 'Kritik Stoklar', 'route' => '/stock/critical', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'boxes', 'description' => 'Kritik stok seviyeleri ve uyarı listesi burada hazırlanır.', 'resource_code' => 'stock_critical', 'page_order' => 61, 'active' => true],
@@ -136,7 +136,7 @@ class PanelMetadataSeeder extends Seeder
             ['menu_group' => 'sales', 'page' => 'sales_bayi', 'label' => 'Bayi / Proje', 'icon' => 'store', 'sort_order' => 40],
             ['menu_group' => 'stock', 'page' => 'stock', 'label' => 'Stok Listesi', 'icon' => 'boxes', 'sort_order' => 60],
             ['menu_group' => 'stock', 'page' => 'stock_critical', 'label' => 'Kritik Stoklar', 'icon' => 'boxes', 'sort_order' => 61],
-            ['menu_group' => 'stock', 'page' => 'stock_warehouse', 'label' => 'Depo / Raf Durumu', 'icon' => 'boxes', 'sort_order' => 62],
+            ['menu_group' => 'stock', 'page' => 'stock_warehouse', 'label' => 'Depo / Raf Durumu', 'icon' => 'boxes', 'sort_order' => 62, 'is_visible' => false],
             ['menu_group' => 'orders', 'page' => 'orders', 'label' => 'Sipariş Yönetimi', 'icon' => 'shopping-cart', 'sort_order' => 70],
             ['menu_group' => 'orders', 'page' => 'orders_alinan', 'label' => 'Alınan Siparişler', 'icon' => 'shopping-cart', 'sort_order' => 71],
             ['menu_group' => 'orders', 'page' => 'orders_verilen', 'label' => 'Verilen Siparişler', 'icon' => 'shopping-cart', 'sort_order' => 72],
@@ -165,7 +165,7 @@ class PanelMetadataSeeder extends Seeder
                     'label' => $item['label'],
                     'icon' => $item['icon'],
                     'sort_order' => $item['sort_order'],
-                    'is_visible' => true,
+                    'is_visible' => $item['is_visible'] ?? true,
                 ],
             );
         }
@@ -430,7 +430,6 @@ SQL,
             'stock' => [
                 ['label' => 'Stok Listesi', 'href' => '/stock'],
                 ['label' => 'Kritik Stoklar', 'href' => '/stock/critical'],
-                ['label' => 'Depo / Raf Durumu', 'href' => '/stock/warehouse'],
             ],
             'orders' => [
                 ['label' => 'Sipariş Yönetimi', 'href' => '/orders'],

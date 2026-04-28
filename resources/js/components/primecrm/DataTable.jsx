@@ -49,10 +49,12 @@ function cellTone(column, rawValue) {
 }
 
 export function DataTable({ columns, rows, onRowClick, rowActions }) {
+    const tableWidth = columns.length <= 3 ? 'min-w-full' : 'min-w-[980px]';
+
     return (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="overflow-x-auto">
-                <table className="min-w-[980px] divide-y divide-slate-200 text-sm">
+                <table className={`${tableWidth} divide-y divide-slate-200 text-sm`}>
                     <thead className="bg-slate-50">
                         <tr>
                             {columns.map((column, index) => (
@@ -61,7 +63,7 @@ export function DataTable({ columns, rows, onRowClick, rowActions }) {
                                     className={[
                                         'sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-4 py-3 font-semibold text-slate-600',
                                         isNumberColumn(column) ? 'text-right' : 'text-left',
-                                        index === 1 ? 'min-w-[280px]' : '',
+                                        index === 0 ? 'min-w-[280px]' : '',
                                     ].join(' ')}
                                 >
                                     {column.label}
