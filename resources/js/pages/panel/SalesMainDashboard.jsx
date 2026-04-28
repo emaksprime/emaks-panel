@@ -23,6 +23,8 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     }));
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
+    const pageTitle = 'Satış Yönetimi';
+    const pageDescription = 'Satış performansı ve cari/ürün kırılımı';
 
     useEffect(() => {
         let active = true;
@@ -71,10 +73,10 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                             Emaks Prime
                         </p>
                         <h1 className="mt-2 text-3xl font-semibold text-slate-950 [font-family:var(--font-display)]">
-                            {config?.page?.title}
+                            {pageTitle}
                         </h1>
                         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                            {config?.page?.description}
+                            {pageDescription}
                         </p>
                         {data?.queryMeta?.notice && (
                             <div className="mt-3 inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">

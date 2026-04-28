@@ -7,7 +7,7 @@ export function KpiCards({ items = [] }) {
                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
                         {item.label}
                     </p>
-                    <strong className="mt-3 block truncate text-2xl font-semibold text-slate-950" title={String(item.value)}>
+                    <strong className="mt-3 block break-words text-xl font-semibold leading-tight text-slate-950 sm:text-2xl" title={String(item.value)}>
                         {item.value}
                     </strong>
                 </article>
