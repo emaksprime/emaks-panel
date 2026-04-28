@@ -108,6 +108,21 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         $this->assertStringContainsString('Ürün Satış Detayı', (string) $filtersJson);
         $this->assertStringContainsString('Müşteri Yönetimi', (string) $layoutJson);
         $this->assertStringNotContainsString('Cari Yönetimi', (string) $layoutJson);
+
+        $detailModeKeys = collect($salesConfig->filters_json['detailModes'] ?? [])->pluck('key')->all();
+        $this->assertSame(['cari', 'urun'], $detailModeKeys);
+    }
+
+    public function test_sales_preview_payload_keeps_ascii_data_keys(): void
+    {
+        $seederSource = file_get_contents(database_path('seeders/PanelMetadataSeeder.php')) ?: '';
+
+        $this->assertStringContainsString("'satir_tipi'", $seederSource);
+        $this->assertStringContainsString("'satir_adi'", $seederSource);
+        $this->assertStringContainsString("'urun' => [", $seederSource);
+        $this->assertStringNotContainsString("'satır_tipi'", $seederSource);
+        $this->assertStringNotContainsString("'satır_adi'", $seederSource);
+        $this->assertStringNotContainsString("'ürün' => [", $seederSource);
     }
 
     public function test_sales_layout_keeps_chart_above_breakdown(): void
