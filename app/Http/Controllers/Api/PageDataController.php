@@ -53,9 +53,22 @@ class PageDataController extends Controller
             );
         } catch (RuntimeException $exception) {
             return response()->json([
-                'message' => $exception->getMessage(),
+                'message' => $this->friendlyErrorMessage($page),
                 'mode' => 'page_data_error',
             ], 502);
         }
+    }
+
+    private function friendlyErrorMessage(Page $page): string
+    {
+        $resourceCode = $page->resource_code ?? $page->code;
+
+        return match ($resourceCode) {
+            'customers' => 'Müşteri veri kaynağı çalıştırılamadı.',
+            'proforma', 'proforma_create', 'proforma_detail', 'proforma_edit' => 'Proforma veri kaynağı çalıştırılamadı.',
+            'stock', 'stock_critical', 'stock_warehouse' => 'Stok veri kaynağı çalıştırılamadı.',
+            'orders', 'orders_alinan', 'orders_verilen' => 'Sipariş veri kaynağı çalıştırılamadı.',
+            default => 'Veri kaynağı çalıştırılamadı.',
+        };
     }
 }

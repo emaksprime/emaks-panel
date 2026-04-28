@@ -132,12 +132,12 @@ class SalesMainPageService
                     'raw' => $netTotal,
                 ],
                 [
-                    'label' => 'Secili Donem',
+                    'label' => 'Seçili Dönem',
                     'value' => $periodLabel,
                     'raw' => $periodLabel,
                 ],
                 [
-                    'label' => 'Konsinye Haric',
+                    'label' => 'Konsinye Hariç',
                     'value' => $this->money($konsinye),
                     'raw' => $konsinye,
                 ],
@@ -148,10 +148,10 @@ class SalesMainPageService
                 ],
             ],
             'chart' => [
-                'title' => $filters['detail_type'] === 'urun' ? 'Urun Ciro Dagilimi' : 'Cari Grup Ciro Dagilimi',
+                'title' => $filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı',
                 'subtitle' => $filters['detail_type'] === 'urun'
-                    ? 'Urun ve model bazli paylarin dagilimi.'
-                    : 'Cari gruplarin toplam ciro icindeki paylari.',
+                    ? 'Ürün ve model bazlı payların dağılımı.'
+                    : 'Satış gruplarının toplam ciro içindeki payları.',
                 'totalNet' => $netTotal,
                 'konsinyeAmount' => $konsinye,
                 'items' => $groupRows->map(function (array $row, int $index) use ($positiveTotal) {
@@ -174,7 +174,7 @@ class SalesMainPageService
             ],
             'breakdown' => [
                 'mode' => $filters['detail_type'],
-                'title' => $filters['detail_type'] === 'urun' ? 'Urun -> Cari Kirilimi' : 'Cari Grup -> Cari -> Urun Kirilimi',
+                'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Kırılımı' : 'Satış Detayı',
                 'groups' => $this->breakdownGroups($filters['detail_type'], $groupRows, $detailRows),
             ],
             'table' => [
@@ -210,7 +210,7 @@ class SalesMainPageService
 
         return $scope ?? $scopes->first() ?? [
             'key' => 'all',
-            'label' => 'Tumu',
+            'label' => 'Tümü',
             'repCode' => null,
             'navigateTo' => null,
             'note' => '',
