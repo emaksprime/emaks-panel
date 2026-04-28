@@ -27,6 +27,17 @@ export type ServiceRequest = {
   riskLevel: ServiceRiskLevel
 }
 
+export type ServiceRequestEvent = {
+  id: string
+  event_type: string
+  title: string
+  note?: string | null
+  from_status?: string | null
+  to_status?: string | null
+  author_user_id?: number | null
+  created_at: string
+}
+
 export type ServiceFilters = {
   search: string
   serviceType: ServiceType | ''

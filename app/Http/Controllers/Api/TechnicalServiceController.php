@@ -67,7 +67,11 @@ class TechnicalServiceController extends Controller
     public function show(TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         return response()->json([
-            'request' => $technicalServiceRequest->load('events'),
+            'request' => $technicalServiceRequest->load([
+                'events' => function ($query) {
+                    $query->orderBy('created_at');
+                },
+            ]),
         ]);
     }
 

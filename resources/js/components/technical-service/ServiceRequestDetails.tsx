@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import type { ServiceRequest } from './types'
+import type { ServiceRequest, ServiceRequestEvent } from './types'
 
 const statusVariant = (status: ServiceRequest['status']) => {
   switch (status) {
@@ -48,13 +48,32 @@ const priorityVariant = (priority: ServiceRequest['priority']) => {
   }
 }
 
-const timelineItems = [
-  { step: 'Talep alındı', time: '09:15', note: 'Teknik servis ekibi talebi aldı.' },
-  { step: 'Usta atandı', time: '10:00', note: 'Talep için görev atandı.' },
-  { step: 'Randevu planlandı', time: '10:20', note: 'Müşteriye randevu bildirimi gönderildi.' },
-]
+type ServiceRequestDetailsProps = {
+  request: ServiceRequest
+  events: ServiceRequestEvent[]
+  loading: boolean
+  error?: string | null
+}
 
-export function ServiceRequestDetails({ request }: { request: ServiceRequest }) {
+const eventTime = (timestamp: string): string => {
+  const date = new Date(timestamp)
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Bilinmiyor'
+  }
+
+  return date.toLocaleString('tr-TR', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  })
+}
+
+export function ServiceRequestDetails({
+  request,
+  events,
+  loading,
+  error,
+}: ServiceRequestDetailsProps) {
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm">
       <CardHeader className="space-y-3 px-6 py-6">
@@ -138,15 +157,32 @@ export function ServiceRequestDetails({ request }: { request: ServiceRequest }) 
         <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Durum Timeline</p>
           <div className="mt-4 space-y-4">
-            {timelineItems.map((item) => (
-              <div key={item.step} className="flex gap-3 text-sm">
-                <div className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
-                <div>
-                  <p className="font-semibold text-slate-900">{item.step}</p>
-                  <p className="text-xs text-slate-500">{item.time} · {item.note}</p>
-                </div>
+            {loading ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                Detay yükleniyor...
               </div>
-            ))}
+            ) : error ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                {error}
+              </div>
+            ) : events.length === 0 ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                Henüz işlem geçmişi yok.
+              </div>
+            ) : (
+              events.map((event) => (
+                <div key={String(event.id)} className="flex gap-3 text-sm">
+                  <div className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
+                  <div>
+                    <p className="font-semibold text-slate-900">{event.title}</p>
+                    <p className="text-xs text-slate-500">
+                      {eventTime(event.created_at)}
+                      {event.note ? ` · ${event.note}` : ''}
+                    </p>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </section>
 

@@ -1,9 +1,10 @@
 import { Head } from '@inertiajs/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import Heading from '@/components/heading'
+import { apiRequest } from '@/lib/api'
 import { ServiceSummaryCards } from '@/components/technical-service/ServiceSummaryCards'
 import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
@@ -22,134 +23,50 @@ type NewRequestForm = {
   notes: string
 }
 
-const requests: ServiceRequest[] = [
-  {
-    id: 'req-001',
-    mrn: 'MRN-1001',
-    customer: 'Aleyna Elektronik',
-    phone: '+90 532 123 45 67',
-    city: 'İstanbul',
-    district: 'Kadıköy',
-    product: 'Philips DDL720 MVP',
-    model: 'DDL720 MVP',
-    serialNumber: 'SN12345678',
-    channel: 'Yetkili Servis',
-    serviceType: 'Montaj',
-    priority: 'Orta',
-    technician: 'Usta Mehmet',
-    appointment: '14 Mayıs 2026, 13:30',
-    status: 'Randevulu',
-    sla: '24 saat',
-    address: 'Moda Mah. Bağdat Cad. No: 45',
-    notes: 'Montaj için ekip hazır.',
-    riskLevel: 'Orta',
-  },
-  {
-    id: 'req-002',
-    mrn: 'MRN-1002',
-    customer: 'Güneş A.Ş.',
-    phone: '+90 532 987 65 43',
-    city: 'Ankara',
-    district: 'Çankaya',
-    product: 'Philips DDL702',
-    model: 'DDL702',
-    serialNumber: 'SN87654321',
-    channel: 'Çağrı Merkezi',
-    serviceType: 'Arıza',
-    priority: 'Yüksek',
-    technician: 'Çilingir Hasan',
-    appointment: '14 Mayıs 2026, 09:00',
-    status: 'Devam Ediyor',
-    sla: '12 saat',
-    address: 'Tunali Hilmi Cad. No: 12',
-    notes: 'Sistem düzgün çalışmıyor.',
-    riskLevel: 'Yüksek',
-  },
-  {
-    id: 'req-003',
-    mrn: 'MRN-1003',
-    customer: 'Narin Beyaz Eşya',
-    phone: '+90 532 555 66 77',
-    city: 'İzmir',
-    district: 'Bornova',
-    product: 'Philips DDL801',
-    model: 'DDL801',
-    serialNumber: 'SN11223344',
-    channel: 'Online',
-    serviceType: 'Kontrol',
-    priority: 'Düşük',
-    technician: 'Usta Ayşe',
-    appointment: '15 Mayıs 2026, 11:00',
-    status: 'Atandı',
-    sla: '48 saat',
-    address: 'Mimar Sinan Mah. 123. Sk. No: 8',
-    notes: 'Periyodik kontrol talebi.',
-    riskLevel: 'Düşük',
-  },
-  {
-    id: 'req-004',
-    mrn: 'MRN-1004',
-    customer: 'Okan Tekstil',
-    phone: '+90 532 222 33 44',
-    city: 'Bursa',
-    district: 'Nilüfer',
-    product: 'Emaks Prime Galaxy 30',
-    model: 'Galaxy 30',
-    serialNumber: 'SN55667788',
-    channel: 'Yetkili Servis',
-    serviceType: 'Arıza',
-    priority: 'Orta',
-    technician: 'Usta Hasan',
-    appointment: '16 Mayıs 2026, 14:30',
-    status: 'Yeni',
-    sla: '72 saat',
-    address: 'Gürsu Mah. Atatürk Cad. No: 17',
-    notes: 'Kapanmama sorunu.',
-    riskLevel: 'Orta',
-  },
-  {
-    id: 'req-005',
-    mrn: 'MRN-1005',
-    customer: 'Ege Teknik Servis',
-    phone: '+90 536 444 55 66',
-    city: 'Antalya',
-    district: 'Muratpaşa',
-    product: 'Philips DDL630',
-    model: 'DDL630',
-    serialNumber: 'SN99887766',
-    channel: 'Çağrı Merkezi',
-    serviceType: 'Arıza',
-    priority: 'Kritik',
-    technician: 'Atanmadı',
-    appointment: '17 Mayıs 2026, 10:00',
-    status: 'Yeni',
-    sla: '18 saat',
-    address: 'Çarşı Mah. 2059 Sk. No: 7',
-    notes: 'Buzdolabı soğutmuyor.',
-    riskLevel: 'Kritik',
-  },
-  {
-    id: 'req-006',
-    mrn: 'MRN-1006',
-    customer: 'Pera Yapı',
-    phone: '+90 532 111 22 33',
-    city: 'İstanbul',
-    district: 'Şişli',
-    product: 'Emaks Prime XT',
-    model: 'Prime XT',
-    serialNumber: 'SN00998877',
-    channel: 'Müşteri',
-    serviceType: 'Montaj',
-    priority: 'Düşük',
-    technician: 'Usta Ali',
-    appointment: '18 Mayıs 2026, 15:45',
-    status: 'İptal',
-    sla: 'N/A',
-    address: 'Halaskargazi Cad. No: 12',
-    notes: 'Müşteri iptal etti.',
-    riskLevel: 'Düşük',
-  },
-]
+type ApiTechnicalServiceRequest = {
+  id: number | string
+  mrn: string
+  customer_name: string
+  customer_phone: string
+  customer_city: string
+  customer_district: string
+  service_address: string
+  product_name: string
+  product_model?: string | null
+  serial_number?: string | null
+  service_type: string
+  status: string
+  priority: string
+  risk_level: string
+  technician_name?: string | null
+  scheduled_at?: string | null
+  sla_due_at?: string | null
+  description?: string | null
+  resolution_notes?: string | null
+  source_channel?: string | null
+}
+
+type ApiTechnicalServiceEvent = {
+  id: number | string
+  event_type: string
+  title: string
+  note?: string | null
+  from_status?: string | null
+  to_status?: string | null
+  author_user_id?: number | null
+  metadata?: Record<string, unknown> | null
+  created_at: string
+  updated_at: string
+}
+
+type SummaryResponse = {
+  total_requests: number
+  ongoing_requests: number
+  status_counts: Record<string, number>
+  priority_counts: Record<string, number>
+  risk_level_counts: Record<string, number>
+  scheduled_today: number
+}
 
 const initialFilters: FilterState = {
   search: '',
@@ -169,59 +86,224 @@ const initialRequestForm: NewRequestForm = {
   notes: '',
 }
 
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) {
+    return 'Belirlenmedi'
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Belirlenmedi'
+  }
+
+  return date.toLocaleString('tr-TR', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
+}
+
+function formatSla(value: string | null | undefined): string {
+  if (!value) {
+    return 'Belirlenmedi'
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Belirlenmedi'
+  }
+
+  return date.toLocaleDateString('tr-TR')
+}
+
+function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
+  return {
+    id: String(request.id),
+    mrn: request.mrn,
+    customer: request.customer_name,
+    phone: request.customer_phone,
+    city: request.customer_city,
+    district: request.customer_district,
+    product: request.product_name,
+    model: request.product_model ?? '',
+    serialNumber: request.serial_number ?? '',
+    serviceType: request.service_type,
+    priority: request.priority,
+    technician: request.technician_name ?? 'Atanmadı',
+    appointment: formatDateTime(request.scheduled_at),
+    status: request.status,
+    sla: formatSla(request.sla_due_at),
+    address: request.service_address,
+    notes: request.description ?? request.resolution_notes ?? '',
+    riskLevel: request.risk_level,
+    channel: request.source_channel ?? '',
+  }
+}
+
 export default function TechnicalService() {
   const [filters, setFilters] = useState<FilterState>(initialFilters)
-  const [selectedId, setSelectedId] = useState(requests[0].id)
+  const [requests, setRequests] = useState<ServiceRequest[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [createForm, setCreateForm] = useState<NewRequestForm>(initialRequestForm)
+  const [loading, setLoading] = useState(true)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [summaryLoading, setSummaryLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [selectedEvents, setSelectedEvents] = useState<ApiTechnicalServiceEvent[]>([])
+  const [createLoading, setCreateLoading] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
+
+  const loadRequests = async () => {
+    setLoading(true)
+    setError(null)
+
+    const params = new URLSearchParams()
+
+    if (filters.search.trim()) {
+      params.append('search', filters.search.trim())
+    }
+
+    if (filters.status) {
+      params.append('status', filters.status)
+    }
+
+    if (filters.serviceType) {
+      params.append('service_type', filters.serviceType)
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/technical-service/requests${params.toString() ? `?${params.toString()}` : ''}`,
+      )
+
+      const items = Array.isArray(response.items) ? response.items : []
+
+      setRequests(items.map(mapApiRequest))
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Teknik servis talepleri alınamadı.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadSummary = async () => {
+    setSummaryLoading(true)
+
+    try {
+      const response = await apiRequest('/api/technical-service/summary')
+      setSummaryData(response as SummaryResponse)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Özet verisi alınamadı.')
+    } finally {
+      setSummaryLoading(false)
+    }
+  }
+
+  const loadRequestDetail = async (id: string) => {
+    setDetailLoading(true)
+    setDetailError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${id}`)
+      const request = response.request
+
+      setSelectedEvents(Array.isArray(request?.events) ? request.events : [])
+    } catch (caught) {
+      setDetailError(caught instanceof Error ? caught.message : 'Talep detayları yüklenemedi.')
+      setSelectedEvents([])
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadSummary()
+  }, [])
+
+  useEffect(() => {
+    void loadRequests()
+  }, [filters])
+
+  useEffect(() => {
+    if (selectedId !== null && requests.some((request) => request.id === selectedId)) {
+      return
+    }
+
+    setSelectedId(requests[0]?.id ?? null)
+  }, [requests, selectedId])
+
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedEvents([])
+      setDetailError(null)
+      return
+    }
+
+    void loadRequestDetail(selectedId)
+  }, [selectedId])
 
   const filteredRequests = useMemo(() => {
     return requests.filter((request) => {
       const search = filters.search.toLowerCase().trim()
       const matchesSearch =
         !search ||
-        [request.mrn, request.customer, request.phone, request.serialNumber]
-          .some((value) => value.toLowerCase().includes(search))
+        [request.mrn, request.customer, request.phone, request.serialNumber].some((value) =>
+          value.toLowerCase().includes(search),
+        )
       const matchesType = !filters.serviceType || request.serviceType === filters.serviceType
       const matchesStatus = !filters.status || request.status === filters.status
 
       return matchesSearch && matchesType && matchesStatus
     })
-  }, [filters])
+  }, [filters, requests])
 
   const selectedRequest =
-    filteredRequests.find((request) => request.id === selectedId) ??
-    filteredRequests[0] ??
-    requests[0]
+    filteredRequests.find((request) => request.id === selectedId) ?? filteredRequests[0] ?? null
+
+  useEffect(() => {
+    if (!selectedId || filteredRequests.some((request) => request.id === selectedId)) {
+      return
+    }
+
+    setSelectedId(filteredRequests[0]?.id ?? null)
+  }, [filteredRequests, selectedId])
+
+  const unassignedCount = requests.filter((request) => !request.technician || request.technician === 'Atanmadı').length
 
   const summaryItems: SummaryItem[] = [
     {
       label: 'Açık Talep',
-      value: String(requests.filter((request) => request.status !== 'Tamamlandı' && request.status !== 'İptal').length),
+      value: summaryLoading ? '...' : String(summaryData?.ongoing_requests ?? 0),
       tone: 'accent',
       description: 'Henüz tamamlanmamış teknik servis talepleri',
     },
     {
       label: 'Bugünkü Randevu',
-      value: String(requests.filter((request) => request.appointment.includes('14 Mayıs 2026')).length),
+      value: summaryLoading ? '...' : String(summaryData?.scheduled_today ?? 0),
       tone: 'warning',
       description: 'Bugün planlanmış servis ziyaretleri',
     },
     {
       label: 'SLA Riski',
-      value: String(requests.filter((request) => request.riskLevel === 'Yüksek' || request.riskLevel === 'Kritik').length),
+      value: summaryLoading
+        ? '...'
+        : String((summaryData?.risk_level_counts?.Yüksek ?? 0) + (summaryData?.risk_level_counts?.Kritik ?? 0)),
       tone: 'warning',
       description: 'Yüksek ve kritik SLA riski olan talepler',
     },
     {
       label: 'Tamamlanan İş',
-      value: String(requests.filter((request) => request.status === 'Tamamlandı').length),
+      value: summaryLoading ? '...' : String(summaryData?.status_counts?.Tamamlandı ?? 0),
       tone: 'default',
       description: 'Bugüne kadar kapatılmış talepler',
     },
     {
       label: 'Atanmamış Talep',
-      value: String(requests.filter((request) => request.technician === 'Atanmadı').length),
+      value: loading ? '...' : String(unassignedCount),
       tone: 'default',
       description: 'Usta atanmamış talepler',
     },
@@ -235,9 +317,38 @@ export default function TechnicalService() {
     setCreateForm(initialRequestForm)
   }
 
-  const handleCreateSubmit = () => {
-    setIsDialogOpen(false)
-    handleCreateReset()
+  const handleCreateSubmit = async () => {
+    setCreateLoading(true)
+    setCreateError(null)
+
+    try {
+      const response = await apiRequest('/api/technical-service/requests', {
+        method: 'POST',
+        body: JSON.stringify({
+          customer_name: createForm.customer,
+          customer_phone: createForm.phone,
+          customer_city: createForm.city,
+          customer_district: createForm.district,
+          service_address: createForm.address,
+          product_name: createForm.product,
+          serial_number: createForm.serialNumber || null,
+          service_type: createForm.serviceType,
+          description: createForm.notes || null,
+          source_channel: 'panel',
+        }),
+      })
+
+      const createdRequest = mapApiRequest(response.request ?? response)
+      setRequests((current) => [createdRequest, ...current])
+      setSelectedId(createdRequest.id)
+      setIsDialogOpen(false)
+      handleCreateReset()
+      void loadSummary()
+    } catch (caught) {
+      setCreateError(caught instanceof Error ? caught.message : 'Teknik servis talebi kaydedilemedi.')
+    } finally {
+      setCreateLoading(false)
+    }
   }
 
   return (
@@ -260,9 +371,14 @@ export default function TechnicalService() {
               <DialogHeader>
                 <DialogTitle>Yeni Servis Talebi</DialogTitle>
                 <DialogDescription>
-                  Buradaki form şimdilik dummy veridir; talep kaydı lokal olarak yapılmayacaktır.
+                  Yeni servis talebi bu ekran üzerinden backend API aracılığıyla kaydedilecektir.
                 </DialogDescription>
               </DialogHeader>
+              {createError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {createError}
+                </div>
+              ) : null}
               <div className="grid gap-4 pt-2">
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="grid gap-2 text-sm font-medium text-slate-700">
@@ -359,8 +475,8 @@ export default function TechnicalService() {
                 <Button variant="outline" type="button" onClick={() => setIsDialogOpen(false)}>
                   İptal
                 </Button>
-                <Button type="button" onClick={handleCreateSubmit}>
-                  Kaydet
+                <Button type="button" onClick={handleCreateSubmit} disabled={createLoading}>
+                  {createLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -389,15 +505,40 @@ export default function TechnicalService() {
               </div>
             </div>
 
-            <ServiceRequestTable
-              requests={filteredRequests}
-              selectedId={selectedRequest.id}
-              onSelect={(request) => setSelectedId(request.id)}
-            />
+            {error ? (
+              <div className="rounded-3xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700">
+                {error}
+              </div>
+            ) : loading ? (
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+                Teknik servis talepleri yükleniyor...
+              </div>
+            ) : filteredRequests.length === 0 ? (
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+                Henüz teknik servis talebi yok.
+              </div>
+            ) : (
+              <ServiceRequestTable
+                requests={filteredRequests}
+                selectedId={selectedRequest?.id ?? ''}
+                onSelect={(request) => setSelectedId(request.id)}
+              />
+            )}
           </div>
 
           <div className="xl:self-start xl:sticky xl:top-28 xl:max-w-[400px]">
-            <ServiceRequestDetails request={selectedRequest} />
+            {selectedRequest ? (
+              <ServiceRequestDetails
+                request={selectedRequest}
+                events={selectedEvents}
+                loading={detailLoading}
+                error={detailError}
+              />
+            ) : (
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+                Seçili talep bulunamadı.
+              </div>
+            )}
           </div>
         </div>
       </div>
