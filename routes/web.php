@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
+use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use Illuminate\Support\Facades\Route;
@@ -24,6 +25,16 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         Route::post('data/{code}', PageDataController::class)
             ->where('code', '[A-Za-z0-9_-]+')
             ->name('api.data.page');
+
+        Route::prefix('technical-service')->middleware('panel.access:technical_service')->group(function () {
+            Route::get('requests', [TechnicalServiceController::class, 'index'])->name('api.technical-service.requests.index');
+            Route::get('requests/{technicalServiceRequest}', [TechnicalServiceController::class, 'show'])->name('api.technical-service.requests.show');
+            Route::post('requests', [TechnicalServiceController::class, 'store'])->name('api.technical-service.requests.store');
+            Route::patch('requests/{technicalServiceRequest}', [TechnicalServiceController::class, 'update'])->name('api.technical-service.requests.update');
+            Route::post('requests/{technicalServiceRequest}/status', [TechnicalServiceController::class, 'updateStatus'])->name('api.technical-service.requests.status');
+            Route::post('requests/{technicalServiceRequest}/assign', [TechnicalServiceController::class, 'assign'])->name('api.technical-service.requests.assign');
+            Route::get('summary', [TechnicalServiceController::class, 'summary'])->name('api.technical-service.summary');
+        });
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {
             Route::get('overview', [\App\Http\Controllers\Api\AdminController::class, 'overview']);
