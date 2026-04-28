@@ -121,7 +121,7 @@ class PanelNavigationService
             ->where('active', true)
             ->orderBy('page_order')
             ->get()
-            ->filter(fn (Page $page) => $this->access->userCanAccess($user, $page->code))
+            ->filter(fn (Page $page) => $this->access->userCanAccess($user, $page->resource_code ?? $page->code))
             ->values();
     }
 

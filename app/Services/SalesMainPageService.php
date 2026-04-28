@@ -31,7 +31,7 @@ class SalesMainPageService
         $filters = $pageConfig->filters_json ?? [];
         $scopes = $this->visibleScopes($user, collect($filters['managementScopes'] ?? []));
         $scope = $scopes->first();
-        $source = $pageConfig->dataSource ?? $this->source();
+        $source = $this->sourceForScope($scope ?? ['key' => 'all']) ?? $pageConfig->dataSource ?? $this->source();
 
         return [
             'page' => [
@@ -47,7 +47,7 @@ class SalesMainPageService
             'defaults' => [
                 'grain' => $filters['defaults']['grain'] ?? 'week',
                 'detailType' => $filters['defaults']['detailType'] ?? 'cari',
-                'scopeKey' => $scope['key'] ?? 'all',
+                'scopeKey' => $this->normalizeScopeKey((string) ($scope['key'] ?? 'all')),
             ],
             'dataSource' => [
                 'slug' => $source->code,
@@ -66,7 +66,8 @@ class SalesMainPageService
         $filters = $this->normalizeFilters($input);
         $page = $this->page();
         $scope = $this->resolveScope($user, $filters['scope_key']);
-        $source = $this->pageConfig()->dataSource ?? $this->source();
+        $normalizedScopeKey = $this->normalizeScopeKey((string) ($scope['key'] ?? $filters['scope_key']));
+        $source = $this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source();
 
         $effectiveRepresentativeCode = $this->effectiveRepresentativeCode($user, $scope);
         $allowed = collect($source->allowed_params ?? []);
@@ -75,7 +76,7 @@ class SalesMainPageService
             'date_to' => $filters['date_to'],
             'grain' => $filters['grain'],
             'detail_type' => $filters['detail_type'],
-            'scope_key' => $scope['key'],
+            'scope_key' => $normalizedScopeKey,
             'rep_code' => $effectiveRepresentativeCode,
             'search' => $input['search'] ?? null,
             'page' => $input['page'] ?? 1,
@@ -90,11 +91,7 @@ class SalesMainPageService
             : collect($source->preview_payload[$filters['detail_type']] ?? []);
 
         if ($rows->isEmpty()) {
-            throw new RuntimeException(
-                $this->usesN8nGateway($source)
-                    ? 'n8n gateway rows alanında satış verisi dönmedi.'
-                    : 'Satış Yönetimi önizleme verisi panel.data_sources içinde tanımlı değil.'
-            );
+            throw new RuntimeException('Seçili filtrelerde satış kaydı bulunamadı.');
         }
 
         $groupRows = $rows
@@ -118,11 +115,11 @@ class SalesMainPageService
                 'dateTo' => $filters['date_to'],
                 'grain' => $filters['grain'],
                 'detailType' => $filters['detail_type'],
-                'scopeKey' => $scope['key'],
+                'scopeKey' => $normalizedScopeKey,
                 'periodLabel' => $periodLabel,
             ],
             'scope' => [
-                'key' => $scope['key'],
+                'key' => $normalizedScopeKey,
                 'label' => $scope['label'],
                 'note' => $scope['note'],
                 'effectiveRepresentativeCode' => $effectiveRepresentativeCode,
@@ -147,7 +144,7 @@ class SalesMainPageService
                 [
                     'label' => 'Aktif Kapsam',
                     'value' => $scope['label'],
-                    'raw' => $scope['key'],
+                    'raw' => $normalizedScopeKey,
                 ],
             ],
             'chart' => [
@@ -192,8 +189,8 @@ class SalesMainPageService
                 'dataSource' => $source->code,
                 'driver' => $source->db_type,
                 'status' => $source->active ? 'active' : 'inactive',
-                'mode' => $isLive ? 'n8n_gateway' : 'preview',
-                'notice' => $isLive ? 'Canlı veri n8n gateway üzerinden alındı.' : 'Önizleme verisi; canlı veri kaynağı henüz bağlı değil.',
+                'mode' => $isLive ? 'live' : 'preview',
+                'notice' => $isLive ? 'Canlı veri alındı.' : 'Önizleme verisi; canlı veri kaynağı henüz bağlı değil.',
                 'whitelistedParameters' => $whitelistedParameters,
                 'gatewayMeta' => $gatewayResult['meta'] ?? null,
                 'gatewayRequest' => $gatewayResult['request'] ?? null,
@@ -208,7 +205,8 @@ class SalesMainPageService
     private function resolveScope(?User $user, string $scopeKey): array
     {
         $scopes = $this->visibleScopes($user, collect($this->pageConfig()->filters_json['managementScopes'] ?? []));
-        $scope = $scopes->firstWhere('key', $scopeKey);
+        $normalizedScopeKey = $this->normalizeScopeKey($scopeKey);
+        $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $normalizedScopeKey);
 
         return $scope ?? $scopes->first() ?? [
             'key' => 'all',
@@ -219,6 +217,11 @@ class SalesMainPageService
             'salesView' => 'tumu',
             'allowAll' => true,
         ];
+    }
+
+    private function normalizeScopeKey(string $scopeKey): string
+    {
+        return str_replace('-', '_', $scopeKey);
     }
 
     /**
@@ -290,7 +293,7 @@ class SalesMainPageService
             'date_to' => $dateTo,
             'grain' => $grain,
             'detail_type' => $detailType,
-            'scope_key' => (string) ($input['scope_key'] ?? $defaults['scopeKey'] ?? 'all'),
+            'scope_key' => $this->normalizeScopeKey((string) ($input['scope_key'] ?? $defaults['scopeKey'] ?? 'all')),
         ];
     }
 
@@ -418,6 +421,17 @@ class SalesMainPageService
         return DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail();
     }
 
+    private function sourceForScope(array $scope): ?DataSource
+    {
+        $code = match ($this->normalizeScopeKey((string) ($scope['key'] ?? 'all'))) {
+            'online_perakende' => 'sales_online_perakende_detail',
+            'bayi_proje' => 'sales_bayi_proje_detail',
+            default => 'sales_main_dashboard',
+        };
+
+        return DataSource::query()->where('code', $code)->where('active', true)->first();
+    }
+
     private function usesN8nGateway(DataSource $source): bool
     {
         return ($source->connection_meta['driver'] ?? $source->db_type) === 'n8n_json';
@@ -444,12 +458,25 @@ class SalesMainPageService
             'date_to' => $filters['date_to'],
             'grain' => $filters['grain'],
             'detail_type' => $filters['detail_type'],
-            'scope_key' => $scope['key'],
+            'scope_key' => $filters['scope_key'],
             'rep_code' => $effectiveRepresentativeCode,
             'bypass_cache' => (bool) ($whitelistedParameters['bypass_cache'] ?? false),
         ], $source);
 
-        return $gatewayResult['rows'];
+        return array_values(array_filter($gatewayResult['rows'], function (mixed $row): bool {
+            if (! is_array($row)) {
+                return false;
+            }
+
+            $keys = array_map('strtolower', array_keys($row));
+            $message = (string) ($row['message'] ?? $row['Message'] ?? '');
+
+            if (count($keys) === 1 && in_array($keys[0], ['message', 'bilgi'], true)) {
+                return false;
+            }
+
+            return ! str_contains(strtolower($message), 'query executed successfully');
+        }));
     }
 
     /**

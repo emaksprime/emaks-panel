@@ -26,20 +26,22 @@ class PanelAccessService
             return true;
         }
 
+        $userOverride = UserAccess::query()
+            ->where('user_id', $resolvedUser->id)
+            ->where('resource_code', $resourceCode)
+            ->first();
+
+        if ($userOverride !== null) {
+            return (bool) $userOverride->can_view;
+        }
+
         $roleCanAccess = RoleResourcePermission::query()
             ->where('role_code', $resolvedUser->role_code)
             ->where('resource_code', $resourceCode)
             ->where('can_view', true)
             ->exists();
 
-        if ($roleCanAccess) {
-            return true;
-        }
-
-        return UserAccess::query()
-            ->where('user_id', $resolvedUser->id)
-            ->where('resource_code', $resourceCode)
-            ->exists();
+        return $roleCanAccess;
     }
 
     /**
@@ -61,14 +63,25 @@ class PanelAccessService
                 ->values();
         }
 
-        return collect()
-            ->merge(RoleResourcePermission::query()
+        $roleCodes = RoleResourcePermission::query()
                 ->where('role_code', $user->role_code)
                 ->where('can_view', true)
-                ->pluck('resource_code'))
-            ->merge(UserAccess::query()
+                ->pluck('resource_code');
+
+        $allowedOverrides = UserAccess::query()
             ->where('user_id', $user->id)
-            ->pluck('resource_code'))
+            ->where('can_view', true)
+            ->pluck('resource_code');
+
+        $deniedOverrides = UserAccess::query()
+            ->where('user_id', $user->id)
+            ->where('can_view', false)
+            ->pluck('resource_code');
+
+        return collect()
+            ->merge($roleCodes)
+            ->merge($allowedOverrides)
+            ->diff($deniedOverrides)
             ->filter()
             ->unique()
             ->values();

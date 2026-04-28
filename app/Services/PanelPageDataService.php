@@ -36,7 +36,11 @@ class PanelPageDataService
         $filters = $this->normalizeFilters($input);
 
         if (! $source || ! $source->active) {
-            return $this->emptyDataset($page, $filters, 'Bu sayfa icin aktif veri kaynagi tanimli degil.');
+            return $this->emptyDataset($page, $filters, 'Bu ekran için aktif veri kaynağı tanımlı değil.');
+        }
+
+        if ($source->db_type === 'n8n_json' && trim((string) $source->query_template) === '') {
+            return $this->emptyDataset($page, $filters, $this->missingQueryMessage($page));
         }
 
         $payload = $this->payloadFor($source, $filters, $user);
@@ -55,10 +59,10 @@ class PanelPageDataService
             'queryMeta' => [
                 'dataSource' => $source->code,
                 'driver' => $source->db_type,
-                'mode' => $source->db_type === 'n8n_json' ? 'n8n_gateway' : $source->db_type,
+                'mode' => $source->db_type === 'n8n_json' ? 'live' : $source->db_type,
                 'notice' => $rows === []
-                    ? 'Canli veri kaynagi bos dondu.'
-                    : 'Canli veri n8n gateway uzerinden alindi.',
+                    ? 'Seçili filtrelerde kayıt bulunamadı.'
+                    : 'Canlı veri alındı.',
                 'gatewayMeta' => $result['meta'] ?? null,
                 'gatewayRequest' => $result['request'] ?? null,
             ],
@@ -103,7 +107,20 @@ class PanelPageDataService
             throw new RuntimeException('Veri kaynagi rows alanini dizi olarak dondurmedi.');
         }
 
-        return array_values(array_filter($rows, 'is_array'));
+        return array_values(array_filter($rows, function (mixed $row): bool {
+            if (! is_array($row)) {
+                return false;
+            }
+
+            $keys = array_map('strtolower', array_keys($row));
+            $message = (string) ($row['message'] ?? $row['Message'] ?? '');
+
+            if (count($keys) === 1 && in_array($keys[0], ['message', 'bilgi'], true)) {
+                return false;
+            }
+
+            return ! str_contains(strtolower($message), 'query executed successfully');
+        }));
     }
 
     /**
@@ -129,6 +146,17 @@ class PanelPageDataService
         return mb_convert_case(str_replace('_', ' ', $key), MB_CASE_TITLE, 'UTF-8');
     }
 
+    private function missingQueryMessage(Page $page): string
+    {
+        return match ($page->resource_code ?? $page->code) {
+            'customers', 'customer_detail' => 'Müşteri veri kaynağı henüz tanımlı değil.',
+            'proforma' => 'Proforma veri kaynağı henüz tanımlı değil.',
+            'stock', 'stock_critical', 'stock_warehouse' => 'Stok veri kaynağı henüz tanımlı değil.',
+            'orders', 'orders_alinan', 'orders_verilen' => 'Sipariş veri kaynağı henüz tanımlı değil.',
+            default => 'Veri kaynağı henüz tanımlı değil.',
+        };
+    }
+
     /**
      * @param  array<string, mixed>  $input
      * @return array<string, mixed>
@@ -149,8 +177,13 @@ class PanelPageDataService
                 ? (string) ($input['detail_type'] ?? 'cari')
                 : 'cari',
             'scope_key' => (string) ($input['scope_key'] ?? 'all'),
+            'customer_code' => (string) ($input['customer_code'] ?? ''),
+            'proforma_no' => (string) ($input['proforma_no'] ?? ''),
+            'price_list' => $input['price_list'] ?? null,
+            'discount_code' => (string) ($input['discount_code'] ?? ''),
             'search' => (string) ($input['search'] ?? ''),
             'page' => (string) max(1, (int) ($input['page'] ?? 1)),
+            'limit' => max(1, min(500, (int) ($input['limit'] ?? 100))),
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
         ];
     }

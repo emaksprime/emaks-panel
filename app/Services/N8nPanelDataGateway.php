@@ -236,7 +236,11 @@ class N8nPanelDataGateway
 
     private function ttlMinutes(string $sourceCode): int
     {
-        if (str_starts_with($sourceCode, 'cari_')) {
+        if (
+            str_starts_with($sourceCode, 'cari_')
+            || str_starts_with($sourceCode, 'customers_')
+            || str_starts_with($sourceCode, 'customer_')
+        ) {
             return 10;
         }
 

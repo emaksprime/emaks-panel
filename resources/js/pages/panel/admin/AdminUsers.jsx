@@ -10,13 +10,15 @@ const blank = {
     role_code: 'sales',
     temsilci_kodu: '',
     aktif: true,
+    force_password_change: false,
     access: [],
+    denied_access: [],
 };
 
 const resourceLabels = {
     page: 'Sayfalar',
     scope: 'Yonetim kapsamleri',
-    data_source: 'Datasource yetkileri',
+    data_source: 'Veri kaynagi yetkileri',
 };
 
 function groupResources(resources) {
@@ -91,28 +93,52 @@ export default function AdminUsers() {
     };
 
     const editUser = (user) => {
-        setForm({ ...blank, ...user, password: '', access: user.access ?? [] });
+        setForm({
+            ...blank,
+            ...user,
+            password: '',
+            access: user.access ?? [],
+            denied_access: user.denied_access ?? [],
+        });
         setStatus({ type: 'idle', message: '' });
     };
 
-    const toggleAccess = (code) => {
+    const setAccessState = (code, state) => {
         setForm((current) => ({
             ...current,
-            access: current.access.includes(code)
-                ? current.access.filter((item) => item !== code)
-                : [...current.access, code],
+            access:
+                state === 'allow'
+                    ? [...new Set([...current.access, code])]
+                    : current.access.filter((item) => item !== code),
+            denied_access:
+                state === 'deny'
+                    ? [...new Set([...(current.denied_access ?? []), code])]
+                    : (current.denied_access ?? []).filter((item) => item !== code),
         }));
+    };
+
+    const accessState = (code) => {
+        if (form.access.includes(code)) {
+            return 'allow';
+        }
+
+        if ((form.denied_access ?? []).includes(code)) {
+            return 'deny';
+        }
+
+        return 'inherit';
     };
 
     const selectAll = () => {
         setForm((current) => ({
             ...current,
             access: data.resources.map((resource) => resource.code),
+            denied_access: [],
         }));
     };
 
     const clearAccess = () => {
-        setForm((current) => ({ ...current, access: [] }));
+        setForm((current) => ({ ...current, access: [], denied_access: [] }));
     };
 
     return (
@@ -180,7 +206,9 @@ export default function AdminUsers() {
                                                 </span>
                                             </td>
                                             <td className="px-5 py-4 text-slate-600">{user.temsilci_kodu || '-'}</td>
-                                            <td className="px-5 py-4 text-slate-600">{user.access?.length ?? 0} kaynak</td>
+                                            <td className="px-5 py-4 text-slate-600">
+                                                {(user.access?.length ?? 0)} izin / {(user.denied_access?.length ?? 0)} engel
+                                            </td>
                                             <td className="px-5 py-4">
                                                 <span className={`rounded-full px-3 py-1 text-xs font-semibold ${user.aktif ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                                                     {user.aktif ? 'Aktif' : 'Pasif'}
@@ -307,20 +335,36 @@ export default function AdminUsers() {
                         </label>
                     </div>
 
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                            <span>
+                                Ilk giriste sifre degistirsin
+                                <small className="block font-normal text-slate-500">
+                                    Kullanici sonraki giriste yeni sifre belirlemeye yonlendirilebilir.
+                                </small>
+                            </span>
+                            <input
+                                type="checkbox"
+                                checked={form.force_password_change}
+                                onChange={(event) => setForm({ ...form, force_password_change: event.target.checked })}
+                            />
+                        </label>
+                    </div>
+
                     <div className="grid gap-3">
                         <div className="flex items-center justify-between gap-2">
                             <div>
                                 <p className="text-sm font-semibold text-slate-800">Kaynak yetkileri</p>
                                 <p className="text-xs text-slate-500">
-                                    {selectedRole?.name ?? form.role_code} rolu ve kullanici bazli erisim birlikte kontrol edilir.
+                                    {selectedRole?.name ?? form.role_code} rolu temel alinir; kullanici bazli izin veya engel ustune uygulanir.
                                 </p>
                             </div>
                             <div className="flex gap-2">
                                 <button type="button" onClick={selectAll} className="text-xs font-semibold text-slate-700">
-                                    Tumunu sec
+                                    Tumune izin ver
                                 </button>
                                 <button type="button" onClick={clearAccess} className="text-xs font-semibold text-slate-500">
-                                    Temizle
+                                    Role birak
                                 </button>
                             </div>
                         </div>
@@ -333,17 +377,21 @@ export default function AdminUsers() {
                                     </div>
                                     <div className="grid gap-1 p-3">
                                         {resources.map((resource) => (
-                                            <label key={resource.code} className="flex items-center gap-3 rounded-lg px-2 py-2 text-sm hover:bg-slate-50">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={form.access.includes(resource.code)}
-                                                    onChange={() => toggleAccess(resource.code)}
-                                                />
-                                                <span>
+                                            <div key={resource.code} className="grid gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_140px] sm:items-center">
+                                                <span className="min-w-0">
                                                     <span className="font-medium text-slate-800">{resource.name}</span>
                                                     <span className="ml-2 text-xs text-slate-400">{resource.code}</span>
                                                 </span>
-                                            </label>
+                                                <select
+                                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
+                                                    value={accessState(resource.code)}
+                                                    onChange={(event) => setAccessState(resource.code, event.target.value)}
+                                                >
+                                                    <option value="inherit">Rol kararini kullan</option>
+                                                    <option value="allow">Izin ver</option>
+                                                    <option value="deny">Engelle</option>
+                                                </select>
+                                            </div>
                                         ))}
                                     </div>
                                 </div>

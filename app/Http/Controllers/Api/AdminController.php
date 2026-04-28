@@ -62,9 +62,11 @@ class AdminController extends Controller
                     'role_code' => $user->role_code,
                     'temsilci_kodu' => $user->temsilci_kodu,
                     'aktif' => $user->aktif,
-                    'access' => UserAccess::query()->where('user_id', $user->id)->pluck('resource_code')->values(),
+                    'force_password_change' => (bool) ($user->force_password_change ?? false),
+                    'access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', true)->pluck('resource_code')->values(),
+                    'denied_access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', false)->pluck('resource_code')->values(),
                 ]),
-            'roles' => Role::query()->orderBy('code')->get(['code', 'name']),
+            'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description']),
             'resources' => Resource::query()->where('active', true)->orderBy('type')->orderBy('name')->get(['code', 'name', 'type']),
         ]);
     }
@@ -84,8 +86,11 @@ class AdminController extends Controller
             'role_code' => ['required', Rule::exists(Role::class, 'code')],
             'temsilci_kodu' => ['nullable', 'string', 'max:32'],
             'aktif' => ['boolean'],
+            'force_password_change' => ['boolean'],
             'access' => ['array'],
             'access.*' => ['string', Rule::exists(Resource::class, 'code')],
+            'denied_access' => ['array'],
+            'denied_access.*' => ['string', Rule::exists(Resource::class, 'code')],
         ]);
 
         $payload = [
@@ -94,6 +99,7 @@ class AdminController extends Controller
             'role_code' => $data['role_code'],
             'temsilci_kodu' => $data['temsilci_kodu'] ?? null,
             'aktif' => (bool) ($data['aktif'] ?? true),
+            'force_password_change' => (bool) ($data['force_password_change'] ?? false),
         ];
 
         if (! empty($data['password'])) {
@@ -109,6 +115,16 @@ class AdminController extends Controller
             UserAccess::query()->create([
                 'user_id' => $user->id,
                 'resource_code' => $resourceCode,
+                'can_view' => true,
+            ]);
+        }
+
+        $allowed = array_unique($data['access'] ?? []);
+        foreach (array_diff(array_unique($data['denied_access'] ?? []), $allowed) as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
             ]);
         }
 
@@ -329,6 +345,8 @@ class AdminController extends Controller
             'detail_type' => ['nullable', 'in:cari,urun'],
             'scope_key' => ['nullable', 'string', 'max:80'],
             'search' => ['nullable', 'string', 'max:255'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'bypass_cache' => ['nullable', 'boolean'],
         ]);
 
         $source = DataSource::query()->where('code', $data['code'])->firstOrFail();
@@ -336,8 +354,8 @@ class AdminController extends Controller
         try {
             $result = $this->dataSourceManager->execute($source, [
                 ...$data,
-                'bypass_cache' => true,
-                'limit' => 5,
+                'bypass_cache' => (bool) ($data['bypass_cache'] ?? true),
+                'limit' => (int) ($data['limit'] ?? 20),
             ]);
         } catch (Throwable $exception) {
             report($exception);
@@ -357,6 +375,7 @@ class AdminController extends Controller
             'ok' => true,
             'status' => 'basarili',
             'rows_count' => count($rows),
+            'preview_rows' => array_slice($rows, 0, (int) ($data['limit'] ?? 20)),
             'first_5_rows' => array_slice($rows, 0, 5),
             'meta' => $result['meta'] ?? [],
         ]);
