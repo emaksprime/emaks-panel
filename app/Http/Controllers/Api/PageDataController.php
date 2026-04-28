@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\DataSource;
 use App\Models\Page;
 use App\Services\PanelAccessService;
 use App\Services\PanelPageDataService;
@@ -23,12 +24,29 @@ class PageDataController extends Controller
 
         abort_if($user === null, 403);
 
+        $normalizedCode = str_replace('-', '_', $code);
         $page = Page::query()
-            ->where('code', str_replace('-', '_', $code))
+            ->where('code', $normalizedCode)
             ->where('active', true)
-            ->firstOrFail();
+            ->first();
 
-        abort_unless($access->userCanAccess($user, $page->resource_code ?? $page->code), 403);
+        $source = null;
+        $sourceResourceCode = null;
+
+        if ($page === null) {
+            $source = DataSource::query()
+                ->where('code', $normalizedCode)
+                ->where('active', true)
+                ->firstOrFail();
+            $sourceResourceCode = $this->resourceForDataSource($source->code);
+        }
+
+        abort_unless(
+            $page !== null
+                ? $access->userCanAccess($user, $page->resource_code ?? $page->code)
+                : $access->userCanAccess($user, (string) $sourceResourceCode),
+            403,
+        );
 
         $validated = $request->validate([
             'date_from' => ['nullable', 'date_format:Y-m-d'],
@@ -49,19 +67,21 @@ class PageDataController extends Controller
 
         try {
             return response()->json(
-                $pageData->dataset($user, $code, $validated),
+                $page !== null
+                    ? $pageData->dataset($user, $code, $validated)
+                    : $pageData->datasetForSource($user, (string) $source?->code, (string) $sourceResourceCode, $validated),
             );
         } catch (RuntimeException $exception) {
             return response()->json([
-                'message' => $this->friendlyErrorMessage($page),
+                'message' => $this->friendlyErrorMessage($page, $sourceResourceCode),
                 'mode' => 'page_data_error',
             ], 502);
         }
     }
 
-    private function friendlyErrorMessage(Page $page): string
+    private function friendlyErrorMessage(?Page $page, ?string $resourceCode = null): string
     {
-        $resourceCode = $page->resource_code ?? $page->code;
+        $resourceCode ??= $page?->resource_code ?? $page?->code;
 
         return match ($resourceCode) {
             'customers' => 'Müşteri veri kaynağı çalıştırılamadı.',
@@ -70,5 +90,14 @@ class PageDataController extends Controller
             'orders', 'orders_alinan', 'orders_verilen' => 'Sipariş veri kaynağı çalıştırılamadı.',
             default => 'Veri kaynağı çalıştırılamadı.',
         };
+    }
+
+    private function resourceForDataSource(string $sourceCode): string
+    {
+        if (str_starts_with($sourceCode, 'customer') || str_starts_with($sourceCode, 'customers_')) {
+            return 'customers';
+        }
+
+        return $sourceCode;
     }
 }
