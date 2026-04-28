@@ -4,7 +4,7 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Tests\TestCase;
+use Illuminate\Foundation\Testing\TestCase;
 
 class DataSourceCacheRepairMigrationTest extends TestCase
 {
