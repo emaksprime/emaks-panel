@@ -44,6 +44,7 @@ type ApiTechnicalServiceRequest = {
   description?: string | null
   resolution_notes?: string | null
   source_channel?: string | null
+  created_at?: string | null
 }
 
 type ApiTechnicalServiceEvent = {
@@ -70,7 +71,6 @@ type SummaryResponse = {
 
 const initialFilters: FilterState = {
   search: '',
-  serviceType: '',
   status: '',
 }
 
@@ -138,6 +138,8 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     notes: request.description ?? request.resolution_notes ?? '',
     riskLevel: request.risk_level,
     channel: request.source_channel ?? '',
+    scheduledAt: request.scheduled_at ?? null,
+    createdAt: request.created_at ?? null,
   }
 }
 
@@ -189,10 +191,6 @@ export default function TechnicalService() {
 
     if (filters.status) {
       params.append('status', filters.status)
-    }
-
-    if (filters.serviceType) {
-      params.append('service_type', filters.serviceType)
     }
 
     try {
@@ -267,18 +265,80 @@ export default function TechnicalService() {
   }, [selectedId])
 
   const filteredRequests = useMemo(() => {
-    return requests.filter((request) => {
-      const search = filters.search.toLowerCase().trim()
-      const matchesSearch =
-        !search ||
-        [request.mrn, request.customer, request.phone, request.serialNumber].some((value) =>
-          value.toLowerCase().includes(search),
-        )
-      const matchesType = !filters.serviceType || request.serviceType === filters.serviceType
-      const matchesStatus = !filters.status || request.status === filters.status
+    const search = filters.search.toLowerCase().trim()
+    const today = new Date()
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
 
-      return matchesSearch && matchesType && matchesStatus
-    })
+    const riskWeight = (risk: string) => {
+      switch (risk) {
+        case 'Kritik':
+          return 4
+        case 'Yüksek':
+          return 3
+        case 'Orta':
+          return 2
+        default:
+          return 1
+      }
+    }
+
+    const isTodayAppointment = (request: ServiceRequest) => {
+      const scheduled = request.scheduledAt ? new Date(request.scheduledAt) : null
+      return scheduled !== null && scheduled >= todayStart && scheduled < todayEnd
+    }
+
+    const compareRequests = (a: ServiceRequest, b: ServiceRequest) => {
+      const riskDiff = riskWeight(b.riskLevel) - riskWeight(a.riskLevel)
+      if (riskDiff !== 0) {
+        return riskDiff
+      }
+
+      const aUnassigned = a.technician === 'Atanmadı' || a.technician.trim() === ''
+      const bUnassigned = b.technician === 'Atanmadı' || b.technician.trim() === ''
+      if (aUnassigned !== bUnassigned) {
+        return aUnassigned ? -1 : 1
+      }
+
+      const aToday = isTodayAppointment(a)
+      const bToday = isTodayAppointment(b)
+      if (aToday !== bToday) {
+        return aToday ? -1 : 1
+      }
+
+      const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0
+      return bCreated - aCreated
+    }
+
+    return requests
+      .filter((request) => {
+        const values = [
+          request.mrn,
+          request.customer,
+          request.phone,
+          request.city,
+          request.district,
+          request.product,
+          request.model,
+          request.serialNumber,
+          request.serviceType,
+          request.status,
+          request.priority,
+          request.riskLevel,
+          request.technician,
+          request.notes,
+        ]
+
+        const matchesSearch =
+          !search ||
+          values.some((value) => value.toLowerCase().includes(search))
+
+        const matchesStatus = !filters.status || request.status === filters.status
+
+        return matchesSearch && matchesStatus
+      })
+      .sort(compareRequests)
   }, [filters, requests])
 
   const selectedRequest =

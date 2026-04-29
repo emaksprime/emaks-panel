@@ -25,6 +25,8 @@ export type ServiceRequest = {
   channel: string
   notes: string
   riskLevel: ServiceRiskLevel
+  scheduledAt?: string | null
+  createdAt?: string | null
 }
 
 export type ServiceRequestEvent = {
@@ -40,7 +42,6 @@ export type ServiceRequestEvent = {
 
 export type ServiceFilters = {
   search: string
-  serviceType: ServiceType | ''
   status: ServiceStatus | ''
 }
 
