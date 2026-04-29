@@ -10,15 +10,15 @@ export default function AdminLogs() {
     }, []);
 
     return (
-        <AdminFrame title="Log Sistemi">
+        <AdminFrame title="Sistem Kayıtları">
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
                 <table className="w-full min-w-[760px] text-sm">
                     <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Tarih</th>
-                            <th className="px-4 py-3">User</th>
-                            <th className="px-4 py-3">Action</th>
-                            <th className="px-4 py-3">Payload</th>
+                            <th className="px-4 py-3">Kullanıcı</th>
+                            <th className="px-4 py-3">İşlem</th>
+                            <th className="px-4 py-3">Veri</th>
                         </tr>
                     </thead>
                     <tbody>

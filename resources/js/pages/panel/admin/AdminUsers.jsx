@@ -26,11 +26,7 @@ const groupOrder = [
 ];
 
 function groupResources(resources) {
-    const uniqueResources = Array.from(
-        new Map(resources.map((resource) => [resource.code, resource])).values(),
-    );
-
-    return uniqueResources.reduce((groups, resource) => {
+    return resources.reduce((groups, resource) => {
         const key = resource.group || 'Sistem Yönetimi';
         return {
             ...groups,
@@ -97,7 +93,7 @@ export default function AdminUsers() {
             setForm(blank);
             setStatus({
                 type: 'success',
-                message: 'Kullanici kaydedildi ve yetkileri guncellendi.',
+                message: 'Kullanıcı kaydedildi ve yetkileri güncellendi.',
             });
         } catch (error) {
             setStatus({ type: 'error', message: error.message });
@@ -156,22 +152,22 @@ export default function AdminUsers() {
     };
 
     return (
-        <AdminFrame title="Kullanici Yonetimi">
+        <AdminFrame title="Kullanıcı Yönetimi">
             <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_460px]">
                 <div className="space-y-4">
                     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                             <div>
                                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                    Panel kullanicilari
+                                    Panel kullanıcıları
                                 </p>
                                 <h2 className="mt-1 text-xl font-semibold text-slate-950">
-                                    {data.users.length} kayit
+                                    {data.users.length} kayıt
                                 </h2>
                             </div>
                             <input
                                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-slate-400 md:w-72"
-                                placeholder="Kullanici, rol veya temsilci ara"
+                                placeholder="Kullanıcı, rol veya temsilci ara"
                                 value={query}
                                 onChange={(event) => setQuery(event.target.value)}
                             />
@@ -183,7 +179,7 @@ export default function AdminUsers() {
                             <table className="w-full min-w-[780px] text-sm">
                                 <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                                     <tr>
-                                        <th className="px-5 py-4">Kullanici</th>
+                                        <th className="px-5 py-4">Kullanıcı</th>
                                         <th className="px-5 py-4">Rol</th>
                                         <th className="px-5 py-4">Temsilci</th>
                                         <th className="px-5 py-4">Yetki</th>
@@ -195,7 +191,7 @@ export default function AdminUsers() {
                                     {isLoading && (
                                         <tr>
                                             <td className="px-5 py-8 text-center text-slate-500" colSpan={6}>
-                                                Kullanicilar yukleniyor...
+                                                Kullanıcılar yükleniyor...
                                             </td>
                                         </tr>
                                     )}
@@ -203,7 +199,7 @@ export default function AdminUsers() {
                                     {!isLoading && filteredUsers.length === 0 && (
                                         <tr>
                                             <td className="px-5 py-8 text-center text-slate-500" colSpan={6}>
-                                                Bu filtreyle kullanici bulunamadi.
+                                                Bu filtreyle kullanıcı bulunamadı.
                                             </td>
                                         </tr>
                                     )}
@@ -234,7 +230,7 @@ export default function AdminUsers() {
                                                     onClick={() => editUser(user)}
                                                     className="rounded-xl border border-slate-200 px-4 py-2 font-semibold text-slate-700 transition hover:border-slate-400 hover:text-slate-950"
                                                 >
-                                                    Duzenle
+                                                    Düzenle
                                                 </button>
                                             </td>
                                         </tr>
@@ -249,10 +245,10 @@ export default function AdminUsers() {
                     <div className="flex items-start justify-between gap-3">
                         <div>
                             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                                {form.id ? 'Kullanici duzenle' : 'Yeni kullanici'}
+                                {form.id ? 'Kullanıcı düzenle' : 'Yeni kullanıcı'}
                             </p>
                             <h2 className="mt-1 text-xl font-semibold text-slate-950">
-                                {form.full_name || 'Kullanici bilgileri'}
+                                {form.full_name || 'Kullanıcı bilgileri'}
                             </h2>
                         </div>
                         {form.id && (
@@ -273,7 +269,7 @@ export default function AdminUsers() {
                     )}
 
                     <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                        Kullanici adi
+                        Kullanıcı adı
                         <input
                             required
                             className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
@@ -295,11 +291,11 @@ export default function AdminUsers() {
                     </label>
 
                     <label className="grid gap-2 text-sm font-semibold text-slate-700">
-                        Sifre
+                        Şifre
                         <input
                             className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
                             type="password"
-                            placeholder={form.id ? 'Degistirmek icin yeni sifre girin' : 'Ilk sifre'}
+                            placeholder={form.id ? 'Değiştirmek için yeni şifre girin' : 'İlk şifre'}
                             value={form.password}
                             onChange={(event) => setForm({ ...form, password: event.target.value })}
                             required={!form.id}
@@ -336,9 +332,9 @@ export default function AdminUsers() {
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                         <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
                             <span>
-                                Aktif kullanici
+                                Aktif kullanıcı
                                 <small className="block font-normal text-slate-500">
-                                    Pasif kullanicilar panele giris yapamaz.
+                                    Pasif kullanıcılar panele giriş yapamaz.
                                 </small>
                             </span>
                             <input
@@ -352,9 +348,9 @@ export default function AdminUsers() {
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                         <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
                             <span>
-                                Ilk giriste sifre degistirsin
+                                İlk girişte şifre değiştirsin
                                 <small className="block font-normal text-slate-500">
-                                    Kullanici sonraki giriste yeni sifre belirlemeye yonlendirilebilir.
+                                    Kullanıcı sonraki girişte yeni şifre belirlemeye yönlendirilebilir.
                                 </small>
                             </span>
                             <input
@@ -370,15 +366,15 @@ export default function AdminUsers() {
                             <div>
                                 <p className="text-sm font-semibold text-slate-800">Kaynak yetkileri</p>
                                 <p className="text-xs text-slate-500">
-                                    {selectedRole?.name ?? form.role_code} rolu temel alinir; kullanici bazli izin veya engel ustune uygulanir.
+                                    {selectedRole?.name ?? form.role_code} rolü temel alınır; kullanıcı bazlı izin veya engel bu listeye uygulanır.
                                 </p>
                             </div>
                             <div className="flex gap-2">
                                 <button type="button" onClick={selectAll} className="text-xs font-semibold text-slate-700">
-                                    Tumune izin ver
+                                    Tümüne izin ver
                                 </button>
                                 <button type="button" onClick={clearAccess} className="text-xs font-semibold text-slate-500">
-                                    Role birak
+                                    Role bırak
                                 </button>
                             </div>
                         </div>
@@ -420,7 +416,7 @@ export default function AdminUsers() {
                         className="rounded-xl bg-slate-950 px-4 py-3 font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                         disabled={isSaving}
                     >
-                        {isSaving ? 'Kaydediliyor...' : 'Kullaniciyi kaydet'}
+                        {isSaving ? 'Kaydediliyor...' : 'Kullanıcıyı kaydet'}
                     </button>
                 </form>
             </section>
