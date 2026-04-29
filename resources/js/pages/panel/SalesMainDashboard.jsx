@@ -77,9 +77,12 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     const updateCustomers = (customers) => {
         setSelectedCustomers(customers);
+        const customerCodes = customers.map((customer) => customer.code).join(',');
+
         updateFilters({
-            customer_filter: customers.map((customer) => customer.code).join(','),
-            bypass_cache: false,
+            customer_filter: customerCodes,
+            cari_filter: customerCodes,
+            bypass_cache: true,
         });
     };
 
