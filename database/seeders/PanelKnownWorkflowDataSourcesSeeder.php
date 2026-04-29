@@ -18,7 +18,7 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
                 'sales_online_perakende_detail',
                 'Online / Perakende Detay',
                 $this->salesTemplateWithCustomerGroupScope($salesTemplate, true),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
                 'SALES_ONLINE_PERAKENDE_DETAY_V1 kapsamı: online/perakende cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
                 'SALES_ONLINE_PERAKENDE_DETAY_V1.json'
             );
@@ -27,11 +27,50 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
                 'sales_bayi_proje_detail',
                 'Bayi / Proje Detay',
                 $this->salesTemplateWithCustomerGroupScope($salesTemplate, false),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
                 'SALES_BAYI_PROJE_DETAY_V1 kapsamı: online/perakende dışı cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
                 'SALES_BAYI_PROJE_DETAY_V1.json'
             );
         }
+
+        $this->upsert(
+            'sales_customer_search',
+            'Satış Müşteri Arama',
+            <<<'SQL_SALES_CUSTOMER_SEARCH'
+SELECT TOP 80
+    LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS cari_kodu,
+    LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS cari_unvani,
+    LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS cari_grubu,
+    CASE
+        WHEN NULLIF(LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))), N'') IS NULL
+            THEN CONCAT(LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))), N' | ', LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))))
+        ELSE CONCAT(LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))), N' | ', LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N' | ', LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))))
+    END AS display_text
+FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
+LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
+    ON grp.crg_kod = cari.cari_grup_kodu
+WHERE
+    (@rep_code = N'' OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @rep_code)
+    AND (
+        @search = N''
+        OR cari.cari_kod LIKE N'%' + @search + N'%'
+        OR cari.cari_unvan1 LIKE N'%' + @search + N'%'
+        OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @search + N'%'
+    )
+    AND NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N'') IS NOT NULL
+ORDER BY
+    CASE WHEN cari.cari_kod = @search THEN 0
+         WHEN cari.cari_unvan1 = @search THEN 1
+         WHEN cari.cari_kod LIKE @search + N'%' THEN 2
+         WHEN cari.cari_unvan1 LIKE @search + N'%' THEN 3
+         ELSE 9 END,
+    cari.cari_unvan1 ASC,
+    cari.cari_kod ASC;
+SQL_SALES_CUSTOMER_SEARCH,
+            ['search', 'rep_code', 'scope_key', 'limit', 'bypass_cache'],
+            'PrimeCRM SalesService.GetCustomerOptionsAsync müşteri arama sorgusu.',
+            'SalesService.cs'
+        );
 
         $this->upsert(
             'stock_dashboard',

@@ -150,6 +150,28 @@ WHERE
         AND ABS(c.net_tutar) < 10
     )
     AND (@rep_code = N'' OR LTRIM(RTRIM(ISNULL(ch.cari_temsilci_kodu, N''))) = @rep_code)
+    AND (
+        @cari_filter = N''
+        OR (
+            CHARINDEX(N',', @cari_filter) > 0
+            AND c.cari_kodu IN
+            (
+                SELECT LTRIM(RTRIM(value))
+                FROM STRING_SPLIT(@cari_filter, N',')
+                WHERE LTRIM(RTRIM(value)) <> N''
+            )
+        )
+        OR (
+            CHARINDEX(N',', @cari_filter) = 0
+            AND
+            (
+                c.cari_kodu = @cari_filter
+                OR c.cari_kodu LIKE N'%' + @cari_filter + N'%'
+                OR c.cari_adi_raw LIKE N'%' + @cari_filter + N'%'
+                OR ch.cari_unvan1 LIKE N'%' + @cari_filter + N'%'
+            )
+        )
+    )
     AND c.stok_kodu_u NOT LIKE 'W-%'
     AND c.stok_kodu_u NOT LIKE N'%HİZMET%'
     AND c.stok_kodu_u NOT LIKE N'%HIZMET%'
@@ -317,7 +339,7 @@ BEGIN
     ORDER BY siralama_1 ASC, CASE satir_tipi WHEN N'GRUP' THEN 0 WHEN N'CARI' THEN 1 WHEN N'URUN' THEN 2 ELSE 3 END ASC, siralama_2 ASC;
 END
 SQL_SALES_MAIN_DASHBOARD,
-                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
                 'connection_meta' => $connectionMeta,
                 'preview_payload' => [],
                 'active' => true,

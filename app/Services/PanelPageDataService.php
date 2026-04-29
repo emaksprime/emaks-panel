@@ -75,7 +75,7 @@ class PanelPageDataService
      */
     public function datasetForSource(User $user, string $sourceCode, string $resourceCode, array $input = []): array
     {
-        if (! $this->access->userCanAccess($user, $resourceCode)) {
+        if (! $this->userCanAccessSource($user, $sourceCode, $resourceCode)) {
             abort(403);
         }
 
@@ -123,15 +123,32 @@ class PanelPageDataService
         ];
     }
 
+    private function userCanAccessSource(User $user, string $sourceCode, string $resourceCode): bool
+    {
+        if ($sourceCode === 'sales_customer_search') {
+            return $this->access->userCanAccess($user, 'sales_main')
+                || $this->access->userCanAccess($user, 'sales_online')
+                || $this->access->userCanAccess($user, 'sales_bayi');
+        }
+
+        return $this->access->userCanAccess($user, $resourceCode);
+    }
+
     /**
      * @param  array<string, mixed>  $filters
      * @return array<string, mixed>
      */
     private function payloadFor(DataSource $source, array $filters, User $user): array
     {
+        $representativeCode = trim((string) ($user->temsilci_kodu ?? '')) ?: null;
+
+        if (str_starts_with($source->code, 'sales_') && $this->access->userCanAccess($user, 'sales_main_all')) {
+            $representativeCode = null;
+        }
+
         $payload = [
             ...$filters,
-            'rep_code' => trim((string) ($user->temsilci_kodu ?? '')) ?: null,
+            'rep_code' => $representativeCode,
             'role_code' => $user->role_code,
             'search' => $filters['search'] ?? null,
             'page' => $filters['page'] ?? 1,
@@ -231,6 +248,8 @@ class PanelPageDataService
                 ? (string) ($input['detail_type'] ?? 'cari')
                 : 'cari',
             'scope_key' => (string) ($input['scope_key'] ?? 'all'),
+            'customer_filter' => $this->normalizeListFilter($input['customer_filter'] ?? $input['cari_filter'] ?? ''),
+            'cari_filter' => $this->normalizeListFilter($input['cari_filter'] ?? $input['customer_filter'] ?? ''),
             'customer_code' => (string) ($input['customer_code'] ?? ''),
             'proforma_no' => (string) ($input['proforma_no'] ?? ''),
             'price_list' => $input['price_list'] ?? null,
@@ -240,6 +259,23 @@ class PanelPageDataService
             'limit' => max(1, min(500, (int) ($input['limit'] ?? 100))),
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
         ];
+    }
+
+    private function normalizeListFilter(mixed $value): string
+    {
+        if (is_array($value)) {
+            return collect($value)
+                ->map(fn (mixed $item) => trim((string) $item))
+                ->filter()
+                ->unique()
+                ->implode(',');
+        }
+
+        return collect(explode(',', (string) $value))
+            ->map(fn (string $item) => trim($item))
+            ->filter()
+            ->unique()
+            ->implode(',');
     }
 
     private function normalizeDate(mixed $value, string $grain, bool $isStart, CarbonImmutable $today): string
