@@ -10,6 +10,7 @@ use App\Services\PanelPageDataService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use RuntimeException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 class PageDataController extends Controller
 {
@@ -74,6 +75,10 @@ class PageDataController extends Controller
                     : $pageData->datasetForSource($user, (string) $source?->code, (string) $sourceResourceCode, $validated),
             );
         } catch (RuntimeException $exception) {
+            if ($exception instanceof HttpExceptionInterface) {
+                throw $exception;
+            }
+
             return response()->json([
                 'message' => $this->friendlyErrorMessage($page, $sourceResourceCode),
                 'mode' => 'page_data_error',

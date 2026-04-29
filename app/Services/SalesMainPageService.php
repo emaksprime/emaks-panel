@@ -337,18 +337,20 @@ class SalesMainPageService
     private function visibleScopes(?User $user, Collection $scopes): Collection
     {
         $canSeeAll = $this->access->userCanAccess($user, 'sales_main_all');
+        $canSeeOnline = $this->access->userCanAccess($user, 'sales_online');
+        $canSeeBayi = $this->access->userCanAccess($user, 'sales_bayi');
         $userRepCode = trim((string) ($user?->temsilci_kodu ?? ''));
 
         return $scopes
-            ->filter(function (array $scope) use ($canSeeAll, $userRepCode) {
+            ->filter(function (array $scope) use ($canSeeAll, $userRepCode, $canSeeOnline, $canSeeBayi) {
                 if ($canSeeAll) {
                     return true;
                 }
 
                 if (($scope['navigateTo'] ?? null) !== null) {
                     return match ($this->normalizeScopeKey((string) ($scope['key'] ?? ''))) {
-                        'online_perakende' => $this->access->userCanAccess($user, 'sales_online'),
-                        'bayi_proje' => $this->access->userCanAccess($user, 'sales_bayi'),
+                        'online_perakende' => $canSeeOnline,
+                        'bayi_proje' => $canSeeBayi,
                         default => false,
                     };
                 }
