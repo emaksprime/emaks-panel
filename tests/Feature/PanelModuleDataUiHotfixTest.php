@@ -353,7 +353,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertEquals(0, $payload['chart']['totalNet']);
     }
 
-    public function test_sales_konsinye_rows_are_visible_but_excluded_from_totals(): void
+    public function test_sales_konsinye_rows_are_excluded_from_totals_while_teshir_rows_are_included(): void
     {
         Http::fake([
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
@@ -380,8 +380,27 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     ],
                     [
                         'satir_tipi' => 'GRUP',
+                        'siralama_1' => 2,
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'cari_kodu' => 'C-2.TESHIR',
+                        'satir_adi' => 'Teşhir Müşteri - TEŞHİR HESABI',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
                         'siralama_1' => 999998,
-                        'cari_grup_adi' => 'KONSİNYE / TEŞHİR',
+                        'cari_grup_adi' => 'KONSİNYE',
                         'adet' => 0,
                         'ciro' => 900,
                         'excluded_from_total' => 1,
@@ -389,9 +408,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     ],
                     [
                         'satir_tipi' => 'KONSINYE',
-                        'cari_grup_adi' => 'KONSİNYE / TEŞHİR',
+                        'cari_grup_adi' => 'KONSİNYE',
                         'cari_kodu' => 'C-1.KONSINYE',
-                        'satir_adi' => 'KONSİNYE / TEŞHİR - Normal Müşteri',
+                        'satir_adi' => 'KONSİNYE - Normal Müşteri',
                         'adet' => 1,
                         'ciro' => 900,
                         'excluded_from_total' => 1,
@@ -410,12 +429,16 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertEquals(100, $payload['kpis'][0]['raw']);
-        $this->assertEquals(100, $payload['chart']['totalNet']);
-        $this->assertSame(['Normal Grup'], array_column($payload['chart']['items'], 'label'));
-        $this->assertSame('KONSİNYE / TEŞHİR', $payload['table']['rows'][1]['label']);
-        $this->assertSame('KONSINYE', $payload['table']['rows'][1]['children'][0]['type']);
-        $this->assertTrue($payload['table']['rows'][1]['children'][0]['excludedFromTotal']);
+        $this->assertEquals(400, $payload['kpis'][0]['raw']);
+        $this->assertEquals(400, $payload['chart']['totalNet']);
+        $this->assertSame(['Normal Grup', 'Teşhir Grup'], array_column($payload['chart']['items'], 'label'));
+        $this->assertSame('Teşhir Grup', $payload['table']['rows'][1]['label']);
+        $this->assertFalse($payload['table']['rows'][1]['excludedFromTotal']);
+        $this->assertSame('C-2.TESHIR', $payload['table']['rows'][1]['children'][0]['customerCode']);
+        $this->assertFalse($payload['table']['rows'][1]['children'][0]['excludedFromTotal']);
+        $this->assertSame('KONSİNYE', $payload['table']['rows'][2]['label']);
+        $this->assertSame('KONSINYE', $payload['table']['rows'][2]['children'][0]['type']);
+        $this->assertTrue($payload['table']['rows'][2]['children'][0]['excludedFromTotal']);
     }
 
     public function test_sales_customer_picker_and_mobile_breakdown_contract_exist(): void

@@ -691,7 +691,7 @@ class SalesMainPageService
         $label = trim((string) ($row['satir_adi'] ?? $row['cari_grup_adi'] ?? ''));
 
         if (($row['satir_tipi'] ?? null) === 'KONSINYE' && $label !== '' && ! str_contains(mb_strtoupper($label, 'UTF-8'), 'KONS')) {
-            return 'KONSİNYE / TEŞHİR - '.$label;
+            return 'KONSİNYE - '.$label;
         }
 
         return $label !== '' ? $label : 'Diğer';
