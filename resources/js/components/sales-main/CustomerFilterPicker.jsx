@@ -28,7 +28,16 @@ function normalizeCustomer(row) {
     };
 }
 
-export function CustomerFilterPicker({ selected = [], onChange, loading, scopeKey = 'all' }) {
+export function CustomerFilterPicker({
+    selected = [],
+    onChange,
+    loading,
+    scopeKey = 'all',
+    dateFrom,
+    dateTo,
+    grain,
+    detailType,
+}) {
     const [query, setQuery] = useState('');
     const [options, setOptions] = useState([]);
     const [searching, setSearching] = useState(false);
@@ -67,7 +76,16 @@ export function CustomerFilterPicker({ selected = [], onChange, loading, scopeKe
                 setMessage('');
                 const response = await apiRequest('/api/data/sales_customer_search', {
                     method: 'POST',
-                    body: JSON.stringify({ search, scope_key: scopeKey, limit: 80, bypass_cache: true }),
+                    body: JSON.stringify({
+                        search,
+                        scope_key: scopeKey,
+                        date_from: dateFrom,
+                        date_to: dateTo,
+                        grain,
+                        detail_type: detailType,
+                        limit: 80,
+                        bypass_cache: true,
+                    }),
                 });
 
                 if (!active) {
@@ -100,7 +118,7 @@ export function CustomerFilterPicker({ selected = [], onChange, loading, scopeKe
             active = false;
             window.clearTimeout(timeout);
         };
-    }, [query, scopeKey]);
+    }, [query, scopeKey, dateFrom, dateTo, grain, detailType]);
 
     const toggleCustomer = (customer) => {
         const nextSelected = selectedCodes.has(customer.code)

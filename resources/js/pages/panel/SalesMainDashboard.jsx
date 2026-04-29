@@ -168,6 +168,10 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         onChange={updateCustomers}
                         loading={loading}
                         scopeKey={filters.scope_key}
+                        dateFrom={filters.date_from}
+                        dateTo={filters.date_to}
+                        grain={filters.grain}
+                        detailType={filters.detail_type}
                     />
                 </section>
 
