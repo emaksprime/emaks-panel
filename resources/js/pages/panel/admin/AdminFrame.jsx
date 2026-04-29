@@ -1,11 +1,11 @@
 import { Head, Link } from '@inertiajs/react';
 
 const tabs = [
-    ['Overview', '/admin'],
-    ['Users', '/admin/users'],
-    ['Pages', '/admin/pages'],
-    ['Datasources', '/admin/datasources'],
-    ['Logs', '/admin/logs'],
+    ['Yönetim', '/admin'],
+    ['Kullanıcı Yönetimi', '/admin/users'],
+    ['Sayfalar', '/admin/pages'],
+    ['Veri Kaynakları', '/admin/datasources'],
+    ['Sistem Kayıtları', '/admin/logs'],
 ];
 
 export function AdminFrame({ title, children }) {
