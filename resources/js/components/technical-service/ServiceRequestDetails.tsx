@@ -56,6 +56,7 @@ type ServiceRequestDetailsProps = {
   onAssign?: () => void
   onSchedule?: () => void
   onComplete?: () => void
+  onReopen?: () => void
 }
 
 const eventTime = (timestamp: string): string => {
@@ -79,9 +80,11 @@ export function ServiceRequestDetails({
   onAssign,
   onSchedule,
   onComplete,
+  onReopen,
 }: ServiceRequestDetailsProps) {
   const isActionDisabled = request.status === 'Tamamlandı' || request.status === 'İptal'
   const disabledTitle = 'Tamamlanan veya iptal edilen taleplerde işlem yapılamaz'
+  const isReopenVisible = isActionDisabled
 
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm">
@@ -223,6 +226,15 @@ export function ServiceRequestDetails({
           >
             Talebi Kapat
           </Button>
+          {isReopenVisible ? (
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => onReopen?.()}
+            >
+              Talebi Yeniden Aç
+            </Button>
+          ) : null}
         </section>
       </CardContent>
     </Card>

@@ -169,6 +169,10 @@ export default function TechnicalService() {
   const [completionNote, setCompletionNote] = useState('')
   const [completeLoading, setCompleteLoading] = useState(false)
   const [completeError, setCompleteError] = useState<string | null>(null)
+  const [reopenDialogOpen, setReopenDialogOpen] = useState(false)
+  const [reopenNote, setReopenNote] = useState('')
+  const [reopenLoading, setReopenLoading] = useState(false)
+  const [reopenError, setReopenError] = useState<string | null>(null)
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
@@ -350,6 +354,40 @@ export default function TechnicalService() {
   const handleCompleteReset = () => {
     setCompletionNote('')
     setCompleteError(null)
+  }
+
+  const handleReopenReset = () => {
+    setReopenNote('')
+    setReopenError(null)
+  }
+
+  const handleReopenSubmit = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    setReopenLoading(true)
+    setReopenError(null)
+
+    try {
+      await apiRequest(`/api/technical-service/requests/${selectedId}/status`, {
+        method: 'POST',
+        body: JSON.stringify({
+          status: 'Yeni',
+          note: reopenNote || null,
+        }),
+      })
+
+      setReopenDialogOpen(false)
+      handleReopenReset()
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setReopenError(caught instanceof Error ? caught.message : 'Talep yeniden açma işlemi başarısız oldu.')
+    } finally {
+      setReopenLoading(false)
+    }
   }
 
   const handleScheduleSubmit = async () => {
@@ -810,8 +848,57 @@ export default function TechnicalService() {
                     İptal
                   </Button>
                 </DialogClose>
-                <Button type="button" onClick={handleCompleteSubmit} disabled={completeLoading}>
+                    <Button type="button" onClick={handleCompleteSubmit} disabled={completeLoading}>
                   {completeLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={reopenDialogOpen} onOpenChange={(open) => {
+            setReopenDialogOpen(open)
+            if (!open) handleReopenReset()
+          }}>
+            <DialogContent className="max-w-lg">
+              <DialogClose asChild>
+                <button
+                  type="button"
+                  className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
+                >
+                  ×
+                </button>
+              </DialogClose>
+              <DialogHeader>
+                <DialogTitle>Talebi yeniden aç</DialogTitle>
+                <DialogDescription>
+                  Bu talebi Yeni statüsüne geri almak için bir neden girin.
+                </DialogDescription>
+              </DialogHeader>
+
+              {reopenError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {reopenError}
+                </div>
+              ) : null}
+
+              <label className="grid gap-2 text-sm font-medium text-slate-700">
+                Yeniden açma nedeni / açıklama
+                <textarea
+                  value={reopenNote}
+                  onChange={(event) => setReopenNote(event.target.value)}
+                  className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                  placeholder="Yeniden açma nedeni"
+                />
+              </label>
+
+              <DialogFooter className="gap-2">
+                <DialogClose asChild>
+                  <Button variant="secondary" type="button" onClick={handleReopenReset}>
+                    İptal
+                  </Button>
+                </DialogClose>
+                <Button type="button" onClick={handleReopenSubmit} disabled={reopenLoading}>
+                  {reopenLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -871,6 +958,7 @@ export default function TechnicalService() {
                 onAssign={() => setAssignDialogOpen(true)}
                 onSchedule={() => setScheduleDialogOpen(true)}
                 onComplete={() => setCompleteDialogOpen(true)}
+                onReopen={() => setReopenDialogOpen(true)}
               />
             ) : (
               <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
