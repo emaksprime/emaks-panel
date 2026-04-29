@@ -8,7 +8,7 @@ function Row({ row, depth = 0 }) {
     return (
         <>
             <tr className="border-b border-slate-100 transition hover:bg-slate-50">
-                <td className="min-w-[320px] py-3 pr-3">
+                <td className="min-w-[320px] py-3 pr-3 pl-4">
                     <div className="flex items-center gap-2" style={{ paddingLeft: depth * 18 }}>
                         {hasChildren ? (
                             <button
@@ -24,8 +24,8 @@ function Row({ row, depth = 0 }) {
                         <span className="max-w-[420px] truncate font-medium text-slate-900" title={row.label}>{row.label}</span>
                     </div>
                 </td>
-                <td className="whitespace-nowrap py-3 text-right text-slate-600">{row.quantityLabel}</td>
-                <td className="whitespace-nowrap py-3 pl-3 text-right font-semibold text-slate-950">{row.amountLabel}</td>
+                <td className="w-24 min-w-[72px] px-3 py-3 text-center whitespace-nowrap text-slate-600">{row.quantityLabel}</td>
+                <td className="w-40 min-w-[132px] px-3 py-3 pr-6 whitespace-nowrap text-right font-semibold text-slate-950">{row.amountLabel}</td>
             </tr>
             {hasChildren && open && row.children.map((child) => (
                 <Row key={`${row.label}-${child.label}`} row={child} depth={depth + 1} />
