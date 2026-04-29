@@ -61,12 +61,12 @@ export function SalesPieChart({ chart }) {
                             </circle>
                         ))}
                     </svg>
-                    <div className="absolute grid size-[50%] place-items-center rounded-full border border-slate-100 bg-white/95 text-center shadow-inner">
-                        <div className="px-3">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <div className="absolute left-1/2 top-1/2 grid size-[48%] -translate-x-1/2 -translate-y-1/2 place-items-center overflow-hidden rounded-full border border-slate-100 bg-white/95 text-center shadow-inner">
+                        <div className="grid min-w-0 place-items-center px-2">
+                            <p className="text-[9px] font-semibold uppercase tracking-[0.05em] text-slate-400 sm:text-[10px]">
                                 Toplam Ciro
                             </p>
-                            <p className="mt-1 text-sm font-bold text-slate-950 sm:text-base">
+                            <p className="mt-1 max-w-24 truncate text-xs font-bold leading-tight text-slate-950 sm:max-w-28 sm:text-sm" title={chart?.totalNetLabel ?? '-'}>
                                 {chart?.totalNetLabel ?? '-'}
                             </p>
                         </div>
