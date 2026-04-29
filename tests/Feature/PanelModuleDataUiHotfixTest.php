@@ -186,8 +186,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_bulent_scope_uses_sales_main_with_representative_code(): void
     {
+        $user = User::factory()->create(['role_code' => 'admin']);
         $service = app(SalesMainPageService::class);
-        $config = $service->config(null, 'sales_main');
+        $config = $service->config($user, 'sales_main');
         $bulent = collect($config['managementScopes'])->firstWhere('key', 'bulent_saglam');
 
         $this->assertIsArray($bulent);
@@ -211,8 +212,6 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 ],
             ]),
         ]);
-
-        $user = User::factory()->create(['role_code' => 'admin']);
 
         $payload = $service->dataset($user, [
             'scope_key' => 'bulent_saglam',
