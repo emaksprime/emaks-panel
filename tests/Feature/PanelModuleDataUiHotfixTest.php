@@ -569,6 +569,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
     {
         $dashboard = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
         $picker = file_get_contents(resource_path('js/components/sales-main/CustomerFilterPicker.jsx')) ?: '';
+        $managementScopeFilter = file_get_contents(resource_path('js/components/sales-main/ManagementScopeFilter.jsx')) ?: '';
         $table = file_get_contents(resource_path('js/components/sales-main/data-table/DataTable.jsx')) ?: '';
         $expandableRows = file_get_contents(resource_path('js/components/sales-main/data-table/ExpandableRows.jsx')) ?: '';
 
@@ -578,11 +579,24 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('dateTo={filters.date_to}', $dashboard);
         $this->assertStringContainsString('grain={filters.grain}', $dashboard);
         $this->assertStringContainsString('detailType={filters.detail_type}', $dashboard);
+        $this->assertStringContainsString("queryParam('grain')", $dashboard);
+        $this->assertStringContainsString("queryParam('date_from')", $dashboard);
+        $this->assertStringContainsString("queryParam('date_to')", $dashboard);
+        $this->assertStringContainsString("queryParam('detail_type')", $dashboard);
+        $this->assertStringContainsString("queryParam('scope_key')", $dashboard);
+        $this->assertStringContainsString('const handleScopeChange', $dashboard);
+        $this->assertStringContainsString('setSelectedCustomers([])', $dashboard);
+        $this->assertStringContainsString("customer_filter: ''", $dashboard);
+        $this->assertStringContainsString("cari_filter: ''", $dashboard);
+        $this->assertStringContainsString('onChange={handleScopeChange}', $dashboard);
+        $this->assertStringContainsString('filters={filters}', $dashboard);
+        $this->assertStringNotContainsString('detail_type: config?.defaults?.detailType ?? current.detail_type', $dashboard);
+        $this->assertStringNotContainsString('scope_key: config?.defaults?.scopeKey ?? current.scope_key', $dashboard);
         $this->assertStringContainsString('customer_filter', $dashboard);
         $this->assertStringContainsString('cari_filter: csv', $dashboard);
         $this->assertStringNotContainsString("scope_key: 'all'", $dashboard);
         $this->assertStringNotContainsString('router.visit', $dashboard);
-        $this->assertStringNotContainsString('window.location', $dashboard);
+        $this->assertStringNotContainsString('window.location =', $dashboard);
         $this->assertStringNotContainsString('window.history', $dashboard);
         $this->assertStringContainsString('bypass_cache: true', $dashboard);
         $this->assertStringContainsString('/api/data/sales_customer_search', $picker);
@@ -596,6 +610,15 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('candidate.code === item.code', $picker);
         $this->assertStringContainsString('selectedCodes.has(customer.code)', $picker);
         $this->assertStringContainsString('Müşteri bulunamadı', $picker);
+        $this->assertStringContainsString('filters = {}', $managementScopeFilter);
+        $this->assertStringContainsString('router.visit(scope.navigateTo', $managementScopeFilter);
+        $this->assertStringContainsString('grain: filters.grain', $managementScopeFilter);
+        $this->assertStringContainsString('date_from: filters.date_from', $managementScopeFilter);
+        $this->assertStringContainsString('date_to: filters.date_to', $managementScopeFilter);
+        $this->assertStringContainsString('detail_type: filters.detail_type', $managementScopeFilter);
+        $this->assertStringContainsString('scope_key: scope.key', $managementScopeFilter);
+        $this->assertStringContainsString('preserveScroll: true', $managementScopeFilter);
+        $this->assertStringContainsString('preserveState: false', $managementScopeFilter);
         $this->assertStringContainsString('md:hidden', $table);
         $this->assertStringContainsString('MobileRow', $table);
         $this->assertStringContainsString('min-w-[1100px]', $table);
