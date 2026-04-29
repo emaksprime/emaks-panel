@@ -4,6 +4,15 @@ import { AdminFrame } from './AdminFrame.jsx';
 
 const blank = { id: null, code: '', name: '', route: '', icon: '', resource_code: '', component: 'panel/page', description: '', page_order: 0, active: true };
 
+const LABELS = {
+    code: 'Kod',
+    name: 'Sayfa Adı',
+    route: 'Rota',
+    icon: 'İkon',
+    resource_code: 'Kaynak Kodu',
+    component: 'Bileşen',
+};
+
 export default function AdminPages() {
     const [data, setData] = useState({ pages: [] });
     const [form, setForm] = useState(blank);
@@ -19,7 +28,7 @@ export default function AdminPages() {
     };
 
     return (
-        <AdminFrame title="Sayfa ve Menu Yonetimi">
+        <AdminFrame title="Sayfa Yönetimi">
             <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
                 <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
                     {data.pages.map((page) => (
@@ -33,10 +42,21 @@ export default function AdminPages() {
                     ))}
                 </div>
                 <form onSubmit={save} className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                    {['code', 'name', 'route', 'icon', 'resource_code', 'component'].map((field) => (
-                        <input key={field} className="rounded-md border border-slate-200 px-3 py-2" placeholder={field} value={form[field] ?? ''} onChange={(event) => setForm({ ...form, [field]: event.target.value })} />
+            {['code', 'name', 'route', 'icon', 'resource_code', 'component'].map((field) => (
+                        <input
+                            key={field}
+                            className="rounded-md border border-slate-200 px-3 py-2"
+                            placeholder={LABELS[field] ?? field}
+                            value={form[field] ?? ''}
+                            onChange={(event) => setForm({ ...form, [field]: event.target.value })}
+                        />
                     ))}
-                    <textarea className="min-h-24 rounded-md border border-slate-200 px-3 py-2" placeholder="description" value={form.description ?? ''} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+                    <textarea
+                        className="min-h-24 rounded-md border border-slate-200 px-3 py-2"
+                        placeholder="Açıklama"
+                        value={form.description ?? ''}
+                        onChange={(event) => setForm({ ...form, description: event.target.value })}
+                    />
                     <input type="number" className="rounded-md border border-slate-200 px-3 py-2" value={form.page_order ?? 0} onChange={(event) => setForm({ ...form, page_order: Number(event.target.value) })} />
                     <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                         <input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} />

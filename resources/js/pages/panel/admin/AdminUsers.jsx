@@ -43,7 +43,7 @@ export default function AdminUsers() {
     };
 
     return (
-        <AdminFrame title="Kullanici Yonetimi">
+        <AdminFrame title="Kullanıcı Yönetimi">
             <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
                 <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
                     <table className="w-full min-w-[760px] text-sm">
@@ -72,7 +72,7 @@ export default function AdminUsers() {
                                             onClick={() => setForm({ ...blank, ...user, password: '' })}
                                             className="rounded-md border border-slate-200 px-3 py-2 font-semibold text-slate-700"
                                         >
-                                            Duzenle
+                                            Düzenle
                                         </button>
                                     </td>
                                 </tr>
@@ -82,9 +82,9 @@ export default function AdminUsers() {
                 </div>
 
                 <form onSubmit={save} className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                    <input className="rounded-md border border-slate-200 px-3 py-2" placeholder="Kullanici adi" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
-                    <input className="rounded-md border border-slate-200 px-3 py-2" placeholder="Ad soyad" value={form.full_name} onChange={(event) => setForm({ ...form, full_name: event.target.value })} />
-                    <input className="rounded-md border border-slate-200 px-3 py-2" type="password" placeholder={form.id ? 'Yeni sifre opsiyonel' : 'Sifre'} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
+                    <input className="rounded-md border border-slate-200 px-3 py-2" placeholder="Kullanıcı adı" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
+                    <input className="rounded-md border border-slate-200 px-3 py-2" placeholder="Ad Soyad" value={form.full_name} onChange={(event) => setForm({ ...form, full_name: event.target.value })} />
+                    <input className="rounded-md border border-slate-200 px-3 py-2" type="password" placeholder={form.id ? 'Yeni şifre (opsiyonel)' : 'Şifre'} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
                     <select className="rounded-md border border-slate-200 px-3 py-2" value={form.role_code} onChange={(event) => setForm({ ...form, role_code: event.target.value })}>
                         {data.roles.map((role) => <option key={role.code} value={role.code}>{role.name}</option>)}
                     </select>
