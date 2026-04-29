@@ -228,7 +228,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame('0024', $payload['scope']['effectiveRepresentativeCode']);
 
         Http::assertSent(function ($request): bool {
-            $payload = $request->data();
+            $payload = json_decode($request->body(), true) ?: [];
 
             return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
                 && ($payload['scope_key'] ?? null) === 'bulent_saglam'
