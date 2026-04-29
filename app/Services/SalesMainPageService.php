@@ -29,7 +29,7 @@ class SalesMainPageService
         $pageConfig = $this->pageConfig();
         $layout = $pageConfig->layout_json ?? [];
         $filters = $pageConfig->filters_json ?? [];
-        $scopes = $this->visibleScopes($user, collect($filters['managementScopes'] ?? []));
+        $scopes = $this->visibleScopes($user, $this->configuredManagementScopes($filters));
         $defaultScopeKey = $this->defaultScopeKeyForPage($pageCode);
         $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $defaultScopeKey)
             ?? $scopes->first();
@@ -213,7 +213,7 @@ class SalesMainPageService
      */
     private function resolveScope(?User $user, string $scopeKey): array
     {
-        $scopes = $this->visibleScopes($user, collect($this->pageConfig()->filters_json['managementScopes'] ?? []));
+        $scopes = $this->visibleScopes($user, $this->configuredManagementScopes($this->pageConfig()->filters_json ?? []));
         $normalizedScopeKey = $this->normalizeScopeKey($scopeKey);
         $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $normalizedScopeKey);
 
@@ -259,6 +259,25 @@ class SalesMainPageService
                 return $userRepCode !== '' && $userRepCode === $scope['repCode'];
             })
             ->values();
+    }
+
+    private function configuredManagementScopes(array $filters): Collection
+    {
+        $scopes = collect($filters['managementScopes'] ?? []);
+
+        if ($scopes->contains(fn (array $scope): bool => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === 'bulent_saglam')) {
+            return $scopes;
+        }
+
+        return $scopes->push([
+            'key' => 'bulent_saglam',
+            'label' => 'Bülent Sağlam',
+            'repCode' => '0024',
+            'allowAll' => false,
+            'salesView' => 'temsilci',
+            'note' => 'Bülent Sağlam temsilci kapsamı',
+            'navigateTo' => null,
+        ]);
     }
 
     private function effectiveRepresentativeCode(?User $user, array $scope): ?string
