@@ -145,11 +145,11 @@ export default function AdminPages() {
                     <h2 className="text-lg font-semibold text-slate-950">Sayfa Ayarları</h2>
                     {[
                         ['code', 'Kod'],
-                        ['name', 'Sayfa adı'],
-                        ['route', 'Route'],
+                        ['name', 'Sayfa Adı'],
+                        ['route', 'Rota'],
                         ['icon', 'İkon'],
-                        ['resource_code', 'Kaynak Kodu (resource_code)'],
-                        ['component', 'React Component'],
+                        ['resource_code', 'Kaynak Kodu'],
+                        ['component', 'React Bileşeni'],
                     ].map(([field, label]) => (
                         <label key={field} className="grid gap-1 text-sm font-semibold text-slate-700">
                             {label}
@@ -234,8 +234,8 @@ export default function AdminPages() {
                     {[
                         ['code', 'Kod'],
                         ['label', 'Etiket'],
-                        ['resource_code', 'Resource code'],
-                        ['action_target', 'Action target'],
+                        ['resource_code', 'Kaynak Kodu'],
+                        ['action_target', 'Eylem Hedefi'],
                     ].map(([field, label]) => (
                         <label key={field} className="grid gap-1 text-sm font-semibold text-slate-700">
                             {label}
@@ -250,20 +250,20 @@ export default function AdminPages() {
                             </select>
                         </label>
                         <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                            Action type
+                            Eylem Türü
                             <select className="rounded-xl border border-slate-200 px-3 py-2 font-normal" value={buttonForm.action_type} onChange={(event) => setButtonForm({ ...buttonForm, action_type: event.target.value })}>
                                 {['navigate', 'webhook', 'modal', 'refresh', 'custom'].map((item) => <option key={item} value={item}>{item}</option>)}
                             </select>
                         </label>
                     </div>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                        Position
+                        Konum
                         <select className="rounded-xl border border-slate-200 px-3 py-2 font-normal" value={buttonForm.position} onChange={(event) => setButtonForm({ ...buttonForm, position: event.target.value })}>
                             {['header_right', 'filter_bar', 'table_row', 'table_bulk', 'card_footer', 'page_top'].map((item) => <option key={item} value={item}>{item}</option>)}
                         </select>
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                        Config JSON
+                        Ayar JSON
                         <textarea className="min-h-28 rounded-xl border border-slate-200 px-3 py-2 font-mono text-xs" value={buttonConfigText} onChange={(event) => setButtonConfigText(event.target.value)} />
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">

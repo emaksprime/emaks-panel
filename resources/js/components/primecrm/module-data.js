@@ -1,4 +1,4 @@
-import { formatMoney, formatQuantity, numericValue } from './format';
+import { formatMoney, formatQuantity, numericValue } from './format.js';
 
 const countFormatter = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 0 });
 
@@ -21,17 +21,19 @@ const aliases = {
     sonHareket: ['son_hareket_tarihi', 'last_movement_date', 'tarih', 'Tarih', 'evrak_tarihi'],
     stokKodu: ['stok_kodu', 'Stok Kodu', 'stokKod', 'sto_kod'],
     urunAdi: ['urun_adi', 'stok_adi', 'stokAdi', 'model', 'model_adi', 'Ürün', 'Urun', 'stok_isim'],
-    kategori: ['kategori_adi', 'kategori', 'Kategori', 'kategori_kodu'],
+    kategori: ['kategori', 'kategori_adi', 'stok_kategori_adi', 'sto_kategori_kodu', 'kategori_kodu', 'Kategori'],
     depo: ['depo', 'Depo', 'depo_adi'],
     raf: ['raf', 'Raf', 'raf_kodu'],
     miktar: ['miktar', 'Miktar', 'stok_miktar', 'quantity', 'adet', 'toplam_miktar', 'siparis_miktar', 'siparis_miktari'],
     birim: ['birim', 'Birim', 'birim_adi'],
     siparisTarihi: ['siparis_tarihi', 'sip_tarih', 'tarih', 'Tarih', 'Sipariş Tarihi'],
+    teslimTarihi: ['teslim_tarihi', 'Teslim Tarihi'],
+    teslimHafta: ['teslim_tarihi_hafta', 'Teslim Tarihi Hafta'],
     evrakNo: ['evrak_no', 'sip_evrakno_seri', 'sip_evrakno_sira', 'Evrak No', 'belge_no'],
     kalan: ['kalan_miktar', 'kalan', 'Kalan'],
     teslim: ['teslim_edilen', 'teslim_miktar', 'teslim_miktari', 'Teslim Edilen', 'gelen_miktar'],
     birimFiyat: ['birim_fiyat', 'fiyat', 'Birim Fiyat'],
-    tutar: ['satir_tutari', 'tutar', 'Tutar', 'toplam', 'genel_toplam', 'net_tutar', 'sip_tutar'],
+    tutar: ['satir_tutari', 'tutar', 'Tutar', 'toplam', 'genel_toplam', 'net_tutar', 'sip_tutar', 'kalan_tutar', 'siparis_tutari'],
     durum: ['status', 'durum', 'Durum'],
     proformaNo: ['proforma_no', 'Proforma No'],
     createdAt: ['created_at', 'tarih', 'Tarih'],
@@ -55,20 +57,41 @@ export function normalizeSearchText(value) {
 const searchAliases = {
     cari: ['cariKodu', 'cariAdi', 'cariGrup', 'telefon', 'email', 'il', 'ilce', 'temsilci'],
     stock: ['stokKodu', 'urunAdi', 'kategori', 'depo', 'raf'],
-    orders: ['siparisTarihi', 'evrakNo', 'cariAdi', 'urunAdi', 'durum'],
+    orders: ['siparisTarihi', 'teslimTarihi', 'teslimHafta', 'evrakNo', 'cariAdi', 'urunAdi', 'kategori', 'durum'],
     proforma: ['proformaNo', 'cariAdi', 'durum', 'createdAt'],
 };
 
-export function filterRowsForSearch(kind, rows, search) {
+export function categoryOptionsForRows(kind, rows) {
+    if (kind !== 'stock') {
+        return [];
+    }
+
+    return Array.from(
+        new Set(
+            rows
+                .map((row) => String(valueFrom(row, 'kategori') ?? '').trim())
+                .filter(Boolean),
+        ),
+    ).sort((a, b) => a.localeCompare(b, 'tr-TR'));
+}
+
+export function filterRowsForSearch(kind, rows, search, filters = {}) {
+    const scopedRows = kind === 'stock'
+        ? rows.filter((row) => numericValue(valueFrom(row, 'miktar')) > 0)
+        : rows;
     const needle = normalizeSearchText(search);
+    const category = normalizeSearchText(filters.category ?? '');
+    const categoryRows = kind === 'stock' && category
+        ? scopedRows.filter((row) => normalizeSearchText(valueFrom(row, 'kategori')) === category)
+        : scopedRows;
 
     if (!needle) {
-        return rows;
+        return categoryRows;
     }
 
     const keys = searchAliases[kind] ?? [];
 
-    return rows.filter((row) => keys.some((key) => normalizeSearchText(valueFrom(row, key)).includes(needle)));
+    return categoryRows.filter((row) => keys.some((key) => normalizeSearchText(valueFrom(row, key)).includes(needle)));
 }
 
 function findColumn(columns, key, label) {
@@ -198,27 +221,22 @@ export function preferredColumns(kind, page, columns) {
         ],
         orders: routePath.includes('/verilen')
             ? [
-                ['siparisTarihi', 'Sipariş Tarihi'],
-                ['evrakNo', 'Evrak No'],
-                ['cariAdi', 'Tedarikçi'],
+                ['teslimTarihi', 'Teslim Tarihi'],
+                ['teslimHafta', 'Teslim Haftası'],
+                ['stokKodu', 'Stok Kodu'],
                 ['urunAdi', 'Ürün / Model'],
+                ['kategori', 'Kategori'],
                 ['miktar', 'Sipariş Miktarı'],
-                ['teslim', 'Gelen'],
-                ['kalan', 'Kalan'],
-                ['tutar', 'Tutar'],
-                ['durum', 'Durum'],
+                ['birimFiyat', 'Birim Fiyat'],
+                ['tutar', 'Sipariş Tutarı'],
             ]
             : [
                 ['siparisTarihi', 'Sipariş Tarihi'],
-                ['evrakNo', 'Evrak No'],
                 ['cariAdi', 'Müşteri'],
                 ['urunAdi', 'Ürün / Model'],
-                ['miktar', 'Sipariş Miktarı'],
-                ['teslim', 'Teslim Edilen'],
                 ['kalan', 'Kalan'],
                 ['birimFiyat', 'Birim Fiyat'],
-                ['tutar', 'Tutar'],
-                ['durum', 'Durum'],
+                ['tutar', 'Kalan Tutar'],
             ],
         proforma: [
             ['proformaNo', 'Proforma No'],

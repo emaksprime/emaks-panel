@@ -7,9 +7,14 @@ const modeSearchPlaceholder = {
     proforma: 'Proforma no, müşteri veya durum ara',
 };
 
-export function FilterBar({ filters, setFilters, onRefresh, loading, mode }) {
+export function FilterBar({ filters, setFilters, onRefresh, loading, mode, categoryOptions = [] }) {
+    const showCategory = mode === 'stock';
+    const gridClass = showCategory
+        ? 'md:grid-cols-[minmax(240px,1fr)_auto_auto_auto_auto]'
+        : 'md:grid-cols-[minmax(240px,1fr)_auto_auto_auto]';
+
     return (
-        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[minmax(240px,1fr)_auto_auto_auto] md:items-end">
+        <section className={['grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:items-end', gridClass].join(' ')}>
             <label className="grid gap-1 text-sm font-semibold text-slate-700">
                 Arama
                 <span className="relative">
@@ -22,6 +27,22 @@ export function FilterBar({ filters, setFilters, onRefresh, loading, mode }) {
                     />
                 </span>
             </label>
+            {showCategory && (
+                <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Kategori
+                    <select
+                        value={filters.category ?? ''}
+                        onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value, page: 1 }))}
+                        disabled={categoryOptions.length === 0}
+                        className="h-11 min-w-44 rounded-xl border border-slate-200 bg-white px-3 font-normal text-slate-900 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-50 disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                        <option value="">{categoryOptions.length === 0 ? 'Kategori bilgisi yok' : 'Tüm Kategoriler'}</option>
+                        {categoryOptions.map((category) => (
+                            <option key={category} value={category}>{category}</option>
+                        ))}
+                    </select>
+                </label>
+            )}
             <label className="grid gap-1 text-sm font-semibold text-slate-700">
                 Başlangıç
                 <input

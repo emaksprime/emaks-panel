@@ -11,6 +11,7 @@ use App\Models\PageConfig;
 use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
+use App\Models\RoleResourcePermission;
 use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\AuditLogger;
@@ -63,11 +64,30 @@ class AdminController extends Controller
                     'temsilci_kodu' => $user->temsilci_kodu,
                     'aktif' => $user->aktif,
                     'force_password_change' => (bool) ($user->force_password_change ?? false),
-                    'access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', true)->pluck('resource_code')->values(),
-                    'denied_access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', false)->pluck('resource_code')->values(),
+                    'access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', true)->pluck('resource_code')->unique()->values(),
+                    'denied_access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', false)->pluck('resource_code')->unique()->values(),
                 ]),
             'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description']),
-            'resources' => Resource::query()->where('active', true)->orderBy('type')->orderBy('name')->get(['code', 'name', 'type']),
+            'resources' => Resource::query()
+                ->where('active', true)
+                ->orderBy('type')
+                ->orderBy('name')
+                ->get(['code', 'name', 'type'])
+                ->unique('code')
+                ->map(fn (Resource $resource) => [
+                    'code' => $resource->code,
+                    'name' => $resource->name,
+                    'type' => $resource->type,
+                    'group' => $this->resourceGroupFor($resource->code, $resource->type),
+                ])
+                ->sortBy([['group', 'asc'], ['name', 'asc']])
+                ->values(),
+            'rolePermissions' => RoleResourcePermission::query()
+                ->where('can_view', true)
+                ->get(['role_code', 'resource_code'])
+                ->groupBy('role_code')
+                ->map(fn ($permissions) => $permissions->pluck('resource_code')->unique()->values())
+                ->all(),
         ]);
     }
 
@@ -110,18 +130,26 @@ class AdminController extends Controller
             ? tap(User::query()->findOrFail($data['id']))->update($payload)
             : User::query()->create($payload);
 
+        $denied = collect($data['denied_access'] ?? [])->unique()->values();
+        $allowed = collect($data['access'] ?? [])->unique()->diff($denied)->values();
+
         UserAccess::query()->where('user_id', $user->id)->delete();
-        foreach (array_unique($data['access'] ?? []) as $resourceCode) {
-            UserAccess::query()->create([
+        foreach ($allowed as $resourceCode) {
+            UserAccess::query()->updateOrCreate([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+            ], [
                 'user_id' => $user->id,
                 'resource_code' => $resourceCode,
                 'can_view' => true,
             ]);
         }
 
-        $allowed = array_unique($data['access'] ?? []);
-        foreach (array_diff(array_unique($data['denied_access'] ?? []), $allowed) as $resourceCode) {
-            UserAccess::query()->create([
+        foreach ($denied as $resourceCode) {
+            UserAccess::query()->updateOrCreate([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+            ], [
                 'user_id' => $user->id,
                 'resource_code' => $resourceCode,
                 'can_view' => false,
@@ -131,6 +159,20 @@ class AdminController extends Controller
         $this->auditLogger->log($request->user(), 'admin.user.save', ['target_user_id' => $user->id], $request);
 
         return $this->users();
+    }
+
+    private function resourceGroupFor(string $code, ?string $type): string
+    {
+        return match (true) {
+            $type === 'data_source' || $code === 'data_sources' => 'Veri Kaynakları',
+            str_starts_with($code, 'sales_') || $code === 'sales_main' => 'Satış Yönetimi',
+            str_starts_with($code, 'stock') => 'Stok Yönetimi',
+            str_starts_with($code, 'orders') => 'Sipariş Yönetimi',
+            str_starts_with($code, 'cari') || str_starts_with($code, 'customer') || $code === 'customers' || str_starts_with($code, 'finance_cari') => 'Müşteri Yönetimi',
+            str_starts_with($code, 'proforma') => 'Proforma',
+            str_starts_with($code, 'admin') || $code === 'user_admin' || $code === 'dashboard' => 'Sistem Yönetimi',
+            default => 'Sistem Yönetimi',
+        };
     }
 
     public function pages(): JsonResponse

@@ -98,6 +98,10 @@ class PageDataController extends Controller
             return 'customers';
         }
 
+        if (str_starts_with($sourceCode, 'proforma_')) {
+            return 'proforma';
+        }
+
         return $sourceCode;
     }
 }

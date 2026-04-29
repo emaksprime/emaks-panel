@@ -155,7 +155,7 @@ export default function AdminDataSources() {
                     <div>
                         <h2 className="text-lg font-semibold text-slate-950">Veri Kaynağı Düzenle</h2>
                         <p className="mt-1 text-sm text-slate-500">
-                            Kaydet, Test Et ve Önizleme akışı panel.data_sources metadata kaydı üzerinden çalışır.
+                            Kaydet, Test Et ve önizleme akışı, panel.data_sources metadata kaydı üzerinden çalışır.
                         </p>
                     </div>
 
@@ -205,8 +205,8 @@ export default function AdminDataSources() {
                     </label>
                     <div className="grid gap-2 sm:grid-cols-2">
                         <button className="rounded-xl bg-slate-950 px-3 py-3 font-semibold text-white">Veri Kaynağını Kaydet</button>
-                        <button type="button" onClick={testSource} disabled={testing} className="rounded-xl border border-slate-200 bg-white px-3 py-3 font-semibold text-slate-700 disabled:opacity-60">
-                            {testing ? 'Test ediliyor...' : 'Test Et'}
+                                <button type="button" onClick={testSource} disabled={testing} className="rounded-xl border border-slate-200 bg-white px-3 py-3 font-semibold text-slate-700 disabled:opacity-60">
+                            {testing ? 'Test ediliyor...' : 'Bağlantıyı Test Et'}
                         </button>
                     </div>
                     {testResult && (
