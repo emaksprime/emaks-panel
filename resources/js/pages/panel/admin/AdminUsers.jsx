@@ -26,7 +26,11 @@ const groupOrder = [
 ];
 
 function groupResources(resources) {
-    return resources.reduce((groups, resource) => {
+    const uniqueResources = Array.from(
+        new Map(resources.map((resource) => [resource.code, resource])).values(),
+    );
+
+    return uniqueResources.reduce((groups, resource) => {
         const key = resource.group || 'Sistem Yönetimi';
         return {
             ...groups,
