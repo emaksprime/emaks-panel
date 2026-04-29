@@ -37,8 +37,12 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
             'sales_customer_search',
             'Satış Müşteri Arama',
             <<<'SQL_SALES_CUSTOMER_SEARCH'
-DECLARE @search NVARCHAR(255) = N'[[search]]';
-DECLARE @rep_code NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @Search NVARCHAR(255) = N'[[search]]';
+DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @CanViewAll bit = CASE
+    WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1
+    ELSE 0
+END;
 
 SELECT TOP 80
     LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS cari_kodu,
@@ -53,19 +57,19 @@ FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
 LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
     ON grp.crg_kod = cari.cari_grup_kodu
 WHERE
-    (@rep_code = N'' OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @rep_code)
+    (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
     AND (
-        @search = N''
-        OR cari.cari_kod LIKE N'%' + @search + N'%'
-        OR cari.cari_unvan1 LIKE N'%' + @search + N'%'
-        OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @search + N'%'
+        @Search = N''
+        OR cari.cari_kod LIKE N'%' + @Search + N'%'
+        OR cari.cari_unvan1 LIKE N'%' + @Search + N'%'
+        OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%'
     )
     AND NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N'') IS NOT NULL
 ORDER BY
-    CASE WHEN cari.cari_kod = @search THEN 0
-         WHEN cari.cari_unvan1 = @search THEN 1
-         WHEN cari.cari_kod LIKE @search + N'%' THEN 2
-         WHEN cari.cari_unvan1 LIKE @search + N'%' THEN 3
+    CASE WHEN cari.cari_kod = @Search THEN 0
+         WHEN cari.cari_unvan1 = @Search THEN 1
+         WHEN cari.cari_kod LIKE @Search + N'%' THEN 2
+         WHEN cari.cari_unvan1 LIKE @Search + N'%' THEN 3
          ELSE 9 END,
     cari.cari_unvan1 ASC,
     cari.cari_kod ASC;

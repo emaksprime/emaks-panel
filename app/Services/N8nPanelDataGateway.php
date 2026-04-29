@@ -50,6 +50,7 @@ class N8nPanelDataGateway
             'customer_filter' => $filters['customer_filter'] ?? $filters['cari_filter'] ?? null,
             'search' => $filters['search'] ?? null,
             'limit' => $filters['limit'] ?? null,
+            'bypass_cache' => $bypassCache,
             'params' => $this->allowedParams($filters, $dataSource),
             'allowed_params' => $dataSource?->allowed_params ?? [],
             'query_template' => $queryTemplate,

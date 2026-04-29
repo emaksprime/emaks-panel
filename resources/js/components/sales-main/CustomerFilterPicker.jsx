@@ -139,6 +139,7 @@ export function CustomerFilterPicker({ selected = [], onChange, loading }) {
                             title={customer.display}
                         >
                             <span className="max-w-[210px] truncate">{customer.title}</span>
+                            <span className="max-w-[96px] truncate text-blue-500">{customer.code}</span>
                             <X className="size-3" />
                         </button>
                     ))}
