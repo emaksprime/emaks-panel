@@ -75,9 +75,8 @@ class SalesMainPageService
         $page = $this->page();
         $scope = $this->resolveScope($user, $filters['scope_key']);
         $normalizedScopeKey = $this->normalizeScopeKey((string) ($scope['key'] ?? $filters['scope_key']));
-        $source = $filters['cari_filter'] !== ''
-            ? $this->source()
-            : ($this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source());
+        $filters['scope_key'] = $normalizedScopeKey;
+        $source = $this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source();
 
         $effectiveRepresentativeCode = $this->effectiveRepresentativeCode($user, $scope);
         $allowed = collect($source->allowed_params ?? []);
@@ -311,6 +310,10 @@ class SalesMainPageService
         $normalizedScopeKey = $this->normalizeScopeKey($scopeKey);
         $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $normalizedScopeKey);
 
+        if ($user !== null && $scopes->isEmpty()) {
+            abort(403);
+        }
+
         return $scope ?? $scopes->first() ?? [
             'key' => 'all',
             'label' => 'Tümü',
@@ -343,7 +346,11 @@ class SalesMainPageService
                 }
 
                 if (($scope['navigateTo'] ?? null) !== null) {
-                    return true;
+                    return match ($this->normalizeScopeKey((string) ($scope['key'] ?? ''))) {
+                        'online_perakende' => $this->access->userCanAccess($user, 'sales_online'),
+                        'bayi_proje' => $this->access->userCanAccess($user, 'sales_bayi'),
+                        default => false,
+                    };
                 }
 
                 if (($scope['repCode'] ?? null) === null) {
