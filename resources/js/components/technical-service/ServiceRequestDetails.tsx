@@ -80,6 +80,9 @@ export function ServiceRequestDetails({
   onSchedule,
   onComplete,
 }: ServiceRequestDetailsProps) {
+  const isActionDisabled = request.status === 'Tamamlandı' || request.status === 'İptal'
+  const disabledTitle = 'Tamamlanan veya iptal edilen taleplerde işlem yapılamaz'
+
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm">
       <CardHeader className="space-y-3 px-6 py-6">
@@ -193,10 +196,33 @@ export function ServiceRequestDetails({
         </section>
 
         <section className="grid gap-3 sm:grid-cols-2">
-          <Button type="button" onClick={() => onAssign?.()}>Usta Ata</Button>
-          <Button variant="outline" type="button" onClick={() => onSchedule?.()}>Randevu Planla</Button>
+          <Button
+            type="button"
+            onClick={() => onAssign?.()}
+            disabled={isActionDisabled}
+            title={isActionDisabled ? disabledTitle : undefined}
+          >
+            Usta Ata
+          </Button>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => onSchedule?.()}
+            disabled={isActionDisabled}
+            title={isActionDisabled ? disabledTitle : undefined}
+          >
+            Randevu Planla
+          </Button>
           <Button variant="secondary" type="button">WhatsApp Link Gönder</Button>
-          <Button variant="destructive" type="button" onClick={() => onComplete?.()}>Talebi Kapat</Button>
+          <Button
+            variant="destructive"
+            type="button"
+            onClick={() => !isActionDisabled && onComplete?.()}
+            disabled={isActionDisabled}
+            title={isActionDisabled ? disabledTitle : undefined}
+          >
+            Talebi Kapat
+          </Button>
         </section>
       </CardContent>
     </Card>
