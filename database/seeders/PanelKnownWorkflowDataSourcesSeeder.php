@@ -39,6 +39,7 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
             <<<'SQL_SALES_CUSTOMER_SEARCH'
 DECLARE @Search NVARCHAR(255) = N'[[search]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @ScopeKey NVARCHAR(80) = REPLACE(N'[[scope_key]]', N'-', N'_');
 DECLARE @CanViewAll bit = CASE
     WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1
     ELSE 0
@@ -58,6 +59,20 @@ LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
     ON grp.crg_kod = cari.cari_grup_kodu
 WHERE
     (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+    AND (
+        @ScopeKey NOT IN (N'online_perakende', N'bayi_proje')
+        OR (
+            @ScopeKey = N'online_perakende'
+            AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+        )
+        OR (
+            @ScopeKey = N'bayi_proje'
+            AND (
+                NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL
+                OR cari.cari_grup_kodu NOT IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+            )
+        )
+    )
     AND (
         @Search = N''
         OR cari.cari_kod LIKE N'%' + @Search + N'%'

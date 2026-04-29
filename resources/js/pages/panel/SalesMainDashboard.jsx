@@ -82,7 +82,6 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
         updateFilters({
             customer_filter: csv,
             cari_filter: csv,
-            scope_key: 'all',
             bypass_cache: true,
         });
     };
@@ -168,6 +167,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         selected={selectedCustomers}
                         onChange={updateCustomers}
                         loading={loading}
+                        scopeKey={filters.scope_key}
                     />
                 </section>
 

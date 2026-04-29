@@ -75,10 +75,6 @@ class PanelPageDataService
      */
     public function datasetForSource(User $user, string $sourceCode, string $resourceCode, array $input = []): array
     {
-        if (! $this->userCanAccessSource($user, $sourceCode, $resourceCode)) {
-            abort(403);
-        }
-
         $source = DataSource::query()
             ->where('code', str_replace('-', '_', $sourceCode))
             ->where('active', true)
@@ -92,6 +88,14 @@ class PanelPageDataService
         ]);
 
         $filters = $this->normalizeFilters($input);
+
+        if (! $this->userCanAccessSource($user, $source->code, $resourceCode)) {
+            abort(403);
+        }
+
+        if ($source->code === 'sales_customer_search') {
+            $filters['scope_key'] = $this->normalizeSalesCustomerSearchScope($user, $filters['scope_key']);
+        }
 
         if ($source->db_type === 'n8n_json' && trim((string) $source->query_template) === '') {
             return $this->emptyDataset($page, $filters, $this->missingQueryMessage($page));
@@ -132,6 +136,48 @@ class PanelPageDataService
         }
 
         return $this->access->userCanAccess($user, $resourceCode);
+    }
+
+    private function normalizeSalesCustomerSearchScope(User $user, string $scopeKey): string
+    {
+        $scopeKey = $this->normalizeScopeKey($scopeKey);
+
+        if ($this->access->userCanAccess($user, 'sales_main_all')) {
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'online_perakende') {
+            abort_unless($this->access->userCanAccess($user, 'sales_online'), 403);
+
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'bayi_proje') {
+            abort_unless($this->access->userCanAccess($user, 'sales_bayi'), 403);
+
+            return $scopeKey;
+        }
+
+        if ($this->access->userCanAccess($user, 'sales_main')) {
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'all' && $this->access->userCanAccess($user, 'sales_online')) {
+            return 'online_perakende';
+        }
+
+        if ($scopeKey === 'all' && $this->access->userCanAccess($user, 'sales_bayi')) {
+            return 'bayi_proje';
+        }
+
+        abort(403);
+    }
+
+    private function normalizeScopeKey(string $scopeKey): string
+    {
+        $scopeKey = trim($scopeKey);
+
+        return str_replace('-', '_', $scopeKey !== '' ? $scopeKey : 'all');
     }
 
     /**
