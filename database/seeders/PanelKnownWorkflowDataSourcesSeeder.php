@@ -37,6 +37,9 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
             'sales_customer_search',
             'Satış Müşteri Arama',
             <<<'SQL_SALES_CUSTOMER_SEARCH'
+DECLARE @search NVARCHAR(255) = N'[[search]]';
+DECLARE @rep_code NVARCHAR(50) = N'[[rep_code]]';
+
 SELECT TOP 80
     LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS cari_kodu,
     LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS cari_unvani,

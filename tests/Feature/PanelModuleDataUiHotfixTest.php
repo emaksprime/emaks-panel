@@ -172,7 +172,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertTrue($onlineSource->active);
         $this->assertNotSame('', trim((string) $onlineSource->query_template));
         $this->assertSame(
-            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
             $onlineSource->allowed_params,
         );
         foreach (['120.01', '120.02', '120.03', '120.04', '120.05', '120.06', '120.07', '120.08', '120.09', '120.16'] as $groupCode) {
