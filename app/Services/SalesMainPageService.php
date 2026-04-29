@@ -336,6 +336,10 @@ class SalesMainPageService
      */
     private function visibleScopes(?User $user, Collection $scopes): Collection
     {
+        if ($user === null) {
+            return $scopes->values();
+        }
+
         $canSeeAll = $this->access->userCanAccess($user, 'sales_main_all');
         $canSeeOnline = $this->access->userCanAccess($user, 'sales_online');
         $canSeeBayi = $this->access->userCanAccess($user, 'sales_bayi');
