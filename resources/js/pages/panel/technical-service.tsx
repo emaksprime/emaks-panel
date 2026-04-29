@@ -165,6 +165,10 @@ export default function TechnicalService() {
   const [scheduleNote, setScheduleNote] = useState('')
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleError, setScheduleError] = useState<string | null>(null)
+  const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
+  const [completionNote, setCompletionNote] = useState('')
+  const [completeLoading, setCompleteLoading] = useState(false)
+  const [completeError, setCompleteError] = useState<string | null>(null)
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
@@ -343,6 +347,11 @@ export default function TechnicalService() {
     setScheduleError(null)
   }
 
+  const handleCompleteReset = () => {
+    setCompletionNote('')
+    setCompleteError(null)
+  }
+
   const handleScheduleSubmit = async () => {
     if (!selectedId) {
       return
@@ -400,6 +409,35 @@ export default function TechnicalService() {
       setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
     } finally {
       setAssignLoading(false)
+    }
+  }
+
+  const handleCompleteSubmit = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    setCompleteLoading(true)
+    setCompleteError(null)
+
+    try {
+      await apiRequest(`/api/technical-service/requests/${selectedId}/status`, {
+        method: 'POST',
+        body: JSON.stringify({
+          status: 'Tamamlandı',
+          resolution_notes: completionNote || null,
+        }),
+      })
+
+      setCompleteDialogOpen(false)
+      handleCompleteReset()
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setCompleteError(caught instanceof Error ? caught.message : 'Talep kapatma işlemi başarısız oldu.')
+    } finally {
+      setCompleteLoading(false)
     }
   }
 
@@ -729,6 +767,55 @@ export default function TechnicalService() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          <Dialog open={completeDialogOpen} onOpenChange={(open) => {
+            setCompleteDialogOpen(open)
+            if (!open) handleCompleteReset()
+          }}>
+            <DialogContent className="max-w-lg">
+              <DialogClose asChild>
+                <button
+                  type="button"
+                  className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
+                >
+                  ×
+                </button>
+              </DialogClose>
+              <DialogHeader>
+                <DialogTitle>Talebi kapat</DialogTitle>
+                <DialogDescription>
+                  Bu talebi tamamlandı olarak işaretleyin ve çözüm notu ekleyin.
+                </DialogDescription>
+              </DialogHeader>
+
+              {completeError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {completeError}
+                </div>
+              ) : null}
+
+              <label className="grid gap-2 text-sm font-medium text-slate-700">
+                Kapanış notu / çözüm açıklaması
+                <textarea
+                  value={completionNote}
+                  onChange={(event) => setCompletionNote(event.target.value)}
+                  className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                  placeholder="Kapanış notu"
+                />
+              </label>
+
+              <DialogFooter className="gap-2">
+                <DialogClose asChild>
+                  <Button variant="secondary" type="button" onClick={handleCompleteReset}>
+                    İptal
+                  </Button>
+                </DialogClose>
+                <Button type="button" onClick={handleCompleteSubmit} disabled={completeLoading}>
+                  {completeLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
 
         <ServiceSummaryCards items={summaryItems} />
@@ -783,6 +870,7 @@ export default function TechnicalService() {
                 error={detailError}
                 onAssign={() => setAssignDialogOpen(true)}
                 onSchedule={() => setScheduleDialogOpen(true)}
+                onComplete={() => setCompleteDialogOpen(true)}
               />
             ) : (
               <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">

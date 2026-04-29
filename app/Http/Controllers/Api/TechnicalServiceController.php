@@ -147,6 +147,7 @@ class TechnicalServiceController extends Controller
         $previousStatus = $technicalServiceRequest->status;
         $technicalServiceRequest->status = $payload['status'];
         $technicalServiceRequest->updated_by_user_id = $request->user()?->id;
+        $technicalServiceRequest->resolution_notes = $payload['resolution_notes'] ?? $payload['note'] ?? null;
 
         if ($payload['status'] === 'Tamamlandı') {
             $technicalServiceRequest->completed_at = now();
@@ -161,7 +162,7 @@ class TechnicalServiceController extends Controller
         $technicalServiceRequest->events()->create([
             'event_type' => 'status_change',
             'title' => 'Durum değişti',
-            'note' => $payload['note'] ?? null,
+            'note' => $payload['resolution_notes'] ?? $payload['note'] ?? null,
             'from_status' => $previousStatus,
             'to_status' => $payload['status'],
             'author_user_id' => $request->user()?->id,

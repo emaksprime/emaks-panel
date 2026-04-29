@@ -19,6 +19,7 @@ class UpdateTechnicalServiceRequestStatus extends FormRequest
         return [
             'status' => ['required', 'string', 'in:Yeni,Atandı,Randevulu,Devam Ediyor,Tamamlandı,İptal'],
             'note' => ['nullable', 'string', 'max:2000'],
+            'resolution_notes' => ['nullable', 'string', 'max:2000'],
         ];
     }
 }
