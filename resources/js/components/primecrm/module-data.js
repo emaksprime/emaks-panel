@@ -1,4 +1,4 @@
-import { formatMoney, formatQuantity, numericValue } from './format';
+import { formatMoney, formatQuantity, numericValue } from './format.js';
 
 const countFormatter = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 0 });
 
