@@ -28,6 +28,7 @@ DECLARE @date_from DATE = '[[date_from]]';
 DECLARE @date_to   DATE = '[[date_to]]';
 DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
 DECLARE @rep_code NVARCHAR(20) = N'[[rep_code]]';
+DECLARE @cari_filter NVARCHAR(MAX) = N'[[cari_filter]]';
 
 IF OBJECT_ID('tempdb..#cube') IS NOT NULL
     DROP TABLE #cube;

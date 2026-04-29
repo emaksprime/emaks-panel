@@ -212,8 +212,11 @@ class PanelModuleDataUiHotfixTest extends TestCase
             $this->assertContains('customer_filter', $source->allowed_params);
         }
 
-        $this->assertStringContainsString('@cari_filter', (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template'));
-        $this->assertStringContainsString('STRING_SPLIT(@cari_filter', (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template'));
+        $salesMainQuery = (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template');
+
+        $this->assertStringContainsString('DECLARE @cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('@cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('STRING_SPLIT(@cari_filter', $salesMainQuery);
 
         Http::fake([
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
