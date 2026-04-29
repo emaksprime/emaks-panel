@@ -210,11 +210,18 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
     public function test_sales_customer_search_sends_search_to_gateway_payload(): void
     {
+        DB::table('panel.data_source_cache')->delete();
+
         Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+            '*' => Http::response([
                 'ok' => true,
                 'rows' => [
-                    ['cari_kodu' => '120.00.001', 'cari_unvani' => 'Mehmet Test', 'display_text' => 'Mehmet Test | 120.00.001'],
+                    [
+                        'cari_kodu' => '120.00.001',
+                        'cari_unvani' => 'Mehmet Test',
+                        'cari_grubu' => 'Test Grup',
+                        'display_text' => 'Mehmet Test | 120.00.001 | Test Grup',
+                    ],
                 ],
             ]),
         ]);
@@ -225,7 +232,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 'limit' => 80,
                 'bypass_cache' => true,
             ])
-            ->assertOk();
+            ->assertOk()
+            ->assertJsonPath('rows.0.cari_kodu', '120.00.001')
+            ->assertJsonPath('rows.0.cari_unvani', 'Mehmet Test');
 
         Http::assertSent(function ($request): bool {
             $payload = json_decode($request->body(), true) ?: [];
@@ -233,7 +242,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
             return ($payload['source_code'] ?? null) === 'sales_customer_search'
                 && ($payload['search'] ?? null) === 'mehmet'
                 && ($payload['params']['search'] ?? null) === 'mehmet'
-                && ($payload['bypass_cache'] ?? null) === true;
+                && ($payload['bypass_cache'] ?? null) === true
+                && ($payload['params']['bypass_cache'] ?? null) === true
+                && in_array('search', $payload['allowed_params'] ?? [], true);
         });
     }
 
