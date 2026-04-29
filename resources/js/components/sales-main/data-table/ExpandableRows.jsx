@@ -8,20 +8,20 @@ function Row({ row, depth = 0 }) {
     return (
         <>
             <tr className="border-b border-slate-100 transition hover:bg-slate-50">
-                <td className="min-w-[320px] py-3 pr-3 pl-4">
-                    <div className="flex items-center gap-2" style={{ paddingLeft: depth * 18 }}>
+                <td className="min-w-[560px] py-3 pr-3 pl-4 align-top">
+                    <div className="flex items-start gap-2" style={{ paddingLeft: depth * 18 }}>
                         {hasChildren ? (
                             <button
                                 type="button"
                                 onClick={() => setOpen((value) => !value)}
-                                className="grid size-6 place-items-center rounded-md border border-slate-200 text-slate-600"
+                                className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-slate-200 text-slate-600"
                             >
                                 {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
                             </button>
                         ) : (
-                            <span className="size-6" />
+                            <span className="size-6 shrink-0" />
                         )}
-                        <span className="max-w-[420px] truncate font-medium text-slate-900" title={row.label}>{row.label}</span>
+                        <span className="min-w-0 max-w-none whitespace-normal break-words font-medium leading-5 text-slate-900" title={row.label}>{row.label}</span>
                     </div>
                 </td>
                 <td className="w-24 min-w-[72px] px-3 py-3 text-center whitespace-nowrap text-slate-600">{row.quantityLabel}</td>

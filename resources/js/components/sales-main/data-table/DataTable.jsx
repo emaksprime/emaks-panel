@@ -5,7 +5,7 @@ const toLabelKey = (value) => (value ?? '').toString().trim().toLowerCase();
 
 function getColumnClass(column, index) {
     if (index === 0) {
-        return 'whitespace-nowrap px-4 py-3 text-left min-w-0';
+        return 'w-auto min-w-[560px] px-4 py-3 text-left whitespace-normal';
     }
 
     const key = toLabelKey(column?.key);
@@ -34,7 +34,7 @@ export function DataTable({ table }) {
                 ))}
             </div>
             <div className="hidden overflow-x-auto md:block">
-                <table className="w-full min-w-[760px] text-sm">
+                <table className="w-full min-w-[1100px] text-sm">
                     <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                         <tr>
                             {columns.map((column, index) => (
@@ -66,7 +66,7 @@ function MobileRow({ row, depth = 0 }) {
                 disabled={!hasChildren}
             >
                 <div className="flex items-start justify-between gap-3">
-                    <h3 className="line-clamp-2 min-w-0 text-sm font-semibold leading-5 text-slate-950" title={row.label}>
+                    <h3 className="min-w-0 whitespace-normal break-words text-sm font-semibold leading-5 text-slate-950" title={row.label}>
                         {row.label}
                     </h3>
                     {hasChildren && (

@@ -75,7 +75,9 @@ class SalesMainPageService
         $page = $this->page();
         $scope = $this->resolveScope($user, $filters['scope_key']);
         $normalizedScopeKey = $this->normalizeScopeKey((string) ($scope['key'] ?? $filters['scope_key']));
-        $source = $this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source();
+        $source = $filters['cari_filter'] !== ''
+            ? $this->source()
+            : ($this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source());
 
         $effectiveRepresentativeCode = $this->effectiveRepresentativeCode($user, $scope);
         $allowed = collect($source->allowed_params ?? []);
@@ -101,6 +103,10 @@ class SalesMainPageService
             : collect($source->preview_payload[$filters['detail_type']] ?? []);
 
         if ($rows->isEmpty()) {
+            if ($filters['cari_filter'] !== '') {
+                return $this->emptySalesDataset($user, $page, $source, $scope, $filters, $normalizedScopeKey, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult);
+            }
+
             throw new RuntimeException('Seçili filtrelerde satış kaydı bulunamadı.');
         }
 
@@ -113,8 +119,12 @@ class SalesMainPageService
             ->filter(fn (array $row) => ($row['satir_tipi'] ?? null) !== 'GRUP')
             ->values();
 
-        $positiveTotal = $groupRows->where('ciro', '>', 0)->sum('ciro');
-        $netTotal = $groupRows->sum('ciro');
+        $totalGroupRows = $groupRows
+            ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
+            ->values();
+
+        $positiveTotal = $totalGroupRows->where('ciro', '>', 0)->sum('ciro');
+        $netTotal = $totalGroupRows->sum('ciro');
         $konsinye = (float) ($rows->first()['konsinye_tutari'] ?? 0);
         $periodLabel = $this->periodLabel($filters['date_from'], $filters['date_to']);
         $isLive = $this->usesN8nGateway($source);
@@ -166,7 +176,7 @@ class SalesMainPageService
                 'totalNet' => $netTotal,
                 'totalNetLabel' => $this->money($netTotal),
                 'konsinyeAmount' => $konsinye,
-                'items' => $groupRows->map(function (array $row, int $index) use ($positiveTotal) {
+                'items' => $totalGroupRows->map(function (array $row, int $index) use ($positiveTotal) {
                     $amount = (float) $row['ciro'];
                     $percentage = $positiveTotal > 0 && $amount > 0
                         ? round(($amount / $positiveTotal) * 100, 1)
@@ -203,6 +213,87 @@ class SalesMainPageService
                 'status' => $source->active ? 'active' : 'inactive',
                 'mode' => $isLive ? 'live' : 'preview',
                 'notice' => $isLive ? 'Canlı veri alındı.' : 'Önizleme verisi; canlı veri kaynağı henüz bağlı değil.',
+                'whitelistedParameters' => $whitelistedParameters,
+                'gatewayMeta' => $gatewayResult['meta'] ?? null,
+                'gatewayRequest' => $gatewayResult['request'] ?? null,
+            ],
+            'navigation' => $this->navigation->sharedForUser($user, $page->route),
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $filters
+     * @param  array<string, mixed>  $scope
+     * @param  array<string, mixed>  $whitelistedParameters
+     * @param  array<string, mixed>|null  $gatewayResult
+     * @return array<string, mixed>
+     */
+    private function emptySalesDataset(
+        ?User $user,
+        Page $page,
+        DataSource $source,
+        array $scope,
+        array $filters,
+        string $normalizedScopeKey,
+        ?string $effectiveRepresentativeCode,
+        array $whitelistedParameters,
+        ?array $gatewayResult,
+    ): array {
+        $periodLabel = $this->periodLabel($filters['date_from'], $filters['date_to']);
+        $isLive = $this->usesN8nGateway($source);
+
+        return [
+            'filters' => [
+                'dateFrom' => $filters['date_from'],
+                'dateTo' => $filters['date_to'],
+                'grain' => $filters['grain'],
+                'detailType' => $filters['detail_type'],
+                'scopeKey' => $normalizedScopeKey,
+                'periodLabel' => $periodLabel,
+                'customerFilter' => $filters['cari_filter'],
+            ],
+            'scope' => [
+                'key' => $normalizedScopeKey,
+                'label' => $scope['label'],
+                'note' => $scope['note'],
+                'effectiveRepresentativeCode' => $effectiveRepresentativeCode,
+                'canSeeAll' => $this->access->userCanAccess($user, 'sales_main_all'),
+            ],
+            'kpis' => [
+                ['label' => 'Toplam Net Ciro', 'value' => $this->money(0), 'raw' => 0],
+                ['label' => 'Seçili Dönem', 'value' => $periodLabel, 'raw' => $periodLabel],
+                ['label' => 'Konsinye Hariç', 'value' => $this->money(0), 'raw' => 0],
+                ['label' => 'Aktif Kapsam', 'value' => $scope['label'], 'raw' => $normalizedScopeKey],
+            ],
+            'chart' => [
+                'title' => $filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı',
+                'subtitle' => $filters['detail_type'] === 'urun'
+                    ? 'Ürün ve model bazlı payların dağılımı.'
+                    : 'Satış gruplarının toplam ciro içindeki payları.',
+                'totalNet' => 0,
+                'totalNetLabel' => $this->money(0),
+                'konsinyeAmount' => 0,
+                'items' => [],
+            ],
+            'breakdown' => [
+                'mode' => $filters['detail_type'],
+                'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Özeti' : 'Satış Detayı',
+                'groups' => [],
+            ],
+            'table' => [
+                'columns' => [
+                    ['key' => 'label', 'label' => 'Başlık'],
+                    ['key' => 'quantity', 'label' => 'Adet'],
+                    ['key' => 'amount', 'label' => 'Ciro'],
+                ],
+                'rows' => [],
+            ],
+            'queryMeta' => [
+                'dataSource' => $source->code,
+                'driver' => $source->db_type,
+                'status' => $source->active ? 'active' : 'inactive',
+                'mode' => $isLive ? 'live' : 'preview',
+                'notice' => 'Seçili müşteri için satış kaydı bulunamadı.',
                 'whitelistedParameters' => $whitelistedParameters,
                 'gatewayMeta' => $gatewayResult['meta'] ?? null,
                 'gatewayRequest' => $gatewayResult['request'] ?? null,
@@ -415,12 +506,16 @@ class SalesMainPageService
                             'customerCode' => trim((string) ($row['cari_kodu'] ?? '')),
                             'cari_kodu' => trim((string) ($row['cari_kodu'] ?? '')),
                             'parent_key' => $this->parentKey($row),
+                            'excludedFromTotal' => $this->rowExcludedFromTotal($row),
                         ],
                     ))
                     ->all();
 
                 return [
-                    ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro'], 'GRUP:'.$groupLabel, ['type' => 'GRUP']),
+                    ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro'], 'GRUP:'.$groupLabel, [
+                        'type' => 'GRUP',
+                        'excludedFromTotal' => $this->rowExcludedFromTotal($group),
+                    ]),
                     'children' => $children,
                 ];
             })->values()->all();
@@ -431,7 +526,7 @@ class SalesMainPageService
         return $groupRows->map(function (array $group) use ($detailRows) {
             $groupLabel = $this->groupName($group);
             $cariRows = $detailRows
-                ->filter(fn (array $row) => ($row['satir_tipi'] ?? null) === 'CARI' && $this->groupName($row) === $groupLabel)
+                ->filter(fn (array $row) => in_array(($row['satir_tipi'] ?? null), ['CARI', 'KONSINYE'], true) && $this->groupName($row) === $groupLabel)
                 ->values();
 
             $urunRows = $detailRows
@@ -449,9 +544,10 @@ class SalesMainPageService
                         (float) $cari['ciro'],
                         'CARI:'.($cariCode !== '' ? $cariCode : $this->rowFingerprint($cari)),
                         [
-                            'type' => 'CARI',
+                            'type' => (string) ($cari['satir_tipi'] ?? 'CARI'),
                             'customerCode' => $cariCode,
                             'cari_kodu' => $cariCode,
+                            'excludedFromTotal' => $this->rowExcludedFromTotal($cari),
                         ],
                     ),
                     'children' => $urunRows
@@ -467,6 +563,7 @@ class SalesMainPageService
                                 'customerCode' => $cariCode,
                                 'cari_kodu' => $cariCode,
                                 'parent_key' => $this->parentKey($urun),
+                                'excludedFromTotal' => $this->rowExcludedFromTotal($urun),
                             ],
                         ))
                         ->all(),
@@ -474,7 +571,10 @@ class SalesMainPageService
             })->all();
 
             return [
-                ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro'], 'GRUP:'.$groupLabel, ['type' => 'GRUP']),
+                ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro'], 'GRUP:'.$groupLabel, [
+                    'type' => 'GRUP',
+                    'excludedFromTotal' => $this->rowExcludedFromTotal($group),
+                ]),
                 'children' => $children,
             ];
         })->values()->all();
@@ -492,7 +592,7 @@ class SalesMainPageService
             ->keyBy(fn (array $group) => $this->groupName($group));
 
         $detailRows
-            ->where('satir_tipi', 'CARI')
+            ->filter(fn (array $row) => in_array(($row['satir_tipi'] ?? null), ['CARI', 'KONSINYE'], true))
             ->each(function (array $row) use ($groups): void {
                 $groupName = $this->groupName($row);
 
@@ -590,7 +690,25 @@ class SalesMainPageService
     {
         $label = trim((string) ($row['satir_adi'] ?? $row['cari_grup_adi'] ?? ''));
 
+        if (($row['satir_tipi'] ?? null) === 'KONSINYE' && $label !== '' && ! str_contains(mb_strtoupper($label, 'UTF-8'), 'KONS')) {
+            return 'KONSİNYE - '.$label;
+        }
+
         return $label !== '' ? $label : 'Diğer';
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function rowExcludedFromTotal(array $row): bool
+    {
+        $value = $row['excluded_from_total'] ?? $row['excludedFromTotal'] ?? 0;
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes'], true);
     }
 
     /**
@@ -622,6 +740,7 @@ class SalesMainPageService
         return match ($type) {
             'GRUP' => 'GRUP:'.$this->groupName($row),
             'CARI' => 'CARI:'.($customerCode !== '' ? $customerCode : $this->rowFingerprint($row)),
+            'KONSINYE' => 'KONSINYE:'.($customerCode !== '' ? $customerCode : $this->rowFingerprint($row)),
             'URUN', 'DETAY' => 'URUN:'.($customerCode !== '' ? $customerCode : $parent).':'.$label,
             'KATEGORI' => 'KATEGORI:'.($categoryCode !== '' ? $categoryCode : $label),
             default => 'ROW:'.$this->rowFingerprint($row),

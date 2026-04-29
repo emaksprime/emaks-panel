@@ -82,6 +82,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
         updateFilters({
             customer_filter: csv,
             cari_filter: csv,
+            scope_key: 'all',
             bypass_cache: true,
         });
     };
