@@ -14,6 +14,10 @@ function polarSegment(item, index, offset) {
 
 export function SalesPieChart({ chart }) {
     const items = chart?.items ?? [];
+    const totalNetRaw = (chart?.totalNetLabel ?? '').toString().trim();
+    const amountText = totalNetRaw ? totalNetRaw.replace(/\s*TL$/i, '').trim() : '-';
+    const currencyText = totalNetRaw ? 'TL' : '';
+
     let offset = 0;
     const segments = items
         .filter((item) => item.percentage > 0)
@@ -70,11 +74,11 @@ export function SalesPieChart({ chart }) {
                             </p>
                             <p
                                 className="mt-0.5 w-full break-words text-center text-sm font-bold leading-tight text-slate-950 sm:text-base"
-                                title={chart?.totalNetLabel ?? '-'}
+                                title={totalNetRaw || '-'}
                             >
-                                {chart?.totalNetLabel ?? '-'}
+                                {amountText}
                             </p>
-                            <p className="text-xs font-semibold text-slate-500">TL</p>
+                            {currencyText ? <p className="text-xs font-semibold text-slate-500">{currencyText}</p> : null}
                         </div>
                     </div>
                 </div>
