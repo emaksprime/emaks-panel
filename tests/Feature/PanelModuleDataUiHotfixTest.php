@@ -194,13 +194,47 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertContains('rep_code', $source->allowed_params);
         $this->assertContains('scope_key', $source->allowed_params);
         $this->assertContains('limit', $source->allowed_params);
+        $this->assertStringContainsString('DECLARE @Search', $query);
+        $this->assertStringContainsString('DECLARE @RepCode', $query);
+        $this->assertStringContainsString('DECLARE @CanViewAll', $query);
         $this->assertStringContainsString('CARI_HESAPLAR', $query);
         $this->assertStringContainsString('CARI_HESAP_GRUPLARI', $query);
         $this->assertStringContainsString('cari.cari_kod LIKE', $query);
         $this->assertStringContainsString('cari.cari_unvan1 LIKE', $query);
         $this->assertStringContainsString('grp.crg_isim', $query);
         $this->assertStringContainsString('cari.cari_temsilci_kodu', $query);
+        $this->assertStringContainsString('ORDER BY', $query);
+        $this->assertStringContainsString('cari.cari_kod ASC', $query);
         $this->assertStringContainsString('display_text', $query);
+    }
+
+    public function test_sales_customer_search_sends_search_to_gateway_payload(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['cari_kodu' => '120.00.001', 'cari_unvani' => 'Mehmet Test', 'display_text' => 'Mehmet Test | 120.00.001'],
+                ],
+            ]),
+        ]);
+
+        $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'limit' => 80,
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_customer_search'
+                && ($payload['search'] ?? null) === 'mehmet'
+                && ($payload['params']['search'] ?? null) === 'mehmet'
+                && ($payload['bypass_cache'] ?? null) === true;
+        });
     }
 
     public function test_sales_datasources_accept_customer_filter_and_send_cari_filter_to_gateway(): void
@@ -217,6 +251,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('DECLARE @cari_filter', $salesMainQuery);
         $this->assertStringContainsString('@cari_filter', $salesMainQuery);
         $this->assertStringContainsString('STRING_SPLIT(@cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('c.cari_kodu = @cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('ch.cari_unvan1 LIKE', $salesMainQuery);
+        $this->assertStringContainsString('INNER JOIN CARI_HESAPLAR ch', $salesMainQuery);
+        $this->assertStringContainsString('konsinye_tutari', $salesMainQuery);
 
         Http::fake([
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
@@ -248,7 +286,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
             return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
                 && ($payload['cari_filter'] ?? null) === 'C-1,C-2'
-                && ($payload['params']['cari_filter'] ?? null) === 'C-1,C-2';
+                && ($payload['customer_filter'] ?? null) === 'C-1,C-2'
+                && ($payload['params']['cari_filter'] ?? null) === 'C-1,C-2'
+                && ($payload['params']['customer_filter'] ?? null) === 'C-1,C-2';
         });
     }
 
@@ -257,14 +297,24 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $dashboard = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
         $picker = file_get_contents(resource_path('js/components/sales-main/CustomerFilterPicker.jsx')) ?: '';
         $table = file_get_contents(resource_path('js/components/sales-main/data-table/DataTable.jsx')) ?: '';
+        $expandableRows = file_get_contents(resource_path('js/components/sales-main/data-table/ExpandableRows.jsx')) ?: '';
 
         $this->assertStringContainsString('CustomerFilterPicker', $dashboard);
         $this->assertStringContainsString('customer_filter', $dashboard);
+        $this->assertStringContainsString('cari_filter: csv', $dashboard);
+        $this->assertStringContainsString('bypass_cache: true', $dashboard);
         $this->assertStringContainsString('/api/data/sales_customer_search', $picker);
+        $this->assertStringContainsString('body: JSON.stringify({ search, limit: 80, bypass_cache: true })', $picker);
         $this->assertStringContainsString('selected.map((item) => item.code)', $picker);
+        $this->assertStringContainsString('candidate.code === item.code', $picker);
+        $this->assertStringContainsString('selectedCodes.has(customer.code)', $picker);
         $this->assertStringContainsString('Müşteri bulunamadı', $picker);
         $this->assertStringContainsString('md:hidden', $table);
         $this->assertStringContainsString('MobileRow', $table);
+        $this->assertStringContainsString('row.id ?? row.label', $table);
+        $this->assertStringContainsString('row.id ?? row.label', $expandableRows);
+        $this->assertStringNotContainsString('key={row.label}', $table);
+        $this->assertStringNotContainsString('key={row.label}', $expandableRows);
     }
 
     public function test_sales_bulent_scope_uses_sales_main_with_representative_code(): void
@@ -401,6 +451,44 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame('Müşteri B', $groupB['children'][0]['label']);
         $this->assertSame('Orphan Müşteri', $other['children'][0]['label']);
         $this->assertStringNotContainsString('Roota Çıkmamalı', json_encode($payload['breakdown']['groups'], JSON_UNESCAPED_UNICODE));
+    }
+
+    public function test_sales_breakdown_keeps_same_title_customers_distinct_by_cari_code(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['satir_tipi' => 'GRUP', 'cari_grup_adi' => 'Group A', 'adet' => 2, 'ciro' => 200],
+                    ['satir_tipi' => 'CARI', 'cari_grup_adi' => 'Group A', 'cari_kodu' => '120.00.001', 'satir_adi' => 'Same Title', 'adet' => 1, 'ciro' => 100],
+                    ['satir_tipi' => 'CARI', 'cari_grup_adi' => 'Group A', 'cari_kodu' => '320.02.355', 'satir_adi' => 'Same Title', 'adet' => 1, 'ciro' => 100],
+                    ['satir_tipi' => 'URUN', 'cari_grup_adi' => 'Group A', 'parent_key' => '120.00.001', 'satir_adi' => 'Product A', 'adet' => 1, 'ciro' => 100],
+                    ['satir_tipi' => 'URUN', 'cari_grup_adi' => 'Group A', 'parent_key' => '320.02.355', 'satir_adi' => 'Product B', 'adet' => 1, 'ciro' => 100],
+                ],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $group = $payload['breakdown']['groups'][0];
+
+        $this->assertSame('GRUP:Group A', $group['id']);
+        $this->assertCount(2, $group['children']);
+        $this->assertSame('Same Title', $group['children'][0]['label']);
+        $this->assertSame('Same Title', $group['children'][1]['label']);
+        $this->assertSame('CARI:120.00.001', $group['children'][0]['id']);
+        $this->assertSame('CARI:320.02.355', $group['children'][1]['id']);
+        $this->assertSame('120.00.001', $group['children'][0]['customerCode']);
+        $this->assertSame('320.02.355', $group['children'][1]['customerCode']);
+        $this->assertStringStartsWith('URUN:120.00.001:', $group['children'][0]['children'][0]['id']);
+        $this->assertStringStartsWith('URUN:320.02.355:', $group['children'][1]['children'][0]['id']);
     }
 
     public function test_user_facing_metadata_uses_customer_terminology(): void

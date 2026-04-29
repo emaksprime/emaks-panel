@@ -405,11 +405,22 @@ class SalesMainPageService
                 $children = $detailRows
                     ->filter(fn (array $row) => $this->parentKey($row) === $groupLabel)
                     ->values()
-                    ->map(fn (array $row) => $this->rowPayload($this->rowLabel($row), (float) $row['adet'], (float) $row['ciro']))
+                    ->map(fn (array $row) => $this->rowPayload(
+                        $this->rowLabel($row),
+                        (float) $row['adet'],
+                        (float) $row['ciro'],
+                        $this->rowId($row, $groupLabel),
+                        [
+                            'type' => (string) ($row['satir_tipi'] ?? 'DETAY'),
+                            'customerCode' => trim((string) ($row['cari_kodu'] ?? '')),
+                            'cari_kodu' => trim((string) ($row['cari_kodu'] ?? '')),
+                            'parent_key' => $this->parentKey($row),
+                        ],
+                    ))
                     ->all();
 
                 return [
-                    ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro']),
+                    ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro'], 'GRUP:'.$groupLabel, ['type' => 'GRUP']),
                     'children' => $children,
                 ];
             })->values()->all();
@@ -432,17 +443,38 @@ class SalesMainPageService
                 $cariCode = trim((string) ($cari['cari_kodu'] ?? ''));
 
                 return [
-                    ...$this->rowPayload($this->rowLabel($cari), (float) $cari['adet'], (float) $cari['ciro']),
+                    ...$this->rowPayload(
+                        $this->rowLabel($cari),
+                        (float) $cari['adet'],
+                        (float) $cari['ciro'],
+                        'CARI:'.($cariCode !== '' ? $cariCode : $this->rowFingerprint($cari)),
+                        [
+                            'type' => 'CARI',
+                            'customerCode' => $cariCode,
+                            'cari_kodu' => $cariCode,
+                        ],
+                    ),
                     'children' => $urunRows
                         ->filter(fn (array $urun) => $cariCode !== '' && $this->parentKey($urun) === $cariCode)
                         ->values()
-                        ->map(fn (array $urun) => $this->rowPayload($this->rowLabel($urun), (float) $urun['adet'], (float) $urun['ciro']))
+                        ->map(fn (array $urun) => $this->rowPayload(
+                            $this->rowLabel($urun),
+                            (float) $urun['adet'],
+                            (float) $urun['ciro'],
+                            $this->rowId($urun, $cariCode),
+                            [
+                                'type' => 'URUN',
+                                'customerCode' => $cariCode,
+                                'cari_kodu' => $cariCode,
+                                'parent_key' => $this->parentKey($urun),
+                            ],
+                        ))
                         ->all(),
                 ];
             })->all();
 
             return [
-                ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro']),
+                ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro'], 'GRUP:'.$groupLabel, ['type' => 'GRUP']),
                 'children' => $children,
             ];
         })->values()->all();
@@ -564,15 +596,53 @@ class SalesMainPageService
     /**
      * @return array<string, mixed>
      */
-    private function rowPayload(string $label, float $quantity, float $amount): array
+    private function rowPayload(string $label, float $quantity, float $amount, ?string $id = null, array $extra = []): array
     {
         return [
+            'id' => $id ?? 'ROW:'.sha1($label.'|'.$quantity.'|'.$amount),
             'label' => $label,
             'quantity' => $quantity,
             'quantityLabel' => $this->quantity($quantity),
             'amount' => $amount,
             'amountLabel' => $this->money($amount),
+            ...$extra,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function rowId(array $row, string $parent = ''): string
+    {
+        $type = strtoupper(trim((string) ($row['satir_tipi'] ?? '')));
+        $customerCode = trim((string) ($row['cari_kodu'] ?? ''));
+        $label = $this->rowLabel($row);
+        $categoryCode = trim((string) ($row['kategori_kodu'] ?? ''));
+
+        return match ($type) {
+            'GRUP' => 'GRUP:'.$this->groupName($row),
+            'CARI' => 'CARI:'.($customerCode !== '' ? $customerCode : $this->rowFingerprint($row)),
+            'URUN', 'DETAY' => 'URUN:'.($customerCode !== '' ? $customerCode : $parent).':'.$label,
+            'KATEGORI' => 'KATEGORI:'.($categoryCode !== '' ? $categoryCode : $label),
+            default => 'ROW:'.$this->rowFingerprint($row),
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function rowFingerprint(array $row): string
+    {
+        return sha1(json_encode([
+            $row['satir_tipi'] ?? '',
+            $row['cari_grup_adi'] ?? '',
+            $row['cari_kodu'] ?? '',
+            $row['parent_key'] ?? '',
+            $row['model_adi'] ?? '',
+            $row['stok_kodu'] ?? '',
+            $row['kategori_kodu'] ?? '',
+            $row['satir_adi'] ?? '',
+        ], JSON_UNESCAPED_UNICODE) ?: '');
     }
 
     private function page(string $pageCode = 'sales_main'): Page
