@@ -172,7 +172,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertTrue($onlineSource->active);
         $this->assertNotSame('', trim((string) $onlineSource->query_template));
         $this->assertSame(
-            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
             $onlineSource->allowed_params,
         );
         foreach (['120.01', '120.02', '120.03', '120.04', '120.05', '120.06', '120.07', '120.08', '120.09', '120.16'] as $groupCode) {
@@ -182,6 +182,86 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame('sales_bayi_proje_detail', $bayi['dataSource']['slug']);
         $this->assertSame('bayi_proje', $bayi['defaults']['scopeKey']);
         $this->assertSame('panel/sales-main', $bayi['page']['component']);
+    }
+
+    public function test_sales_customer_search_datasource_uses_primecrm_customer_lookup(): void
+    {
+        $source = DataSource::query()->where('code', 'sales_customer_search')->firstOrFail();
+        $query = (string) $source->query_template;
+
+        $this->assertSame('n8n_json', $source->db_type);
+        $this->assertContains('search', $source->allowed_params);
+        $this->assertContains('rep_code', $source->allowed_params);
+        $this->assertContains('scope_key', $source->allowed_params);
+        $this->assertContains('limit', $source->allowed_params);
+        $this->assertStringContainsString('CARI_HESAPLAR', $query);
+        $this->assertStringContainsString('CARI_HESAP_GRUPLARI', $query);
+        $this->assertStringContainsString('cari.cari_kod LIKE', $query);
+        $this->assertStringContainsString('cari.cari_unvan1 LIKE', $query);
+        $this->assertStringContainsString('grp.crg_isim', $query);
+        $this->assertStringContainsString('cari.cari_temsilci_kodu', $query);
+        $this->assertStringContainsString('display_text', $query);
+    }
+
+    public function test_sales_datasources_accept_customer_filter_and_send_cari_filter_to_gateway(): void
+    {
+        foreach (['sales_main_dashboard', 'sales_online_perakende_detail', 'sales_bayi_proje_detail'] as $sourceCode) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+
+            $this->assertContains('cari_filter', $source->allowed_params);
+            $this->assertContains('customer_filter', $source->allowed_params);
+        }
+
+        $this->assertStringContainsString('@cari_filter', (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template'));
+        $this->assertStringContainsString('STRING_SPLIT(@cari_filter', (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template'));
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Grup A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'customer_filter' => 'C-1,C-2',
+            'bypass_cache' => true,
+        ]);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['cari_filter'] ?? null) === 'C-1,C-2'
+                && ($payload['params']['cari_filter'] ?? null) === 'C-1,C-2';
+        });
+    }
+
+    public function test_sales_customer_picker_and_mobile_breakdown_contract_exist(): void
+    {
+        $dashboard = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
+        $picker = file_get_contents(resource_path('js/components/sales-main/CustomerFilterPicker.jsx')) ?: '';
+        $table = file_get_contents(resource_path('js/components/sales-main/data-table/DataTable.jsx')) ?: '';
+
+        $this->assertStringContainsString('CustomerFilterPicker', $dashboard);
+        $this->assertStringContainsString('customer_filter', $dashboard);
+        $this->assertStringContainsString('/api/data/sales_customer_search', $picker);
+        $this->assertStringContainsString('selected.map((item) => item.code)', $picker);
+        $this->assertStringContainsString('Müşteri bulunamadı', $picker);
+        $this->assertStringContainsString('md:hidden', $table);
+        $this->assertStringContainsString('MobileRow', $table);
     }
 
     public function test_sales_bulent_scope_uses_sales_main_with_representative_code(): void

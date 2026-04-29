@@ -86,6 +86,8 @@ class SalesMainPageService
             'detail_type' => $filters['detail_type'],
             'scope_key' => $normalizedScopeKey,
             'rep_code' => $effectiveRepresentativeCode,
+            'cari_filter' => $filters['cari_filter'],
+            'customer_filter' => $filters['cari_filter'],
             'search' => $input['search'] ?? null,
             'page' => $input['page'] ?? 1,
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
@@ -125,6 +127,7 @@ class SalesMainPageService
                 'detailType' => $filters['detail_type'],
                 'scopeKey' => $normalizedScopeKey,
                 'periodLabel' => $periodLabel,
+                'customerFilter' => $filters['cari_filter'],
             ],
             'scope' => [
                 'key' => $normalizedScopeKey,
@@ -322,7 +325,25 @@ class SalesMainPageService
             'grain' => $grain,
             'detail_type' => $detailType,
             'scope_key' => $this->normalizeScopeKey((string) ($input['scope_key'] ?? $defaults['scopeKey'] ?? 'all')),
+            'cari_filter' => $this->normalizeCustomerFilter($input['customer_filter'] ?? $input['cari_filter'] ?? ''),
         ];
+    }
+
+    private function normalizeCustomerFilter(mixed $value): string
+    {
+        if (is_array($value)) {
+            return collect($value)
+                ->map(fn (mixed $item) => trim((string) $item))
+                ->filter()
+                ->unique()
+                ->implode(',');
+        }
+
+        return collect(explode(',', (string) $value))
+            ->map(fn (string $item) => trim($item))
+            ->filter()
+            ->unique()
+            ->implode(',');
     }
 
     private function normalizeDate(mixed $value, string $grain, bool $isStart, CarbonImmutable $today): string
@@ -620,6 +641,8 @@ class SalesMainPageService
             'detail_type' => $filters['detail_type'],
             'scope_key' => $filters['scope_key'],
             'rep_code' => $effectiveRepresentativeCode,
+            'cari_filter' => $filters['cari_filter'],
+            'customer_filter' => $filters['cari_filter'],
             'bypass_cache' => (bool) ($whitelistedParameters['bypass_cache'] ?? false),
         ], $source);
 

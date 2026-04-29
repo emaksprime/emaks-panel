@@ -44,7 +44,7 @@ class PageDataController extends Controller
         abort_unless(
             $page !== null
                 ? $access->userCanAccess($user, $page->resource_code ?? $page->code)
-                : $access->userCanAccess($user, (string) $sourceResourceCode),
+                : $this->userCanAccessDataSource($access, $user, (string) $source?->code, (string) $sourceResourceCode),
             403,
         );
 
@@ -55,6 +55,8 @@ class PageDataController extends Controller
             'detail_type' => ['nullable', 'in:cari,urun'],
             'scope_key' => ['nullable', 'string', 'max:80'],
             'rep_code' => ['nullable', 'string', 'max:40'],
+            'customer_filter' => ['nullable', 'string', 'max:1000'],
+            'cari_filter' => ['nullable', 'string', 'max:1000'],
             'customer_code' => ['nullable', 'string', 'max:80'],
             'proforma_no' => ['nullable', 'string', 'max:80'],
             'price_list' => ['nullable', 'integer'],
@@ -102,6 +104,21 @@ class PageDataController extends Controller
             return 'proforma';
         }
 
+        if (str_starts_with($sourceCode, 'sales_')) {
+            return 'sales_main';
+        }
+
         return $sourceCode;
+    }
+
+    private function userCanAccessDataSource(PanelAccessService $access, mixed $user, string $sourceCode, string $resourceCode): bool
+    {
+        if ($sourceCode === 'sales_customer_search') {
+            return $access->userCanAccess($user, 'sales_main')
+                || $access->userCanAccess($user, 'sales_online')
+                || $access->userCanAccess($user, 'sales_bayi');
+        }
+
+        return $access->userCanAccess($user, $resourceCode);
     }
 }

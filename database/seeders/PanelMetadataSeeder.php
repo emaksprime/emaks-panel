@@ -63,6 +63,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'user_admin', 'name' => 'Kullanıcı Yönetimi', 'type' => 'page'],
             ['code' => 'data_sources', 'name' => 'Veri Kaynakları Yönetimi', 'type' => 'page'],
             ['code' => 'sales_main_dashboard', 'name' => 'Satış Yönetimi Veri Kaynağı', 'type' => 'data_source'],
+            ['code' => 'sales_customer_search', 'name' => 'Satış Müşteri Arama Veri Kaynağı', 'type' => 'data_source'],
             ['code' => 'stock_dashboard', 'name' => 'Stok Veri Kaynağı', 'type' => 'data_source'],
             ['code' => 'sales_bayi_proje_detail', 'name' => 'Bayi / Proje Veri Kaynağı', 'type' => 'data_source'],
             ['code' => 'sales_online_perakende_detail', 'name' => 'Online / Perakende Veri Kaynağı', 'type' => 'data_source'],
@@ -214,10 +215,11 @@ DECLARE @date_from DATE = '{{date_from}}';
 DECLARE @date_to DATE = '{{date_to}}';
 DECLARE @detail_type NVARCHAR(10) = '{{detail_type}}';
 DECLARE @rep_code NVARCHAR(20) = '{{rep_code}}';
+DECLARE @cari_filter NVARCHAR(MAX) = '{{cari_filter}}';
 -- Query template metadata panel.data_sources uzerinden okunur.
 -- Gerçek MSSQL executor bilerek bağlanmamıştır.
 SQL,
-                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter'],
                 'connection_meta' => [
                     'driver' => 'n8n_json',
                     'method' => 'POST',

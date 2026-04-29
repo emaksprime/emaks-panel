@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ExpandableRows } from './ExpandableRows.jsx';
 
 const toLabelKey = (value) => (value ?? '').toString().trim().toLowerCase();
@@ -23,10 +24,16 @@ function getColumnClass(column, index) {
 
 export function DataTable({ table }) {
     const columns = table?.columns ?? [];
+    const rows = table?.rows ?? [];
 
     return (
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-            <div className="overflow-x-auto">
+        <div className="rounded-xl border border-slate-200 bg-white">
+            <div className="grid gap-3 p-3 md:hidden">
+                {rows.map((row) => (
+                    <MobileRow key={row.label} row={row} />
+                ))}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
                 <table className="w-full min-w-[760px] text-sm">
                     <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                         <tr>
@@ -38,10 +45,54 @@ export function DataTable({ table }) {
                         </tr>
                     </thead>
                     <tbody>
-                        <ExpandableRows rows={table?.rows ?? []} />
+                        <ExpandableRows rows={rows} />
                     </tbody>
                 </table>
             </div>
         </div>
+    );
+}
+
+function MobileRow({ row, depth = 0 }) {
+    const [open, setOpen] = useState(depth < 1);
+    const hasChildren = Array.isArray(row.children) && row.children.length > 0;
+
+    return (
+        <article className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm" style={{ marginLeft: depth * 10 }}>
+            <button
+                type="button"
+                onClick={() => hasChildren && setOpen((value) => !value)}
+                className="grid w-full gap-3 text-left"
+                disabled={!hasChildren}
+            >
+                <div className="flex items-start justify-between gap-3">
+                    <h3 className="line-clamp-2 min-w-0 text-sm font-semibold leading-5 text-slate-950" title={row.label}>
+                        {row.label}
+                    </h3>
+                    {hasChildren && (
+                        <span className="shrink-0 rounded-full border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-500">
+                            {open ? 'Kapat' : 'Aç'}
+                        </span>
+                    )}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                    <span className="rounded-xl bg-slate-50 p-2">
+                        <span className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Adet</span>
+                        <span className="mt-1 block text-sm font-semibold text-slate-800">{row.quantityLabel}</span>
+                    </span>
+                    <span className="rounded-xl bg-blue-50 p-2 text-right">
+                        <span className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-400">Ciro</span>
+                        <span className="mt-1 block break-words text-sm font-semibold text-blue-800">{row.amountLabel}</span>
+                    </span>
+                </div>
+            </button>
+            {hasChildren && open && (
+                <div className="mt-3 grid gap-2">
+                    {row.children.map((child) => (
+                        <MobileRow key={`${row.label}-${child.label}`} row={child} depth={depth + 1} />
+                    ))}
+                </div>
+            )}
+        </article>
     );
 }
