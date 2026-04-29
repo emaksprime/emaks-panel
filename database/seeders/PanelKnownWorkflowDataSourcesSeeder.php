@@ -183,22 +183,48 @@ WITH AcikSiparisler AS
         ON mdl.mdl_kodu = sto.sto_model_kodu
     WHERE
         sip.sip_iptal = 0
+        AND CAST(sip.sip_tarih AS date) >= @BasTar
         AND sip.sip_tip = 0
         AND sip.sip_kapat_fl = 0
-        AND ISNULL(sip.sip_miktar, 0) > ISNULL(sip.sip_teslim_miktar, 0)
-        AND sip.sip_tarih >= @BasTar
+        AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
+        AND UPPER(LTRIM(RTRIM(ISNULL(crg.crg_isim, N'')))) NOT LIKE N'%İHRACAT%'
 )
 SELECT
-    sip_tarih AS [siparis_tarihi],
+    CONVERT(varchar(10), sip_tarih, 23) AS [siparis_tarihi],
     cari_adi,
-    stok_adi,
-    model_adi,
-    siparis_miktar,
-    teslim_miktar,
+    ISNULL(NULLIF(model_adi, N''), stok_adi) AS [urun_adi],
     kalan_miktar,
-    CAST(sip_tutar - iskonto_1 - iskonto_2 - iskonto_3 AS decimal(18,2)) AS net_tutar
+    ROUND(
+        CASE
+            WHEN ISNULL(siparis_miktar, 0) = 0 THEN 0
+            ELSE (
+                (
+                    ISNULL(sip_tutar, 0)
+                    - ISNULL(iskonto_1, 0)
+                    - ISNULL(iskonto_2, 0)
+                    - ISNULL(iskonto_3, 0)
+                ) / siparis_miktar
+            )
+        END, 2
+    ) AS birim_fiyat,
+    ROUND(
+        CASE
+            WHEN ISNULL(siparis_miktar, 0) = 0 THEN 0
+            ELSE (
+                (
+                    ISNULL(sip_tutar, 0)
+                    - ISNULL(iskonto_1, 0)
+                    - ISNULL(iskonto_2, 0)
+                    - ISNULL(iskonto_3, 0)
+                ) / siparis_miktar
+            ) * kalan_miktar
+        END, 2
+    ) AS kalan_tutar
 FROM AcikSiparisler
-ORDER BY sip_tarih DESC, cari_adi ASC;
+ORDER BY
+    sip_tarih DESC,
+    cari_adi,
+    urun_adi;
 SQL_ORDERS_ALINAN,
             ['date_from', 'date_to', 'search', 'page', 'bypass_cache'],
             'EMAKS PRIME - Siparisler Workflow (TAM FIX) Code - Build SQL Alinan node sorgusu.',
@@ -246,24 +272,66 @@ WITH VerilenSiparisler AS
         sip.sip_iptal = 0
         AND sip.sip_tip = 1
         AND sip.sip_kapat_fl = 0
-        AND sip.sip_tarih >= @BasTar
-        AND ISNULL(sip.sip_miktar, 0) > ISNULL(sip.sip_teslim_miktar, 0)
+        AND CAST(sip.sip_tarih AS date) >= @BasTar
+        AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
 )
 SELECT
-    sip_tarih AS [siparis_tarihi],
-    sip_teslim_tarih AS [teslim_tarihi],
-    CONCAT(ISNULL(sip_evrakno_seri, ''), '-', ISNULL(CAST(sip_evrakno_sira AS nvarchar(50)), '')) AS [evrak_no],
+    CONVERT(varchar(10), sip_teslim_tarih, 104) AS [teslim_tarihi],
+    CASE DATEPART(MONTH, sip_teslim_tarih)
+        WHEN 1 THEN N'Ocak'
+        WHEN 2 THEN N'Şubat'
+        WHEN 3 THEN N'Mart'
+        WHEN 4 THEN N'Nisan'
+        WHEN 5 THEN N'Mayıs'
+        WHEN 6 THEN N'Haziran'
+        WHEN 7 THEN N'Temmuz'
+        WHEN 8 THEN N'Ağustos'
+        WHEN 9 THEN N'Eylül'
+        WHEN 10 THEN N'Ekim'
+        WHEN 11 THEN N'Kasım'
+        WHEN 12 THEN N'Aralık'
+        ELSE N''
+    END + N' ' +
+    CASE
+        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 1 AND 7 THEN N'1. Haftası'
+        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 8 AND 14 THEN N'2. Haftası'
+        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 15 AND 21 THEN N'3. Haftası'
+        ELSE N'4. Haftası'
+    END AS [teslim_tarihi_hafta],
     sip_stok_kod AS [stok_kodu],
-    stok_adi,
+    ISNULL(NULLIF(model_adi, N''), stok_adi) AS [stok_adi],
     stok_kategori_adi,
-    model_adi,
-    siparis_miktari,
-    teslim_miktari,
-    kalan_miktar,
-    birim_fiyat,
-    CAST(sip_tutar - iskonto_1 - iskonto_2 - iskonto_3 AS decimal(18,2)) AS net_tutar
+    kalan_miktar AS [siparis_miktari],
+    ROUND(
+        CASE
+            WHEN ISNULL(siparis_miktari, 0) = 0 THEN 0
+            ELSE (
+                (
+                    ISNULL(sip_tutar, 0)
+                    - ISNULL(iskonto_1, 0)
+                    - ISNULL(iskonto_2, 0)
+                    - ISNULL(iskonto_3, 0)
+                ) / siparis_miktari
+            )
+        END, 2
+    ) AS birim_fiyat,
+    ROUND(
+        CASE
+            WHEN ISNULL(siparis_miktari, 0) = 0 THEN 0
+            ELSE (
+                (
+                    ISNULL(sip_tutar, 0)
+                    - ISNULL(iskonto_1, 0)
+                    - ISNULL(iskonto_2, 0)
+                    - ISNULL(iskonto_3, 0)
+                ) / siparis_miktari
+            ) * kalan_miktar
+        END, 2
+    ) AS siparis_tutari
 FROM VerilenSiparisler
-ORDER BY sip_tarih DESC, sip_stok_kod ASC;
+ORDER BY
+    sip_teslim_tarih,
+    ISNULL(NULLIF(model_adi, N''), stok_adi);
 SQL_ORDERS_VERILEN,
             ['date_from', 'date_to', 'search', 'page', 'bypass_cache'],
             'EMAKS PRIME - Siparisler Workflow (TAM FIX) Code - Build SQL Verilen node sorgusu.',

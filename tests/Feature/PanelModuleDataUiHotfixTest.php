@@ -143,7 +143,18 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertMatchesRegularExpression('/HAVING\s+SUM\(miktar\)\s*>\s*0/i', $stock);
 
         $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*0/i', $alinan);
+        $this->assertStringContainsString('CARI_HESAPLAR', $alinan);
+        $this->assertStringContainsString('CARI_HESAP_GRUPLARI', $alinan);
+        $this->assertStringContainsString('NOT LIKE', $alinan);
+        $this->assertStringContainsString('İHRACAT', $alinan);
+        $this->assertStringContainsString('kalan_tutar', $alinan);
+
         $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*1/i', $verilen);
+        $this->assertStringContainsString('STOK_KATEGORILERI', $verilen);
+        $this->assertStringContainsString('teslim_tarihi', $verilen);
+        $this->assertStringContainsString('teslim_tarihi_hafta', $verilen);
+        $this->assertStringContainsString('stok_kategori_adi', $verilen);
+        $this->assertStringContainsString('siparis_tutari', $verilen);
         $this->assertNotSame($alinan, $verilen);
     }
 
@@ -252,6 +263,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("['urunAdi'", $moduleData);
         $this->assertStringContainsString('Ürün / Model', $moduleData);
         $this->assertStringContainsString("['miktar', 'Miktar']", $moduleData);
+        $this->assertStringContainsString('teslim_tarihi_hafta', $moduleData);
+        $this->assertStringContainsString('Teslim Haftası', $moduleData);
         $this->assertStringNotContainsString('/stock/warehouse', $moduleLayout);
         $this->assertStringContainsString('Operasyon Paneli', file_get_contents(resource_path('js/components/app-logo.tsx')) ?: '');
     }
