@@ -30,7 +30,7 @@ export function DataTable({ table }) {
         <div className="rounded-xl border border-slate-200 bg-white">
             <div className="grid gap-3 p-3 md:hidden">
                 {rows.map((row) => (
-                    <MobileRow key={row.label} row={row} />
+                    <MobileRow key={row.id ?? row.label} row={row} />
                 ))}
             </div>
             <div className="hidden overflow-x-auto md:block">
@@ -89,7 +89,7 @@ function MobileRow({ row, depth = 0 }) {
             {hasChildren && open && (
                 <div className="mt-3 grid gap-2">
                     {row.children.map((child) => (
-                        <MobileRow key={`${row.label}-${child.label}`} row={child} depth={depth + 1} />
+                        <MobileRow key={`${row.id ?? row.label}-${child.id ?? child.label}`} row={child} depth={depth + 1} />
                     ))}
                 </div>
             )}

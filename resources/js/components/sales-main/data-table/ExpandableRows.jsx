@@ -28,12 +28,12 @@ function Row({ row, depth = 0 }) {
                 <td className="w-40 min-w-[132px] px-3 py-3 pr-6 whitespace-nowrap text-right font-semibold text-slate-950">{row.amountLabel}</td>
             </tr>
             {hasChildren && open && row.children.map((child) => (
-                <Row key={`${row.label}-${child.label}`} row={child} depth={depth + 1} />
+                <Row key={`${row.id ?? row.label}-${child.id ?? child.label}`} row={child} depth={depth + 1} />
             ))}
         </>
     );
 }
 
 export function ExpandableRows({ rows = [] }) {
-    return rows.map((row) => <Row key={row.label} row={row} />);
+    return rows.map((row) => <Row key={row.id ?? row.label} row={row} />);
 }
