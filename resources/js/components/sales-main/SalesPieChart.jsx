@@ -1,5 +1,5 @@
 function polarSegment(item, index, offset) {
-    const radius = 78;
+    const radius = 82;
     const circumference = 2 * Math.PI * radius;
     const percentage = Math.max(Number(item.percentage || 0), 0);
     const dash = (percentage / 100) * circumference;
@@ -28,12 +28,14 @@ export function SalesPieChart({ chart }) {
         <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:grid-cols-[300px_minmax(0,1fr)]">
             <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">
-                    {chart?.title}
+                    SATIŞ DAĞILIMI
                 </p>
-                <h2 className="mt-2 text-lg font-semibold text-slate-950">{chart?.subtitle}</h2>
-                <div className="relative mx-auto mt-5 grid aspect-square w-full max-w-[230px] place-items-center rounded-full bg-gradient-to-br from-white to-slate-100 shadow-[0_18px_45px_rgba(15,23,42,0.16)]">
-                    <svg viewBox="0 0 220 220" className="size-full -rotate-90 drop-shadow-sm" role="img" aria-label={chart?.title ?? 'Satış dağılımı'}>
-                        <title>{chart?.title ?? 'Satış dağılımı'}</title>
+                <h2 className="mt-2 text-lg font-semibold text-slate-950">
+                    {chart?.title || 'Satış Dağılımı'}
+                </h2>
+                <div className="relative mx-auto mt-5 grid aspect-square w-full max-w-[280px] place-items-center rounded-full bg-gradient-to-br from-white to-slate-100 shadow-[0_18px_45px_rgba(15,23,42,0.16)]">
+                    <svg viewBox="0 0 220 220" className="size-full -rotate-90 drop-shadow-sm" role="img" aria-label={chart?.title ?? 'Satış Dağılımı'}>
+                        <title>{chart?.title ?? 'Satış Dağılımı'}</title>
                         <defs>
                             {segments.map((item, index) => (
                                 <linearGradient id={item.gradientId} key={item.gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
@@ -42,13 +44,13 @@ export function SalesPieChart({ chart }) {
                                 </linearGradient>
                             ))}
                         </defs>
-                        <circle cx="110" cy="110" r="78" fill="none" stroke="#e2e8f0" strokeWidth="28" />
+                        <circle cx="110" cy="110" r="82" fill="none" stroke="#e2e8f0" strokeWidth="28" />
                         {segments.map((item) => (
                             <circle
                                 key={item.label}
                                 cx="110"
                                 cy="110"
-                                r="78"
+                                r="82"
                                 fill="none"
                                 stroke={`url(#${item.gradientId})`}
                                 strokeWidth="28"
@@ -61,14 +63,18 @@ export function SalesPieChart({ chart }) {
                             </circle>
                         ))}
                     </svg>
-                    <div className="absolute left-1/2 top-1/2 grid size-[48%] -translate-x-1/2 -translate-y-1/2 place-items-center overflow-hidden rounded-full border border-slate-100 bg-white/95 text-center shadow-inner">
-                        <div className="grid min-w-0 place-items-center px-2">
+                    <div className="absolute left-1/2 top-1/2 grid size-[58%] -translate-x-1/2 -translate-y-1/2 place-items-center overflow-hidden rounded-full border border-slate-100 bg-white/95 text-center shadow-inner">
+                        <div className="grid min-w-0 place-items-center gap-1 px-2 leading-tight">
                             <p className="text-[9px] font-semibold uppercase tracking-[0.05em] text-slate-400 sm:text-[10px]">
                                 Toplam Ciro
                             </p>
-                            <p className="mt-1 max-w-24 truncate text-xs font-bold leading-tight text-slate-950 sm:max-w-28 sm:text-sm" title={chart?.totalNetLabel ?? '-'}>
+                            <p
+                                className="mt-0.5 w-full break-words text-center text-sm font-bold leading-tight text-slate-950 sm:text-base"
+                                title={chart?.totalNetLabel ?? '-'}
+                            >
                                 {chart?.totalNetLabel ?? '-'}
                             </p>
+                            <p className="text-xs font-semibold text-slate-500">TL</p>
                         </div>
                     </div>
                 </div>
