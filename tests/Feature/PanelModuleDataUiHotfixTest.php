@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\DataSource;
 use App\Models\Page;
 use App\Models\PageConfig;
 use App\Models\User;
@@ -103,6 +104,49 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('Eye', $panelPage);
     }
 
+    public function test_stock_category_filter_and_positive_quantity_contract(): void
+    {
+        [$exitCode, $output, $error] = $this->runNodeModule(<<<'JS'
+            import { categoryOptionsForRows, filterRowsForSearch } from './resources/js/components/primecrm/module-data.js';
+
+            const rows = [
+                { stok_kodu: 'A1', stok_adi: 'Çekiç', kategori: 'El Aletleri', toplam_miktar: 6 },
+                { stok_kodu: 'B1', stok_adi: 'Kablo', stok_kategori_adi: 'Elektrik', toplam_miktar: 3 },
+                { stok_kodu: 'C1', stok_adi: 'Negatif', kategori: 'El Aletleri', toplam_miktar: -2 },
+            ];
+
+            console.log(JSON.stringify({
+                categories: categoryOptionsForRows('stock', rows),
+                filtered: filterRowsForSearch('stock', rows, 'cekic', { category: 'El Aletleri' }).map((row) => row.stok_kodu),
+                positive: filterRowsForSearch('stock', rows, '', {}).map((row) => row.stok_kodu),
+            }));
+        JS);
+
+        $this->assertSame(0, $exitCode, $error);
+
+        $results = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['El Aletleri', 'Elektrik'], $results['categories']);
+        $this->assertSame(['A1'], $results['filtered']);
+        $this->assertSame(['A1', 'B1'], $results['positive']);
+    }
+
+    public function test_stock_and_order_queries_keep_known_source_filters(): void
+    {
+        $stock = (string) DataSource::query()->where('code', 'stock_dashboard')->value('query_template');
+        $alinan = (string) DataSource::query()->where('code', 'orders_alinan')->value('query_template');
+        $verilen = (string) DataSource::query()->where('code', 'orders_verilen')->value('query_template');
+
+        $this->assertStringContainsString('STOK_KATEGORILERI', $stock);
+        $this->assertStringContainsString('STOK_MODEL_TANIMLARI', $stock);
+        $this->assertStringContainsString('kategori', $stock);
+        $this->assertMatchesRegularExpression('/HAVING\s+SUM\(miktar\)\s*>\s*0/i', $stock);
+
+        $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*0/i', $alinan);
+        $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*1/i', $verilen);
+        $this->assertNotSame($alinan, $verilen);
+    }
+
     public function test_sales_online_and_bayi_use_processed_dashboard_config(): void
     {
         $service = app(SalesMainPageService::class);
@@ -173,6 +217,24 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ->postJson('/api/data/customer_statement', ['customer_code' => 'M-1'])
             ->assertOk()
             ->assertJsonPath('queryMeta.dataSource', 'customer_statement');
+    }
+
+    public function test_proforma_create_contract_uses_customer_search_aliases_discounts_and_local_draft(): void
+    {
+        $component = file_get_contents(resource_path('js/components/primecrm/ProformaCreatePanel.jsx')) ?: '';
+        $controller = file_get_contents(app_path('Http/Controllers/Api/PageDataController.php')) ?: '';
+
+        $this->assertStringContainsString('/api/data/proforma_customer_search', $component);
+        $this->assertStringContainsString('/api/data/proforma_price_list', $component);
+        $this->assertStringContainsString('/api/data/proforma_discount_defs', $component);
+        $this->assertStringContainsString('musteri_kodu', $component);
+        $this->assertStringContainsString('cari_kodu', $component);
+        $this->assertStringContainsString('cari_unvan1', $component);
+        $this->assertStringContainsString('emaks_proforma_cart', $component);
+        $this->assertStringContainsString('emaks_proforma_draft', $component);
+        $this->assertStringContainsString('discounts', $component);
+        $this->assertStringContainsString('Ek İskonto Ekle', $component);
+        $this->assertStringContainsString("str_starts_with(\$sourceCode, 'proforma_')", $controller);
     }
 
     public function test_sales_and_module_frontend_do_not_expose_raw_technical_columns(): void

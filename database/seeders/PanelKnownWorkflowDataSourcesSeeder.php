@@ -42,26 +42,46 @@ WITH depo_miktarlari AS
     SELECT
         sto.sto_kod,
         sto.sto_isim,
+        sto.sto_kategori_kodu,
+        ISNULL(ktg.ktg_isim, sto.sto_kategori_kodu) AS kategori,
+        mdl.mdl_ismi AS model_adi,
         CAST(ISNULL(dbo.fn_DepodakiMiktar(sto.sto_kod, 1, GETDATE()), 0) AS decimal(18,2)) AS miktar
     FROM STOKLAR sto
+    LEFT JOIN STOK_KATEGORILERI ktg
+        ON ktg.ktg_kod = sto.sto_kategori_kodu
+    LEFT JOIN STOK_MODEL_TANIMLARI mdl
+        ON mdl.mdl_kodu = sto.sto_model_kodu
 
     UNION ALL
 
     SELECT
         sto.sto_kod,
         sto.sto_isim,
+        sto.sto_kategori_kodu,
+        ISNULL(ktg.ktg_isim, sto.sto_kategori_kodu) AS kategori,
+        mdl.mdl_ismi AS model_adi,
         CAST(ISNULL(dbo.fn_DepodakiMiktar(sto.sto_kod, 5, GETDATE()), 0) AS decimal(18,2)) AS miktar
     FROM STOKLAR sto
+    LEFT JOIN STOK_KATEGORILERI ktg
+        ON ktg.ktg_kod = sto.sto_kategori_kodu
+    LEFT JOIN STOK_MODEL_TANIMLARI mdl
+        ON mdl.mdl_kodu = sto.sto_model_kodu
 )
 SELECT
     sto_kod AS [stok_kodu],
     sto_isim AS [stok_adi],
+    sto_kategori_kodu AS [kategori_kodu],
+    kategori,
+    model_adi,
     SUM(miktar) AS [toplam_miktar]
 FROM depo_miktarlari
 GROUP BY
     sto_kod,
-    sto_isim
-HAVING SUM(miktar) <> 0
+    sto_isim,
+    sto_kategori_kodu,
+    kategori,
+    model_adi
+HAVING SUM(miktar) > 0
 ORDER BY
     sto_kod;
 SQL_STOCK,
@@ -163,6 +183,8 @@ WITH AcikSiparisler AS
         ON mdl.mdl_kodu = sto.sto_model_kodu
     WHERE
         sip.sip_iptal = 0
+        AND sip.sip_tip = 0
+        AND sip.sip_kapat_fl = 0
         AND ISNULL(sip.sip_miktar, 0) > ISNULL(sip.sip_teslim_miktar, 0)
         AND sip.sip_tarih >= @BasTar
 )
@@ -222,6 +244,8 @@ WITH VerilenSiparisler AS
         ON mdl.mdl_kodu = sto.sto_model_kodu
     WHERE
         sip.sip_iptal = 0
+        AND sip.sip_tip = 1
+        AND sip.sip_kapat_fl = 0
         AND sip.sip_tarih >= @BasTar
         AND ISNULL(sip.sip_miktar, 0) > ISNULL(sip.sip_teslim_miktar, 0)
 )

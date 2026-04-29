@@ -48,6 +48,10 @@ function cellTone(column, rawValue) {
     return '';
 }
 
+function stockCategory(row) {
+    return row.kategori ?? row.kategori_adi ?? row.stok_kategori_adi ?? row.sto_kategori_kodu ?? row.kategori_kodu ?? null;
+}
+
 export function DataTable({ columns, rows, onRowClick, rowActions }) {
     const tableWidth = columns.length <= 3 ? 'min-w-full' : 'min-w-[980px]';
 
@@ -80,6 +84,9 @@ export function DataTable({ columns, rows, onRowClick, rowActions }) {
                                     const value = formatCell(rawValue, column);
                                     const numeric = isNumberColumn(column);
                                     const status = isStatusColumn(column);
+                                    const category = column.label === 'ÃœrÃ¼n / Model' || column.label === 'Ürün / Model'
+                                        ? stockCategory(row)
+                                        : null;
 
                                     return (
                                         <td
@@ -98,7 +105,14 @@ export function DataTable({ columns, rows, onRowClick, rowActions }) {
                                                     <span className="block truncate" title={value}>{value}</span>
                                                 </span>
                                             ) : (
-                                                <span className="block truncate" title={value}>{value}</span>
+                                                <>
+                                                    <span className="block truncate" title={value}>{value}</span>
+                                                    {category && (
+                                                        <span className="mt-1 inline-flex max-w-full rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                                                            <span className="truncate" title={String(category)}>{String(category)}</span>
+                                                        </span>
+                                                    )}
+                                                </>
                                             )}
                                         </td>
                                     );

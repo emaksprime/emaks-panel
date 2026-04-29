@@ -1,13 +1,14 @@
 import { Head, Link } from '@inertiajs/react';
 import { ArrowRight, Database, Eye, EyeOff, FileText, Plus, ShieldCheck } from 'lucide-react';
 import { createElement, useEffect, useState } from 'react';
-import type { MouseEvent } from 'react';
+import type { Dispatch, MouseEvent, SetStateAction } from 'react';
 import { CustomerDetailDrawer } from '@/components/primecrm/CustomerDetailDrawer.jsx';
 import { DataTable } from '@/components/primecrm/DataTable.jsx';
 import { DetailDrawer } from '@/components/primecrm/DetailDrawer.jsx';
 import { FilterBar } from '@/components/primecrm/FilterBar.jsx';
 import { KpiCard } from '@/components/primecrm/KpiCard.jsx';
 import {
+    categoryOptionsForRows,
     detailTitle,
     filterRowsForSearch,
     friendlyEmptyMessage,
@@ -19,6 +20,7 @@ import {
 } from '@/components/primecrm/module-data.js';
 import { ModuleShell } from '@/components/primecrm/ModuleShell.jsx';
 import { ProformaCartDrawer } from '@/components/primecrm/ProformaCartDrawer.jsx';
+import { ProformaCreatePanel } from '@/components/primecrm/ProformaCreatePanel.jsx';
 import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
 import { apiRequest } from '@/lib/api';
 import { panelIcon } from '@/lib/panel-icons';
@@ -81,6 +83,7 @@ const defaultFilters = () => {
         warehouse: '',
         stock_state: '',
         order_status: '',
+        category: '',
     };
 };
 
@@ -130,9 +133,21 @@ function PrintBrandHeader({ visible }: { visible: boolean }) {
     );
 }
 
-function ProformaDraftPanel({ slug }: { slug: string }) {
+function ProformaDraftPanel({
+    slug,
+    cartItems,
+    setCartItems,
+}: {
+    slug: string;
+    cartItems: Array<Record<string, unknown>>;
+    setCartItems: Dispatch<SetStateAction<Array<Record<string, unknown>>>>;
+}) {
     if (!['proforma_create', 'proforma_edit'].includes(slug)) {
         return null;
+    }
+
+    if (cartItems || setCartItems) {
+        return <ProformaCreatePanel cartItems={cartItems} setCartItems={setCartItems} />;
     }
 
     return (
@@ -242,7 +257,9 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
 
     const activeData = data?.signature === signature ? data : null;
     const activeError = error?.signature === signature ? error.message : null;
-    const rows = filterRowsForSearch(kind, activeData?.rows ?? [], filters.search);
+    const rawRows = activeData?.rows ?? [];
+    const categoryOptions = categoryOptionsForRows(kind, rawRows);
+    const rows = filterRowsForSearch(kind, rawRows, filters.search, filters);
     const columns = preferredColumns(kind, page, activeData?.columns ?? []);
     const hasRows = rows.length > 0 && columns.length > 0;
     const loading = !activeData && !activeError;
@@ -309,11 +326,12 @@ function ModuleDataPanel({ page }: { page: PanelPagePayload }) {
                 setFilters={setFilters}
                 mode={kind}
                 loading={loading}
+                categoryOptions={categoryOptions}
                 onRefresh={() => setFilters((current) => ({ ...current, bypass_cache: !current.bypass_cache }))}
             />
 
             <PrintBrandHeader visible={kind === 'cari' || kind === 'proforma'} />
-            <ProformaDraftPanel slug={page.slug} />
+            <ProformaDraftPanel slug={page.slug} cartItems={cartItems} setCartItems={setCartItems} />
 
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 {cards.map((card) => (
