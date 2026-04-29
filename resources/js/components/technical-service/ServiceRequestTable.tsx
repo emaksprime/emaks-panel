@@ -78,12 +78,14 @@ export function ServiceRequestTable({
           <tbody className="divide-y divide-slate-100 bg-white">
             {requests.map((request) => {
               const active = request.id === selectedId
+              const isInactive = request.status === 'Tamamlandı' || request.status === 'İptal'
               return (
                 <tr
                   key={request.id}
                   className={
                     'cursor-pointer transition hover:bg-slate-50 ' +
-                    (active ? 'bg-slate-100' : '')
+                    (active ? 'bg-slate-100 ' : '') +
+                    (isInactive ? 'opacity-70' : '')
                   }
                   onClick={() => onSelect(request)}
                 >

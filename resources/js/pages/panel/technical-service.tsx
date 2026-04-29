@@ -183,23 +183,9 @@ export default function TechnicalService() {
     setLoading(true)
     setError(null)
 
-    const params = new URLSearchParams()
-
-    if (filters.search.trim()) {
-      params.append('search', filters.search.trim())
-    }
-
-    if (filters.status) {
-      params.append('status', filters.status)
-    }
-
     try {
-      const response = await apiRequest(
-        `/api/technical-service/requests${params.toString() ? `?${params.toString()}` : ''}`,
-      )
-
+      const response = await apiRequest('/api/technical-service/requests')
       const items = Array.isArray(response.items) ? response.items : []
-
       setRequests(items.map(mapApiRequest))
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Teknik servis talepleri alınamadı.')
@@ -244,7 +230,7 @@ export default function TechnicalService() {
 
   useEffect(() => {
     void loadRequests()
-  }, [filters])
+  }, [])
 
   useEffect(() => {
     if (selectedId !== null && requests.some((request) => request.id === selectedId)) {
@@ -995,9 +981,13 @@ export default function TechnicalService() {
               <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
                 Teknik servis talepleri yükleniyor...
               </div>
-            ) : filteredRequests.length === 0 ? (
+            ) : requests.length === 0 ? (
               <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
                 Henüz teknik servis talebi yok.
+              </div>
+            ) : filteredRequests.length === 0 ? (
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+                Filtreye uygun teknik servis talebi bulunamadı.
               </div>
             ) : (
               <ServiceRequestTable
