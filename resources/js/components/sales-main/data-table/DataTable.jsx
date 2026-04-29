@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ExpandableRows } from './ExpandableRows.jsx';
+import { HighlightedAccountLabel } from '../HighlightedAccountLabel.jsx';
 
 const toLabelKey = (value) => (value ?? '').toString().trim().toLowerCase();
 
@@ -67,7 +68,7 @@ function MobileRow({ row, depth = 0 }) {
             >
                 <div className="flex items-start justify-between gap-3">
                     <h3 className="min-w-0 whitespace-normal break-words text-sm font-semibold leading-5 text-slate-950" title={row.label}>
-                        {row.label}
+                        <HighlightedAccountLabel value={row.label} />
                     </h3>
                     {hasChildren && (
                         <span className="shrink-0 rounded-full border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-500">

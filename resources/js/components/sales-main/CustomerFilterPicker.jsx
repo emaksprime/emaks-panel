@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Search, X } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
+import { HighlightedAccountLabel } from './HighlightedAccountLabel.jsx';
 
 function valueFrom(row, keys) {
     for (const key of keys) {
@@ -156,8 +157,10 @@ export function CustomerFilterPicker({
                             className="inline-flex max-w-full items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700"
                             title={customer.display}
                         >
-                            <span className="max-w-[210px] truncate">{customer.title}</span>
-                            <span className="max-w-[96px] truncate text-blue-500">{customer.code}</span>
+                            <span className="max-w-[260px] whitespace-normal break-words text-left">
+                                <HighlightedAccountLabel value={customer.title} />
+                            </span>
+                            <span className="max-w-[120px] whitespace-normal break-words text-left text-blue-500">{customer.code}</span>
                             <X className="size-3" />
                         </button>
                     ))}
@@ -193,10 +196,10 @@ export function CustomerFilterPicker({
                                     {checked && <Check className="size-3.5" />}
                                 </span>
                                 <span className="min-w-0">
-                                    <span className="block truncate text-sm font-semibold text-slate-900" title={customer.title}>
-                                        {customer.title}
+                                    <span className="block whitespace-normal break-words text-sm font-semibold text-slate-900" title={customer.title}>
+                                        <HighlightedAccountLabel value={customer.title} />
                                     </span>
-                                    <span className="mt-1 block truncate text-xs font-medium text-slate-500" title={[customer.code, customer.group].filter(Boolean).join(' | ')}>
+                                    <span className="mt-1 block whitespace-normal break-words text-xs font-medium text-slate-500" title={[customer.code, customer.group].filter(Boolean).join(' | ')}>
                                         {[customer.code, customer.group].filter(Boolean).join(' | ')}
                                     </span>
                                 </span>
