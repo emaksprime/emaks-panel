@@ -15,15 +15,23 @@ const blank = {
     denied_access: [],
 };
 
-const resourceLabels = {
-    page: 'Sayfalar',
-    scope: 'Yonetim kapsamleri',
-    data_source: 'Veri kaynagi yetkileri',
-};
+const groupOrder = [
+    'Satış Yönetimi',
+    'Stok Yönetimi',
+    'Sipariş Yönetimi',
+    'Müşteri Yönetimi',
+    'Proforma',
+    'Sistem Yönetimi',
+    'Veri Kaynakları',
+];
 
 function groupResources(resources) {
-    return resources.reduce((groups, resource) => {
-        const key = resource.type || 'other';
+    const uniqueResources = Array.from(
+        new Map(resources.map((resource) => [resource.code, resource])).values(),
+    );
+
+    return uniqueResources.reduce((groups, resource) => {
+        const key = resource.group || 'Sistem Yönetimi';
         return {
             ...groups,
             [key]: [...(groups[key] ?? []), resource],
@@ -32,7 +40,7 @@ function groupResources(resources) {
 }
 
 export default function AdminUsers() {
-    const [data, setData] = useState({ users: [], roles: [], resources: [] });
+    const [data, setData] = useState({ users: [], roles: [], resources: [], rolePermissions: {} });
     const [form, setForm] = useState(blank);
     const [query, setQuery] = useState('');
     const [status, setStatus] = useState({ type: 'idle', message: '' });
@@ -67,7 +75,13 @@ export default function AdminUsers() {
     });
 
     const groupedResources = groupResources(data.resources);
+    const groupedResourceEntries = Object.entries(groupedResources).sort(
+        ([left], [right]) =>
+            (groupOrder.indexOf(left) === -1 ? 999 : groupOrder.indexOf(left)) -
+            (groupOrder.indexOf(right) === -1 ? 999 : groupOrder.indexOf(right)),
+    );
     const selectedRole = data.roles.find((role) => role.code === form.role_code);
+    const roleAllowedResources = new Set(data.rolePermissions?.[form.role_code] ?? []);
 
     const save = async (event) => {
         event.preventDefault();
@@ -370,10 +384,10 @@ export default function AdminUsers() {
                         </div>
 
                         <div className="max-h-72 overflow-auto rounded-xl border border-slate-200">
-                            {Object.entries(groupedResources).map(([type, resources]) => (
+                            {groupedResourceEntries.map(([type, resources]) => (
                                 <div key={type} className="border-b border-slate-100 last:border-b-0">
                                     <div className="bg-slate-50 px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                        {resourceLabels[type] ?? type}
+                                        {type}
                                     </div>
                                     <div className="grid gap-1 p-3">
                                         {resources.map((resource) => (
@@ -381,14 +395,17 @@ export default function AdminUsers() {
                                                 <span className="min-w-0">
                                                     <span className="font-medium text-slate-800">{resource.name}</span>
                                                     <span className="ml-2 text-xs text-slate-400">{resource.code}</span>
+                                                    <span className="mt-1 block text-xs text-slate-500">
+                                                        Rol kararı: {roleAllowedResources.has(resource.code) ? 'izinli' : 'kapalı'}
+                                                    </span>
                                                 </span>
                                                 <select
                                                     className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
                                                     value={accessState(resource.code)}
                                                     onChange={(event) => setAccessState(resource.code, event.target.value)}
                                                 >
-                                                    <option value="inherit">Rol kararini kullan</option>
-                                                    <option value="allow">Izin ver</option>
+                                                    <option value="inherit">Rol kararını kullan</option>
+                                                    <option value="allow">İzin ver</option>
                                                     <option value="deny">Engelle</option>
                                                 </select>
                                             </div>

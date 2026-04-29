@@ -26,13 +26,24 @@ class PanelAccessService
             return true;
         }
 
-        $userOverride = UserAccess::query()
+        $deniedOverride = UserAccess::query()
             ->where('user_id', $resolvedUser->id)
             ->where('resource_code', $resourceCode)
-            ->first();
+            ->where('can_view', false)
+            ->exists();
 
-        if ($userOverride !== null) {
-            return (bool) $userOverride->can_view;
+        if ($deniedOverride) {
+            return false;
+        }
+
+        $allowedOverride = UserAccess::query()
+            ->where('user_id', $resolvedUser->id)
+            ->where('resource_code', $resourceCode)
+            ->where('can_view', true)
+            ->exists();
+
+        if ($allowedOverride) {
+            return true;
         }
 
         $roleCanAccess = RoleResourcePermission::query()

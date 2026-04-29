@@ -10,6 +10,22 @@ use Illuminate\Support\Collection;
 
 class PanelNavigationService
 {
+    /**
+     * @var list<string>
+     */
+    private array $routePriority = [
+        '/sales/main',
+        '/sales/online',
+        '/sales/bayi',
+        '/stock',
+        '/orders',
+        '/orders/alinan',
+        '/cari',
+        '/proforma',
+        '/admin',
+        '/dashboard',
+    ];
+
     public function __construct(
         private readonly PanelAccessService $access,
     ) {
@@ -48,7 +64,22 @@ class PanelNavigationService
             return route('login');
         }
 
-        return $this->visiblePagesFor($user)->first()?->route ?? '/dashboard';
+        return $this->firstAccessibleRouteFor($user) ?? '/dashboard';
+    }
+
+    public function firstAccessibleRouteFor(User $user): ?string
+    {
+        $visibleRoutes = $this->visiblePagesFor($user)
+            ->map(fn (Page $page) => $this->normalizePath($page->route))
+            ->flip();
+
+        foreach ($this->routePriority as $route) {
+            if ($visibleRoutes->has($this->normalizePath($route))) {
+                return $route;
+            }
+        }
+
+        return $visibleRoutes->keys()->first();
     }
 
     public function resolveVisiblePage(?User $user, string $path): ?Page
