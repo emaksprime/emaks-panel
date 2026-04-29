@@ -193,11 +193,18 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertContains('search', $source->allowed_params);
         $this->assertContains('rep_code', $source->allowed_params);
         $this->assertContains('scope_key', $source->allowed_params);
+        $this->assertContains('date_from', $source->allowed_params);
+        $this->assertContains('date_to', $source->allowed_params);
+        $this->assertContains('grain', $source->allowed_params);
+        $this->assertContains('detail_type', $source->allowed_params);
         $this->assertContains('limit', $source->allowed_params);
         $this->assertStringContainsString('DECLARE @Search', $query);
         $this->assertStringContainsString('DECLARE @RepCode', $query);
         $this->assertStringContainsString('DECLARE @ScopeKey', $query);
+        $this->assertStringContainsString('DECLARE @date_from', $query);
+        $this->assertStringContainsString('DECLARE @date_to', $query);
         $this->assertStringContainsString('DECLARE @CanViewAll', $query);
+        $this->assertStringContainsString('fn_Stok_Masraf_Musteri_Grup_Hareket_Kubu', $query);
         $this->assertStringContainsString('CARI_HESAPLAR', $query);
         $this->assertStringContainsString('CARI_HESAP_GRUPLARI', $query);
         $this->assertStringContainsString("@ScopeKey = N'online_perakende'", $query);
@@ -209,7 +216,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('grp.crg_isim', $query);
         $this->assertStringContainsString('cari.cari_temsilci_kodu', $query);
         $this->assertStringContainsString('ORDER BY', $query);
-        $this->assertStringContainsString('cari.cari_kod ASC', $query);
+        $this->assertStringContainsString('toplam_ciro DESC', $query);
+        $this->assertStringContainsString('cari_kodu ASC', $query);
         $this->assertStringContainsString('display_text', $query);
     }
 
@@ -245,6 +253,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ->postJson('/api/data/sales_customer_search', [
                 'search' => 'mehmet',
                 'scope_key' => 'online_perakende',
+                'date_from' => '2026-04-29',
+                'date_to' => '2026-04-29',
+                'grain' => 'day',
+                'detail_type' => 'cari',
                 'limit' => 80,
                 'bypass_cache' => true,
             ]);
@@ -262,6 +274,14 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame('mehmet', $payload['params']['search'] ?? null);
         $this->assertSame('online_perakende', $payload['scope_key'] ?? null);
         $this->assertSame('online_perakende', $payload['params']['scope_key'] ?? null);
+        $this->assertSame('2026-04-29', $payload['date_from'] ?? null);
+        $this->assertSame('2026-04-29', $payload['params']['date_from'] ?? null);
+        $this->assertSame('2026-04-29', $payload['date_to'] ?? null);
+        $this->assertSame('2026-04-29', $payload['params']['date_to'] ?? null);
+        $this->assertSame('day', $payload['grain'] ?? null);
+        $this->assertSame('day', $payload['params']['grain'] ?? null);
+        $this->assertSame('cari', $payload['detail_type'] ?? null);
+        $this->assertSame('cari', $payload['params']['detail_type'] ?? null);
         $this->assertTrue($payload['bypass_cache'] ?? false);
         $this->assertTrue($payload['params']['bypass_cache'] ?? false);
         $this->assertContains('search', $payload['allowed_params'] ?? []);
@@ -274,6 +294,14 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['params']['search'] ?? null) === 'mehmet'
                 && ($payload['scope_key'] ?? null) === 'online_perakende'
                 && ($payload['params']['scope_key'] ?? null) === 'online_perakende'
+                && ($payload['date_from'] ?? null) === '2026-04-29'
+                && ($payload['params']['date_from'] ?? null) === '2026-04-29'
+                && ($payload['date_to'] ?? null) === '2026-04-29'
+                && ($payload['params']['date_to'] ?? null) === '2026-04-29'
+                && ($payload['grain'] ?? null) === 'day'
+                && ($payload['params']['grain'] ?? null) === 'day'
+                && ($payload['detail_type'] ?? null) === 'cari'
+                && ($payload['params']['detail_type'] ?? null) === 'cari'
                 && ($payload['bypass_cache'] ?? null) === true
                 && ($payload['params']['bypass_cache'] ?? null) === true
                 && in_array('search', $payload['allowed_params'] ?? [], true);
@@ -443,7 +471,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         ]);
 
         $this->assertSame('sales_online_perakende_detail', $payload['queryMeta']['dataSource']);
-        $this->assertSame('Seçili müşteri için satış kaydı bulunamadı.', $payload['queryMeta']['notice']);
+        $this->assertSame('Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.', $payload['queryMeta']['notice']);
         $this->assertSame([], $payload['table']['rows']);
         $this->assertEquals(0, $payload['kpis'][0]['raw']);
         $this->assertEquals(0, $payload['chart']['totalNet']);
@@ -546,6 +574,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertStringContainsString('CustomerFilterPicker', $dashboard);
         $this->assertStringContainsString('scopeKey={filters.scope_key}', $dashboard);
+        $this->assertStringContainsString('dateFrom={filters.date_from}', $dashboard);
+        $this->assertStringContainsString('dateTo={filters.date_to}', $dashboard);
+        $this->assertStringContainsString('grain={filters.grain}', $dashboard);
+        $this->assertStringContainsString('detailType={filters.detail_type}', $dashboard);
         $this->assertStringContainsString('customer_filter', $dashboard);
         $this->assertStringContainsString('cari_filter: csv', $dashboard);
         $this->assertStringNotContainsString("scope_key: 'all'", $dashboard);
@@ -555,7 +587,11 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('bypass_cache: true', $dashboard);
         $this->assertStringContainsString('/api/data/sales_customer_search', $picker);
         $this->assertStringContainsString('scope_key: scopeKey', $picker);
-        $this->assertStringContainsString('body: JSON.stringify({ search, scope_key: scopeKey, limit: 80, bypass_cache: true })', $picker);
+        $this->assertStringContainsString('date_from: dateFrom', $picker);
+        $this->assertStringContainsString('date_to: dateTo', $picker);
+        $this->assertStringContainsString('grain', $picker);
+        $this->assertStringContainsString('detail_type: detailType', $picker);
+        $this->assertStringContainsString('limit: 80', $picker);
         $this->assertStringContainsString('selected.map((item) => item.code)', $picker);
         $this->assertStringContainsString('candidate.code === item.code', $picker);
         $this->assertStringContainsString('selectedCodes.has(customer.code)', $picker);

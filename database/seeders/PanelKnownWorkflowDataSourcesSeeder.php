@@ -40,57 +40,146 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
 DECLARE @Search NVARCHAR(255) = N'[[search]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
 DECLARE @ScopeKey NVARCHAR(80) = REPLACE(N'[[scope_key]]', N'-', N'_');
+DECLARE @date_from DATE = '[[date_from]]';
+DECLARE @date_to DATE = '[[date_to]]';
+DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
 DECLARE @CanViewAll bit = CASE
     WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1
     ELSE 0
 END;
 
-SELECT TOP 80
-    LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS cari_kodu,
-    LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS cari_unvani,
-    LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS cari_grubu,
-    CASE
-        WHEN NULLIF(LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))), N'') IS NULL
-            THEN CONCAT(LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))), N' | ', LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))))
-        ELSE CONCAT(LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))), N' | ', LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N' | ', LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))))
-    END AS display_text
-FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
-LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
-    ON grp.crg_kod = cari.cari_grup_kodu
-WHERE
-    (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
-    AND (
-        @ScopeKey NOT IN (N'online_perakende', N'bayi_proje')
-        OR (
-            @ScopeKey = N'online_perakende'
-            AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+;WITH cube AS
+(
+    SELECT
+        LTRIM(RTRIM(ISNULL(msg_S_1032, N''))) AS cari_kodu,
+        LTRIM(RTRIM(ISNULL(msg_S_0201, N''))) AS cari_adi_raw,
+        LTRIM(RTRIM(ISNULL(msg_S_2663, N''))) AS stok_kodu_raw,
+        LTRIM(RTRIM(ISNULL(msg_S_2664, N''))) AS urun_adi_raw,
+        LTRIM(RTRIM(ISNULL(msg_S_0059, N''))) AS model_adi_raw,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_0118, N'')))) AS belge_tipi,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_2663, N'')))) AS stok_kodu_u,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_2664, N'')))) AS urun_adi_u,
+        UPPER(LTRIM(RTRIM(ISNULL(msg_S_0059, N'')))) AS model_adi_u,
+        CAST(ISNULL(msg_S_0165, 0) AS decimal(18,2)) AS adet,
+        CAST(ISNULL(msg_S_0535, 0) AS decimal(18,2)) AS net_tutar
+    FROM dbo.fn_Stok_Masraf_Musteri_Grup_Hareket_Kubu(
+        CONVERT(char(8), @date_from, 112),
+        CONVERT(char(8), @date_to, 112),
+        1,
+        1
+    )
+    WHERE ISNULL(LTRIM(RTRIM(msg_S_1032)), N'') <> N''
+),
+filtered AS
+(
+    SELECT
+        c.cari_kodu,
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, c.cari_adi_raw))) AS cari_unvani,
+        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS cari_grubu,
+        CASE
+            WHEN c.belge_tipi LIKE N'%İADE%'
+              OR c.belge_tipi LIKE N'%IADE%'
+            THEN -ABS(c.adet)
+            ELSE c.adet
+        END AS adet,
+        CASE
+            WHEN c.belge_tipi LIKE N'%İADE%'
+              OR c.belge_tipi LIKE N'%IADE%'
+            THEN -ABS(c.net_tutar)
+            ELSE c.net_tutar
+        END AS net_tutar
+    FROM cube c
+    INNER JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK)
+        ON cari.cari_kod = c.cari_kodu
+    LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
+        ON grp.crg_kod = cari.cari_grup_kodu
+    WHERE
+        ABS(c.net_tutar) > 1
+        AND NOT (
+            c.belge_tipi IN (N'DEĞİŞİM', N'PROJE İÇİN NUMUNE ÜRÜN')
+            AND ABS(c.net_tutar) < 10
         )
-        OR (
-            @ScopeKey = N'bayi_proje'
-            AND (
-                NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL
-                OR cari.cari_grup_kodu NOT IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+        AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        AND (
+            @ScopeKey NOT IN (N'online_perakende', N'bayi_proje')
+            OR (
+                @ScopeKey = N'online_perakende'
+                AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+            )
+            OR (
+                @ScopeKey = N'bayi_proje'
+                AND (
+                    NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL
+                    OR cari.cari_grup_kodu NOT IN (N'120.01',N'120.02',N'120.03',N'120.04',N'120.05',N'120.06',N'120.07',N'120.08',N'120.09',N'120.16')
+                )
             )
         )
-    )
-    AND (
-        @Search = N''
-        OR cari.cari_kod LIKE N'%' + @Search + N'%'
-        OR cari.cari_unvan1 LIKE N'%' + @Search + N'%'
-        OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%'
-    )
-    AND NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N'') IS NOT NULL
+        AND (
+            @Search = N''
+            OR cari.cari_kod LIKE N'%' + @Search + N'%'
+            OR cari.cari_unvan1 LIKE N'%' + @Search + N'%'
+            OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%'
+        )
+        AND NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))), N'') IS NOT NULL
+        AND c.stok_kodu_u NOT LIKE 'W-%'
+        AND c.stok_kodu_u NOT LIKE N'%HİZMET%'
+        AND c.stok_kodu_u NOT LIKE N'%HIZMET%'
+        AND c.stok_kodu_u NOT LIKE N'%SERVİS%'
+        AND c.stok_kodu_u NOT LIKE N'%SERVIS%'
+        AND c.stok_kodu_u NOT LIKE N'%MONTAJ%'
+        AND c.stok_kodu_u NOT LIKE N'%YOL%'
+        AND c.stok_kodu_u NOT LIKE N'%KEŞİF%'
+        AND c.stok_kodu_u NOT LIKE N'%KESIF%'
+        AND c.urun_adi_u NOT LIKE N'%HİZMET%'
+        AND c.urun_adi_u NOT LIKE N'%HIZMET%'
+        AND c.urun_adi_u NOT LIKE N'%SERVİS%'
+        AND c.urun_adi_u NOT LIKE N'%SERVIS%'
+        AND c.urun_adi_u NOT LIKE N'%MONTAJ%'
+        AND c.urun_adi_u NOT LIKE N'%YOL%'
+        AND c.urun_adi_u NOT LIKE N'%KEŞİF%'
+        AND c.urun_adi_u NOT LIKE N'%KESIF%'
+        AND c.model_adi_u NOT LIKE N'%HİZMET%'
+        AND c.model_adi_u NOT LIKE N'%HIZMET%'
+        AND c.model_adi_u NOT LIKE N'%SERVİS%'
+        AND c.model_adi_u NOT LIKE N'%SERVIS%'
+        AND c.model_adi_u NOT LIKE N'%MONTAJ%'
+        AND c.model_adi_u NOT LIKE N'%YOL%'
+        AND c.model_adi_u NOT LIKE N'%KEŞİF%'
+        AND c.model_adi_u NOT LIKE N'%KESIF%'
+),
+customers AS
+(
+    SELECT
+        cari_kodu,
+        cari_unvani,
+        cari_grubu,
+        SUM(ABS(adet)) AS toplam_adet,
+        SUM(ABS(net_tutar)) AS toplam_ciro
+    FROM filtered
+    GROUP BY cari_kodu, cari_unvani, cari_grubu
+)
+SELECT TOP 80
+    cari_kodu,
+    cari_unvani,
+    cari_grubu,
+    CASE
+        WHEN NULLIF(cari_grubu, N'') IS NULL
+            THEN CONCAT(cari_unvani, N' | ', cari_kodu)
+        ELSE CONCAT(cari_unvani, N' | ', cari_kodu, N' | ', cari_grubu)
+    END AS display_text
+FROM customers
 ORDER BY
-    CASE WHEN cari.cari_kod = @Search THEN 0
-         WHEN cari.cari_unvan1 = @Search THEN 1
-         WHEN cari.cari_kod LIKE @Search + N'%' THEN 2
-         WHEN cari.cari_unvan1 LIKE @Search + N'%' THEN 3
+    CASE WHEN cari_kodu = @Search THEN 0
+         WHEN cari_unvani = @Search THEN 1
+         WHEN cari_kodu LIKE @Search + N'%' THEN 2
+         WHEN cari_unvani LIKE @Search + N'%' THEN 3
          ELSE 9 END,
-    cari.cari_unvan1 ASC,
-    cari.cari_kod ASC;
+    toplam_ciro DESC,
+    cari_unvani ASC,
+    cari_kodu ASC;
 SQL_SALES_CUSTOMER_SEARCH,
-            ['search', 'rep_code', 'scope_key', 'limit', 'bypass_cache'],
-            'PrimeCRM SalesService.GetCustomerOptionsAsync müşteri arama sorgusu.',
+            ['search', 'scope_key', 'date_from', 'date_to', 'grain', 'detail_type', 'rep_code', 'limit', 'bypass_cache'],
+            'PrimeCRM SalesService.GetCustomerOptionsAsync arama mantığı aktif satış hareketi datasıyla sınırlandırılır.',
             'SalesService.cs'
         );
 

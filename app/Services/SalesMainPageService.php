@@ -292,7 +292,7 @@ class SalesMainPageService
                 'driver' => $source->db_type,
                 'status' => $source->active ? 'active' : 'inactive',
                 'mode' => $isLive ? 'live' : 'preview',
-                'notice' => 'Seçili müşteri için satış kaydı bulunamadı.',
+                'notice' => 'Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.',
                 'whitelistedParameters' => $whitelistedParameters,
                 'gatewayMeta' => $gatewayResult['meta'] ?? null,
                 'gatewayRequest' => $gatewayResult['request'] ?? null,
