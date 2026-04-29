@@ -31,6 +31,9 @@ import type {
     PanelMetric,
     PanelPagePayload,
 } from '@/types';
+import CustomerDocumentDetailPage from './customer-crm/CustomerDocumentDetail.jsx';
+import CustomerInfoPage from './customer-crm/CustomerInfo.jsx';
+import CustomerStatementPage from './customer-crm/CustomerStatement.jsx';
 
 type PanelPageProps = {
     page: PanelPagePayload;
@@ -405,6 +408,19 @@ export default function PanelPage({
     permissions,
 }: PanelPageProps) {
     const isModule = page.layoutType === 'module';
+    const normalizedCode = String(page.code ?? '').trim();
+
+    if (normalizedCode === 'cari') {
+        return <CustomerInfoPage />;
+    }
+
+    if (normalizedCode === 'cari_detail') {
+        return <CustomerStatementPage />;
+    }
+
+    if (normalizedCode === 'cari_document_detail') {
+        return <CustomerDocumentDetailPage />;
+    }
 
     return (
         <>
