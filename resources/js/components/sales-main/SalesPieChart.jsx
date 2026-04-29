@@ -16,7 +16,7 @@ export function SalesPieChart({ chart }) {
     const items = chart?.items ?? [];
     const totalNetRaw = (chart?.totalNetLabel ?? '').toString().trim();
     const amountText = totalNetRaw ? totalNetRaw.replace(/\s*TL$/i, '').trim() : '-';
-    const currencyText = totalNetRaw ? 'TL' : '';
+    const currencyText = totalNetRaw ? '₺' : '';
 
     let offset = 0;
     const segments = items
