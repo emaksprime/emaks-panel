@@ -565,11 +565,117 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertTrue($payload['table']['rows'][2]['children'][0]['excludedFromTotal']);
     }
 
+    public function test_sales_customer_filter_chart_uses_customer_items_with_account_flags(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'BAYİ',
+                        'adet' => 2,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'BAYİ',
+                        'cari_kodu' => 'C-1',
+                        'satir_adi' => 'AYNI FİRMA',
+                        'adet' => 1,
+                        'ciro' => 100,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'BAYİ',
+                        'cari_kodu' => 'C-2',
+                        'satir_adi' => 'AYNI FİRMA',
+                        'adet' => 1,
+                        'ciro' => 200,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 2,
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'cari_kodu' => 'C-3.TESHIR',
+                        'satir_adi' => 'TEŞHİR MÜŞTERİ - TEŞHİR HESABI',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 999998,
+                        'cari_grup_adi' => 'KONSİNYE',
+                        'adet' => 1,
+                        'ciro' => 900,
+                        'excluded_from_total' => 1,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'KONSINYE',
+                        'cari_grup_adi' => 'KONSİNYE',
+                        'cari_kodu' => 'C-1.KONSINYE',
+                        'satir_adi' => 'KONSİNYE - AYNI FİRMA',
+                        'adet' => 1,
+                        'ciro' => 900,
+                        'excluded_from_total' => 1,
+                        'konsinye_tutari' => 900,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'customer_filter' => 'C-1,C-2,C-3.TESHIR,C-1.KONSINYE',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('Seçili Müşteri Karşılaştırması', $payload['chart']['title']);
+        $this->assertEquals(600, $payload['chart']['totalNet']);
+        $this->assertSame(['C-3.TESHIR', 'C-2', 'C-1', 'C-1.KONSINYE'], array_column($payload['chart']['items'], 'customerCode'));
+        $this->assertSame(['TEŞHİR MÜŞTERİ - TEŞHİR HESABI', 'AYNI FİRMA', 'AYNI FİRMA', 'KONSİNYE - AYNI FİRMA'], array_column($payload['chart']['items'], 'label'));
+        $this->assertNotContains('BAYİ', array_column($payload['chart']['items'], 'label'));
+        $this->assertFalse($payload['chart']['items'][0]['excludedFromTotal']);
+        $this->assertTrue($payload['chart']['items'][0]['isTeshir']);
+        $this->assertEquals(50.0, $payload['chart']['items'][0]['percentage']);
+        $this->assertSame('AYNI FİRMA', $payload['chart']['items'][1]['label']);
+        $this->assertSame('AYNI FİRMA', $payload['chart']['items'][2]['label']);
+        $this->assertNotSame($payload['chart']['items'][1]['customerCode'], $payload['chart']['items'][2]['customerCode']);
+        $this->assertSame('KONSİNYE', $payload['chart']['items'][3]['groupLabel']);
+        $this->assertTrue($payload['chart']['items'][3]['excludedFromTotal']);
+        $this->assertTrue($payload['chart']['items'][3]['isConsignment']);
+        $this->assertSame(0, $payload['chart']['items'][3]['percentage']);
+    }
+
     public function test_sales_customer_picker_and_mobile_breakdown_contract_exist(): void
     {
         $dashboard = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
         $picker = file_get_contents(resource_path('js/components/sales-main/CustomerFilterPicker.jsx')) ?: '';
         $managementScopeFilter = file_get_contents(resource_path('js/components/sales-main/ManagementScopeFilter.jsx')) ?: '';
+        $pieChart = file_get_contents(resource_path('js/components/sales-main/SalesPieChart.jsx')) ?: '';
+        $highlightedLabel = file_get_contents(resource_path('js/components/sales-main/HighlightedAccountLabel.jsx')) ?: '';
         $table = file_get_contents(resource_path('js/components/sales-main/data-table/DataTable.jsx')) ?: '';
         $expandableRows = file_get_contents(resource_path('js/components/sales-main/data-table/ExpandableRows.jsx')) ?: '';
 
@@ -610,6 +716,14 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('candidate.code === item.code', $picker);
         $this->assertStringContainsString('selectedCodes.has(customer.code)', $picker);
         $this->assertStringContainsString('Müşteri bulunamadı', $picker);
+        $this->assertStringContainsString('HighlightedAccountLabel', $picker);
+        $this->assertStringContainsString('HighlightedAccountLabel', $pieChart);
+        $this->assertStringContainsString('customerCode', $pieChart);
+        $this->assertStringContainsString('groupLabel', $pieChart);
+        $this->assertStringContainsString('TEŞHİR HESABI', $highlightedLabel);
+        $this->assertStringContainsString('KONSİNYE HESABI', $highlightedLabel);
+        $this->assertStringContainsString('<strong', $highlightedLabel);
+        $this->assertStringNotContainsString('dangerouslySetInnerHTML', $highlightedLabel);
         $this->assertStringContainsString('filters = {}', $managementScopeFilter);
         $this->assertStringContainsString('router.visit(scope.navigateTo', $managementScopeFilter);
         $this->assertStringContainsString('grain: filters.grain', $managementScopeFilter);
@@ -624,9 +738,11 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('min-w-[1100px]', $table);
         $this->assertStringContainsString('whitespace-normal', $table);
         $this->assertStringContainsString('break-words', $table);
+        $this->assertStringContainsString('HighlightedAccountLabel', $table);
         $this->assertStringContainsString('min-w-[560px]', $expandableRows);
         $this->assertStringContainsString('whitespace-normal', $expandableRows);
         $this->assertStringContainsString('break-words', $expandableRows);
+        $this->assertStringContainsString('HighlightedAccountLabel', $expandableRows);
         $this->assertStringNotContainsString('truncate', $table);
         $this->assertStringNotContainsString('truncate', $expandableRows);
         $this->assertStringNotContainsString('line-clamp-2', $table);

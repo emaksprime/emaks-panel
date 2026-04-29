@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { HighlightedAccountLabel } from '../HighlightedAccountLabel.jsx';
 
 function Row({ row, depth = 0 }) {
     const [open, setOpen] = useState(depth < 1);
@@ -21,7 +22,9 @@ function Row({ row, depth = 0 }) {
                         ) : (
                             <span className="size-6 shrink-0" />
                         )}
-                        <span className="min-w-0 max-w-none whitespace-normal break-words font-medium leading-5 text-slate-900" title={row.label}>{row.label}</span>
+                        <span className="min-w-0 max-w-none whitespace-normal break-words font-medium leading-5 text-slate-900" title={row.label}>
+                            <HighlightedAccountLabel value={row.label} />
+                        </span>
                     </div>
                 </td>
                 <td className="w-24 min-w-[72px] px-3 py-3 text-center whitespace-nowrap text-slate-600">{row.quantityLabel}</td>

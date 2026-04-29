@@ -168,30 +168,16 @@ class SalesMainPageService
                 ],
             ],
             'chart' => [
-                'title' => $filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı',
+                'title' => $filters['cari_filter'] !== ''
+                    ? 'Seçili Müşteri Karşılaştırması'
+                    : ($filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı'),
                 'subtitle' => $filters['detail_type'] === 'urun'
                     ? 'Ürün ve model bazlı payların dağılımı.'
                     : 'Satış gruplarının toplam ciro içindeki payları.',
                 'totalNet' => $netTotal,
                 'totalNetLabel' => $this->money($netTotal),
                 'konsinyeAmount' => $konsinye,
-                'items' => $totalGroupRows->map(function (array $row, int $index) use ($positiveTotal) {
-                    $amount = (float) $row['ciro'];
-                    $percentage = $positiveTotal > 0 && $amount > 0
-                        ? round(($amount / $positiveTotal) * 100, 1)
-                        : 0;
-
-                    return [
-                        'label' => $row['cari_grup_adi'],
-                        'amount' => $amount,
-                        'amountLabel' => $this->money($amount),
-                        'quantity' => (float) $row['adet'],
-                        'quantityLabel' => $this->quantity((float) $row['adet']),
-                        'percentage' => $percentage,
-                        'color' => $this->palette($index),
-                        'isNegative' => $amount < 0,
-                    ];
-                })->values()->all(),
+                'items' => $this->chartItems($groupRows, $detailRows, $filters, $positiveTotal),
             ],
             'breakdown' => [
                 'mode' => $filters['detail_type'],
@@ -265,7 +251,9 @@ class SalesMainPageService
                 ['label' => 'Aktif Kapsam', 'value' => $scope['label'], 'raw' => $normalizedScopeKey],
             ],
             'chart' => [
-                'title' => $filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı',
+                'title' => $filters['cari_filter'] !== ''
+                    ? 'Seçili Müşteri Karşılaştırması'
+                    : ($filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı'),
                 'subtitle' => $filters['detail_type'] === 'urun'
                     ? 'Ürün ve model bazlı payların dağılımı.'
                     : 'Satış gruplarının toplam ciro içindeki payları.',
@@ -493,6 +481,145 @@ class SalesMainPageService
             '#06b6d4',
             '#f97316',
         ][$index % 8];
+    }
+
+    /**
+     * @param  Collection<int, array<string, mixed>>  $groupRows
+     * @param  Collection<int, array<string, mixed>>  $detailRows
+     * @param  array<string, string>  $filters
+     * @return array<int, array<string, mixed>>
+     */
+    private function chartItems(Collection $groupRows, Collection $detailRows, array $filters, float $positiveTotal): array
+    {
+        if (($filters['cari_filter'] ?? '') === '') {
+            return $groupRows
+                ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
+                ->values()
+                ->map(function (array $row, int $index) use ($positiveTotal) {
+                    $amount = (float) $row['ciro'];
+                    $percentage = $positiveTotal > 0 && $amount > 0
+                        ? round(($amount / $positiveTotal) * 100, 1)
+                        : 0;
+
+                    return [
+                        'label' => $this->groupName($row),
+                        'amount' => $amount,
+                        'amountLabel' => $this->money($amount),
+                        'quantity' => (float) $row['adet'],
+                        'quantityLabel' => $this->quantity((float) $row['adet']),
+                        'percentage' => $percentage,
+                        'color' => $this->palette($index),
+                        'isNegative' => $amount < 0,
+                        'excludedFromTotal' => false,
+                        'isConsignment' => false,
+                        'isTeshir' => $this->isTeshirAccount($this->groupName($row), ''),
+                    ];
+                })
+                ->all();
+        }
+
+        $customerRows = $detailRows
+            ->filter(fn (array $row): bool => in_array(($row['satir_tipi'] ?? null), ['CARI', 'KONSINYE'], true))
+            ->values();
+
+        if ($customerRows->isEmpty()) {
+            $customerRows = $detailRows
+                ->filter(fn (array $row): bool => trim((string) ($row['cari_kodu'] ?? '')) !== '')
+                ->values();
+        }
+
+        $customers = [];
+
+        foreach ($customerRows as $row) {
+            $customerCode = trim((string) ($row['cari_kodu'] ?? ''));
+
+            if ($customerCode === '') {
+                continue;
+            }
+
+            $label = $this->rowLabel($row);
+            $groupLabel = $this->groupName($row);
+            $excluded = $this->rowExcludedFromTotal($row) || $this->isConsignmentAccount($label, $customerCode);
+
+            if (! isset($customers[$customerCode])) {
+                $customers[$customerCode] = [
+                    'label' => $label,
+                    'customerCode' => $customerCode,
+                    'groupLabel' => $groupLabel,
+                    'amount' => 0.0,
+                    'quantity' => 0.0,
+                    'excludedFromTotal' => $excluded,
+                    'isConsignment' => $this->isConsignmentAccount($label, $customerCode) || $excluded,
+                    'isTeshir' => $this->isTeshirAccount($label, $customerCode),
+                ];
+            }
+
+            $customers[$customerCode]['amount'] += (float) ($row['ciro'] ?? 0);
+            $customers[$customerCode]['quantity'] += (float) ($row['adet'] ?? 0);
+            $customers[$customerCode]['excludedFromTotal'] = (bool) $customers[$customerCode]['excludedFromTotal'] || $excluded;
+            $customers[$customerCode]['isConsignment'] = (bool) $customers[$customerCode]['isConsignment'] || $this->isConsignmentAccount($label, $customerCode);
+            $customers[$customerCode]['isTeshir'] = (bool) $customers[$customerCode]['isTeshir'] || $this->isTeshirAccount($label, $customerCode);
+        }
+
+        $includedPositiveTotal = collect($customers)
+            ->reject(fn (array $item): bool => (bool) $item['excludedFromTotal'])
+            ->where('amount', '>', 0)
+            ->sum('amount');
+
+        return collect($customers)
+            ->sort(function (array $left, array $right): int {
+                $leftExcluded = (bool) $left['excludedFromTotal'];
+                $rightExcluded = (bool) $right['excludedFromTotal'];
+
+                if ($leftExcluded !== $rightExcluded) {
+                    return $leftExcluded ? 1 : -1;
+                }
+
+                return abs((float) $right['amount']) <=> abs((float) $left['amount']);
+            })
+            ->values()
+            ->map(function (array $item, int $index) use ($includedPositiveTotal) {
+                $amount = (float) $item['amount'];
+                $excluded = (bool) $item['excludedFromTotal'];
+                $percentage = ! $excluded && $includedPositiveTotal > 0 && $amount > 0
+                    ? round(($amount / $includedPositiveTotal) * 100, 1)
+                    : 0;
+
+                return [
+                    ...$item,
+                    'amount' => $amount,
+                    'amountLabel' => $this->money($amount),
+                    'quantity' => (float) $item['quantity'],
+                    'quantityLabel' => $this->quantity((float) $item['quantity']),
+                    'percentage' => $percentage,
+                    'color' => $this->palette($index),
+                    'isNegative' => $amount < 0,
+                ];
+            })
+            ->all();
+    }
+
+    private function isConsignmentAccount(string $label, string $customerCode): bool
+    {
+        $text = $this->asciiAccountText($label.' '.$customerCode);
+
+        return str_contains($text, 'KONSINYE');
+    }
+
+    private function isTeshirAccount(string $label, string $customerCode): bool
+    {
+        $text = $this->asciiAccountText($label.' '.$customerCode);
+
+        return str_contains($text, 'TESHIR');
+    }
+
+    private function asciiAccountText(string $value): string
+    {
+        return str_replace(
+            ['İ', 'İ', 'ı', 'Ş', 'ş', 'Ğ', 'ğ', 'Ü', 'ü', 'Ö', 'ö', 'Ç', 'ç'],
+            ['I', 'I', 'I', 'S', 'S', 'G', 'G', 'U', 'U', 'O', 'O', 'C', 'C'],
+            mb_strtoupper($value, 'UTF-8'),
+        );
     }
 
     /**
