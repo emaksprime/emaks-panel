@@ -212,6 +212,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
     {
         DB::table('panel.data_source_cache')->delete();
 
+        $source = DataSource::query()->where('code', 'sales_customer_search')->firstOrFail();
+        $this->assertTrue($source->active);
+        $this->assertNotSame('', trim((string) $source->query_template));
+
         Http::fake([
             '*' => Http::response([
                 'ok' => true,
@@ -226,18 +230,36 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ]),
         ]);
 
-        $this->actingAs(User::factory()->create(['role_code' => 'admin']))
+        $user = User::factory()->create(['role_code' => 'admin', 'aktif' => true]);
+        DB::table('panel.user_access')->updateOrInsert(
+            ['user_id' => $user->id, 'resource_code' => 'sales_main'],
+            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $response = $this->actingAs($user)
             ->postJson('/api/data/sales_customer_search', [
                 'search' => 'mehmet',
                 'limit' => 80,
                 'bypass_cache' => true,
-            ])
-            ->assertOk()
-            ->assertJsonPath('rows.0.cari_kodu', '120.00.001')
-            ->assertJsonPath('rows.0.cari_unvani', 'Mehmet Test');
+            ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('rows.0.cari_kodu', '120.00.001');
+        $response->assertJsonPath('rows.0.cari_unvani', 'Mehmet Test');
+
+        Http::assertSentCount(1);
+        [$request] = Http::recorded()->first();
+        $payload = $request->data();
+
+        $this->assertSame('sales_customer_search', $payload['source_code'] ?? null);
+        $this->assertSame('mehmet', $payload['search'] ?? null);
+        $this->assertSame('mehmet', $payload['params']['search'] ?? null);
+        $this->assertTrue($payload['bypass_cache'] ?? false);
+        $this->assertTrue($payload['params']['bypass_cache'] ?? false);
+        $this->assertContains('search', $payload['allowed_params'] ?? []);
 
         Http::assertSent(function ($request): bool {
-            $payload = json_decode($request->body(), true) ?: [];
+            $payload = $request->data();
 
             return ($payload['source_code'] ?? null) === 'sales_customer_search'
                 && ($payload['search'] ?? null) === 'mehmet'
