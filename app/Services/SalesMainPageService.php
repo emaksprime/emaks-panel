@@ -29,7 +29,7 @@ class SalesMainPageService
         $pageConfig = $this->pageConfig();
         $layout = $pageConfig->layout_json ?? [];
         $filters = $pageConfig->filters_json ?? [];
-        $scopes = $this->visibleScopes($user, collect($filters['managementScopes'] ?? []));
+        $scopes = $this->visibleScopes($user, $this->configuredManagementScopes($filters));
         $defaultScopeKey = $this->defaultScopeKeyForPage($pageCode);
         $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $defaultScopeKey)
             ?? $scopes->first();
@@ -213,7 +213,7 @@ class SalesMainPageService
      */
     private function resolveScope(?User $user, string $scopeKey): array
     {
-        $scopes = $this->visibleScopes($user, collect($this->pageConfig()->filters_json['managementScopes'] ?? []));
+        $scopes = $this->visibleScopes($user, $this->configuredManagementScopes($this->pageConfig()->filters_json ?? []));
         $normalizedScopeKey = $this->normalizeScopeKey($scopeKey);
         $scope = $scopes->first(fn (array $scope) => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === $normalizedScopeKey);
 
@@ -259,6 +259,25 @@ class SalesMainPageService
                 return $userRepCode !== '' && $userRepCode === $scope['repCode'];
             })
             ->values();
+    }
+
+    private function configuredManagementScopes(array $filters): Collection
+    {
+        $scopes = collect($filters['managementScopes'] ?? []);
+
+        if ($scopes->contains(fn (array $scope): bool => $this->normalizeScopeKey((string) ($scope['key'] ?? '')) === 'bulent_saglam')) {
+            return $scopes;
+        }
+
+        return $scopes->push([
+            'key' => 'bulent_saglam',
+            'label' => 'Bülent Sağlam',
+            'repCode' => '0024',
+            'allowAll' => false,
+            'salesView' => 'temsilci',
+            'note' => 'Bülent Sağlam temsilci kapsamı',
+            'navigateTo' => null,
+        ]);
     }
 
     private function effectiveRepresentativeCode(?User $user, array $scope): ?string
@@ -357,47 +376,168 @@ class SalesMainPageService
     private function breakdownGroups(string $detailType, Collection $groupRows, Collection $detailRows): array
     {
         if ($detailType === 'urun') {
+            $detailRows = $this->normalizeProductDetailRows($groupRows, $detailRows);
+            $groupRows = $this->normalizeProductGroupRows($groupRows, $detailRows);
+
             return $groupRows->map(function (array $group) use ($detailRows) {
+                $groupLabel = $this->groupName($group);
                 $children = $detailRows
-                    ->where('parent_key', $group['cari_grup_adi'])
+                    ->filter(fn (array $row) => $this->parentKey($row) === $groupLabel)
                     ->values()
-                    ->map(fn (array $row) => $this->rowPayload($row['satir_adi'], (float) $row['adet'], (float) $row['ciro']))
+                    ->map(fn (array $row) => $this->rowPayload($this->rowLabel($row), (float) $row['adet'], (float) $row['ciro']))
                     ->all();
 
                 return [
-                    ...$this->rowPayload($group['cari_grup_adi'], (float) $group['adet'], (float) $group['ciro']),
+                    ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro']),
                     'children' => $children,
                 ];
             })->values()->all();
         }
 
+        $groupRows = $this->normalizeCustomerGroupRows($groupRows, $detailRows);
+
         return $groupRows->map(function (array $group) use ($detailRows) {
+            $groupLabel = $this->groupName($group);
             $cariRows = $detailRows
-                ->where('satir_tipi', 'CARI')
-                ->where('cari_grup_adi', $group['cari_grup_adi'])
+                ->filter(fn (array $row) => ($row['satir_tipi'] ?? null) === 'CARI' && $this->groupName($row) === $groupLabel)
                 ->values();
 
             $urunRows = $detailRows
                 ->where('satir_tipi', 'URUN')
-                ->where('cari_grup_adi', $group['cari_grup_adi'])
+                ->filter(fn (array $row) => $this->groupName($row) === $groupLabel)
                 ->values();
 
             $children = $cariRows->map(function (array $cari) use ($urunRows) {
+                $cariCode = trim((string) ($cari['cari_kodu'] ?? ''));
+
                 return [
-                    ...$this->rowPayload($cari['satir_adi'], (float) $cari['adet'], (float) $cari['ciro']),
+                    ...$this->rowPayload($this->rowLabel($cari), (float) $cari['adet'], (float) $cari['ciro']),
                     'children' => $urunRows
-                        ->where('parent_key', $cari['cari_kodu'])
+                        ->filter(fn (array $urun) => $cariCode !== '' && $this->parentKey($urun) === $cariCode)
                         ->values()
-                        ->map(fn (array $urun) => $this->rowPayload($urun['satir_adi'], (float) $urun['adet'], (float) $urun['ciro']))
+                        ->map(fn (array $urun) => $this->rowPayload($this->rowLabel($urun), (float) $urun['adet'], (float) $urun['ciro']))
                         ->all(),
                 ];
             })->all();
 
             return [
-                ...$this->rowPayload($group['cari_grup_adi'], (float) $group['adet'], (float) $group['ciro']),
+                ...$this->rowPayload($groupLabel, (float) $group['adet'], (float) $group['ciro']),
                 'children' => $children,
             ];
         })->values()->all();
+    }
+
+    /**
+     * @param  Collection<int, array<string, mixed>>  $groupRows
+     * @param  Collection<int, array<string, mixed>>  $detailRows
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function normalizeCustomerGroupRows(Collection $groupRows, Collection $detailRows): Collection
+    {
+        $groups = $groupRows
+            ->map(fn (array $group) => [...$group, 'cari_grup_adi' => $this->groupName($group)])
+            ->keyBy(fn (array $group) => $this->groupName($group));
+
+        $detailRows
+            ->where('satir_tipi', 'CARI')
+            ->each(function (array $row) use ($groups): void {
+                $groupName = $this->groupName($row);
+
+                if (! $groups->has($groupName)) {
+                    $groups->put($groupName, [
+                        'satir_tipi' => 'GRUP',
+                        'cari_grup_adi' => $groupName,
+                        'adet' => 0,
+                        'ciro' => 0,
+                        'siralama_1' => 999999,
+                    ]);
+                }
+            });
+
+        return $groups->values()->sortBy('siralama_1')->values();
+    }
+
+    /**
+     * @param  Collection<int, array<string, mixed>>  $groupRows
+     * @param  Collection<int, array<string, mixed>>  $detailRows
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function normalizeProductGroupRows(Collection $groupRows, Collection $detailRows): Collection
+    {
+        $groups = $groupRows
+            ->map(fn (array $group) => [...$group, 'cari_grup_adi' => $this->groupName($group)])
+            ->keyBy(fn (array $group) => $this->groupName($group));
+
+        $detailRows->each(function (array $row) use ($groups): void {
+            $groupName = $this->parentKey($row);
+
+            if ($groupName !== '' && ! $groups->has($groupName)) {
+                $groups->put($groupName, [
+                    'satir_tipi' => 'GRUP',
+                    'cari_grup_adi' => $groupName,
+                    'adet' => 0,
+                    'ciro' => 0,
+                    'siralama_1' => 999999,
+                ]);
+            }
+        });
+
+        return $groups->values()->sortBy('siralama_1')->values();
+    }
+
+    /**
+     * @param  Collection<int, array<string, mixed>>  $groupRows
+     * @param  Collection<int, array<string, mixed>>  $detailRows
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function normalizeProductDetailRows(Collection $groupRows, Collection $detailRows): Collection
+    {
+        $knownGroups = $groupRows
+            ->map(fn (array $group) => $this->groupName($group))
+            ->filter()
+            ->values()
+            ->all();
+
+        return $detailRows->map(function (array $row) use ($knownGroups) {
+            if ($this->parentKey($row) === '') {
+                $fallbackGroup = $this->groupName($row);
+
+                return [
+                    ...$row,
+                    'parent_key' => $fallbackGroup !== 'Diğer' && in_array($fallbackGroup, $knownGroups, true) ? $fallbackGroup : 'Diğer',
+                ];
+            }
+
+            return $row;
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function groupName(array $row): string
+    {
+        $name = trim((string) ($row['cari_grup_adi'] ?? ''));
+
+        return $name !== '' ? $name : 'Diğer';
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function parentKey(array $row): string
+    {
+        return trim((string) ($row['parent_key'] ?? ''));
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function rowLabel(array $row): string
+    {
+        $label = trim((string) ($row['satir_adi'] ?? $row['cari_grup_adi'] ?? ''));
+
+        return $label !== '' ? $label : 'Diğer';
     }
 
     /**

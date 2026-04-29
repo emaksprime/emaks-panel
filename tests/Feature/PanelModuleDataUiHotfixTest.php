@@ -164,14 +164,160 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $online = $service->config(null, 'sales_online');
         $bayi = $service->config(null, 'sales_bayi');
+        $onlineSource = DataSource::query()->where('code', 'sales_online_perakende_detail')->firstOrFail();
 
         $this->assertSame('sales_online_perakende_detail', $online['dataSource']['slug']);
         $this->assertSame('online_perakende', $online['defaults']['scopeKey']);
         $this->assertSame('panel/sales-main', $online['page']['component']);
+        $this->assertTrue($onlineSource->active);
+        $this->assertNotSame('', trim((string) $onlineSource->query_template));
+        $this->assertSame(
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+            $onlineSource->allowed_params,
+        );
+        foreach (['120.01', '120.02', '120.03', '120.04', '120.05', '120.06', '120.07', '120.08', '120.09', '120.16'] as $groupCode) {
+            $this->assertStringContainsString($groupCode, (string) $onlineSource->query_template);
+        }
 
         $this->assertSame('sales_bayi_proje_detail', $bayi['dataSource']['slug']);
         $this->assertSame('bayi_proje', $bayi['defaults']['scopeKey']);
         $this->assertSame('panel/sales-main', $bayi['page']['component']);
+    }
+
+    public function test_sales_bulent_scope_uses_sales_main_with_representative_code(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $service = app(SalesMainPageService::class);
+        $config = $service->config($user, 'sales_main');
+        $bulent = collect($config['managementScopes'])->firstWhere('key', 'bulent_saglam');
+
+        $this->assertIsArray($bulent);
+        $this->assertSame('Bülent Sağlam', $bulent['label']);
+        $this->assertSame('0024', $bulent['repCode']);
+        $this->assertSame('temsilci', $bulent['salesView']);
+        $this->assertFalse((bool) $bulent['allowAll']);
+        $this->assertNull($bulent['navigateTo'] ?? null);
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Grup A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $payload = $service->dataset($user, [
+            'scope_key' => 'bulent_saglam',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
+        $this->assertSame('bulent_saglam', $payload['scope']['key']);
+        $this->assertSame('0024', $payload['scope']['effectiveRepresentativeCode']);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['scope_key'] ?? null) === 'bulent_saglam'
+                && ($payload['rep_code'] ?? null) === '0024';
+        });
+    }
+
+    public function test_sales_customer_breakdown_keeps_customer_rows_under_groups(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Grup A',
+                        'adet' => 3,
+                        'ciro' => 300,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'Grup A',
+                        'cari_kodu' => 'C-1',
+                        'satir_adi' => 'Müşteri A',
+                        'adet' => 2,
+                        'ciro' => 200,
+                    ],
+                    [
+                        'satir_tipi' => 'URUN',
+                        'cari_grup_adi' => 'Grup A',
+                        'parent_key' => 'C-1',
+                        'satir_adi' => 'Ürün A',
+                        'adet' => 2,
+                        'ciro' => 200,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'Grup B',
+                        'cari_kodu' => 'C-2',
+                        'satir_adi' => 'Müşteri B',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => '',
+                        'cari_kodu' => 'C-3',
+                        'satir_adi' => 'Orphan Müşteri',
+                        'adet' => 1,
+                        'ciro' => 50,
+                    ],
+                    [
+                        'satir_tipi' => 'URUN',
+                        'cari_grup_adi' => 'Grup A',
+                        'parent_key' => 'NO_MATCH',
+                        'satir_adi' => 'Roota Çıkmamalı',
+                        'adet' => 1,
+                        'ciro' => 25,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $rootLabels = collect($payload['breakdown']['groups'])->pluck('label')->all();
+
+        $this->assertSame('Grup A', $rootLabels[0]);
+        $this->assertContains('Grup B', $rootLabels);
+        $this->assertContains('Diğer', $rootLabels);
+        $this->assertNotContains('Müşteri A', $rootLabels);
+        $this->assertNotContains('Orphan Müşteri', $rootLabels);
+
+        $groupA = collect($payload['breakdown']['groups'])->firstWhere('label', 'Grup A');
+        $groupB = collect($payload['breakdown']['groups'])->firstWhere('label', 'Grup B');
+        $other = collect($payload['breakdown']['groups'])->firstWhere('label', 'Diğer');
+
+        $this->assertSame('Müşteri A', $groupA['children'][0]['label']);
+        $this->assertSame('Ürün A', $groupA['children'][0]['children'][0]['label']);
+        $this->assertSame('Müşteri B', $groupB['children'][0]['label']);
+        $this->assertSame('Orphan Müşteri', $other['children'][0]['label']);
+        $this->assertStringNotContainsString('Roota Çıkmamalı', json_encode($payload['breakdown']['groups'], JSON_UNESCAPED_UNICODE));
     }
 
     public function test_user_facing_metadata_uses_customer_terminology(): void
