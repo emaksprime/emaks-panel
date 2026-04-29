@@ -9,17 +9,25 @@ import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 import { CustomerFilterPicker } from '@/components/sales-main/CustomerFilterPicker.jsx';
 
+function queryParam(name) {
+    if (typeof window === 'undefined') {
+        return null;
+    }
+
+    return new URLSearchParams(window.location.search).get(name);
+}
+
 export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const config = salesMainConfig;
     const today = new Date().toISOString().slice(0, 10);
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
     const [data, setData] = useState(salesMainData);
     const [filters, setFilters] = useState(() => ({
-        date_from: salesMainData?.filters?.dateFrom ?? monthStart,
-        date_to: salesMainData?.filters?.dateTo ?? today,
-        grain: salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
-        detail_type: salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
-        scope_key: salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
+        date_from: queryParam('date_from') ?? salesMainData?.filters?.dateFrom ?? monthStart,
+        date_to: queryParam('date_to') ?? salesMainData?.filters?.dateTo ?? today,
+        grain: queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
+        detail_type: queryParam('detail_type') ?? salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
+        scope_key: queryParam('scope_key') ?? salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
         customer_filter: salesMainData?.filters?.customerFilter ?? '',
         bypass_cache: false,
     }));
@@ -31,12 +39,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     useEffect(() => {
         setData(salesMainData);
-        setFilters((current) => ({
-            ...current,
-            detail_type: config?.defaults?.detailType ?? current.detail_type,
-            scope_key: config?.defaults?.scopeKey ?? current.scope_key,
-        }));
-    }, [config?.defaults?.detailType, config?.defaults?.scopeKey, salesMainData]);
+    }, [salesMainData]);
 
     useEffect(() => {
         let active = true;
@@ -73,6 +76,16 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     const updateFilters = (patch) => {
         setFilters((current) => ({ ...current, ...patch }));
+    };
+
+    const handleScopeChange = (patch) => {
+        setSelectedCustomers([]);
+        updateFilters({
+            ...patch,
+            customer_filter: '',
+            cari_filter: '',
+            bypass_cache: true,
+        });
     };
 
     const updateCustomers = (customers) => {
@@ -126,8 +139,9 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                             <ManagementScopeFilter
                                 scopes={config?.managementScopes ?? []}
                                 activeKey={filters.scope_key}
-                                onChange={updateFilters}
+                                onChange={handleScopeChange}
                                 loading={loading}
+                                filters={filters}
                             />
                         </div>
                         <div className="grid gap-2">
