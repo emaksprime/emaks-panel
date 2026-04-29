@@ -232,8 +232,27 @@ BEGIN
         SELECT CAST(SUM(net_tutar) AS decimal(18,2)) AS konsinye_tutari
         FROM #filtered
         WHERE is_konsinye = 1
+    ),
+    konsinye_detay AS
+    (
+        SELECT
+            cari_kodu,
+            CASE
+                WHEN NULLIF(model_adi, N'') IS NULL THEN N'KONSİNYE / TEŞHİR - ' + cari_adi
+                ELSE N'KONSİNYE / TEŞHİR - ' + model_adi + N' - ' + cari_adi
+            END AS satir_adi,
+            CASE
+                WHEN NULLIF(model_adi, N'') IS NULL THEN N'KONSİNYE / TEŞHİR - ' + cari_adi_html
+                ELSE N'KONSİNYE / TEŞHİR - ' + model_adi + N' - ' + cari_adi_html
+            END AS satir_adi_html,
+            CAST(SUM(adet) AS decimal(18,2)) AS adet,
+            CAST(SUM(net_tutar) AS decimal(18,2)) AS ciro,
+            ROW_NUMBER() OVER (ORDER BY SUM(net_tutar) DESC, cari_adi ASC, cari_kodu ASC) AS konsinye_sira
+        FROM #filtered
+        WHERE is_konsinye = 1
+        GROUP BY cari_kodu, cari_adi, cari_adi_html, model_adi
     )
-    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi
+    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi, excluded_from_total
     FROM
     (
         SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
@@ -241,14 +260,16 @@ BEGIN
                mt.model_adi AS satir_adi, mt.model_adi AS satir_adi_html, mt.adet, mt.ciro, mt.model_sira AS siralama_1,
                0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
-               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi
+                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(0 AS bit) AS excluded_from_total
         FROM model_totals mt
         UNION ALL
         SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
                N'DETAY' AS satir_tipi, md.model_adi AS cari_grup_adi, md.cari_kodu, md.cari_adi AS satir_adi,
                md.cari_adi_html AS satir_adi_html, md.adet, md.ciro, mt.model_sira AS siralama_1, md.cari_sira AS siralama_2,
                md.model_adi AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
-               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi
+                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(0 AS bit) AS excluded_from_total
         FROM model_cari_detay md
         INNER JOIN model_totals mt ON mt.model_adi = md.model_adi
         UNION ALL
@@ -256,8 +277,28 @@ BEGIN
                N'KATEGORI' AS satir_tipi, CAST(NULL AS nvarchar(255)) AS cari_grup_adi, CAST(NULL AS nvarchar(50)) AS cari_kodu,
                kt.kategori_kodu AS satir_adi, kt.kategori_kodu AS satir_adi_html, kt.adet, CAST(0 AS decimal(18,2)) AS ciro,
                999999 AS siralama_1, kt.kategori_sira AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
-               (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari, kt.kategori_kodu, kt.kategori_adi
+                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari, kt.kategori_kodu, kt.kategori_adi,
+                CAST(0 AS bit) AS excluded_from_total
         FROM kategori_totals kt
+        UNION ALL
+        SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
+               N'GRUP' AS satir_tipi, N'KONSİNYE / TEŞHİR' AS cari_grup_adi, CAST(NULL AS nvarchar(50)) AS cari_kodu,
+               N'KONSİNYE / TEŞHİR' AS satir_adi, N'KONSİNYE / TEŞHİR' AS satir_adi_html,
+               CAST(0 AS decimal(18,2)) AS adet, CAST(0 AS decimal(18,2)) AS ciro, 999998 AS siralama_1,
+               0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
+               (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
+               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(1 AS bit) AS excluded_from_total
+        FROM konsinye_total
+        WHERE EXISTS (SELECT 1 FROM #filtered WHERE is_konsinye = 1)
+        UNION ALL
+        SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
+               N'KONSINYE' AS satir_tipi, N'KONSİNYE / TEŞHİR' AS cari_grup_adi, kd.cari_kodu,
+               kd.satir_adi, kd.satir_adi_html, kd.adet, kd.ciro, 999998 AS siralama_1, kd.konsinye_sira AS siralama_2,
+               N'KONSİNYE / TEŞHİR' AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
+               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(1 AS bit) AS excluded_from_total
+        FROM konsinye_detay kd
     ) q
     ORDER BY siralama_1 ASC, CASE satir_tipi WHEN N'GRUP' THEN 0 WHEN N'DETAY' THEN 1 ELSE 2 END ASC, siralama_2 ASC;
 END
@@ -302,8 +343,21 @@ BEGIN
         SELECT CAST(SUM(net_tutar) AS decimal(18,2)) AS konsinye_tutari
         FROM #filtered
         WHERE is_konsinye = 1
+    ),
+    konsinye_cari_detay AS
+    (
+        SELECT
+            cari_kodu,
+            N'KONSİNYE / TEŞHİR - ' + cari_adi AS satir_adi,
+            N'KONSİNYE / TEŞHİR - ' + cari_adi_html AS satir_adi_html,
+            CAST(SUM(adet) AS decimal(18,2)) AS adet,
+            CAST(SUM(net_tutar) AS decimal(18,2)) AS ciro,
+            ROW_NUMBER() OVER (ORDER BY SUM(net_tutar) DESC, cari_adi ASC, cari_kodu ASC) AS konsinye_sira
+        FROM #filtered
+        WHERE is_konsinye = 1
+        GROUP BY cari_kodu, cari_adi, cari_adi_html
     )
-    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi
+    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi, excluded_from_total
     FROM
     (
         SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
@@ -311,14 +365,16 @@ BEGIN
                gt.cari_grup_adi AS satir_adi, gt.cari_grup_adi AS satir_adi_html, gt.adet, gt.ciro, gt.grup_sira AS siralama_1,
                0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
-               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi
+                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(0 AS bit) AS excluded_from_total
         FROM group_totals gt
         UNION ALL
         SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
                N'CARI' AS satir_tipi, ct.cari_grup_adi, ct.cari_kodu, ct.cari_adi AS satir_adi,
                ct.cari_adi_html AS satir_adi_html, ct.adet, ct.ciro, gt.grup_sira AS siralama_1, ct.cari_sira AS siralama_2,
                ct.cari_kodu AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
-               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi
+                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(0 AS bit) AS excluded_from_total
         FROM cari_totals ct
         INNER JOIN group_totals gt ON gt.cari_grup_adi = ct.cari_grup_adi
         UNION ALL
@@ -326,7 +382,8 @@ BEGIN
                N'URUN' AS satir_tipi, cud.cari_grup_adi, cud.cari_kodu, cud.model_adi AS satir_adi,
                cud.model_adi AS satir_adi_html, cud.adet, cud.ciro, gt.grup_sira AS siralama_1, cud.urun_sira AS siralama_2,
                cud.cari_kodu AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
-               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi
+                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(0 AS bit) AS excluded_from_total
         FROM cari_urun_detay cud
         INNER JOIN group_totals gt ON gt.cari_grup_adi = cud.cari_grup_adi
         UNION ALL
@@ -334,8 +391,28 @@ BEGIN
                N'KATEGORI' AS satir_tipi, CAST(NULL AS nvarchar(255)) AS cari_grup_adi, CAST(NULL AS nvarchar(50)) AS cari_kodu,
                kt.kategori_kodu AS satir_adi, kt.kategori_kodu AS satir_adi_html, kt.adet, CAST(0 AS decimal(18,2)) AS ciro,
                999999 AS siralama_1, kt.kategori_sira AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
-               (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari, kt.kategori_kodu, kt.kategori_adi
+                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari, kt.kategori_kodu, kt.kategori_adi,
+                CAST(0 AS bit) AS excluded_from_total
         FROM kategori_totals kt
+        UNION ALL
+        SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
+               N'GRUP' AS satir_tipi, N'KONSİNYE / TEŞHİR' AS cari_grup_adi, CAST(NULL AS nvarchar(50)) AS cari_kodu,
+               N'KONSİNYE / TEŞHİR' AS satir_adi, N'KONSİNYE / TEŞHİR' AS satir_adi_html,
+               CAST(0 AS decimal(18,2)) AS adet, CAST(0 AS decimal(18,2)) AS ciro, 999998 AS siralama_1,
+               0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
+               (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
+               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(1 AS bit) AS excluded_from_total
+        FROM konsinye_total
+        WHERE EXISTS (SELECT 1 FROM #filtered WHERE is_konsinye = 1)
+        UNION ALL
+        SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
+               N'KONSINYE' AS satir_tipi, N'KONSİNYE / TEŞHİR' AS cari_grup_adi, kd.cari_kodu,
+               kd.satir_adi, kd.satir_adi_html, kd.adet, kd.ciro, 999998 AS siralama_1, kd.konsinye_sira AS siralama_2,
+               kd.cari_kodu AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
+               CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(1 AS bit) AS excluded_from_total
+        FROM konsinye_cari_detay kd
     ) q
     ORDER BY siralama_1 ASC, CASE satir_tipi WHEN N'GRUP' THEN 0 WHEN N'CARI' THEN 1 WHEN N'URUN' THEN 2 ELSE 3 END ASC, siralama_2 ASC;
 END
