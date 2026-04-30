@@ -34,6 +34,40 @@ function pickAmount(row, keys) {
     return numeric;
 }
 
+function normalizeNumericValue(value) {
+    const raw = String(value).trim();
+
+    if (raw === '') {
+        return null;
+    }
+
+    const normalized = raw.replace(/\s/g, '');
+    const hasComma = normalized.includes(',');
+    const hasDot = normalized.includes('.');
+    const hasPercent = normalized.includes('%');
+
+    if (hasPercent) {
+        return null;
+    }
+
+    if (hasComma && hasDot) {
+        const lastComma = normalized.lastIndexOf(',');
+        const lastDot = normalized.lastIndexOf('.');
+
+        if (lastComma > lastDot) {
+            return Number.parseFloat(normalized.replace(/\./g, '').replace(',', '.'));
+        }
+
+        return Number.parseFloat(normalized.replace(/,/g, ''));
+    }
+
+    if (hasComma) {
+        return Number.parseFloat(normalized.replace(/\./g, '').replace(',', '.'));
+    }
+
+    return Number.parseFloat(normalized.replace(/,/g, ''));
+}
+
 export function readText(row, keys) {
     const raw = firstValue(row, keys);
 
@@ -58,7 +92,7 @@ export function formatMoney(value) {
 }
 
 export function formatNumber(value) {
-    const numeric = pickAmount({ value }, ['value']);
+    const numeric = normalizeNumericValue(value);
 
     if (numeric === null) {
         return '-';
@@ -87,7 +121,7 @@ export function formatPercentOrNumber(value) {
         return raw;
     }
 
-    const numeric = pickAmount({ value: raw }, ['value']);
+    const numeric = normalizeNumericValue(raw);
 
     if (numeric === null) {
         return '-';
