@@ -1034,17 +1034,15 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ->assertJsonPath('queryMeta.dataSource', 'customer_documents');
 
         Http::assertSent(function ($request): bool {
-            $payload = $request->data();
-
-            return ($payload['source_code'] ?? null) === 'customer_documents'
-                && ($payload['guid'] ?? null) === 'GUID-01'
-                && ($payload['params']['guid'] ?? null) === 'GUID-01'
-                && ($payload['hareket_guid'] ?? null) === 'HAREKET-GUID-01'
-                && ($payload['params']['hareket_guid'] ?? null) === 'HAREKET-GUID-01'
-                && ($payload['document_guid'] ?? null) === 'DOCUMENT-GUID-01'
-                && ($payload['params']['document_guid'] ?? null) === 'DOCUMENT-GUID-01'
-                && ($payload['evrak_guid'] ?? null) === 'EVRAK-GUID-01'
-                && ($payload['params']['evrak_guid'] ?? null) === 'EVRAK-GUID-01';
+            return ($request['source_code'] ?? null) === 'customer_documents'
+                && ($request['guid'] ?? null) === 'GUID-01'
+                && (($request['params'] ?? [])['guid'] ?? null) === 'GUID-01'
+                && ($request['hareket_guid'] ?? null) === 'HAREKET-GUID-01'
+                && (($request['params'] ?? [])['hareket_guid'] ?? null) === 'HAREKET-GUID-01'
+                && ($request['document_guid'] ?? null) === 'DOCUMENT-GUID-01'
+                && (($request['params'] ?? [])['document_guid'] ?? null) === 'DOCUMENT-GUID-01'
+                && ($request['evrak_guid'] ?? null) === 'EVRAK-GUID-01'
+                && (($request['params'] ?? [])['evrak_guid'] ?? null) === 'EVRAK-GUID-01';
         });
     }
 
