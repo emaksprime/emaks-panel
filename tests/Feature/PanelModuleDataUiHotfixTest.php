@@ -958,6 +958,120 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringNotContainsString('Evraklar', $drawer);
     }
 
+    public function test_customer_crm_pages_use_primecrm_list_and_balance_contracts(): void
+    {
+        $page = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
+        $component = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx')) ?: '';
+
+        $this->assertStringContainsString("normalizedCode === 'cari'", $page);
+        $this->assertStringContainsString('<CustomerInfoPage />', $page);
+        $this->assertStringContainsString("normalizedCode === 'cari_balance'", $page);
+        $this->assertStringContainsString('<CustomerBalancePage />', $page);
+
+        foreach ([
+            'Cari Kodu',
+            'Firma Ünvanı',
+            'Grup',
+            'Temsilci',
+            'Bakiye Durumu',
+            'Onaylı Açık Sipariş',
+            'Genel Durum',
+            'Onay Bekleyen Sipariş',
+        ] as $column) {
+            $this->assertStringContainsString($column, $component);
+        }
+
+        $this->assertStringContainsString('Cari kodu, firma adı, grup veya temsilci ara', $component);
+        $this->assertStringContainsString('/api/data/cari', $component);
+        $this->assertStringContainsString('/api/data/cari_balance', $component);
+    }
+
+    public function test_customer_balance_screen_is_customer_based_not_group_summary(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx')) ?: '';
+        $balanceColumnsOffset = strpos($component, 'const BALANCE_COLUMNS');
+
+        $this->assertNotFalse($balanceColumnsOffset);
+        $this->assertLessThan(
+            strpos($component, "'Grup'", $balanceColumnsOffset),
+            strpos($component, "'Cari Kodu'", $balanceColumnsOffset),
+            'Müşteri Bakiyesi ilk kolonu Grup olmamalı.',
+        );
+
+        foreach (['Cari Kodu', 'Firma Ünvanı', 'Grup', 'Temsilci', 'Borç', 'Alacak', 'Net Bakiye', 'Detay'] as $column) {
+            $this->assertStringContainsString($column, $component);
+        }
+
+        $query = (string) DataSource::query()->where('code', 'customers_balance')->value('query_template');
+
+        $this->assertStringContainsString('musteri_kodu', $query);
+        $this->assertStringContainsString('firma_unvani', $query);
+        $this->assertStringContainsString('temsilci_kodu', $query);
+        $this->assertStringContainsString('net_bakiye', $query);
+        $this->assertStringNotContainsString('GROUP BY GRUP', strtoupper($query));
+    }
+
+    public function test_customer_list_datasource_returns_primecrm_summary_and_row_fields(): void
+    {
+        $query = (string) DataSource::query()->where('code', 'customers_list')->value('query_template');
+
+        $this->assertStringContainsString('SiparisOzet', $query);
+        $this->assertStringContainsString('AcikSiparisTutar', $query);
+        $this->assertStringContainsString('GenelDurumTutar', $query);
+        $this->assertStringContainsString('toplam_alacak_bakiyesi', $query);
+        $this->assertStringContainsString('toplam_borc_bakiyesi', $query);
+        $this->assertStringContainsString('toplam_onayli_acik_siparis', $query);
+        $this->assertStringContainsString('toplam_onay_bekleyen_siparis', $query);
+        $this->assertStringContainsString('genel_sonuc', $query);
+    }
+
+    public function test_customer_detail_and_document_drilldowns_have_empty_states_without_request(): void
+    {
+        $statement = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerStatement.jsx')) ?: '';
+        $document = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerDocumentDetail.jsx')) ?: '';
+
+        $this->assertStringContainsString('if (!canLoad)', $statement);
+        $this->assertStringContainsString('Önce Müşteri Listesi’nden bir cari seçin.', $statement);
+        $this->assertStringContainsString('/api/data/customer_statement', $statement);
+        $this->assertStringContainsString('/api/data/customer_detail', $statement);
+
+        $this->assertStringContainsString('if (!guid)', $document);
+        $this->assertStringContainsString('Evrak listesinde Detay Gör ile geçiş yapınız.', $document);
+        $this->assertStringContainsString('/api/data/customer_documents', $document);
+        $this->assertStringContainsString("rowsByKind(rows, ['header'])", $document);
+        $this->assertStringContainsString("rowsByKind(rows, ['cari', 'movement'])", $document);
+        $this->assertStringContainsString("rowsByKind(rows, ['stock', 'stok'])", $document);
+    }
+
+    public function test_customer_documents_datasource_uses_primecrm_document_detail_queries(): void
+    {
+        $source = DataSource::query()->where('code', 'customer_documents')->firstOrFail();
+        $query = (string) $source->query_template;
+
+        $this->assertNotSame('', trim($query));
+        $this->assertStringContainsString('CARI_HESAP_HAREKETLERI', $query);
+        $this->assertStringContainsString('STOK_HAREKETLERI', $query);
+        $this->assertStringContainsString("N'header' AS line_type", $query);
+        $this->assertStringContainsString("N'cari' AS line_type", $query);
+        $this->assertStringContainsString("N'stock' AS line_type", $query);
+
+        $allowed = (array) $source->allowed_params;
+        $this->assertContains('guid', $allowed);
+        $this->assertContains('hareket_guid', $allowed);
+        $this->assertContains('document_guid', $allowed);
+        $this->assertContains('evrak_guid', $allowed);
+    }
+
+    public function test_customer_detail_and_document_pages_are_drilldowns_not_main_tabs(): void
+    {
+        $cariDetailPageId = Page::query()->where('code', 'cari_detail')->value('id');
+        $cariTabs = PageConfig::query()->where('page_code', 'cari')->firstOrFail()->layout_json['tabs'] ?? [];
+        $tabLabels = collect($cariTabs)->pluck('label')->all();
+
+        $this->assertFalse((bool) DB::table('panel.page_menu')->where('page_id', $cariDetailPageId)->value('is_visible'));
+        $this->assertSame(['Müşteri Listesi', 'Müşteri Bakiyesi'], $tabLabels);
+    }
+
     public function test_customer_datasource_codes_can_be_called_without_page_records(): void
     {
         Http::fake([

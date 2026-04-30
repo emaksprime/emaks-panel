@@ -144,7 +144,7 @@ class PanelMetadataSeeder extends Seeder
             ['menu_group' => 'orders', 'page' => 'orders_verilen', 'label' => 'Verilen Siparişler', 'icon' => 'shopping-cart', 'sort_order' => 72],
             ['menu_group' => 'cari', 'page' => 'cari', 'label' => 'Müşteri Listesi', 'icon' => 'wallet', 'sort_order' => 80],
             ['menu_group' => 'cari', 'page' => 'cari_balance', 'label' => 'Müşteri Bakiyesi', 'icon' => 'wallet', 'sort_order' => 81],
-            ['menu_group' => 'cari', 'page' => 'cari_detail', 'label' => 'Müşteri Detay / Ekstre', 'icon' => 'wallet', 'sort_order' => 82],
+            ['menu_group' => 'cari', 'page' => 'cari_detail', 'label' => 'Müşteri Detay / Ekstre', 'icon' => 'wallet', 'sort_order' => 82, 'is_visible' => false],
             ['menu_group' => 'cari', 'page' => 'cari_document_detail', 'label' => 'Evrak Detayı', 'icon' => 'wallet', 'sort_order' => 83, 'is_visible' => false],
             ['menu_group' => 'proforma', 'page' => 'proforma', 'label' => 'Proforma Liste', 'icon' => 'folder-kanban', 'sort_order' => 90],
             ['menu_group' => 'proforma', 'page' => 'proforma_create', 'label' => 'Proforma Oluştur', 'icon' => 'folder-kanban', 'sort_order' => 91],
@@ -449,8 +449,6 @@ SQL,
             'cari' => [
                 ['label' => 'Müşteri Listesi', 'href' => '/cari'],
                 ['label' => 'Müşteri Bakiyesi', 'href' => '/cari/balance'],
-                ['label' => 'Müşteri Detay', 'href' => '/cari/detail'],
-                ['label' => 'Müşteri Ekstre', 'href' => '/cari/detail'],
             ],
             'proforma' => [
                 ['label' => 'Proforma Liste', 'href' => '/proforma'],

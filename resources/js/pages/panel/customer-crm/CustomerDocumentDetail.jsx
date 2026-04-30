@@ -34,6 +34,10 @@ function pickRows(payload, candidates) {
     return [];
 }
 
+function rowsByKind(rows, kinds) {
+    return rows.filter((row) => kinds.includes(String(row?.line_type ?? row?.row_type ?? '').toLowerCase()));
+}
+
 export default function CustomerDocumentDetailPage() {
     const { guid } = useMemo(parseCurrentSearch, []);
     const [documentRows, setDocumentRows] = useState([]);
@@ -75,20 +79,30 @@ export default function CustomerDocumentDetailPage() {
                 setQueryMeta(response?.queryMeta ?? null);
 
                 const rows = Array.isArray(response?.rows) ? response.rows : [];
+                const headerFromRows = rowsByKind(rows, ['header']);
+                const movementFromRows = rowsByKind(rows, ['cari', 'movement']);
+                const stockFromRows = rowsByKind(rows, ['stock', 'stok']);
+
                 setDocumentRows(rows);
-                setHeaderRows(Array.isArray(response?.header) ? response.header : rows.length ? [rows[0]] : []);
+                setHeaderRows(Array.isArray(response?.header) ? response.header : headerFromRows);
                 setMovementRows(
-                    pickRows(response, ['cari_hareket_satirlari', 'hareket_satirlari', 'movement_rows', 'rows_movement']) || [],
+                    movementFromRows.length
+                        ? movementFromRows
+                        : pickRows(response, ['cari_hareket_satirlari', 'hareket_satirlari', 'movement_rows', 'rows_movement']) || [],
                 );
-                setStockRows(pickRows(response, ['stok_hareket_satirlari', 'stok_satirlari', 'line_items', 'rows_items']) || []);
+                setStockRows(
+                    stockFromRows.length
+                        ? stockFromRows
+                        : pickRows(response, ['stok_hareket_satirlari', 'stok_satirlari', 'line_items', 'rows_items']) || [],
+                );
                 setError(null);
             })
-            .catch((caught) => {
+            .catch(() => {
                 if (cancelled) {
                     return;
                 }
 
-                setError(caught instanceof Error ? caught.message : 'Veri alınamadı.');
+                setError('Evrak detayı alınamadı veya veri kaynağı çalıştırılamadı.');
                 setDocumentRows([]);
                 setHeaderRows([]);
                 setMovementRows([]);
@@ -256,7 +270,7 @@ export default function CustomerDocumentDetailPage() {
 
             {isEmpty && (
                 <EmptyState
-                    title="Detay için guid bulunmadi."
+                    title="Evrak detayı için guid bulunamadı."
                     description="Evrak listesinde Detay Gör ile geçiş yapınız."
                 />
             )}
