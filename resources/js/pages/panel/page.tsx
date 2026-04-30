@@ -408,21 +408,23 @@ export default function PanelPage({
     permissions,
 }: PanelPageProps) {
     const isModule = page.layoutType === 'module';
-    const normalizedCode = String(page.code ?? '').trim();
+    const normalizedCode = String(page.code ?? page.slug ?? '').trim();
+    const routePath = String(page.routePath ?? (page as any).route ?? '').trim();
+    const matchesPage = (...values: string[]) => values.includes(normalizedCode) || values.includes(routePath);
 
-    if (normalizedCode === 'cari') {
+    if (matchesPage('cari', '/cari')) {
         return <CustomerInfoPage />;
     }
 
-    if (normalizedCode === 'cari_balance') {
+    if (matchesPage('cari_balance', '/cari/balance')) {
         return <CustomerBalancePage />;
     }
 
-    if (normalizedCode === 'cari_detail') {
+    if (matchesPage('cari_detail', '/cari/detail')) {
         return <CustomerStatementPage />;
     }
 
-    if (normalizedCode === 'cari_document_detail') {
+    if (matchesPage('cari_document_detail', '/cari/document-detail')) {
         return <CustomerDocumentDetailPage />;
     }
 
