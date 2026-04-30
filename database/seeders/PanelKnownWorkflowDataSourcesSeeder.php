@@ -501,16 +501,12 @@ DECLARE @Take int = 200;
 WITH CariBaz AS
 (
     SELECT
-        LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS [musteri_kodu],
-        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [musteri_adi],
-        LTRIM(RTRIM(ISNULL(cari.cari_unvan2, N''))) AS [firma_unvani_2],
-        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS [grup],
-        LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) AS [temsilci_kodu],
-        LTRIM(RTRIM(ISNULL(cpt.cari_per_adi, N'') + CASE WHEN ISNULL(cpt.cari_per_soyadi, N'') = N'' THEN N'' ELSE N' ' + cpt.cari_per_soyadi END)) AS [temsilci],
-        LTRIM(RTRIM(ISNULL(cari.cari_CepTel, N''))) AS [telefon],
-        LTRIM(RTRIM(ISNULL(cari.cari_EMail, N''))) AS [email],
-        LTRIM(RTRIM(ISNULL(cari.cari_il, N''))) AS [il],
-        LTRIM(RTRIM(ISNULL(cari.cari_ilce, N''))) AS [ilce],
+        LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS CariKodu,
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS FirmaUnvani,
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan2, N''))) AS FirmaUnvani2,
+        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS Grup,
+        LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) AS TemsilciKodu,
+        LTRIM(RTRIM(ISNULL(cpt.cari_per_adi, N'') + CASE WHEN ISNULL(cpt.cari_per_soyadi, N'') = N'' THEN N'' ELSE N' ' + cpt.cari_per_soyadi END)) AS TemsilciAdi,
         CAST(ISNULL(
             CASE
                 WHEN Cari_F10da_detay = 1 THEN dbo.fn_CariHesapAnaDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
@@ -519,7 +515,7 @@ WITH CariBaz AS
                 WHEN Cari_F10da_detay = 4 THEN dbo.fn_CariHareketSayisi(0,cari.cari_kod,'')
                 ELSE 0
             END, 0) AS decimal(18,2)
-        ) AS [bakiye]
+        ) AS BakiyeDurumu
     FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
     LEFT OUTER JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK) ON grp.crg_kod = cari.cari_grup_kodu
     LEFT OUTER JOIN dbo.CARI_PERSONEL_TANIMLARI cpt WITH (NOLOCK) ON cpt.cari_per_kod = cari.cari_temsilci_kodu
@@ -528,22 +524,143 @@ WITH CariBaz AS
         ((cari.cari_kod NOT LIKE N'320%' AND cari.cari_kod NOT LIKE N'331%') OR cari.cari_kod LIKE N'320.ÇLG%')
         AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
         AND (@Search = N'' OR cari.cari_kod LIKE N'%' + @Search + N'%' OR cari.cari_unvan1 LIKE N'%' + @Search + N'%' OR cari.cari_unvan2 LIKE N'%' + @Search + N'%' OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_adi, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_soyadi, N'') LIKE N'%' + @Search + N'%')
+),
+SiparisHam AS
+(
+    SELECT
+        sip.sip_tarih,
+        sip.sip_evrakno_seri,
+        sip.sip_aciklama2,
+        LTRIM(RTRIM(ISNULL(sip.sip_musteri_kod, N''))) AS CariKodu,
+        sto.sto_isim AS stok_adi,
+        mdl.mdl_ismi AS model_adi,
+        LTRIM(RTRIM(CASE WHEN ISNULL(sip.sip_cari_sormerk, N'') <> N'' THEN sip.sip_cari_sormerk WHEN ISNULL(sip.sip_stok_sormerk, N'') <> N'' THEN sip.sip_stok_sormerk ELSE N'' END)) AS sorumluluk_kodu,
+        ISNULL(sip.sip_miktar, 0) AS siparis_miktar,
+        ISNULL(sip.sip_teslim_miktar, 0) AS teslim_miktar,
+        ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) AS kalan_miktar,
+        ISNULL(sip.sip_tutar, 0) AS sip_tutar,
+        ISNULL(sip.sip_iskonto_1, 0) AS iskonto_1,
+        ISNULL(sip.sip_iskonto_2, 0) AS iskonto_2,
+        ISNULL(sip.sip_iskonto_3, 0) AS iskonto_3
+    FROM dbo.SIPARISLER sip WITH (NOLOCK)
+    INNER JOIN CariBaz cb ON cb.CariKodu = LTRIM(RTRIM(ISNULL(sip.sip_musteri_kod, N'')))
+    LEFT JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK) ON cari.cari_kod = sip.sip_musteri_kod
+    LEFT JOIN dbo.CARI_HESAP_GRUPLARI crg WITH (NOLOCK) ON crg.crg_kod = cari.cari_grup_kodu
+    LEFT JOIN dbo.STOKLAR sto WITH (NOLOCK) ON sto.sto_kod = sip.sip_stok_kod
+    LEFT JOIN dbo.STOK_MODEL_TANIMLARI mdl WITH (NOLOCK) ON mdl.mdl_kodu = sto.sto_model_kodu
+    WHERE
+        ISNULL(sip.sip_iptal, 0) = 0
+        AND ISNULL(sip.sip_tip, 0) = 0
+        AND ISNULL(sip.sip_kapat_fl, 0) = 0
+        AND CAST(sip.sip_tarih AS date) >= '2025-01-01'
+        AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
+        AND UPPER(LTRIM(RTRIM(ISNULL(crg.crg_isim, N'')))) NOT LIKE N'%İHRACAT%'
+),
+SiparisHesaplanmis AS
+(
+    SELECT
+        sip_evrakno_seri,
+        CariKodu,
+        CASE WHEN UPPER(ISNULL(stok_adi, N'')) LIKE N'%STAND%' OR UPPER(ISNULL(model_adi, N'')) LIKE N'%STAND%' OR UPPER(ISNULL(ISNULL(NULLIF(model_adi, N''), stok_adi), N'')) LIKE N'%STAND%' THEN stok_adi ELSE ISNULL(NULLIF(model_adi, N''), stok_adi) END AS urun_adi,
+        sorumluluk_kodu,
+        kalan_miktar,
+        ROUND(CASE WHEN ISNULL(siparis_miktar, 0) = 0 THEN 0 ELSE ((ISNULL(sip_tutar, 0) - ISNULL(iskonto_1, 0) - ISNULL(iskonto_2, 0) - ISNULL(iskonto_3, 0)) / siparis_miktar) * kalan_miktar END, 2) AS kalan_tutar
+    FROM SiparisHam
+),
+SiparisNormalizeEdilmis AS
+(
+    SELECT
+        sip_evrakno_seri,
+        CariKodu,
+        kalan_miktar,
+        kalan_tutar,
+        UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(urun_adi, N''), N'İ', N'I'), N'I', N'I'), N'ı', N'I'), N'Ö', N'O'), N'ö', N'O'), N'Ü', N'U'), N'ü', N'U'), N'Ç', N'C'), N'ç', N'C'), N'Ş', N'S')) AS urun_adi_norm,
+        UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(sorumluluk_kodu, N''), N'İ', N'I'), N'I', N'I'), N'ı', N'I'), N'Ö', N'O'), N'ö', N'O'), N'Ü', N'U'), N'ü', N'U'), N'Ç', N'C'), N'ç', N'C'), N'Ş', N'S')) AS sorumluluk_norm
+    FROM SiparisHesaplanmis
+),
+SiparisFiltreli AS
+(
+    SELECT sip_evrakno_seri, CariKodu, kalan_miktar, kalan_tutar
+    FROM SiparisNormalizeEdilmis
+    WHERE
+        urun_adi_norm NOT LIKE N'%KILIT DONUSUM APARAT%'
+        AND urun_adi_norm NOT LIKE N'%KILIT DONUSUM APATAR%'
+        AND urun_adi_norm NOT LIKE N'%DONUSUM APARAT%'
+        AND urun_adi_norm NOT LIKE N'%DONUSUM APATAR%'
+        AND NOT (urun_adi_norm LIKE N'%YEDEK PARCA%' AND kalan_tutar <= 10)
+        AND (NOT (sorumluluk_norm LIKE N'%DEGISIM%' OR sorumluluk_norm LIKE N'%GARANTI DISI KONTROL%' OR sorumluluk_norm LIKE N'%GARANTI KAPSAMI KONTROL%' OR LTRIM(RTRIM(sorumluluk_norm)) = N'GR') OR kalan_tutar > 10)
+),
+SiparisOzet AS
+(
+    SELECT
+        CariKodu,
+        CAST(SUM(CASE WHEN ISNULL(sip_evrakno_seri, N'') <> N'B' THEN kalan_miktar ELSE 0 END) AS decimal(18,2)) AS AcikSiparisAdet,
+        CAST(SUM(CASE WHEN ISNULL(sip_evrakno_seri, N'') = N'B' THEN kalan_miktar ELSE 0 END) AS decimal(18,2)) AS BekleyenSiparisAdet,
+        CAST(SUM(CASE WHEN ISNULL(sip_evrakno_seri, N'') <> N'B' THEN kalan_tutar ELSE 0 END) AS decimal(18,2)) AS AcikSiparisTutar,
+        CAST(SUM(CASE WHEN ISNULL(sip_evrakno_seri, N'') = N'B' THEN kalan_tutar ELSE 0 END) AS decimal(18,2)) AS BekleyenSiparisTutar
+    FROM SiparisFiltreli
+    GROUP BY CariKodu
+),
+CariFinal AS
+(
+    SELECT
+        cb.CariKodu,
+        cb.FirmaUnvani,
+        cb.FirmaUnvani2,
+        cb.Grup,
+        cb.TemsilciKodu,
+        cb.TemsilciAdi,
+        cb.BakiyeDurumu,
+        CAST(ISNULL(so.AcikSiparisAdet, 0) AS decimal(18,2)) AS AcikSiparisAdet,
+        CAST(ISNULL(so.AcikSiparisTutar, 0) AS decimal(18,2)) AS AcikSiparisTutar,
+        CAST(ISNULL(so.BekleyenSiparisAdet, 0) AS decimal(18,2)) AS BekleyenSiparisAdet,
+        CAST(ISNULL(so.BekleyenSiparisTutar, 0) AS decimal(18,2)) AS BekleyenSiparisTutar,
+        CAST(cb.BakiyeDurumu + ISNULL(so.AcikSiparisTutar, 0) AS decimal(18,2)) AS GenelDurumTutar
+    FROM CariBaz cb
+    LEFT JOIN SiparisOzet so ON so.CariKodu = cb.CariKodu
+),
+FilteredFinal AS
+(
+    SELECT *
+    FROM CariFinal
+    WHERE
+        @PanelFilter = N''
+        OR @PanelFilter = N'all'
+        OR (@PanelFilter = N'receivable' AND BakiyeDurumu > 0)
+        OR (@PanelFilter = N'payable' AND BakiyeDurumu < 0)
+        OR (@PanelFilter = N'approvedOrders' AND AcikSiparisTutar > 0)
+        OR (@PanelFilter = N'generalOpen' AND GenelDurumTutar <> 0)
+        OR (@PanelFilter = N'pendingOrders' AND BekleyenSiparisTutar > 0)
 )
 SELECT TOP (@Take)
-    musteri_kodu,
-    musteri_adi,
-    firma_unvani_2,
-    grup,
-    telefon,
-    email,
-    il,
-    ilce,
-    bakiye,
-    temsilci_kodu,
-    temsilci
-FROM CariBaz
-WHERE @PanelFilter = N'' OR @PanelFilter = N'all' OR (@PanelFilter = N'receivable' AND bakiye > 0) OR (@PanelFilter = N'payable' AND bakiye < 0)
-ORDER BY musteri_kodu ASC;
+    CariKodu AS [musteri_kodu],
+    FirmaUnvani AS [firma_unvani],
+    FirmaUnvani AS [musteri_adi],
+    FirmaUnvani2 AS [firma_unvani_2],
+    Grup AS [grup],
+    TemsilciKodu AS [temsilci_kodu],
+    TemsilciAdi AS [temsilci],
+    BakiyeDurumu AS [bakiye_durumu],
+    BakiyeDurumu AS [bakiye],
+    AcikSiparisAdet AS [acik_siparis_adet],
+    AcikSiparisTutar AS [acik_siparis_tutar],
+    AcikSiparisTutar AS [onayli_acik_siparis_tutari],
+    GenelDurumTutar AS [genel_durum_tutar],
+    GenelDurumTutar AS [genel_durum],
+    BekleyenSiparisAdet AS [bekleyen_siparis_adet],
+    BekleyenSiparisTutar AS [bekleyen_siparis_tutar],
+    BekleyenSiparisTutar AS [onay_bekleyen_siparis_tutari],
+    CAST(SUM(CASE WHEN BakiyeDurumu > 0 THEN BakiyeDurumu ELSE 0 END) OVER () AS decimal(18,2)) AS [toplam_alacak_bakiyesi],
+    CAST(SUM(CASE WHEN BakiyeDurumu < 0 THEN ABS(BakiyeDurumu) ELSE 0 END) OVER () AS decimal(18,2)) AS [toplam_borc_bakiyesi],
+    CAST(SUM(AcikSiparisTutar) OVER () AS decimal(18,2)) AS [toplam_onayli_acik_siparis],
+    CAST(SUM(BekleyenSiparisTutar) OVER () AS decimal(18,2)) AS [toplam_onay_bekleyen_siparis],
+    CAST(SUM(GenelDurumTutar) OVER () AS decimal(18,2)) AS [genel_sonuc]
+FROM FilteredFinal
+ORDER BY
+    CASE WHEN @PanelFilter IN (N'approvedOrders', N'pendingOrders') THEN 0 ELSE 1 END,
+    CASE WHEN @PanelFilter = N'approvedOrders' THEN AcikSiparisTutar END DESC,
+    CASE WHEN @PanelFilter = N'pendingOrders' THEN BekleyenSiparisTutar END DESC,
+    CariKodu ASC;
 SQL_CUSTOMERS_LIST,
             ['search', 'scope_key', 'rep_code', 'page', 'bypass_cache'],
             'PrimeCRM CariService.SearchAsync müşteri liste ve bakiye mantığından uyarlanan kanonik sorgu.',
@@ -562,8 +679,12 @@ WITH CariScope AS
 (
     SELECT
         LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS [musteri_kodu],
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [firma_unvani],
         LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [musteri_adi],
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan2, N''))) AS [firma_unvani_2],
         LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS [grup],
+        LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) AS [temsilci_kodu],
+        LTRIM(RTRIM(ISNULL(cpt.cari_per_adi, N'') + CASE WHEN ISNULL(cpt.cari_per_soyadi, N'') = N'' THEN N'' ELSE N' ' + cpt.cari_per_soyadi END)) AS [temsilci],
         CAST(ISNULL(
             CASE
                 WHEN Cari_F10da_detay = 1 THEN dbo.fn_CariHesapAnaDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
@@ -584,11 +705,16 @@ WITH CariScope AS
 )
 SELECT
     musteri_kodu,
+    firma_unvani,
     musteri_adi,
+    firma_unvani_2,
     grup,
+    temsilci_kodu,
+    temsilci,
     CAST(CASE WHEN net_bakiye < 0 THEN ABS(net_bakiye) ELSE 0 END AS decimal(18,2)) AS [borc],
     CAST(CASE WHEN net_bakiye > 0 THEN net_bakiye ELSE 0 END AS decimal(18,2)) AS [alacak],
-    net_bakiye
+    net_bakiye,
+    net_bakiye AS [bakiye_durumu]
 FROM CariScope
 WHERE net_bakiye <> 0
 ORDER BY ABS(net_bakiye) DESC, musteri_kodu ASC;
@@ -611,8 +737,25 @@ DECLARE @DateTo DATE = '[[date_to]]';
     SELECT
         cha.cha_Guid AS [hareket_guid],
         CAST(cha.cha_tarihi AS date) AS [tarih],
+        CASE cha.cha_evrak_tip
+            WHEN 0 THEN N'Açılış Fişi'
+            WHEN 1 THEN N'Tahsilat Makbuzu'
+            WHEN 2 THEN N'Tediye Makbuzu'
+            WHEN 3 THEN N'Gelen Havale'
+            WHEN 4 THEN N'Gönderilen Havale'
+            WHEN 5 THEN N'Mahsup Fişi'
+            WHEN 6 THEN N'Satış Faturası'
+            WHEN 7 THEN N'Alış Faturası'
+            WHEN 8 THEN N'Portföye Giriş Bordrosu'
+            WHEN 9 THEN N'Portföyden Çıkış Bordrosu'
+            WHEN 10 THEN N'Çek/Senet Bordrosu'
+            WHEN 13 THEN N'Gelen Fatura'
+            WHEN 63 THEN N'Satış İrsaliyesi'
+            ELSE N'Evrak Tipi ' + CONVERT(nvarchar(10), cha.cha_evrak_tip)
+        END AS [evrak_tipi],
         LTRIM(RTRIM(ISNULL(cha.cha_evrakno_seri, N''))) AS [evrak_seri],
         ISNULL(cha.cha_evrakno_sira, 0) AS [evrak_sira],
+        LTRIM(RTRIM(CONCAT(ISNULL(cha.cha_evrakno_seri, N''), CASE WHEN ISNULL(cha.cha_evrakno_seri, N'') = N'' THEN N'' ELSE N'-' END, CONVERT(nvarchar(30), ISNULL(cha.cha_evrakno_sira, 0))))) AS [evrak_no],
         LTRIM(RTRIM(ISNULL(cha.cha_belge_no, N''))) AS [belge_no],
         LTRIM(RTRIM(ISNULL(cha.cha_aciklama, N''))) AS [aciklama],
         CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 0 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS [borc],
@@ -622,12 +765,15 @@ DECLARE @DateTo DATE = '[[date_to]]';
     WHERE cha.cha_kod = @CustomerCode
       AND cha.cha_tarihi >= @DateFrom
       AND cha.cha_tarihi < DATEADD(day, 1, @DateTo)
+      AND ISNULL(cha.cha_iptal, 0) = 0
 )
 SELECT
     hareket_guid,
     tarih,
+    evrak_tipi,
     evrak_seri,
     evrak_sira,
+    evrak_no,
     belge_no,
     aciklama,
     borc,
@@ -651,17 +797,12 @@ DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), 
 
 SELECT TOP 1
     LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS [musteri_kodu],
+    LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [firma_unvani],
     LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS [musteri_adi],
     LTRIM(RTRIM(ISNULL(cari.cari_unvan2, N''))) AS [firma_unvani_2],
     LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS [grup],
     LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) AS [temsilci_kodu],
     LTRIM(RTRIM(ISNULL(cpt.cari_per_adi, N'') + CASE WHEN ISNULL(cpt.cari_per_soyadi, N'') = N'' THEN N'' ELSE N' ' + cpt.cari_per_soyadi END)) AS [temsilci],
-    LTRIM(RTRIM(ISNULL(cari.cari_CepTel, N''))) AS [telefon],
-    LTRIM(RTRIM(ISNULL(cari.cari_EMail, N''))) AS [email],
-    LTRIM(RTRIM(ISNULL(cari.cari_VergiKimlikNo, N''))) AS [vergi_no],
-    LTRIM(RTRIM(ISNULL(cari.cari_vdaire_adi, N''))) AS [vergi_dairesi],
-    LTRIM(RTRIM(ISNULL(cari.cari_il, N''))) AS [il],
-    LTRIM(RTRIM(ISNULL(cari.cari_ilce, N''))) AS [ilce],
     CAST(ISNULL(
         CASE
             WHEN Cari_F10da_detay = 1 THEN dbo.fn_CariHesapAnaDovizBakiye('',0,cari.cari_kod,'','',NULL,NULL,NULL,0,MusteriTeminatMektubu_Bakiyeyi_Etkilemesin_fl,FirmaTeminatMektubu_Bakiyeyi_Etkilemesin_fl,DepozitoCeki_Bakiyeyi_Etkilemesin_fl,DepozitoSenedi_Bakiyeyi_Etkilemesin_fl,DepozitoNakitIslemler_Bakiyeyi_Etkilemesin_fl)
@@ -671,12 +812,15 @@ SELECT TOP 1
             ELSE 0
         END, 0) AS decimal(18,2)
     ) AS [bakiye]
+    ,LTRIM(RTRIM(ISNULL(CariHareketIsim, N''))) AS [hareket_tipi]
 FROM dbo.CARI_HESAPLAR cari WITH (NOLOCK)
 LEFT OUTER JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK) ON grp.crg_kod = cari.cari_grup_kodu
 LEFT OUTER JOIN dbo.CARI_PERSONEL_TANIMLARI cpt WITH (NOLOCK) ON cpt.cari_per_kod = cari.cari_temsilci_kodu
+LEFT OUTER JOIN dbo.vw_Cari_Hesap_Hareket_Tip_Isimleri ON CariHareketNo = cari.cari_hareket_tipi
 LEFT OUTER JOIN dbo.vw_Gendata ON 1 = 1
 WHERE
     LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) = @CustomerCode
+    AND ((cari.cari_kod NOT LIKE N'320%' AND cari.cari_kod NOT LIKE N'331%') OR cari.cari_kod LIKE N'320.ÇLG%')
     AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode);
 SQL_CUSTOMER_DETAIL,
             ['customer_code', 'rep_code', 'bypass_cache'],
@@ -686,7 +830,167 @@ SQL_CUSTOMER_DETAIL,
         $this->upsert(
             'customer_documents',
             'Müşteri Evrak Detay',
-            '',
+            <<<'SQL_CUSTOMER_DOCUMENTS'
+DECLARE @HareketGuid uniqueidentifier = COALESCE(
+    TRY_CONVERT(uniqueidentifier, NULLIF(N'[[guid]]', N'')),
+    TRY_CONVERT(uniqueidentifier, NULLIF(N'[[hareket_guid]]', N'')),
+    TRY_CONVERT(uniqueidentifier, NULLIF(N'[[document_guid]]', N'')),
+    TRY_CONVERT(uniqueidentifier, NULLIF(N'[[evrak_guid]]', N''))
+);
+DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+
+;WITH Header AS
+(
+    SELECT TOP 1
+        cha.cha_Guid AS hareket_guid,
+        LTRIM(RTRIM(ISNULL(cha.cha_kod, N''))) AS cari_kodu,
+        LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS firma_unvani,
+        LTRIM(RTRIM(ISNULL(grp.crg_isim, N''))) AS grup,
+        LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) AS temsilci_kodu,
+        LTRIM(RTRIM(ISNULL(cpt.cari_per_adi, N'') + CASE WHEN ISNULL(cpt.cari_per_soyadi, N'') = N'' THEN N'' ELSE N' ' + cpt.cari_per_soyadi END)) AS temsilci,
+        CAST(cha.cha_tarihi AS date) AS tarih,
+        ISNULL(cha.cha_evrak_tip, 0) AS evrak_tip_no,
+        CASE cha.cha_evrak_tip
+            WHEN 0 THEN N'Açılış Fişi'
+            WHEN 1 THEN N'Tahsilat Makbuzu'
+            WHEN 2 THEN N'Tediye Makbuzu'
+            WHEN 3 THEN N'Gelen Havale'
+            WHEN 4 THEN N'Gönderilen Havale'
+            WHEN 5 THEN N'Mahsup Fişi'
+            WHEN 6 THEN N'Satış Faturası'
+            WHEN 7 THEN N'Alış Faturası'
+            WHEN 8 THEN N'Portföye Giriş Bordrosu'
+            WHEN 9 THEN N'Portföyden Çıkış Bordrosu'
+            WHEN 10 THEN N'Çek/Senet Bordrosu'
+            WHEN 13 THEN N'Gelen Fatura'
+            WHEN 63 THEN N'Satış İrsaliyesi'
+            ELSE N'Evrak Tipi ' + CONVERT(nvarchar(10), cha.cha_evrak_tip)
+        END AS evrak_tipi,
+        LTRIM(RTRIM(ISNULL(cha.cha_evrakno_seri, N''))) AS evrak_seri,
+        ISNULL(cha.cha_evrakno_sira, 0) AS evrak_sira,
+        LTRIM(RTRIM(CONCAT(ISNULL(cha.cha_evrakno_seri, N''), CASE WHEN ISNULL(cha.cha_evrakno_seri, N'') = N'' THEN N'' ELSE N'-' END, CONVERT(nvarchar(30), ISNULL(cha.cha_evrakno_sira, 0))))) AS evrak_no,
+        LTRIM(RTRIM(ISNULL(cha.cha_aciklama, N''))) AS aciklama,
+        CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 0 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS borc,
+        CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 1 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS alacak
+    FROM dbo.CARI_HESAP_HAREKETLERI cha WITH (NOLOCK)
+    INNER JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK) ON cari.cari_kod = cha.cha_kod
+    LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK) ON grp.crg_kod = cari.cari_grup_kodu
+    LEFT JOIN dbo.CARI_PERSONEL_TANIMLARI cpt WITH (NOLOCK) ON cpt.cari_per_kod = cari.cari_temsilci_kodu
+    WHERE
+        cha.cha_Guid = @HareketGuid
+        AND ISNULL(cha.cha_iptal, 0) = 0
+        AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+)
+SELECT
+    N'header' AS line_type,
+    CONVERT(nvarchar(36), hareket_guid) AS hareket_guid,
+    cari_kodu,
+    cari_kodu AS musteri_kodu,
+    firma_unvani,
+    firma_unvani AS musteri_adi,
+    grup,
+    temsilci_kodu,
+    temsilci,
+    tarih,
+    evrak_tipi,
+    evrak_tip_no,
+    evrak_seri,
+    evrak_sira,
+    evrak_no,
+    aciklama,
+    borc,
+    alacak,
+    CAST(CASE WHEN borc <> 0 THEN borc ELSE alacak END AS decimal(18,2)) AS tutar,
+    CAST(NULL AS nvarchar(100)) AS stok_kodu,
+    CAST(NULL AS nvarchar(500)) AS urun_adi,
+    CAST(NULL AS decimal(18,2)) AS miktar,
+    CAST(NULL AS decimal(18,2)) AS net_birim_fiyat,
+    CAST(NULL AS decimal(18,2)) AS iskonto_1,
+    CAST(NULL AS decimal(18,2)) AS iskonto_2,
+    CAST(NULL AS decimal(18,2)) AS iskonto_3,
+    CAST(NULL AS decimal(18,2)) AS iskonto,
+    CAST(NULL AS decimal(18,2)) AS net_tutar
+FROM Header
+UNION ALL
+SELECT
+    N'cari' AS line_type,
+    CONVERT(nvarchar(36), cha.cha_Guid) AS hareket_guid,
+    LTRIM(RTRIM(ISNULL(cha.cha_kod, N''))) AS cari_kodu,
+    LTRIM(RTRIM(ISNULL(cha.cha_kod, N''))) AS musteri_kodu,
+    LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS firma_unvani,
+    LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))) AS musteri_adi,
+    h.grup,
+    h.temsilci_kodu,
+    h.temsilci,
+    CAST(cha.cha_tarihi AS date) AS tarih,
+    h.evrak_tipi,
+    h.evrak_tip_no,
+    LTRIM(RTRIM(ISNULL(cha.cha_evrakno_seri, N''))) AS evrak_seri,
+    ISNULL(cha.cha_evrakno_sira, 0) AS evrak_sira,
+    LTRIM(RTRIM(CONCAT(ISNULL(cha.cha_evrakno_seri, N''), CASE WHEN ISNULL(cha.cha_evrakno_seri, N'') = N'' THEN N'' ELSE N'-' END, CONVERT(nvarchar(30), ISNULL(cha.cha_evrakno_sira, 0))))) AS evrak_no,
+    LTRIM(RTRIM(ISNULL(cha.cha_aciklama, N''))) AS aciklama,
+    CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 0 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS borc,
+    CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 1 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS alacak,
+    CAST(ISNULL(cha.cha_meblag, 0) AS decimal(18,2)) AS tutar,
+    CAST(NULL AS nvarchar(100)) AS stok_kodu,
+    CAST(NULL AS nvarchar(500)) AS urun_adi,
+    CAST(NULL AS decimal(18,2)) AS miktar,
+    CAST(NULL AS decimal(18,2)) AS net_birim_fiyat,
+    CAST(NULL AS decimal(18,2)) AS iskonto_1,
+    CAST(NULL AS decimal(18,2)) AS iskonto_2,
+    CAST(NULL AS decimal(18,2)) AS iskonto_3,
+    CAST(NULL AS decimal(18,2)) AS iskonto,
+    CAST(NULL AS decimal(18,2)) AS net_tutar
+FROM dbo.CARI_HESAP_HAREKETLERI cha WITH (NOLOCK)
+INNER JOIN Header h ON h.cari_kodu = LTRIM(RTRIM(ISNULL(cha.cha_kod, N'')))
+LEFT JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK) ON cari.cari_kod = cha.cha_kod
+WHERE
+    cha.cha_evrak_tip = h.evrak_tip_no
+    AND ISNULL(cha.cha_evrakno_seri, N'') = h.evrak_seri
+    AND ISNULL(cha.cha_evrakno_sira, 0) = h.evrak_sira
+    AND ABS(DATEDIFF(day, cha.cha_tarihi, h.tarih)) <= 7
+    AND ISNULL(cha.cha_iptal, 0) = 0
+UNION ALL
+SELECT
+    N'stock' AS line_type,
+    CONVERT(nvarchar(36), sth.sth_Guid) AS hareket_guid,
+    h.cari_kodu,
+    h.cari_kodu AS musteri_kodu,
+    h.firma_unvani,
+    h.firma_unvani AS musteri_adi,
+    h.grup,
+    h.temsilci_kodu,
+    h.temsilci,
+    CAST(sth.sth_tarih AS date) AS tarih,
+    h.evrak_tipi,
+    h.evrak_tip_no,
+    LTRIM(RTRIM(ISNULL(sth.sth_evrakno_seri, N''))) AS evrak_seri,
+    ISNULL(sth.sth_evrakno_sira, 0) AS evrak_sira,
+    LTRIM(RTRIM(CONCAT(ISNULL(sth.sth_evrakno_seri, N''), CASE WHEN ISNULL(sth.sth_evrakno_seri, N'') = N'' THEN N'' ELSE N'-' END, CONVERT(nvarchar(30), ISNULL(sth.sth_evrakno_sira, 0))))) AS evrak_no,
+    CAST(NULL AS nvarchar(500)) AS aciklama,
+    CAST(NULL AS decimal(18,2)) AS borc,
+    CAST(NULL AS decimal(18,2)) AS alacak,
+    CAST(ISNULL(sth.sth_tutar, 0) AS decimal(18,2)) AS tutar,
+    LTRIM(RTRIM(ISNULL(sth.sth_stok_kod, N''))) AS stok_kodu,
+    LTRIM(RTRIM(ISNULL(sto.sto_isim, N''))) AS urun_adi,
+    CAST(ISNULL(sth.sth_miktar, 0) AS decimal(18,2)) AS miktar,
+    CAST(CASE WHEN ISNULL(sth.sth_miktar, 0) = 0 THEN 0 ELSE (ISNULL(sth.sth_tutar, 0) - ISNULL(sth.sth_iskonto1, 0) - ISNULL(sth.sth_iskonto2, 0) - ISNULL(sth.sth_iskonto3, 0)) / NULLIF(sth.sth_miktar, 0) END AS decimal(18,2)) AS net_birim_fiyat,
+    CAST(ISNULL(sth.sth_iskonto1, 0) AS decimal(18,2)) AS iskonto_1,
+    CAST(ISNULL(sth.sth_iskonto2, 0) AS decimal(18,2)) AS iskonto_2,
+    CAST(ISNULL(sth.sth_iskonto3, 0) AS decimal(18,2)) AS iskonto_3,
+    CAST(ISNULL(sth.sth_iskonto1, 0) + ISNULL(sth.sth_iskonto2, 0) + ISNULL(sth.sth_iskonto3, 0) AS decimal(18,2)) AS iskonto,
+    CAST(ISNULL(sth.sth_tutar, 0) - ISNULL(sth.sth_iskonto1, 0) - ISNULL(sth.sth_iskonto2, 0) - ISNULL(sth.sth_iskonto3, 0) AS decimal(18,2)) AS net_tutar
+FROM dbo.STOK_HAREKETLERI sth WITH (NOLOCK)
+INNER JOIN Header h ON
+    LTRIM(RTRIM(ISNULL(sth.sth_cari_kodu, N''))) = h.cari_kodu
+    AND CAST(sth.sth_tarih AS date) BETWEEN DATEADD(day, -7, h.tarih) AND DATEADD(day, 7, h.tarih)
+    AND LTRIM(RTRIM(ISNULL(sth.sth_evrakno_seri, N''))) = h.evrak_seri
+    AND ISNULL(sth.sth_evrakno_sira, 0) = h.evrak_sira
+LEFT JOIN dbo.STOKLAR sto WITH (NOLOCK) ON sto.sto_kod = sth.sth_stok_kod
+WHERE ISNULL(sth.sth_iptal, 0) = 0
+ORDER BY line_type, tarih, hareket_guid;
+SQL_CUSTOMER_DOCUMENTS,
             [
                 'guid',
                 'hareket_guid',
@@ -694,9 +998,10 @@ SQL_CUSTOMER_DETAIL,
                 'evrak_guid',
                 'customer_code',
                 'document_id',
+                'rep_code',
                 'bypass_cache',
             ],
-            'PrimeCRM CariService.GetDocumentDetailAsync evrak detay mantığı için metadata kaydı. Query template admin panelden tamamlanacak.',
+            'PrimeCRM CariService.GetDocumentDetailAsync evrak detay, cari satırları ve stok/hizmet satırları sorguları.',
             'CariService.cs',
         );
 

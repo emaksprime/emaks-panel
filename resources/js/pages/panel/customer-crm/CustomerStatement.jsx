@@ -90,12 +90,12 @@ export default function CustomerStatementPage() {
                 setQueryMeta(detailResponse?.queryMeta ?? null);
                 setError(null);
             })
-            .catch((caught) => {
+            .catch(() => {
                 if (cancelled) {
                     return;
                 }
 
-                setError(caught instanceof Error ? caught.message : 'Veri alınamadı.');
+                setError('Müşteri ekstresi alınamadı veya veri kaynağı çalıştırılamadı.');
                 setSummaryRows([]);
                 setDetailRows([]);
             })
@@ -170,7 +170,7 @@ export default function CustomerStatementPage() {
 
     return (
         <main className="grid gap-5 bg-[#f3f7fb] p-4 md:p-6">
-            <Head title="Cari Hesap Ekstresi" />
+            <Head title="Müşteri Hesap Ekstresi" />
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -178,7 +178,7 @@ export default function CustomerStatementPage() {
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Müşteri Yönetimi</p>
                         <h1 className="mt-1 text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">Cari Hesap Ekstresi</h1>
                         <p className="mt-2 text-sm text-slate-600">
-                            {query.code ? `${query.code} - ${summary?.musteri_adi ? `${summary.musteri_adi}` : readText(summary, ['firma_unvani'])}` : 'Cari kodu seçilmeli.'}
+                            {query.code ? `${query.code} - ${summary?.musteri_adi ? `${summary.musteri_adi}` : readText(summary, ['firma_unvani'])}` : 'Önce Müşteri Listesi’nden bir cari seçin.'}
                         </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -309,7 +309,7 @@ export default function CustomerStatementPage() {
                             ? queryMeta?.notice
                             : canLoad
                                 ? 'Tarihi değiştirip tekrar deneyin.'
-                                : 'Cari kodu seçerek ekstreyi yükleyin.'}
+                                : 'Önce Müşteri Listesi’nden bir cari seçin.'}
                     />
                 )}
             </section>
