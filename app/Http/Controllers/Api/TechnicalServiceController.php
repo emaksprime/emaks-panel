@@ -117,6 +117,12 @@ class TechnicalServiceController extends Controller
         $scheduleNote = $payload['schedule_note'] ?? null;
         unset($payload['schedule_note']);
 
+        $travelSummary = null;
+        if (array_key_exists('travel_round_trip_km', $payload) && $payload['travel_round_trip_km'] !== null) {
+            $travelSummary = $this->calculateTravelCosts((float) $payload['travel_round_trip_km']);
+            $payload = array_merge($payload, $travelSummary);
+        }
+
         $previousStatus = $technicalServiceRequest->status;
         $isScheduling = array_key_exists('scheduled_at', $payload) && ! empty($payload['scheduled_at']);
 
@@ -134,7 +140,7 @@ class TechnicalServiceController extends Controller
                 'from_status' => $previousStatus,
                 'to_status' => $technicalServiceRequest->status,
                 'author_user_id' => $request->user()?->id,
-                'metadata' => [],
+                'metadata' => $travelSummary ? ['travel' => $travelSummary] : [],
             ]);
         }
 
@@ -184,6 +190,8 @@ class TechnicalServiceController extends Controller
     {
         $payload = $request->validated();
         $technicalServiceRequest->technician_name = $payload['technician_name'];
+        $travelSummary = $this->calculateTravelCosts((float) $payload['travel_round_trip_km']);
+        $technicalServiceRequest->fill($travelSummary);
         $technicalServiceRequest->updated_by_user_id = $request->user()?->id;
         $technicalServiceRequest->save();
 
@@ -194,7 +202,10 @@ class TechnicalServiceController extends Controller
             'from_status' => null,
             'to_status' => null,
             'author_user_id' => $request->user()?->id,
-            'metadata' => ['technician_name' => $payload['technician_name']],
+            'metadata' => [
+                'technician_name' => $payload['technician_name'],
+                'travel' => $travelSummary,
+            ],
         ]);
 
         return response()->json(['request' => $technicalServiceRequest]);
@@ -250,5 +261,23 @@ class TechnicalServiceController extends Controller
         }
 
         return sprintf('MRN-%s-%04d', $today, $sequence);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function calculateTravelCosts(float $roundTripKm): array
+    {
+        $roundTripKm = round(max($roundTripKm, 0), 2);
+        $billableKm = round(max($roundTripKm - 30, 0), 2);
+        $travelFee = round($billableKm * 10, 2);
+
+        return [
+            'travel_round_trip_km' => $roundTripKm,
+            'travel_billable_km' => $billableKm,
+            'travel_fee_amount' => $travelFee,
+            'travel_calculation_source' => 'manual',
+            'travel_calculated_at' => now(),
+        ];
     }
 }

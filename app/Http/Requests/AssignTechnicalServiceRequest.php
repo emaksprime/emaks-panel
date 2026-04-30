@@ -18,6 +18,7 @@ class AssignTechnicalServiceRequest extends FormRequest
     {
         return [
             'technician_name' => ['required', 'string', 'max:255'],
+            'travel_round_trip_km' => ['required', 'numeric', 'min:0'],
             'note' => ['nullable', 'string', 'max:2000'],
         ];
     }

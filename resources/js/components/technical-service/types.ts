@@ -25,6 +25,11 @@ export type ServiceRequest = {
   notes: string
   scheduledAt?: string | null
   createdAt?: string | null
+  travelRoundTripKm?: number | null
+  travelBillableKm?: number | null
+  travelFeeAmount?: number | null
+  travelCalculationSource?: string | null
+  travelCalculatedAt?: string | null
 }
 
 export type ServiceRequestEvent = {

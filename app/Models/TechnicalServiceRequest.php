@@ -36,6 +36,11 @@ class TechnicalServiceRequest extends Model
         'description',
         'resolution_notes',
         'source_channel',
+        'travel_round_trip_km',
+        'travel_billable_km',
+        'travel_fee_amount',
+        'travel_calculation_source',
+        'travel_calculated_at',
         'created_by_user_id',
         'updated_by_user_id',
     ];
@@ -45,6 +50,10 @@ class TechnicalServiceRequest extends Model
         'sla_due_at' => 'datetime',
         'completed_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'travel_round_trip_km' => 'decimal:2',
+        'travel_billable_km' => 'decimal:2',
+        'travel_fee_amount' => 'decimal:2',
+        'travel_calculated_at' => 'datetime',
     ];
 
     public function events(): HasMany

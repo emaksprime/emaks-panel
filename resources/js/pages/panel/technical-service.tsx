@@ -9,7 +9,7 @@ import { ServiceSummaryCards } from '@/components/technical-service/ServiceSumma
 import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
-import { formatTechnicalServiceMrn, getServicePaymentInfo, normalizeTechnicalServiceText } from '@/components/technical-service/utils'
+import { calculateTravelPreview, formatTechnicalServiceMrn, getServicePaymentInfo, normalizeTechnicalServiceText } from '@/components/technical-service/utils'
 import type { ServiceFilters as FilterState, ServiceRequest, SummaryItem } from '@/components/technical-service/types'
 
 type NewRequestForm = {
@@ -44,6 +44,11 @@ type ApiTechnicalServiceRequest = {
   resolution_notes?: string | null
   source_channel?: string | null
   created_at?: string | null
+  travel_round_trip_km?: number | string | null
+  travel_billable_km?: number | string | null
+  travel_fee_amount?: number | string | null
+  travel_calculation_source?: string | null
+  travel_calculated_at?: string | null
 }
 
 type ApiTechnicalServiceEvent = {
@@ -142,6 +147,15 @@ function statusFilterLabel(status: FilterState['status']): string {
   }
 }
 
+function parseNullableNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
   return {
     id: String(request.id),
@@ -163,6 +177,11 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     channel: request.source_channel ?? '',
     scheduledAt: request.scheduled_at ?? null,
     createdAt: request.created_at ?? null,
+    travelRoundTripKm: parseNullableNumber(request.travel_round_trip_km),
+    travelBillableKm: parseNullableNumber(request.travel_billable_km),
+    travelFeeAmount: parseNullableNumber(request.travel_fee_amount),
+    travelCalculationSource: request.travel_calculation_source ?? null,
+    travelCalculatedAt: request.travel_calculated_at ?? null,
   }
 }
 
@@ -190,6 +209,7 @@ export default function TechnicalService() {
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleHour, setScheduleHour] = useState('')
   const [scheduleMinute, setScheduleMinute] = useState('')
+  const [travelRoundTripKm, setTravelRoundTripKm] = useState('')
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
   const [completionReason, setCompletionReason] = useState('')
   const [completionOtherNote, setCompletionOtherNote] = useState('')
@@ -410,7 +430,23 @@ export default function TechnicalService() {
   const selectedListDisplayMrn = selectedListRequest ? formatTechnicalServiceMrn(selectedListRequest) : null
   const selectedDetailDisplayMrn = selectedDetailRequest ? formatTechnicalServiceMrn(selectedDetailRequest) : null
   const modalDisplayMrn = selectedListDisplayMrn ?? selectedDetailDisplayMrn
-  const modalPayment = getServicePaymentInfo(modalRequest?.serviceType)
+  const modalPayment = getServicePaymentInfo(
+    modalRequest?.serviceType,
+    modalRequest?.travelRoundTripKm,
+    modalRequest?.travelFeeAmount,
+    modalRequest?.travelBillableKm,
+  )
+  const assignTravelRoundTripKm = travelRoundTripKm.trim() === '' ? null : Number(travelRoundTripKm)
+  const assignTravelPreview = calculateTravelPreview(
+    typeof assignTravelRoundTripKm === 'number' && Number.isFinite(assignTravelRoundTripKm) && assignTravelRoundTripKm >= 0
+      ? assignTravelRoundTripKm
+      : null,
+  )
+  const assignPaymentPreview = getServicePaymentInfo(
+    modalRequest?.serviceType,
+    assignTravelPreview.roundTripKm,
+    assignTravelPreview.travelFeeAmount,
+  )
 
   const unassignedCount = requests.filter((request) => {
     const isOpen = request.status !== 'Tamamlandı' && request.status !== 'İptal'
@@ -461,6 +497,7 @@ export default function TechnicalService() {
     setScheduleDate('')
     setScheduleHour('')
     setScheduleMinute('')
+    setTravelRoundTripKm('')
     setAssignError(null)
   }
 
@@ -520,6 +557,12 @@ export default function TechnicalService() {
       return
     }
 
+    const parsedTravelRoundTripKm = Number(travelRoundTripKm)
+    if (travelRoundTripKm.trim() === '' || !Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
+      setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
+      return
+    }
+
     setAssignLoading(true)
     setAssignError(null)
 
@@ -530,6 +573,7 @@ export default function TechnicalService() {
         method: 'POST',
         body: JSON.stringify({
           technician_name: selectedTechnician,
+          travel_round_trip_km: parsedTravelRoundTripKm,
           note: assignTechnicianOption === 'Diğer' ? assignNote || null : null,
         }),
       })
@@ -884,6 +928,37 @@ export default function TechnicalService() {
                     </select>
                   </label>
                 </div>
+
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Gidiş-geliş km
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={travelRoundTripKm}
+                    onChange={(event) => setTravelRoundTripKm(event.target.value)}
+                    placeholder="Örn. 42"
+                  />
+                </label>
+
+                <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium text-slate-600">Ücretsiz km</span>
+                    <span className="font-semibold text-slate-900">{assignPaymentPreview.freeKmLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium text-slate-600">Ücretli km</span>
+                    <span className="font-semibold text-slate-900">{assignPaymentPreview.billableKmLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium text-slate-600">Yol ücreti</span>
+                    <span className="font-semibold text-slate-900">{assignPaymentPreview.travelAmountLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
+                    <span className="font-medium text-slate-600">Toplam usta maliyeti</span>
+                    <span className="font-semibold text-slate-950">{assignPaymentPreview.totalTechnicianCostLabel}</span>
+                  </div>
+                </div>
               </div>
 
               <DialogFooter className="gap-2">
@@ -901,7 +976,10 @@ export default function TechnicalService() {
                     (assignTechnicianOption === 'Diğer' && !assignOtherTechnician.trim()) ||
                     !scheduleDate ||
                     !scheduleHour ||
-                    !scheduleMinute
+                    !scheduleMinute ||
+                    travelRoundTripKm.trim() === '' ||
+                    !Number.isFinite(Number(travelRoundTripKm)) ||
+                    Number(travelRoundTripKm) < 0
                   }
                 >
                   {assignLoading ? 'Kaydediliyor...' : 'Usta Ata ve Randevu Ver'}

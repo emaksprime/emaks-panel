@@ -35,6 +35,7 @@ class UpdateTechnicalServiceRequest extends FormRequest
             'resolution_notes' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'schedule_note' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'source_channel' => ['sometimes', 'nullable', 'string', 'max:128'],
+            'travel_round_trip_km' => ['sometimes', 'nullable', 'numeric', 'min:0'],
         ];
     }
 }

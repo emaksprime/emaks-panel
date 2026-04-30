@@ -41,46 +41,87 @@ export const formatTechnicalServiceMrn = (
 }
 
 const formatCurrency = (amount: number): string => `${amount.toLocaleString('tr-TR')} TL`
+const formatKm = (value: number): string => `${value.toLocaleString('tr-TR')} km`
 
-export function getServicePaymentInfo(serviceType?: string, travelKm?: number | null) {
+const serviceBaseAmount = (serviceType?: string) => {
   const normalized = normalizeTechnicalServiceText(serviceType)
-  const hasTravelKm = typeof travelKm === 'number' && Number.isFinite(travelKm) && travelKm >= 0
-  const travelAmount = hasTravelKm ? travelKm * 10 : null
-  const travelAmountLabel = travelAmount === null
-    ? 'Yol km bilgisi girilmedi'
-    : `${travelKm} km x 10 TL = ${formatCurrency(travelAmount)}`
 
   if (normalized === 'montaj') {
-    const technicianAmount = 3000
     return {
       serviceTypeLabel: 'Montaj',
-      customerAmountLabel: '3.000 TL KDV dahil',
-      technicianAmountLabel: formatCurrency(technicianAmount),
-      travelAmountLabel,
-      totalTechnicianCostLabel: travelAmount === null
-        ? `${formatCurrency(technicianAmount)} + yol ücreti`
-        : formatCurrency(technicianAmount + travelAmount),
+      amount: 3000,
     }
   }
 
   if (normalized === 'servis' || normalized === 'ariza') {
-    const technicianAmount = 1800
     return {
       serviceTypeLabel: normalized === 'ariza' ? 'Arıza' : 'Servis',
-      customerAmountLabel: '1.800 TL KDV dahil',
-      technicianAmountLabel: formatCurrency(technicianAmount),
-      travelAmountLabel,
-      totalTechnicianCostLabel: travelAmount === null
-        ? `${formatCurrency(technicianAmount)} + yol ücreti`
-        : formatCurrency(technicianAmount + travelAmount),
+      amount: 1800,
     }
   }
 
   return {
     serviceTypeLabel: serviceType?.trim() || 'Belirlenmedi',
+    amount: null,
+  }
+}
+
+export function calculateTravelPreview(roundTripKm: number | null | undefined) {
+  const hasRoundTripKm = typeof roundTripKm === 'number' && Number.isFinite(roundTripKm) && roundTripKm >= 0
+  const normalizedRoundTripKm = hasRoundTripKm ? Math.round(roundTripKm * 100) / 100 : null
+  const billableKm = normalizedRoundTripKm === null ? null : Math.max(normalizedRoundTripKm - 30, 0)
+  const travelFeeAmount = billableKm === null ? null : billableKm * 10
+
+  return {
+    roundTripKm: normalizedRoundTripKm,
+    freeKm: 30,
+    billableKm,
+    travelFeeAmount,
+  }
+}
+
+export function getServicePaymentInfo(
+  serviceType?: string,
+  travelKm?: number | null,
+  persistedTravelFeeAmount?: number | null,
+  persistedBillableKm?: number | null,
+) {
+  const base = serviceBaseAmount(serviceType)
+  const travel = calculateTravelPreview(travelKm)
+  const billableKm = typeof persistedBillableKm === 'number' && Number.isFinite(persistedBillableKm)
+    ? persistedBillableKm
+    : travel.billableKm
+  const travelAmount = typeof persistedTravelFeeAmount === 'number' && Number.isFinite(persistedTravelFeeAmount)
+    ? persistedTravelFeeAmount
+    : travel.travelFeeAmount
+
+  if (base.amount !== null) {
+    return {
+      serviceTypeLabel: base.serviceTypeLabel,
+      customerAmountLabel: `${formatCurrency(base.amount)} KDV dahil`,
+      technicianAmountLabel: formatCurrency(base.amount),
+      roundTripKmLabel: travel.roundTripKm === null ? 'Yol km bilgisi girilmedi' : formatKm(travel.roundTripKm),
+      freeKmLabel: formatKm(travel.freeKm),
+      billableKmLabel: billableKm === null ? 'Yol km bilgisi girilmedi' : formatKm(billableKm),
+      travelAmountLabel: travelAmount === null
+        ? 'Yol km bilgisi girilmedi'
+        : `${billableKm?.toLocaleString('tr-TR') ?? 0} km x 10 TL = ${formatCurrency(travelAmount)}`,
+      totalTechnicianCostLabel: travelAmount === null
+        ? `${formatCurrency(base.amount)} + yol ücreti`
+        : formatCurrency(base.amount + travelAmount),
+      totalTechnicianCostAmount: travelAmount === null ? null : base.amount + travelAmount,
+    }
+  }
+
+  return {
+    serviceTypeLabel: base.serviceTypeLabel,
     customerAmountLabel: 'Belirlenmedi',
     technicianAmountLabel: 'Belirlenmedi',
+    roundTripKmLabel: travel.roundTripKm === null ? 'Yol km bilgisi girilmedi' : formatKm(travel.roundTripKm),
+    freeKmLabel: formatKm(travel.freeKm),
+    billableKmLabel: billableKm === null ? 'Yol km bilgisi girilmedi' : formatKm(billableKm),
     travelAmountLabel: 'Yol km bilgisi girilmedi',
     totalTechnicianCostLabel: 'Belirlenmedi',
+    totalTechnicianCostAmount: null,
   }
 }

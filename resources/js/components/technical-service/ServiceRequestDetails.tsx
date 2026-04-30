@@ -70,7 +70,12 @@ export function ServiceRequestDetails({
   onComplete,
   onReopen,
 }: ServiceRequestDetailsProps) {
-  const paymentInfo = getServicePaymentInfo(request.serviceType)
+  const paymentInfo = getServicePaymentInfo(
+    request.serviceType,
+    request.travelRoundTripKm,
+    request.travelFeeAmount,
+    request.travelBillableKm,
+  )
   const isActionDisabled = request.status === 'Tamamlandı' || request.status === 'İptal'
   const disabledTitle = 'Tamamlanan veya iptal edilen taleplerde işlem yapılamaz'
   const isReopenVisible = isActionDisabled
@@ -156,6 +161,18 @@ export function ServiceRequestDetails({
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Usta ödemesi</p>
               <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.technicianAmountLabel}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Gidiş-geliş km</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{paymentInfo.roundTripKmLabel}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Ücretsiz km</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{paymentInfo.freeKmLabel}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Ücretli km</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{paymentInfo.billableKmLabel}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Yol ücreti</p>
