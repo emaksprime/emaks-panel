@@ -1065,7 +1065,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
     public function test_customer_detail_and_document_pages_are_drilldowns_not_main_tabs(): void
     {
         $cariDetailPageId = Page::query()->where('code', 'cari_detail')->value('id');
-        $cariTabs = PageConfig::query()->where('page_code', 'cari')->firstOrFail()->layout_json['tabs'] ?? [];
+        $cariTabs = PageConfig::query()->where('page_code', 'cari')->firstOrFail()->layout_json['moduleTabs'] ?? [];
         $tabLabels = collect($cariTabs)->pluck('label')->all();
 
         $this->assertFalse((bool) DB::table('panel.page_menu')->where('page_id', $cariDetailPageId)->value('is_visible'));
