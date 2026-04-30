@@ -187,14 +187,23 @@ class PanelPageDataService
     private function payloadFor(DataSource $source, array $filters, User $user): array
     {
         $representativeCode = trim((string) ($user->temsilci_kodu ?? '')) ?: null;
+        $customerScopeKey = $filters['customer_scope_key'] ?? null;
+        $customerGroupScope = $filters['customer_group_scope'] ?? null;
 
         if (str_starts_with($source->code, 'sales_') && $this->access->userCanAccess($user, 'sales_main_all')) {
             $representativeCode = null;
         }
 
+        if ($this->isCustomerDataSource($source->code)) {
+            [$customerScopeKey, $representativeCode] = $this->customerScopeFor($user);
+            $customerGroupScope = $customerScopeKey;
+        }
+
         $payload = [
             ...$filters,
             'rep_code' => $representativeCode,
+            'customer_scope_key' => $customerScopeKey,
+            'customer_group_scope' => $customerGroupScope,
             'role_code' => $user->role_code,
             'search' => $filters['search'] ?? null,
             'page' => $filters['page'] ?? 1,
@@ -210,6 +219,43 @@ class PanelPageDataService
         return collect($payload)
             ->only([...$allowed, 'role_code', 'bypass_cache'])
             ->all();
+    }
+
+    private function isCustomerDataSource(string $sourceCode): bool
+    {
+        return str_starts_with($sourceCode, 'customer_')
+            || str_starts_with($sourceCode, 'customers_');
+    }
+
+    /**
+     * @return array{0: string, 1: string|null}
+     */
+    private function customerScopeFor(User $user): array
+    {
+        if ($this->access->isPrivileged($user) || $this->access->userCanAccess($user, 'customers_all')) {
+            return ['all', null];
+        }
+
+        $canSeeOnline = $this->access->userCanAccess($user, 'customers_online');
+        $canSeeBayi = $this->access->userCanAccess($user, 'customers_bayi');
+
+        if ($canSeeOnline && $canSeeBayi) {
+            return ['all_segments', null];
+        }
+
+        if ($canSeeOnline) {
+            return ['online_perakende', null];
+        }
+
+        if ($canSeeBayi) {
+            return ['bayi_proje', null];
+        }
+
+        if ($this->access->userCanAccess($user, 'customers_own_rep')) {
+            return ['own_rep', trim((string) ($user->temsilci_kodu ?? '')) ?: null];
+        }
+
+        abort(403);
     }
 
     /**
