@@ -991,7 +991,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('Sonuçlar', $component);
         $this->assertStringContainsString('Cari satırına tıklayarak hesap ekstresini görüntüleyebilirsiniz.', $component);
         $this->assertStringContainsString('{rows.length} kayıt', $component);
-        $this->assertStringContainsString('min-w-[1320px]', $component);
+        $this->assertStringNotContainsString('min-w-[1320px]', $component);
+        $this->assertStringNotContainsString('min-w-[1120px]', $component);
+        $this->assertStringContainsString('md:hidden', $component);
+        $this->assertStringContainsString('hidden w-full md:block', $component);
+        $this->assertStringContainsString('representativeScopeCode(queryMeta)', $component);
+        $this->assertStringNotContainsString('props?.auth?.user', $component);
         $this->assertStringContainsString('whitespace-normal break-words', $component);
         $this->assertStringContainsString('/api/data/cari', $component);
         $this->assertStringContainsString('/api/data/cari_balance', $component);
@@ -1038,6 +1043,88 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('ToplamAlacakBakiyesi', $query);
         $this->assertStringContainsString('ToplamBorcBakiyesi', $query);
         $this->assertStringContainsString('ToplamCariSayisi', $query);
+    }
+
+    public function test_customer_datasource_payload_scopes_admin_and_normal_users(): void
+    {
+        DB::table('panel.data_source_cache')->delete();
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $admin = User::factory()->create([
+            'role_code' => 'admin',
+            'temsilci_kodu' => '0003',
+            'aktif' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/data/cari', [
+                'search' => '',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = method_exists($request, 'data') ? $request->data() : [];
+            $params = $payload['params'] ?? [];
+
+            return ($payload['source_code'] ?? null) === 'customers_list'
+                && array_key_exists('rep_code', $payload)
+                && $payload['rep_code'] === null
+                && array_key_exists('rep_code', $params)
+                && $params['rep_code'] === null
+                && ($params['customer_scope_key'] ?? null) === 'all'
+                && ($params['customer_group_scope'] ?? null) === 'all';
+        });
+
+        $normalUser = User::factory()->create([
+            'role_code' => 'customer',
+            'temsilci_kodu' => '0003',
+            'aktif' => true,
+        ]);
+
+        $this->actingAs($normalUser)
+            ->postJson('/api/data/cari_balance', [
+                'search' => '',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = method_exists($request, 'data') ? $request->data() : [];
+            $params = $payload['params'] ?? [];
+
+            return ($payload['source_code'] ?? null) === 'customers_balance'
+                && ($payload['rep_code'] ?? null) === '0003'
+                && ($params['rep_code'] ?? null) === '0003'
+                && ($params['customer_scope_key'] ?? null) === 'own_rep'
+                && ($params['customer_group_scope'] ?? null) === 'own_rep';
+        });
+    }
+
+    public function test_customer_datasources_include_row_scope_params_and_filters(): void
+    {
+        foreach (['customers_all', 'customers_online', 'customers_bayi', 'customers_own_rep'] as $resourceCode) {
+            $this->assertDatabaseHas('panel.resources', [
+                'code' => $resourceCode,
+                'type' => 'scope',
+            ]);
+        }
+
+        foreach (['customers_list', 'customers_balance', 'customer_detail', 'customer_statement', 'customer_documents'] as $sourceCode) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+            $query = (string) $source->query_template;
+
+            $this->assertContains('customer_scope_key', $source->allowed_params);
+            $this->assertContains('customer_group_scope', $source->allowed_params);
+            $this->assertStringContainsString('@CustomerScopeKey', $query);
+            $this->assertStringContainsString("N'online_perakende'", $query);
+            $this->assertStringContainsString("N'bayi_proje'", $query);
+            $this->assertStringContainsString("N'own_rep'", $query);
+            $this->assertStringContainsString('cari_grup_kodu', $query);
+        }
     }
 
     public function test_customer_detail_and_document_drilldowns_have_empty_states_without_request(): void

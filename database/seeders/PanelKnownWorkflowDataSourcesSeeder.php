@@ -495,6 +495,7 @@ SQL_ORDERS_VERILEN,
 DECLARE @Search NVARCHAR(255) = N'[[search]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
 DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+DECLARE @CustomerScopeKey NVARCHAR(80) = N'[[customer_scope_key]]';
 DECLARE @PanelFilter NVARCHAR(50) = N'[[scope_key]]';
 DECLARE @Take int = 200;
 
@@ -523,6 +524,12 @@ WITH CariBaz AS
     WHERE
         ((cari.cari_kod NOT LIKE N'320%' AND cari.cari_kod NOT LIKE N'331%') OR cari.cari_kod LIKE N'320.ÇLG%')
         AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        AND (
+            @CustomerScopeKey IN (N'', N'all', N'all_segments')
+            OR (@CustomerScopeKey = N'own_rep' AND LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+            OR (@CustomerScopeKey = N'online_perakende' AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16'))
+            OR (@CustomerScopeKey = N'bayi_proje' AND (NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL OR ISNULL(cari.cari_grup_kodu, N'') NOT IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16')))
+        )
         AND (@Search = N'' OR cari.cari_kod LIKE N'%' + @Search + N'%' OR cari.cari_unvan1 LIKE N'%' + @Search + N'%' OR cari.cari_unvan2 LIKE N'%' + @Search + N'%' OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_adi, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_soyadi, N'') LIKE N'%' + @Search + N'%')
 ),
 SiparisHam AS
@@ -675,7 +682,7 @@ ORDER BY
     CASE WHEN @PanelFilter = N'pendingOrders' THEN BekleyenSiparisTutar END DESC,
     CariKodu ASC;
 SQL_CUSTOMERS_LIST,
-            ['search', 'scope_key', 'rep_code', 'page', 'bypass_cache'],
+            ['search', 'scope_key', 'rep_code', 'customer_scope_key', 'customer_group_scope', 'page', 'bypass_cache'],
             'PrimeCRM CariService.SearchAsync müşteri liste ve bakiye mantığından uyarlanan kanonik sorgu.',
             'CariService.cs'
         );
@@ -687,6 +694,7 @@ SQL_CUSTOMERS_LIST,
 DECLARE @Search NVARCHAR(255) = N'[[search]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
 DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+DECLARE @CustomerScopeKey NVARCHAR(80) = N'[[customer_scope_key]]';
 
 WITH CariScope AS
 (
@@ -714,6 +722,12 @@ WITH CariScope AS
     WHERE
         ((cari.cari_kod NOT LIKE N'320%' AND cari.cari_kod NOT LIKE N'331%') OR cari.cari_kod LIKE N'320.ÇLG%')
         AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        AND (
+            @CustomerScopeKey IN (N'', N'all', N'all_segments')
+            OR (@CustomerScopeKey = N'own_rep' AND LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+            OR (@CustomerScopeKey = N'online_perakende' AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16'))
+            OR (@CustomerScopeKey = N'bayi_proje' AND (NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL OR ISNULL(cari.cari_grup_kodu, N'') NOT IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16')))
+        )
         AND (@Search = N'' OR cari.cari_kod LIKE N'%' + @Search + N'%' OR cari.cari_unvan1 LIKE N'%' + @Search + N'%' OR cari.cari_unvan2 LIKE N'%' + @Search + N'%' OR ISNULL(grp.crg_isim, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_adi, N'') LIKE N'%' + @Search + N'%' OR ISNULL(cpt.cari_per_soyadi, N'') LIKE N'%' + @Search + N'%')
 )
 SELECT
@@ -732,7 +746,7 @@ FROM CariScope
 WHERE net_bakiye <> 0
 ORDER BY ABS(net_bakiye) DESC, musteri_kodu ASC;
 SQL_CUSTOMERS_BALANCE,
-            ['search', 'rep_code', 'page', 'bypass_cache'],
+            ['search', 'rep_code', 'customer_scope_key', 'customer_group_scope', 'page', 'bypass_cache'],
             'PrimeCRM CariService.GetSearchSummaryAsync bakiye hesaplama mantığından müşteri bazlı liste sorgusu.',
             'CariService.cs'
         );
@@ -744,6 +758,9 @@ SQL_CUSTOMERS_BALANCE,
 DECLARE @CustomerCode NVARCHAR(80) = N'[[customer_code]]';
 DECLARE @DateFrom DATE = '[[date_from]]';
 DECLARE @DateTo DATE = '[[date_to]]';
+DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
+DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+DECLARE @CustomerScopeKey NVARCHAR(80) = N'[[customer_scope_key]]';
 
 ;WITH Hareketler AS
 (
@@ -775,10 +792,18 @@ DECLARE @DateTo DATE = '[[date_to]]';
         CAST(CASE WHEN ISNULL(cha.cha_tip, 0) = 1 THEN ISNULL(cha.cha_meblag, 0) ELSE 0 END AS decimal(18,2)) AS [alacak],
         cha.cha_Guid AS SortGuid
     FROM dbo.CARI_HESAP_HAREKETLERI cha WITH (NOLOCK)
+    INNER JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK) ON cari.cari_kod = cha.cha_kod
     WHERE cha.cha_kod = @CustomerCode
       AND cha.cha_tarihi >= @DateFrom
       AND cha.cha_tarihi < DATEADD(day, 1, @DateTo)
       AND ISNULL(cha.cha_iptal, 0) = 0
+      AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+      AND (
+          @CustomerScopeKey IN (N'', N'all', N'all_segments')
+          OR (@CustomerScopeKey = N'own_rep' AND LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+          OR (@CustomerScopeKey = N'online_perakende' AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16'))
+          OR (@CustomerScopeKey = N'bayi_proje' AND (NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL OR ISNULL(cari.cari_grup_kodu, N'') NOT IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16')))
+      )
 )
 SELECT
     hareket_guid,
@@ -795,7 +820,7 @@ SELECT
 FROM Hareketler
 ORDER BY tarih ASC, SortGuid ASC;
 SQL_CUSTOMER_STATEMENT,
-            ['customer_code', 'date_from', 'date_to', 'bypass_cache'],
+            ['customer_code', 'date_from', 'date_to', 'rep_code', 'customer_scope_key', 'customer_group_scope', 'bypass_cache'],
             'PrimeCRM CariService.GetStatementRowsAsync ekstre sorgusu.',
             'CariService.cs'
         );
@@ -807,6 +832,7 @@ SQL_CUSTOMER_STATEMENT,
 DECLARE @CustomerCode NVARCHAR(80) = N'[[customer_code]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
 DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+DECLARE @CustomerScopeKey NVARCHAR(80) = N'[[customer_scope_key]]';
 
 SELECT TOP 1
     LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) AS [musteri_kodu],
@@ -834,9 +860,15 @@ LEFT OUTER JOIN dbo.vw_Gendata ON 1 = 1
 WHERE
     LTRIM(RTRIM(ISNULL(cari.cari_kod, N''))) = @CustomerCode
     AND ((cari.cari_kod NOT LIKE N'320%' AND cari.cari_kod NOT LIKE N'331%') OR cari.cari_kod LIKE N'320.ÇLG%')
-    AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode);
+    AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+    AND (
+        @CustomerScopeKey IN (N'', N'all', N'all_segments')
+        OR (@CustomerScopeKey = N'own_rep' AND LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        OR (@CustomerScopeKey = N'online_perakende' AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16'))
+        OR (@CustomerScopeKey = N'bayi_proje' AND (NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL OR ISNULL(cari.cari_grup_kodu, N'') NOT IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16')))
+    );
 SQL_CUSTOMER_DETAIL,
-            ['customer_code', 'rep_code', 'bypass_cache'],
+            ['customer_code', 'rep_code', 'customer_scope_key', 'customer_group_scope', 'bypass_cache'],
             'PrimeCRM CariService.GetCariSummaryAsync müşteri detay mantığından uyarlanan kanonik sorgu.',
             'CariService.cs'
         );
@@ -852,6 +884,7 @@ DECLARE @HareketGuid uniqueidentifier = COALESCE(
 );
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
 DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), N'') IS NULL THEN 1 ELSE 0 END;
+DECLARE @CustomerScopeKey NVARCHAR(80) = N'[[customer_scope_key]]';
 
 ;WITH Header AS
 (
@@ -894,6 +927,12 @@ DECLARE @CanViewAll bit = CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(@RepCode, N''))), 
         cha.cha_Guid = @HareketGuid
         AND ISNULL(cha.cha_iptal, 0) = 0
         AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+        AND (
+            @CustomerScopeKey IN (N'', N'all', N'all_segments')
+            OR (@CustomerScopeKey = N'own_rep' AND LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
+            OR (@CustomerScopeKey = N'online_perakende' AND ISNULL(cari.cari_grup_kodu, N'') IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16'))
+            OR (@CustomerScopeKey = N'bayi_proje' AND (NULLIF(LTRIM(RTRIM(ISNULL(cari.cari_grup_kodu, N''))), N'') IS NULL OR ISNULL(cari.cari_grup_kodu, N'') NOT IN (N'120.01', N'120.02', N'120.03', N'120.04', N'120.05', N'120.06', N'120.07', N'120.08', N'120.09', N'120.16')))
+        )
 )
 SELECT
     N'header' AS line_type,
@@ -1012,6 +1051,8 @@ SQL_CUSTOMER_DOCUMENTS,
                 'customer_code',
                 'document_id',
                 'rep_code',
+                'customer_scope_key',
+                'customer_group_scope',
                 'bypass_cache',
             ],
             'PrimeCRM CariService.GetDocumentDetailAsync evrak detay, cari satırları ve stok/hizmet satırları sorguları.',
