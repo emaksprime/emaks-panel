@@ -264,10 +264,13 @@ export default function CustomerStatementPage() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-slate-700">
-                            {detailRows.map((row) => {
+                            {detailRows.map((row, index) => {
                                 const guid = readText(row, ['hareket_guid', 'hareketGuid', 'guid']);
+                                const evrakSeri = readText(row, ['evrak_seri', 'seri', 'evrakSeri']);
+                                const evrakSira = readText(row, ['evrak_sira', 'sira', 'evrakSira']);
+                                const tarih = readText(row, ['tarih', 'date']);
                                 const detailUrl = guid ? `/cari/document-detail?guid=${encodeURIComponent(guid)}` : null;
-                                const rowIndex = row.evrak_no || row.evrakSira || guid || Math.random().toString(36).slice(2);
+                                const rowIndex = `${evrakSeri}-${evrakSira}-${tarih}-${index}`;
 
                                 return (
                                     <tr key={rowIndex} className="hover:bg-slate-50">

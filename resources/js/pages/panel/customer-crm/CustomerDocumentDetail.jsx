@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '@/lib/api';
 import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
 import { KpiCard } from '@/components/primecrm/KpiCard.jsx';
-import { readDate, readMoney, readNumberRaw, readText } from './customerCrmUtils.js';
+import { formatNumber, formatPercentOrNumber, readDate, readMoney, readNumberRaw, readText } from './customerCrmUtils.js';
 
 function parseCurrentSearch() {
     const search = typeof window === 'undefined' ? '' : window.location.search;
@@ -12,12 +12,6 @@ function parseCurrentSearch() {
     return {
         guid: params.get('guid') ?? '',
     };
-}
-
-function formatAmount(value) {
-    const money = readMoney({ value }, ['value']);
-
-    return money;
 }
 
 function pickRows(payload, candidates) {
@@ -65,13 +59,14 @@ export default function CustomerDocumentDetailPage() {
 
         void apiRequest('/api/data/customer_documents', {
             method: 'POST',
-            body: JSON.stringify({
-                guid,
-                hareket_guid: guid,
-                document_guid: guid,
-                bypass_cache: true,
-            }),
-        })
+                body: JSON.stringify({
+                    guid,
+                    hareket_guid: guid,
+                    document_guid: guid,
+                    evrak_guid: guid,
+                    bypass_cache: true,
+                }),
+            })
             .then((response) => {
                 if (cancelled) {
                     return;
@@ -120,7 +115,7 @@ export default function CustomerDocumentDetailPage() {
     const hasMovementRows = Array.isArray(movementRows) && movementRows.length > 0;
     const hasStockRows = Array.isArray(stockRows) && stockRows.length > 0;
     const hasDocument = Array.isArray(documentRows) && documentRows.length > 0;
-    const amount = formatAmount(readNumberRaw(header, ['tutar', 'toplam_tutar', 'genel_tutar']));
+    const amount = readMoney(header, ['tutar', 'toplam_tutar', 'genel_tutar']);
 
     return (
         <main className="grid gap-5 bg-[#f3f7fb] p-4 md:p-6">
@@ -235,13 +230,13 @@ export default function CustomerDocumentDetailPage() {
                                                 {readText(row, ['urun_adi', 'hizmet_adi']) || '-'}
                                             </div>
                                         </td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatAmount(readNumberRaw(row, ['miktar', 'quantity']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatAmount(readNumberRaw(row, ['birim_fiyat', 'net_birim_fiyat']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatAmount(readNumberRaw(row, ['tutar', 'toplam_tutar']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatAmount(readNumberRaw(row, ['iskonto_1', 'iskonto1']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatAmount(readNumberRaw(row, ['iskonto_2', 'iskonto2']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatAmount(readNumberRaw(row, ['iskonto_3', 'iskonto3']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatAmount(readNumberRaw(row, ['net_tutar', 'net_tutar_tl']))}</td>
+                                        <td className="px-4 py-3 text-right tabular-nums">{formatNumber(readNumberRaw(row, ['miktar', 'quantity']))}</td>
+                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['birim_fiyat', 'net_birim_fiyat'])}</td>
+                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['tutar', 'toplam_tutar'])}</td>
+                                        <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_1', 'iskonto1']))}</td>
+                                        <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_2', 'iskonto2']))}</td>
+                                        <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_3', 'iskonto3']))}</td>
+                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['net_tutar', 'net_tutar_tl'])}</td>
                                     </tr>
                                 ))}
                         </tbody>

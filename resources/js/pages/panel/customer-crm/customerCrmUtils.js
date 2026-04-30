@@ -1,4 +1,4 @@
-﻿function firstValue(row, keys) {
+function firstValue(row, keys) {
     if (!row || typeof row !== 'object') {
         return undefined;
     }
@@ -55,6 +55,48 @@ export function formatMoney(value) {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
     }).format(numeric)} TL`;
+}
+
+export function formatNumber(value) {
+    const numeric = pickAmount({ value }, ['value']);
+
+    if (numeric === null) {
+        return '-';
+    }
+
+    const digitsAfterSeparator = Number.isInteger(numeric) ? 0 : 2;
+
+    return new Intl.NumberFormat('tr-TR', {
+        minimumFractionDigits: digitsAfterSeparator,
+        maximumFractionDigits: 2,
+    }).format(numeric);
+}
+
+export function formatPercentOrNumber(value) {
+    if (value === null || value === undefined) {
+        return '-';
+    }
+
+    const raw = String(value).trim();
+
+    if (raw === '') {
+        return '-';
+    }
+
+    if (raw.includes('%')) {
+        return raw;
+    }
+
+    const numeric = pickAmount({ value: raw }, ['value']);
+
+    if (numeric === null) {
+        return '-';
+    }
+
+    return `${new Intl.NumberFormat('tr-TR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(numeric)}`;
 }
 
 export function readMoney(row, keys) {
