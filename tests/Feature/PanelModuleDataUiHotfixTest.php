@@ -1034,15 +1034,31 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ->assertJsonPath('queryMeta.dataSource', 'customer_documents');
 
         Http::assertSent(function ($request): bool {
-            return ($request['source_code'] ?? null) === 'customer_documents'
-                && ($request['guid'] ?? null) === 'GUID-01'
-                && (($request['params'] ?? [])['guid'] ?? null) === 'GUID-01'
-                && ($request['hareket_guid'] ?? null) === 'HAREKET-GUID-01'
-                && (($request['params'] ?? [])['hareket_guid'] ?? null) === 'HAREKET-GUID-01'
-                && ($request['document_guid'] ?? null) === 'DOCUMENT-GUID-01'
-                && (($request['params'] ?? [])['document_guid'] ?? null) === 'DOCUMENT-GUID-01'
-                && ($request['evrak_guid'] ?? null) === 'EVRAK-GUID-01'
-                && (($request['params'] ?? [])['evrak_guid'] ?? null) === 'EVRAK-GUID-01';
+            $payload = method_exists($request, 'data') ? $request->data() : null;
+
+            if (! is_array($payload) || $payload === []) {
+                $decodedBody = json_decode((string) $request->body(), true);
+                if (is_array($decodedBody)) {
+                    $payload = $decodedBody;
+                }
+            }
+
+            if (! is_array($payload)) {
+                return false;
+            }
+
+            $params = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+
+            $guid = $payload['guid'] ?? null;
+            $hareketGuid = $payload['hareket_guid'] ?? null;
+            $documentGuid = $payload['document_guid'] ?? null;
+            $evrakGuid = $payload['evrak_guid'] ?? null;
+
+            return ($payload['source_code'] ?? null) === 'customer_documents'
+                && (($guid ?? ($params['guid'] ?? null)) === 'GUID-01')
+                && (($hareketGuid ?? ($params['hareket_guid'] ?? null)) === 'HAREKET-GUID-01')
+                && (($documentGuid ?? ($params['document_guid'] ?? null)) === 'DOCUMENT-GUID-01')
+                && (($evrakGuid ?? ($params['evrak_guid'] ?? null)) === 'EVRAK-GUID-01');
         });
     }
 
