@@ -962,10 +962,17 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $page = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
         $component = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx')) ?: '';
 
-        $this->assertStringContainsString("normalizedCode === 'cari'", $page);
+        $this->assertStringContainsString('page.code ?? page.slug', $page);
+        $this->assertStringContainsString('routePath = String', $page);
+        $this->assertStringContainsString('matchesPage', $page);
+        $this->assertStringContainsString("matchesPage('cari', '/cari')", $page);
         $this->assertStringContainsString('<CustomerInfoPage />', $page);
-        $this->assertStringContainsString("normalizedCode === 'cari_balance'", $page);
+        $this->assertStringContainsString("matchesPage('cari_balance', '/cari/balance')", $page);
         $this->assertStringContainsString('<CustomerBalancePage />', $page);
+        $this->assertStringContainsString("matchesPage('cari_detail', '/cari/detail')", $page);
+        $this->assertStringContainsString('<CustomerStatementPage />', $page);
+        $this->assertStringContainsString("matchesPage('cari_document_detail', '/cari/document-detail')", $page);
+        $this->assertStringContainsString('<CustomerDocumentDetailPage />', $page);
 
         foreach ([
             'Cari Kodu',
