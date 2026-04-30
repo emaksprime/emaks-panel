@@ -18,6 +18,7 @@ function parseCurrentSearch() {
 
 function yearStartDate() {
     const today = new Date();
+
     return `${today.getFullYear()}-01-01`;
 }
 
@@ -29,10 +30,24 @@ function formatIsoDate(date) {
     return `${year}-${month}-${day}`;
 }
 
+function statementNumber(row) {
+    const evrakNo = readText(row, ['evrak_no', 'evrakNo', 'belge_no']);
+
+    if (evrakNo) {
+        return evrakNo;
+    }
+
+    return `${readText(row, ['evrak_seri', 'seri', 'evrakSeri'])} ${readText(row, ['evrak_sira', 'sira', 'evrakSira'])}`.trim() || '-';
+}
+
 export default function CustomerStatementPage() {
     const queryParams = useMemo(parseCurrentSearch, []);
     const [query, setQuery] = useState(() => ({
         code: queryParams.code,
+        from: queryParams.from || yearStartDate(),
+        to: queryParams.to || formatIsoDate(new Date()),
+    }));
+    const [dateDraft, setDateDraft] = useState(() => ({
         from: queryParams.from || yearStartDate(),
         to: queryParams.to || formatIsoDate(new Date()),
     }));
@@ -45,7 +60,7 @@ export default function CustomerStatementPage() {
     const [error, setError] = useState(null);
 
     const canLoad = query.code.trim() !== '';
-    const isDatasourceMissing = /tanimli degil|not found|undefined/i.test(
+    const isDatasourceMissing = /tanimli degil|tanımlı değil|not found|undefined/i.test(
         String((queryMeta?.notice ?? summaryMeta?.notice ?? '').toLowerCase()),
     );
 
@@ -53,6 +68,10 @@ export default function CustomerStatementPage() {
         if (!canLoad) {
             setSummaryRows([]);
             setDetailRows([]);
+            setQueryMeta(null);
+            setSummaryMeta(null);
+            setError(null);
+            setLoading(false);
             return;
         }
 
@@ -98,6 +117,8 @@ export default function CustomerStatementPage() {
                 setError('Müşteri ekstresi alınamadı veya veri kaynağı çalıştırılamadı.');
                 setSummaryRows([]);
                 setDetailRows([]);
+                setSummaryMeta(null);
+                setQueryMeta(null);
             })
             .finally(() => {
                 if (!cancelled) {
@@ -111,12 +132,14 @@ export default function CustomerStatementPage() {
     }, [canLoad, query.code, query.from, query.to]);
 
     const summary = summaryRows[0] ?? {};
+    const customerName = readText(summary, ['musteri_adi', 'firma_unvani']);
+    const customerCode = readText(summary, ['musteri_kodu', 'cari_kodu']) || query.code;
 
     const exportRows = useMemo(() => {
         return detailRows.map((row) => ({
             tarih: readDate(row, ['tarih', 'date']),
             evrakTipi: readText(row, ['evrak_tipi', 'evrakTipi', 'type']),
-            evrakNo: `${readText(row, ['evrak_seri', 'seri', 'evrakSeri'])} ${readText(row, ['evrak_sira', 'sira', 'evrakSira'])}`.trim() || '-',
+            evrakNo: statementNumber(row),
             aciklama: readText(row, ['aciklama', 'aciklamaMetni']),
             borc: readMoney(row, ['borc', 'borc_tl']),
             alacak: readMoney(row, ['alacak', 'alacak_tl']),
@@ -168,17 +191,26 @@ export default function CustomerStatementPage() {
         window.print();
     };
 
-    return (
-        <main className="grid gap-5 bg-[#f3f7fb] p-4 md:p-6">
-            <Head title="Müşteri Hesap Ekstresi" />
+    const onFilter = (event) => {
+        event.preventDefault();
+        setQuery((current) => ({
+            ...current,
+            from: dateDraft.from || yearStartDate(),
+            to: dateDraft.to || formatIsoDate(new Date()),
+        }));
+    };
 
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    return (
+        <main className="mx-auto grid w-full max-w-[1600px] gap-5 bg-[#f3f7fb] p-4 md:p-6">
+            <Head title="Cari Hesap Ekstresi" />
+
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
+                    <div className="max-w-4xl">
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Müşteri Yönetimi</p>
                         <h1 className="mt-1 text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">Cari Hesap Ekstresi</h1>
-                        <p className="mt-2 text-sm text-slate-600">
-                            {query.code ? `${query.code} - ${summary?.musteri_adi ? `${summary.musteri_adi}` : readText(summary, ['firma_unvani'])}` : 'Önce Müşteri Listesi’nden bir cari seçin.'}
+                        <p className="mt-2 whitespace-normal break-words text-sm text-slate-600">
+                            {canLoad ? `${customerCode} - ${customerName || '-'}` : 'Önce Müşteri Listesi’nden bir cari seçin.'}
                         </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -207,112 +239,119 @@ export default function CustomerStatementPage() {
                     </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                    <KpiCard label="Cari Kodu" value={readText(summary, ['musteri_kodu', 'cari_kodu']) || '-'} hint={readText(summary, ['temsilci_kodu', 'temsilciKodu']) || '-'} />
-                    <KpiCard
-                        label="Firma Ünvanı"
-                        value={readText(summary, ['musteri_adi', 'firma_unvani']) || '-'}
-                        hint={readText(summary, ['firma_unvani_2', 'firmaUnvan2']) || '-'}
-                    />
-                    <KpiCard label="Grup" value={readText(summary, ['grup']) || '-'} hint="Müşteri grubu" />
-                    <KpiCard
-                        label="Temsilci"
-                        value={readText(summary, ['temsilci', 'temsilciAdi', 'temsilci_adi']) || '-'}
-                        hint={readText(summary, ['temsilci_kodu', 'temsilciKodu']) || '-'}
-                    />
-                    <KpiCard
-                        label="Bakiye Durumu"
-                        value={readMoney(summary, ['bakiye', 'balance', 'bakiye_durumu'])}
-                        hint={summary?.belge_no || summary?.evrak_no ? `Ekstre No: ${summary.belge_no || summary.evrak_no}` : '-'}
-                    />
-                </div>
-            </section>
-
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                    Tarih Aralığı
-                    <div className="grid gap-2 md:grid-cols-2">
-                        <input
-                            type="date"
-                            value={query.from}
-                            onChange={(event) => setQuery((current) => ({ ...current, from: event.target.value }))}
-                            className="h-11 rounded-xl border border-slate-200 bg-white px-3"
+                {canLoad ? (
+                    <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                        <KpiCard label="Cari Kodu" value={customerCode || '-'} hint={readText(summary, ['temsilci_kodu', 'temsilciKodu']) || '-'} />
+                        <KpiCard
+                            label="Firma Ünvanı"
+                            value={customerName || '-'}
+                            hint={readText(summary, ['firma_unvani_2', 'firmaUnvan2']) || '-'}
                         />
-                        <input
-                            type="date"
-                            value={query.to}
-                            onChange={(event) => setQuery((current) => ({ ...current, to: event.target.value }))}
-                            className="h-11 rounded-xl border border-slate-200 bg-white px-3"
+                        <KpiCard label="Grup" value={readText(summary, ['grup']) || '-'} hint="Müşteri grubu" />
+                        <KpiCard
+                            label="Temsilci"
+                            value={readText(summary, ['temsilci', 'temsilciAdi', 'temsilci_adi']) || '-'}
+                            hint={readText(summary, ['temsilci_kodu', 'temsilciKodu']) || '-'}
+                        />
+                        <KpiCard
+                            label="Bakiye Durumu"
+                            value={readMoney(summary, ['bakiye', 'balance', 'bakiye_durumu'])}
+                            hint={summary?.belge_no || summary?.evrak_no ? `Ekstre No: ${summary.belge_no || summary.evrak_no}` : '-'}
                         />
                     </div>
-                </label>
+                ) : null}
             </section>
 
-            <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-slate-200 text-sm">
-                        <thead className="bg-slate-50">
-                            <tr>
-                                <th className="px-4 py-3 text-left">Tarih</th>
-                                <th className="px-4 py-3 text-left">Evrak Tipi</th>
-                                <th className="px-4 py-3 text-left">Evrak No</th>
-                                <th className="px-4 py-3 text-left">Açıklama</th>
-                                <th className="px-4 py-3 text-right">Borç</th>
-                                <th className="px-4 py-3 text-right">Alacak</th>
-                                <th className="px-4 py-3 text-right">Bakiye</th>
-                                <th className="px-4 py-3 text-right">Detay</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-slate-700">
-                            {detailRows.map((row, index) => {
-                                const guid = readText(row, ['hareket_guid', 'hareketGuid', 'guid']);
-                                const evrakSeri = readText(row, ['evrak_seri', 'seri', 'evrakSeri']);
-                                const evrakSira = readText(row, ['evrak_sira', 'sira', 'evrakSira']);
-                                const tarih = readText(row, ['tarih', 'date']);
-                                const detailUrl = guid ? `/cari/document-detail?guid=${encodeURIComponent(guid)}` : null;
-                                const rowIndex = `${evrakSeri}-${evrakSira}-${tarih}-${index}`;
+            {!canLoad ? (
+                <EmptyState title="Önce Müşteri Listesi’nden bir cari seçin." description="Müşteri Bilgi ekranındaki Ekstre bağlantısı ile devam edin." />
+            ) : (
+                <>
+                    <form onSubmit={onFilter} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                        <h2 className="text-sm font-semibold text-slate-900">Tarih Filtresi</h2>
+                        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                            <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                                Başlangıç
+                                <input
+                                    type="date"
+                                    value={dateDraft.from}
+                                    onChange={(event) => setDateDraft((current) => ({ ...current, from: event.target.value }))}
+                                    className="h-11 rounded-xl border border-slate-200 bg-white px-3"
+                                />
+                            </label>
+                            <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                                Bitiş
+                                <input
+                                    type="date"
+                                    value={dateDraft.to}
+                                    onChange={(event) => setDateDraft((current) => ({ ...current, to: event.target.value }))}
+                                    className="h-11 rounded-xl border border-slate-200 bg-white px-3"
+                                />
+                            </label>
+                            <button type="submit" className="self-end rounded-xl bg-blue-700 px-5 py-3 text-sm font-semibold text-white">
+                                Filtrele
+                            </button>
+                        </div>
+                    </form>
 
-                                return (
-                                    <tr key={rowIndex} className="hover:bg-slate-50">
-                                        <td className="px-4 py-3">{readDate(row, ['tarih', 'date'])}</td>
-                                        <td className="px-4 py-3">{readText(row, ['evrak_tipi', 'evrakTipi'])}</td>
-                                        <td className="px-4 py-3 font-mono text-xs">
-                                            {`${readText(row, ['evrak_seri', 'seri', 'evrakSeri'])} ${readText(row, ['evrak_sira', 'sira', 'evrakSira'])}`.trim() || '-'}
-                                        </td>
-                                        <td className="max-w-[320px] px-4 py-3 break-words">{readText(row, ['aciklama', 'aciklamaMetni']) || '-'}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['borc', 'borc_tl'])}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['alacak', 'alacak_tl'])}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['bakiye', 'balance'])}</td>
-                                        <td className="px-4 py-3 text-right">
-                                            {detailUrl ? (
-                                                <Link
-                                                    href={detailUrl}
-                                                    className="inline-flex rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-                                                >
-                                                    Detay Gör
-                                                </Link>
-                                            ) : (
-                                                <span className="text-slate-400">-</span>
-                                            )}
-                                        </td>
+                    <section className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                        <div className="w-full overflow-x-auto">
+                            <table className="w-full min-w-[1180px] divide-y divide-slate-200 text-sm">
+                                <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left">Tarih</th>
+                                        <th className="px-4 py-3 text-left">Evrak Tipi</th>
+                                        <th className="px-4 py-3 text-left">Evrak No</th>
+                                        <th className="min-w-[320px] px-4 py-3 text-left">Açıklama</th>
+                                        <th className="px-4 py-3 text-right">Borç</th>
+                                        <th className="px-4 py-3 text-right">Alacak</th>
+                                        <th className="px-4 py-3 text-right">Bakiye</th>
+                                        <th className="px-4 py-3 text-right">Detay</th>
                                     </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </div>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-slate-700">
+                                    {detailRows.map((row, index) => {
+                                        const guid = readText(row, ['hareket_guid', 'hareketGuid', 'guid']);
+                                        const tarih = readText(row, ['tarih', 'date']);
+                                        const detailUrl = guid ? `/cari/document-detail?guid=${encodeURIComponent(guid)}` : null;
+                                        const rowIndex = `${statementNumber(row)}-${tarih}-${index}`;
 
-                {detailRows.length === 0 && !loading && !error && (
-                    <EmptyState
-                        title={isDatasourceMissing ? 'Bu ekran için veri kaynağı henüz tanımlı değil.' : 'Seçili filtrelerde kayıt bulunamadı.'}
-                        description={isDatasourceMissing
-                            ? queryMeta?.notice
-                            : canLoad
-                                ? 'Tarihi değiştirip tekrar deneyin.'
-                                : 'Önce Müşteri Listesi’nden bir cari seçin.'}
-                    />
-                )}
-            </section>
+                                        return (
+                                            <tr key={rowIndex} className="align-top hover:bg-slate-50">
+                                                <td className="px-4 py-3">{readDate(row, ['tarih', 'date'])}</td>
+                                                <td className="px-4 py-3 whitespace-normal break-words">{readText(row, ['evrak_tipi', 'evrakTipi'])}</td>
+                                                <td className="px-4 py-3 font-mono text-xs">{statementNumber(row)}</td>
+                                                <td className="px-4 py-3 whitespace-normal break-words leading-5">{readText(row, ['aciklama', 'aciklamaMetni']) || '-'}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['borc', 'borc_tl'])}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['alacak', 'alacak_tl'])}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['bakiye', 'balance'])}</td>
+                                                <td className="px-4 py-3 text-right">
+                                                    {detailUrl ? (
+                                                        <Link
+                                                            href={detailUrl}
+                                                            className="inline-flex rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                                                        >
+                                                            Detay Gör
+                                                        </Link>
+                                                    ) : (
+                                                        <span className="text-slate-400">-</span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {detailRows.length === 0 && !loading && !error && (
+                            <EmptyState
+                                title={isDatasourceMissing ? 'Bu ekran için veri kaynağı henüz tanımlı değil.' : 'Seçili filtrelerde kayıt bulunamadı.'}
+                                description={isDatasourceMissing ? queryMeta?.notice : 'Tarihi değiştirip tekrar deneyin.'}
+                            />
+                        )}
+                    </section>
+                </>
+            )}
 
             <ErrorBanner message={error} />
             <LoadingOverlay show={loading} />
