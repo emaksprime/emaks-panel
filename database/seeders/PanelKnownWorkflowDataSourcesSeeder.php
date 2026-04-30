@@ -683,7 +683,22 @@ SQL_CUSTOMER_DETAIL,
             'PrimeCRM CariService.GetCariSummaryAsync müşteri detay mantığından uyarlanan kanonik sorgu.',
             'CariService.cs'
         );
-        $this->upsert('customer_documents', 'Müşteri Evrak Detay', '', ['document_id', 'customer_code', 'bypass_cache'], 'PrimeCRM CariService.GetDocumentDetailAsync evrak detay mantığı için metadata kaydı. Query template admin panelden tamamlanacak.', 'CariService.cs');
+        $this->upsert(
+            'customer_documents',
+            'Müşteri Evrak Detay',
+            '',
+            [
+                'guid',
+                'hareket_guid',
+                'document_guid',
+                'evrak_guid',
+                'customer_code',
+                'document_id',
+                'bypass_cache',
+            ],
+            'PrimeCRM CariService.GetDocumentDetailAsync evrak detay mantığı için metadata kaydı. Query template admin panelden tamamlanacak.',
+            'CariService.cs',
+        );
 
         $this->upsert(
             'proforma_customer_search',

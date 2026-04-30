@@ -982,6 +982,134 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ->assertJsonPath('queryMeta.dataSource', 'customer_statement');
     }
 
+    public function test_customer_documents_data_source_allows_guid_aliases_in_request_and_gateway_payload(): void
+    {
+        $source = DataSource::query()->where('code', 'customer_documents')->firstOrFail();
+
+        $source->update([
+            'db_type' => 'n8n_json',
+            'query_template' => 'SELECT 1',
+            'allowed_params' => [
+                'guid',
+                'hareket_guid',
+                'document_guid',
+                'evrak_guid',
+                'customer_code',
+                'document_id',
+                'bypass_cache',
+            ],
+            'connection_meta' => [
+                'driver' => 'n8n_json',
+                'method' => 'POST',
+                'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
+                'response_rows_key' => 'rows',
+                'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
+                'source_reference' => 'CariService.cs',
+            ],
+            'active' => true,
+        ]);
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'admin', 'aktif' => true]);
+        DB::table('panel.user_access')->updateOrInsert(
+            ['user_id' => $user->id, 'resource_code' => 'customers'],
+            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $this->actingAs($user)
+            ->postJson('/api/data/customer_documents', [
+                'guid' => 'GUID-01',
+                'hareket_guid' => 'HAREKET-GUID-01',
+                'document_guid' => 'DOCUMENT-GUID-01',
+                'evrak_guid' => 'EVRAK-GUID-01',
+                'bypass_cache' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.dataSource', 'customer_documents');
+
+        Http::assertSent(function ($request): bool {
+            $payload = method_exists($request, 'data') ? $request->data() : null;
+
+            if (! is_array($payload) || $payload === []) {
+                $decodedBody = json_decode((string) $request->body(), true);
+                if (is_array($decodedBody)) {
+                    $payload = $decodedBody;
+                }
+            }
+
+            if (! is_array($payload)) {
+                return false;
+            }
+
+            $params = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+
+            $guid = $payload['guid'] ?? null;
+            $hareketGuid = $payload['hareket_guid'] ?? null;
+            $documentGuid = $payload['document_guid'] ?? null;
+            $evrakGuid = $payload['evrak_guid'] ?? null;
+
+            return ($payload['source_code'] ?? null) === 'customer_documents'
+                && (($guid ?? ($params['guid'] ?? null)) === 'GUID-01')
+                && (($hareketGuid ?? ($params['hareket_guid'] ?? null)) === 'HAREKET-GUID-01')
+                && (($documentGuid ?? ($params['document_guid'] ?? null)) === 'DOCUMENT-GUID-01')
+                && (($evrakGuid ?? ($params['evrak_guid'] ?? null)) === 'EVRAK-GUID-01');
+        });
+    }
+
+    public function test_customer_crm_helpers_and_customer_statement_key_use_no_randomness(): void
+    {
+        $utils = file_get_contents(base_path('resources/js/pages/panel/customer-crm/customerCrmUtils.js')) ?: '';
+        $statement = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerStatement.jsx')) ?: '';
+        $documentDetail = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerDocumentDetail.jsx')) ?: '';
+
+        $this->assertFalse(str_starts_with($utils, "\xEF\xBB\xBF"), 'customerCrmUtils.js should not include UTF-8 BOM.');
+        $this->assertStringNotContainsString('Math.random()', $statement);
+        $this->assertStringContainsString('`${evrakSeri}-${evrakSira}-${tarih}-${index}`', $statement);
+        $this->assertStringContainsString('formatPercentOrNumber', $documentDetail);
+        $this->assertStringContainsString('formatNumber', $documentDetail);
+        $this->assertStringContainsString('evrak_guid', $documentDetail);
+
+        [$exitCode, $output, $error] = $this->runNodeModule(<<<'JS'
+            import { formatPercentOrNumber, formatNumber } from './resources/js/pages/panel/customer-crm/customerCrmUtils.js';
+
+            console.log(
+                JSON.stringify({
+                    quantityInteger: formatNumber(5),
+                    quantityDecimal: formatNumber(12.5),
+                    discountPercent: formatPercentOrNumber('%33,50'),
+                    discountNumber: formatPercentOrNumber(33.5),
+                }),
+            );
+JS);
+
+        $this->assertSame(0, $exitCode, $error);
+
+        $results = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertStringNotContainsString('TL', $results['quantityInteger']);
+        $this->assertStringNotContainsString('TL', $results['quantityDecimal']);
+        $this->assertStringNotContainsString('TL', $results['discountPercent']);
+        $this->assertStringNotContainsString('TL', $results['discountNumber']);
+        $this->assertSame('%33,50', $results['discountPercent']);
+    }
+
+    public function test_customer_documents_allowed_params_include_guid_aliases_in_seeded_source(): void
+    {
+        $allowed = (array) (DataSource::query()->where('code', 'customer_documents')->value('allowed_params') ?? []);
+
+        $this->assertContains('guid', $allowed);
+        $this->assertContains('hareket_guid', $allowed);
+        $this->assertContains('document_guid', $allowed);
+        $this->assertContains('evrak_guid', $allowed);
+        $this->assertContains('bypass_cache', $allowed);
+    }
+
     public function test_proforma_create_contract_uses_customer_search_aliases_discounts_and_local_draft(): void
     {
         $component = file_get_contents(resource_path('js/components/primecrm/ProformaCreatePanel.jsx')) ?: '';
