@@ -631,6 +631,17 @@ FilteredFinal AS
         OR (@PanelFilter = N'approvedOrders' AND AcikSiparisTutar > 0)
         OR (@PanelFilter = N'generalOpen' AND GenelDurumTutar <> 0)
         OR (@PanelFilter = N'pendingOrders' AND BekleyenSiparisTutar > 0)
+),
+SummaryTotals AS
+(
+    SELECT
+        CAST(ISNULL(SUM(CASE WHEN BakiyeDurumu > 0 THEN BakiyeDurumu ELSE 0 END), 0) AS decimal(18,2)) AS ToplamAlacakBakiyesi,
+        CAST(ABS(ISNULL(SUM(CASE WHEN BakiyeDurumu < 0 THEN BakiyeDurumu ELSE 0 END), 0)) AS decimal(18,2)) AS ToplamBorcBakiyesi,
+        CAST(ISNULL(SUM(AcikSiparisTutar), 0) AS decimal(18,2)) AS ToplamOnayliAcikSiparis,
+        CAST(ISNULL(SUM(BekleyenSiparisTutar), 0) AS decimal(18,2)) AS ToplamOnayBekleyenSiparis,
+        CAST(ISNULL(SUM(BakiyeDurumu + AcikSiparisTutar), 0) AS decimal(18,2)) AS GenelSonuc,
+        COUNT(1) AS ToplamCariSayisi
+    FROM CariFinal
 )
 SELECT TOP (@Take)
     CariKodu AS [musteri_kodu],
@@ -650,12 +661,14 @@ SELECT TOP (@Take)
     BekleyenSiparisAdet AS [bekleyen_siparis_adet],
     BekleyenSiparisTutar AS [bekleyen_siparis_tutar],
     BekleyenSiparisTutar AS [onay_bekleyen_siparis_tutari],
-    CAST(SUM(CASE WHEN BakiyeDurumu > 0 THEN BakiyeDurumu ELSE 0 END) OVER () AS decimal(18,2)) AS [toplam_alacak_bakiyesi],
-    CAST(SUM(CASE WHEN BakiyeDurumu < 0 THEN ABS(BakiyeDurumu) ELSE 0 END) OVER () AS decimal(18,2)) AS [toplam_borc_bakiyesi],
-    CAST(SUM(AcikSiparisTutar) OVER () AS decimal(18,2)) AS [toplam_onayli_acik_siparis],
-    CAST(SUM(BekleyenSiparisTutar) OVER () AS decimal(18,2)) AS [toplam_onay_bekleyen_siparis],
-    CAST(SUM(GenelDurumTutar) OVER () AS decimal(18,2)) AS [genel_sonuc]
+    st.ToplamAlacakBakiyesi AS [toplam_alacak_bakiyesi],
+    st.ToplamBorcBakiyesi AS [toplam_borc_bakiyesi],
+    st.ToplamOnayliAcikSiparis AS [toplam_onayli_acik_siparis],
+    st.ToplamOnayBekleyenSiparis AS [toplam_onay_bekleyen_siparis],
+    st.GenelSonuc AS [genel_sonuc],
+    st.ToplamCariSayisi AS [toplam_cari_sayisi]
 FROM FilteredFinal
+CROSS JOIN SummaryTotals st
 ORDER BY
     CASE WHEN @PanelFilter IN (N'approvedOrders', N'pendingOrders') THEN 0 ELSE 1 END,
     CASE WHEN @PanelFilter = N'approvedOrders' THEN AcikSiparisTutar END DESC,

@@ -937,7 +937,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringNotContainsString('Cari Yönetimi', $labels);
     }
 
-    public function test_customer_pages_and_drawer_use_customer_datasources(): void
+    public function test_customer_pages_use_customer_datasources_without_list_drawer(): void
     {
         $this->assertSame(
             'customers_list',
@@ -948,14 +948,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
             PageConfig::query()->with('dataSource')->where('page_code', 'cari_balance')->firstOrFail()->dataSource?->code,
         );
 
-        $drawer = file_get_contents(resource_path('js/components/primecrm/CustomerDetailDrawer.jsx')) ?: '';
+        $component = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx')) ?: '';
 
-        $this->assertStringContainsString('Genel Bilgi', $drawer);
-        $this->assertStringContainsString('Bakiye', $drawer);
-        $this->assertStringContainsString('Ekstre', $drawer);
-        $this->assertStringContainsString('/api/data/customer_detail', $drawer);
-        $this->assertStringContainsString('/api/data/customer_statement', $drawer);
-        $this->assertStringNotContainsString('Evraklar', $drawer);
+        $this->assertStringContainsString('/api/data/cari', $component);
+        $this->assertStringContainsString('/api/data/cari_balance', $component);
+        $this->assertStringContainsString('/cari/detail?code=', $component);
+        $this->assertStringNotContainsString('CustomerDetailDrawer', $component);
+        $this->assertStringNotContainsString('Müşteri kodu bulunamadı', $component);
     }
 
     public function test_customer_crm_pages_use_primecrm_list_and_balance_contracts(): void
@@ -982,6 +981,11 @@ class PanelModuleDataUiHotfixTest extends TestCase
         }
 
         $this->assertStringContainsString('Cari kodu, firma adı, grup veya temsilci ara', $component);
+        $this->assertStringContainsString('Sonuçlar', $component);
+        $this->assertStringContainsString('Cari satırına tıklayarak hesap ekstresini görüntüleyebilirsiniz.', $component);
+        $this->assertStringContainsString('{rows.length} kayıt', $component);
+        $this->assertStringContainsString('min-w-[1320px]', $component);
+        $this->assertStringContainsString('whitespace-normal break-words', $component);
         $this->assertStringContainsString('/api/data/cari', $component);
         $this->assertStringContainsString('/api/data/cari_balance', $component);
     }
@@ -998,7 +1002,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'Müşteri Bakiyesi ilk kolonu Grup olmamalı.',
         );
 
-        foreach (['Cari Kodu', 'Firma Ünvanı', 'Grup', 'Temsilci', 'Borç', 'Alacak', 'Net Bakiye', 'Detay'] as $column) {
+        foreach (['Cari Kodu', 'Firma Ünvanı', 'Grup', 'Temsilci', 'Borç', 'Alacak', 'Net Bakiye', 'Ekstre'] as $column) {
             $this->assertStringContainsString($column, $component);
         }
 
@@ -1023,6 +1027,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('toplam_onayli_acik_siparis', $query);
         $this->assertStringContainsString('toplam_onay_bekleyen_siparis', $query);
         $this->assertStringContainsString('genel_sonuc', $query);
+        $this->assertStringContainsString('SummaryTotals', $query);
+        $this->assertStringContainsString('ToplamAlacakBakiyesi', $query);
+        $this->assertStringContainsString('ToplamBorcBakiyesi', $query);
+        $this->assertStringContainsString('ToplamCariSayisi', $query);
     }
 
     public function test_customer_detail_and_document_drilldowns_have_empty_states_without_request(): void
@@ -1032,6 +1040,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertStringContainsString('if (!canLoad)', $statement);
         $this->assertStringContainsString('Önce Müşteri Listesi’nden bir cari seçin.', $statement);
+        $this->assertStringContainsString('yearStartDate()', $statement);
+        $this->assertStringContainsString('${today.getFullYear()}-01-01', $statement);
+        $this->assertStringNotContainsString('monthStart', $statement);
+        $this->assertStringContainsString('Filtrele', $statement);
         $this->assertStringContainsString('/api/data/customer_statement', $statement);
         $this->assertStringContainsString('/api/data/customer_detail', $statement);
 
@@ -1041,6 +1053,21 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("rowsByKind(rows, ['header'])", $document);
         $this->assertStringContainsString("rowsByKind(rows, ['cari', 'movement'])", $document);
         $this->assertStringContainsString("rowsByKind(rows, ['stock', 'stok'])", $document);
+    }
+
+    public function test_customer_crm_long_company_names_are_not_truncated(): void
+    {
+        foreach ([
+            resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx'),
+            resource_path('js/pages/panel/customer-crm/CustomerStatement.jsx'),
+            resource_path('js/pages/panel/customer-crm/CustomerDocumentDetail.jsx'),
+        ] as $path) {
+            $component = file_get_contents($path) ?: '';
+
+            $this->assertStringNotContainsString('truncate', $component);
+            $this->assertStringContainsString('whitespace-normal', $component);
+            $this->assertStringContainsString('break-words', $component);
+        }
     }
 
     public function test_customer_documents_datasource_uses_primecrm_document_detail_queries(): void
@@ -1184,7 +1211,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertFalse(str_starts_with($utils, "\xEF\xBB\xBF"), 'customerCrmUtils.js should not include UTF-8 BOM.');
         $this->assertStringNotContainsString('Math.random()', $statement);
-        $this->assertStringContainsString('`${evrakSeri}-${evrakSira}-${tarih}-${index}`', $statement);
+        $this->assertStringContainsString('statementNumber(row)', $statement);
+        $this->assertStringContainsString('`${statementNumber(row)}-${tarih}-${index}`', $statement);
         $this->assertStringContainsString('formatPercentOrNumber', $documentDetail);
         $this->assertStringContainsString('formatNumber', $documentDetail);
         $this->assertStringContainsString('evrak_guid', $documentDetail);

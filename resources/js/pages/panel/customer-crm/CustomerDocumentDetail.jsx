@@ -38,6 +38,16 @@ function rowsByKind(rows, kinds) {
     return rows.filter((row) => kinds.includes(String(row?.line_type ?? row?.row_type ?? '').toLowerCase()));
 }
 
+function documentNumber(row) {
+    const explicit = readText(row, ['evrak_no', 'evrakNo', 'belge_no']);
+
+    if (explicit) {
+        return explicit;
+    }
+
+    return `${readText(row, ['evrak_seri', 'seri'])} ${readText(row, ['evrak_sira', 'sira'])}`.trim() || '-';
+}
+
 export default function CustomerDocumentDetailPage() {
     const { guid } = useMemo(parseCurrentSearch, []);
     const [documentRows, setDocumentRows] = useState([]);
@@ -54,6 +64,9 @@ export default function CustomerDocumentDetailPage() {
             setDocumentRows([]);
             setMovementRows([]);
             setStockRows([]);
+            setQueryMeta(null);
+            setError(null);
+            setLoading(false);
             return;
         }
 
@@ -63,14 +76,14 @@ export default function CustomerDocumentDetailPage() {
 
         void apiRequest('/api/data/customer_documents', {
             method: 'POST',
-                body: JSON.stringify({
-                    guid,
-                    hareket_guid: guid,
-                    document_guid: guid,
-                    evrak_guid: guid,
-                    bypass_cache: true,
-                }),
-            })
+            body: JSON.stringify({
+                guid,
+                hareket_guid: guid,
+                document_guid: guid,
+                evrak_guid: guid,
+                bypass_cache: true,
+            }),
+        })
             .then((response) => {
                 if (cancelled) {
                     return;
@@ -124,24 +137,23 @@ export default function CustomerDocumentDetailPage() {
     const returnCode = readText(header, ['musteri_kodu', 'cari_kodu', 'customer_code']) || '';
     const returnName = readText(header, ['musteri_adi', 'firma_unvani']) || '';
     const backHref = returnCode ? `/cari/detail?code=${encodeURIComponent(returnCode)}` : '/cari';
-    const isDatasourceMissing = /tanimli degil|not found|undefined/i.test(String(queryMeta?.notice ?? '').toLowerCase());
-    const isEmpty = !guid && !loading && !error;
+    const isDatasourceMissing = /tanimli degil|tanımlı değil|not found|undefined/i.test(String(queryMeta?.notice ?? '').toLowerCase());
     const hasMovementRows = Array.isArray(movementRows) && movementRows.length > 0;
     const hasStockRows = Array.isArray(stockRows) && stockRows.length > 0;
     const hasDocument = Array.isArray(documentRows) && documentRows.length > 0;
     const amount = readMoney(header, ['tutar', 'toplam_tutar', 'genel_tutar']);
 
     return (
-        <main className="grid gap-5 bg-[#f3f7fb] p-4 md:p-6">
+        <main className="mx-auto grid w-full max-w-[1600px] gap-5 bg-[#f3f7fb] p-4 md:p-6">
             <Head title="Evrak Detayı" />
 
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
+                    <div className="max-w-4xl">
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Müşteri Yönetimi</p>
                         <h1 className="mt-1 text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">Evrak Detayı</h1>
-                        <p className="mt-2 text-sm text-slate-600">
-                            {`${readText(header, ['evrak_tipi', 'evrakTipi']) || '-'} ${readText(header, ['evrak_no', 'evrakNo']) || ''}`.trim() || 'Belge bilgisi bulunamadı.'}
+                        <p className="mt-2 whitespace-normal break-words text-sm text-slate-600">
+                            {guid ? `${readText(header, ['evrak_tipi', 'evrakTipi']) || '-'} - ${documentNumber(header)}` : 'Evrak listesinde Detay Gör ile geçiş yapınız.'}
                         </p>
                     </div>
                     <Link
@@ -153,126 +165,125 @@ export default function CustomerDocumentDetailPage() {
                 </div>
             </section>
 
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                <KpiCard
-                    label="Cari"
-                    value={readText(header, ['musteri_kodu', 'cari_kodu']) || '-'}
-                    hint={returnName || '-'}
-                />
-                <KpiCard
-                    label="Tarih"
-                    value={readDate(header, ['tarih', 'date'])}
-                    hint={readText(header, ['durum']) || '-'}
-                />
-                <KpiCard
-                    label="Evrak Tipi"
-                    value={readText(header, ['evrak_tipi', 'evrakTipi']) || '-'}
-                    hint="Belge tipi"
-                />
-                <KpiCard
-                    label="Evrak No"
-                    value={readText(header, ['evrak_no', 'evrakNo', 'belge_no']) || '-'}
-                    hint={readText(header, ['evrak_seri', 'seri']) || '-'}
-                />
-                <KpiCard label="Tutar" value={amount} hint="Genel toplam" />
-            </section>
+            {!guid ? (
+                <EmptyState title="Evrak listesinde Detay Gör ile geçiş yapınız." description="Cari ekstre ekranındaki Detay Gör bağlantısı ile devam edin." />
+            ) : (
+                <>
+                    <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                        <KpiCard
+                            label="Cari"
+                            value={readText(header, ['musteri_kodu', 'cari_kodu']) || '-'}
+                            hint={returnName || '-'}
+                        />
+                        <KpiCard
+                            label="Tarih"
+                            value={readDate(header, ['tarih', 'date'])}
+                            hint={readText(header, ['durum']) || '-'}
+                        />
+                        <KpiCard
+                            label="Evrak Tipi"
+                            value={readText(header, ['evrak_tipi', 'evrakTipi']) || '-'}
+                            hint="Belge tipi"
+                        />
+                        <KpiCard
+                            label="Evrak No"
+                            value={documentNumber(header)}
+                            hint={readText(header, ['evrak_seri', 'seri']) || '-'}
+                        />
+                        <KpiCard label="Tutar" value={amount} hint="Genel toplam" />
+                    </section>
 
-            <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <div className="border-b border-slate-100 px-4 py-3">
-                    <h2 className="text-sm font-semibold text-slate-900">Cari Hareket Satırları</h2>
-                </div>
-                <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-slate-200 text-sm">
-                        <thead className="bg-slate-50">
-                            <tr>
-                                <th className="px-4 py-3 text-left">Tarih</th>
-                                <th className="px-4 py-3 text-left">Cari Kodu</th>
-                                <th className="px-4 py-3 text-left">Cari Ünvan</th>
-                                <th className="px-4 py-3 text-left">Açıklama</th>
-                                <th className="px-4 py-3 text-right">Borç</th>
-                                <th className="px-4 py-3 text-right">Alacak</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-slate-700">
-                            {hasMovementRows &&
-                                movementRows.map((row, index) => (
-                                    <tr key={readText(row, ['hareket_id', 'id']) || index} className="hover:bg-slate-50">
-                                        <td className="px-4 py-3">{readDate(row, ['tarih', 'date'])}</td>
-                                        <td className="px-4 py-3 font-mono text-xs text-slate-600">{readText(row, ['cari_kodu', 'cariKodu']) || '-'}</td>
-                                        <td className="px-4 py-3">{readText(row, ['cari_unvani', 'firma_unvani', 'musteri_adi']) || '-'}</td>
-                                        <td className="px-4 py-3 break-words" title={readText(row, ['aciklama', 'aciklamaMetni']) || '-'}>
-                                            {readText(row, ['aciklama', 'aciklamaMetni']) || '-'}
-                                        </td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['borc', 'borc_tl'])}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['alacak', 'alacak_tl'])}</td>
+                    <section className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                        <div className="border-b border-slate-100 px-5 py-4">
+                            <h2 className="text-base font-semibold text-slate-900">Cari Hareket Satırları</h2>
+                        </div>
+                        <div className="w-full overflow-x-auto">
+                            <table className="w-full min-w-[1040px] divide-y divide-slate-200 text-sm">
+                                <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left">Tarih</th>
+                                        <th className="px-4 py-3 text-left">Cari Kodu</th>
+                                        <th className="min-w-[280px] px-4 py-3 text-left">Cari Ünvan</th>
+                                        <th className="min-w-[280px] px-4 py-3 text-left">Açıklama</th>
+                                        <th className="px-4 py-3 text-right">Borç</th>
+                                        <th className="px-4 py-3 text-right">Alacak</th>
                                     </tr>
-                                ))}
-                        </tbody>
-                    </table>
-                </div>
-                {(!hasMovementRows || !hasDocument) && (
-                    <EmptyState title="Cari hareket satırı bulunamadı." description="Bu evraka ait hareket satırları boş." />
-                )}
-            </section>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-slate-700">
+                                    {hasMovementRows &&
+                                        movementRows.map((row, index) => (
+                                            <tr key={readText(row, ['hareket_id', 'id', 'hareket_guid']) || index} className="align-top hover:bg-slate-50">
+                                                <td className="px-4 py-3">{readDate(row, ['tarih', 'date'])}</td>
+                                                <td className="px-4 py-3 font-mono text-xs text-slate-600">{readText(row, ['cari_kodu', 'cariKodu']) || '-'}</td>
+                                                <td className="px-4 py-3 whitespace-normal break-words leading-5">{readText(row, ['cari_unvani', 'firma_unvani', 'musteri_adi']) || '-'}</td>
+                                                <td className="px-4 py-3 whitespace-normal break-words leading-5" title={readText(row, ['aciklama', 'aciklamaMetni']) || '-'}>
+                                                    {readText(row, ['aciklama', 'aciklamaMetni']) || '-'}
+                                                </td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['borc', 'borc_tl'])}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['alacak', 'alacak_tl'])}</td>
+                                            </tr>
+                                        ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        {(!hasMovementRows || !hasDocument) && (
+                            <EmptyState title="Cari hareket satırı bulunamadı." description="Bu evraka ait hareket satırları boş." />
+                        )}
+                    </section>
 
-            <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <div className="border-b border-slate-100 px-4 py-3">
-                    <h2 className="text-sm font-semibold text-slate-900">Stok / Hizmet Satırları</h2>
-                </div>
-                <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-slate-200 text-sm">
-                        <thead className="bg-slate-50">
-                            <tr>
-                                <th className="px-4 py-3 text-left">Stok Kodu</th>
-                                <th className="px-4 py-3 text-left">Ürün / Hizmet</th>
-                                <th className="px-4 py-3 text-right">Miktar</th>
-                                <th className="px-4 py-3 text-right">Net Birim Fiyat</th>
-                                <th className="px-4 py-3 text-right">Tutar</th>
-                                <th className="px-4 py-3 text-right">İsk. 1</th>
-                                <th className="px-4 py-3 text-right">İsk. 2</th>
-                                <th className="px-4 py-3 text-right">İsk. 3</th>
-                                <th className="px-4 py-3 text-right">Net Tutar</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-slate-700">
-                            {hasStockRows &&
-                                stockRows.map((row, index) => (
-                                    <tr key={readText(row, ['satir_id', 'id']) || index} className="hover:bg-slate-50">
-                                        <td className="px-4 py-3 font-mono text-xs text-slate-600">{readText(row, ['stok_kodu', 'stokKodu']) || '-'}</td>
-                                        <td className="px-4 py-3">
-                                            <div className="font-semibold text-slate-900" title={readText(row, ['urun_adi', 'hizmet_adi']) || '-'}>
-                                                {readText(row, ['urun_adi', 'hizmet_adi']) || '-'}
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatNumber(readNumberRaw(row, ['miktar', 'quantity']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['birim_fiyat', 'net_birim_fiyat'])}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['tutar', 'toplam_tutar'])}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_1', 'iskonto1']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_2', 'iskonto2']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_3', 'iskonto3']))}</td>
-                                        <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['net_tutar', 'net_tutar_tl'])}</td>
+                    <section className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                        <div className="border-b border-slate-100 px-5 py-4">
+                            <h2 className="text-base font-semibold text-slate-900">Stok / Hizmet Satırları</h2>
+                        </div>
+                        <div className="w-full overflow-x-auto">
+                            <table className="w-full min-w-[1240px] divide-y divide-slate-200 text-sm">
+                                <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left">Stok Kodu</th>
+                                        <th className="min-w-[320px] px-4 py-3 text-left">Ürün / Hizmet</th>
+                                        <th className="px-4 py-3 text-right">Miktar</th>
+                                        <th className="px-4 py-3 text-right">Net Birim Fiyat</th>
+                                        <th className="px-4 py-3 text-right">Tutar</th>
+                                        <th className="px-4 py-3 text-right">İsk. 1</th>
+                                        <th className="px-4 py-3 text-right">İsk. 2</th>
+                                        <th className="px-4 py-3 text-right">İsk. 3</th>
+                                        <th className="px-4 py-3 text-right">Net Tutar</th>
                                     </tr>
-                                ))}
-                        </tbody>
-                    </table>
-                </div>
-                {(!hasStockRows || !hasDocument) && (
-                    <EmptyState title="Stok veya hizmet satırı bulunamadı." description="Bu evraka ait ürün/hizmet satırları boş." />
-                )}
-            </section>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-slate-700">
+                                    {hasStockRows &&
+                                        stockRows.map((row, index) => (
+                                            <tr key={readText(row, ['satir_id', 'id', 'hareket_guid']) || index} className="align-top hover:bg-slate-50">
+                                                <td className="px-4 py-3 font-mono text-xs text-slate-600">{readText(row, ['stok_kodu', 'stokKodu']) || '-'}</td>
+                                                <td className="px-4 py-3">
+                                                    <div className="whitespace-normal break-words font-semibold leading-5 text-slate-900" title={readText(row, ['urun_adi', 'hizmet_adi']) || '-'}>
+                                                        {readText(row, ['urun_adi', 'hizmet_adi']) || '-'}
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{formatNumber(readNumberRaw(row, ['miktar', 'quantity']))}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['birim_fiyat', 'net_birim_fiyat'])}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['tutar', 'toplam_tutar'])}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_1', 'iskonto1']))}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_2', 'iskonto2']))}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{formatPercentOrNumber(readNumberRaw(row, ['iskonto_3', 'iskonto3']))}</td>
+                                                <td className="px-4 py-3 text-right tabular-nums">{readMoney(row, ['net_tutar', 'net_tutar_tl'])}</td>
+                                            </tr>
+                                        ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        {(!hasStockRows || !hasDocument) && (
+                            <EmptyState title="Stok veya hizmet satırı bulunamadı." description="Bu evraka ait ürün/hizmet satırları boş." />
+                        )}
+                    </section>
 
-            {isDatasourceMissing && (
-                <EmptyState
-                    title="Bu ekran için veri kaynağı henüz tanımlı değil."
-                    description={queryMeta?.notice}
-                />
-            )}
-
-            {isEmpty && (
-                <EmptyState
-                    title="Evrak detayı için guid bulunamadı."
-                    description="Evrak listesinde Detay Gör ile geçiş yapınız."
-                />
+                    {isDatasourceMissing && (
+                        <EmptyState
+                            title="Bu ekran için veri kaynağı henüz tanımlı değil."
+                            description={queryMeta?.notice}
+                        />
+                    )}
+                </>
             )}
 
             <ErrorBanner message={error} />
