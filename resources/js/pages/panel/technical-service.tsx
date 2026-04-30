@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,7 @@ import { ServiceSummaryCards } from '@/components/technical-service/ServiceSumma
 import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
+import { formatTechnicalServiceMrn, getServicePaymentInfo, normalizeTechnicalServiceText } from '@/components/technical-service/utils'
 import type { ServiceFilters as FilterState, ServiceRequest, SummaryItem } from '@/components/technical-service/types'
 
 type NewRequestForm = {
@@ -37,10 +38,8 @@ type ApiTechnicalServiceRequest = {
   service_type: string
   status: string
   priority: string
-  risk_level: string
   technician_name?: string | null
   scheduled_at?: string | null
-  sla_due_at?: string | null
   description?: string | null
   resolution_notes?: string | null
   source_channel?: string | null
@@ -65,7 +64,6 @@ type SummaryResponse = {
   ongoing_requests: number
   status_counts: Record<string, number>
   priority_counts: Record<string, number>
-  risk_level_counts: Record<string, number>
   scheduled_today: number
 }
 
@@ -86,6 +84,25 @@ const initialRequestForm: NewRequestForm = {
   notes: '',
 }
 
+const TECHNICIANS = [
+  'METİN USTA',
+  'BURHAN USTA',
+  'FATİH USTA',
+  'EMRE USTA',
+  'BARIŞ USTA',
+  'Diğer',
+] as const
+
+const CLOSURE_REASONS = [
+  'Montaj tamamlandı',
+  'Müşterinin kapısı uygun değildi',
+  'Müşteri siparişi iptal etti',
+  'Müşteri randevuya gelmedi / evde yoktu',
+  'Ürün / seri numarası uyumsuz',
+  'Servis ücreti kabul edilmedi',
+  'Diğer',
+] as const
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return 'Belirlenmedi'
@@ -103,18 +120,26 @@ function formatDateTime(value: string | null | undefined): string {
   })
 }
 
-function formatSla(value: string | null | undefined): string {
-  if (!value) {
-    return 'Belirlenmedi'
+function normalizeSearchText(value: string | null | undefined): string {
+  return normalizeTechnicalServiceText(value)
+    .replace(/[-\s\p{Punctuation}]+/gu, '')
+}
+
+function statusFilterLabel(status: FilterState['status']): string {
+  switch (status) {
+    case 'unassigned':
+      return 'Atanmamış İşler'
+    case 'today_installations':
+      return 'Bugünkü Montajlar'
+    case 'scheduled':
+      return 'Randevulu'
+    case 'Tamamlandı':
+      return 'Tamamlandı'
+    case 'İptal':
+      return 'İptal'
+    default:
+      return 'Tümü'
   }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return 'Belirlenmedi'
-  }
-
-  return date.toLocaleDateString('tr-TR')
 }
 
 function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
@@ -133,10 +158,8 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     technician: request.technician_name ?? 'Atanmadı',
     appointment: formatDateTime(request.scheduled_at),
     status: request.status,
-    sla: formatSla(request.sla_due_at),
     address: request.service_address,
     notes: request.description ?? request.resolution_notes ?? '',
-    riskLevel: request.risk_level,
     channel: request.source_channel ?? '',
     scheduledAt: request.scheduled_at ?? null,
     createdAt: request.created_at ?? null,
@@ -147,7 +170,9 @@ export default function TechnicalService() {
   const [filters, setFilters] = useState<FilterState>(initialFilters)
   const [requests, setRequests] = useState<ServiceRequest[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedListRequest, setSelectedListRequest] = useState<ServiceRequest | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false)
   const [createForm, setCreateForm] = useState<NewRequestForm>(initialRequestForm)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -155,20 +180,19 @@ export default function TechnicalService() {
   const [error, setError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [selectedEvents, setSelectedEvents] = useState<ApiTechnicalServiceEvent[]>([])
+  const [selectedDetailRequest, setSelectedDetailRequest] = useState<ServiceRequest | null>(null)
   const [assignDialogOpen, setAssignDialogOpen] = useState(false)
-  const [assignTechnician, setAssignTechnician] = useState('')
+  const [assignTechnicianOption, setAssignTechnicianOption] = useState('')
+  const [assignOtherTechnician, setAssignOtherTechnician] = useState('')
   const [assignNote, setAssignNote] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
-  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleHour, setScheduleHour] = useState('')
   const [scheduleMinute, setScheduleMinute] = useState('')
-  const [scheduleNote, setScheduleNote] = useState('')
-  const [scheduleLoading, setScheduleLoading] = useState(false)
-  const [scheduleError, setScheduleError] = useState<string | null>(null)
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
-  const [completionNote, setCompletionNote] = useState('')
+  const [completionReason, setCompletionReason] = useState('')
+  const [completionOtherNote, setCompletionOtherNote] = useState('')
   const [completeLoading, setCompleteLoading] = useState(false)
   const [completeError, setCompleteError] = useState<string | null>(null)
   const [reopenDialogOpen, setReopenDialogOpen] = useState(false)
@@ -178,6 +202,8 @@ export default function TechnicalService() {
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
+  const selectedIdRef = useRef<string | null>(null)
+  const detailRequestTokenRef = useRef(0)
 
   const loadRequests = async () => {
     setLoading(true)
@@ -207,19 +233,67 @@ export default function TechnicalService() {
     }
   }
 
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
+
   const loadRequestDetail = async (id: string) => {
+    const requestId = String(id)
+    const requestToken = detailRequestTokenRef.current + 1
+    detailRequestTokenRef.current = requestToken
+    const expectedListRequest = selectedListRequest ?? requests.find((item) => item.id === requestId) ?? null
+    const isCurrentRequest = () => detailRequestTokenRef.current === requestToken && selectedIdRef.current === requestId
     setDetailLoading(true)
     setDetailError(null)
+    setSelectedDetailRequest(null)
+    setSelectedEvents([])
 
     try {
       const response = await apiRequest(`/api/technical-service/requests/${id}`)
-      const request = response.request
+      if (!isCurrentRequest()) {
+        return
+      }
 
+      const request = response.request
+      if (!request) {
+        setDetailError('Talep detayları bulunamadı.')
+        setDetailLoading(false)
+        return
+      }
+
+      const mappedDetail = mapApiRequest(request)
+      const currentListRequest = expectedListRequest
+
+      if (!currentListRequest || String(mappedDetail.id) !== requestId || mappedDetail.mrn !== currentListRequest.mrn) {
+        console.error('Technical service detail mismatch', {
+          selectedListRequest: currentListRequest,
+          detail: mappedDetail,
+        })
+        setDetailError('Seçilen kayıt ile detay verisi eşleşmedi. Lütfen listeyi yenileyin.')
+        setSelectedDetailRequest(null)
+        setSelectedEvents([])
+        setDetailLoading(false)
+        return
+      }
+
+      if (!isCurrentRequest()) {
+        return
+      }
+
+      setSelectedDetailRequest(mappedDetail)
       setSelectedEvents(Array.isArray(request?.events) ? request.events : [])
     } catch (caught) {
+      if (!isCurrentRequest()) {
+        return
+      }
+
       setDetailError(caught instanceof Error ? caught.message : 'Talep detayları yüklenemedi.')
       setSelectedEvents([])
+      setSelectedDetailRequest(null)
     } finally {
+      if (!isCurrentRequest()) {
+        return
+      }
       setDetailLoading(false)
     }
   }
@@ -233,17 +307,13 @@ export default function TechnicalService() {
   }, [])
 
   useEffect(() => {
-    if (selectedId !== null && requests.some((request) => request.id === selectedId)) {
-      return
-    }
-
-    setSelectedId(requests[0]?.id ?? null)
-  }, [requests, selectedId])
-
-  useEffect(() => {
     if (!selectedId) {
+      detailRequestTokenRef.current += 1
       setSelectedEvents([])
+      setSelectedListRequest(null)
+      setSelectedDetailRequest(null)
       setDetailError(null)
+      setDetailLoading(false)
       return
     }
 
@@ -251,35 +321,21 @@ export default function TechnicalService() {
   }, [selectedId])
 
   const filteredRequests = useMemo(() => {
-    const search = filters.search.toLowerCase().trim()
+    const search = normalizeSearchText(filters.search)
     const today = new Date()
     const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
     const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
-
-    const riskWeight = (risk: string) => {
-      switch (risk) {
-        case 'Kritik':
-          return 4
-        case 'Yüksek':
-          return 3
-        case 'Orta':
-          return 2
-        default:
-          return 1
-      }
-    }
 
     const isTodayAppointment = (request: ServiceRequest) => {
       const scheduled = request.scheduledAt ? new Date(request.scheduledAt) : null
       return scheduled !== null && scheduled >= todayStart && scheduled < todayEnd
     }
 
-    const compareRequests = (a: ServiceRequest, b: ServiceRequest) => {
-      const riskDiff = riskWeight(b.riskLevel) - riskWeight(a.riskLevel)
-      if (riskDiff !== 0) {
-        return riskDiff
-      }
+    const isOpenRequest = (request: ServiceRequest) => request.status !== 'Tamamlandı' && request.status !== 'İptal'
+    const isUnassignedRequest = (request: ServiceRequest) => !request.technician?.trim() || request.technician === 'Atanmadı'
+    const hasScheduledAppointment = (request: ServiceRequest) => Boolean(request.scheduledAt)
 
+    const compareRequests = (a: ServiceRequest, b: ServiceRequest) => {
       const aUnassigned = a.technician === 'Atanmadı' || a.technician.trim() === ''
       const bUnassigned = b.technician === 'Atanmadı' || b.technician.trim() === ''
       if (aUnassigned !== bUnassigned) {
@@ -299,8 +355,10 @@ export default function TechnicalService() {
 
     return requests
       .filter((request) => {
+        const displayMrn = formatTechnicalServiceMrn(request)
         const values = [
           request.mrn,
+          displayMrn,
           request.customer,
           request.phone,
           request.city,
@@ -311,34 +369,55 @@ export default function TechnicalService() {
           request.serviceType,
           request.status,
           request.priority,
-          request.riskLevel,
           request.technician,
+          request.appointment,
+          request.scheduledAt,
           request.notes,
         ]
 
         const matchesSearch =
           !search ||
-          values.some((value) => value.toLowerCase().includes(search))
+          values.some((value) => normalizeSearchText(value).includes(search))
 
-        const matchesStatus = !filters.status || request.status === filters.status
+        const matchesStatus = (() => {
+          switch (filters.status) {
+            case '':
+              return true
+            case 'unassigned':
+              return isOpenRequest(request) && isUnassignedRequest(request)
+            case 'today_installations':
+              return request.serviceType === 'Montaj' && isTodayAppointment(request)
+            case 'scheduled':
+              return isOpenRequest(request) && hasScheduledAppointment(request)
+            case 'Tamamlandı':
+              return request.status === 'Tamamlandı'
+            case 'İptal':
+              return request.status === 'İptal'
+            default:
+              return true
+          }
+        })()
 
         return matchesSearch && matchesStatus
       })
       .sort(compareRequests)
   }, [filters, requests])
 
-  const selectedRequest =
-    filteredRequests.find((request) => request.id === selectedId) ?? filteredRequests[0] ?? null
+  const selectedRequest = selectedId
+    ? requests.find((request) => request.id === selectedId) ?? null
+    : null
+  const modalRequest = selectedDetailRequest ?? selectedListRequest ?? selectedRequest
+  const selectedListDisplayMrn = selectedListRequest ? formatTechnicalServiceMrn(selectedListRequest) : null
+  const selectedDetailDisplayMrn = selectedDetailRequest ? formatTechnicalServiceMrn(selectedDetailRequest) : null
+  const modalDisplayMrn = selectedListDisplayMrn ?? selectedDetailDisplayMrn
+  const modalPayment = getServicePaymentInfo(modalRequest?.serviceType)
 
-  useEffect(() => {
-    if (!selectedId || filteredRequests.some((request) => request.id === selectedId)) {
-      return
-    }
-
-    setSelectedId(filteredRequests[0]?.id ?? null)
-  }, [filteredRequests, selectedId])
-
-  const unassignedCount = requests.filter((request) => !request.technician || request.technician === 'Atanmadı').length
+  const unassignedCount = requests.filter((request) => {
+    const isOpen = request.status !== 'Tamamlandı' && request.status !== 'İptal'
+    const isUnassigned = !request.technician?.trim() || request.technician === 'Atanmadı'
+    return isOpen && isUnassigned
+  }).length
+  const activeStatusFilterLabel = statusFilterLabel(filters.status)
 
   const summaryItems: SummaryItem[] = [
     {
@@ -352,14 +431,6 @@ export default function TechnicalService() {
       value: summaryLoading ? '...' : String(summaryData?.scheduled_today ?? 0),
       tone: 'warning',
       description: 'Bugün planlanmış servis ziyaretleri',
-    },
-    {
-      label: 'SLA Riski',
-      value: summaryLoading
-        ? '...'
-        : String((summaryData?.risk_level_counts?.Yüksek ?? 0) + (summaryData?.risk_level_counts?.Kritik ?? 0)),
-      tone: 'warning',
-      description: 'Yüksek ve kritik SLA riski olan talepler',
     },
     {
       label: 'Tamamlanan İş',
@@ -384,21 +455,18 @@ export default function TechnicalService() {
   }
 
   const handleAssignReset = () => {
-    setAssignTechnician('')
+    setAssignTechnicianOption('')
+    setAssignOtherTechnician('')
     setAssignNote('')
-    setAssignError(null)
-  }
-
-  const handleScheduleReset = () => {
     setScheduleDate('')
     setScheduleHour('')
     setScheduleMinute('')
-    setScheduleNote('')
-    setScheduleError(null)
+    setAssignError(null)
   }
 
   const handleCompleteReset = () => {
-    setCompletionNote('')
+    setCompletionReason('')
+    setCompletionOtherNote('')
     setCompleteError(null)
   }
 
@@ -436,39 +504,19 @@ export default function TechnicalService() {
     }
   }
 
-  const handleScheduleSubmit = async () => {
+  const handleAssignSubmit = async () => {
     if (!selectedId) {
       return
     }
 
-    setScheduleLoading(true)
-    setScheduleError(null)
-
-    try {
-      const scheduledAt = `${scheduleDate}T${scheduleHour}:${scheduleMinute}:00`
-
-      await apiRequest(`/api/technical-service/requests/${selectedId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          scheduled_at: scheduledAt,
-          schedule_note: scheduleNote || null,
-        }),
-      })
-
-      setScheduleDialogOpen(false)
-      handleScheduleReset()
-      await loadRequests()
-      await loadSummary()
-      await loadRequestDetail(selectedId)
-    } catch (caught) {
-      setScheduleError(caught instanceof Error ? caught.message : 'Randevu planlama işlemi başarısız oldu.')
-    } finally {
-      setScheduleLoading(false)
+    const selectedTechnician = assignTechnicianOption === 'Diğer' ? assignOtherTechnician.trim() : assignTechnicianOption
+    if (!selectedTechnician) {
+      setAssignError('Lütfen bir usta seçin veya manuel isim girin.')
+      return
     }
-  }
 
-  const handleAssignSubmit = async () => {
-    if (!selectedId) {
+    if (!scheduleDate || !scheduleHour || !scheduleMinute) {
+      setAssignError('Lütfen randevu tarihi ve saatini seçin.')
       return
     }
 
@@ -476,11 +524,21 @@ export default function TechnicalService() {
     setAssignError(null)
 
     try {
+      const scheduledAt = `${scheduleDate}T${scheduleHour}:${scheduleMinute}:00`
+
       await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
         method: 'POST',
         body: JSON.stringify({
-          technician_name: assignTechnician,
-          note: assignNote || null,
+          technician_name: selectedTechnician,
+          note: assignTechnicianOption === 'Diğer' ? assignNote || null : null,
+        }),
+      })
+
+      await apiRequest(`/api/technical-service/requests/${selectedId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          scheduled_at: scheduledAt,
+          schedule_note: assignNote || null,
         }),
       })
 
@@ -501,6 +559,21 @@ export default function TechnicalService() {
       return
     }
 
+    if (!completionReason) {
+      setCompleteError('Lütfen bir kapanış nedeni seçin.')
+      return
+    }
+
+    const isOtherReason = completionReason === 'Diğer'
+    const notes = isOtherReason ? completionOtherNote.trim() : completionReason
+    if (isOtherReason && !notes) {
+      setCompleteError('Lütfen açıklama girin.')
+      setCompleteLoading(false)
+      return
+    }
+
+    const nextStatus = completionReason === 'Montaj tamamlandı' ? 'Tamamlandı' : 'İptal'
+
     setCompleteLoading(true)
     setCompleteError(null)
 
@@ -508,8 +581,8 @@ export default function TechnicalService() {
       await apiRequest(`/api/technical-service/requests/${selectedId}/status`, {
         method: 'POST',
         body: JSON.stringify({
-          status: 'Tamamlandı',
-          resolution_notes: completionNote || null,
+          status: nextStatus,
+          resolution_notes: notes || null,
         }),
       })
 
@@ -568,7 +641,7 @@ export default function TechnicalService() {
           <div>
             <Heading
               title="Teknik Servis"
-              description="Montaj ve servis taleplerini takip edin, SLA uyarılarını izleyin ve talep detaylarını görüntüleyin."
+              description="Montaj ve servis taleplerini takip edin, randevu ve talep detaylarını görüntüleyin."
             />
           </div>
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
@@ -694,7 +767,7 @@ export default function TechnicalService() {
             setAssignDialogOpen(open)
             if (!open) handleAssignReset()
           }}>
-            <DialogContent className="max-w-lg">
+            <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
               <DialogClose asChild>
                 <button
                   type="button"
@@ -704,10 +777,15 @@ export default function TechnicalService() {
                 </button>
               </DialogClose>
               <DialogHeader>
-                <DialogTitle>Usta ata</DialogTitle>
+                <DialogTitle>Usta ata ve randevu ver</DialogTitle>
                 <DialogDescription>
-                  Seçili talebe bir teknisyen atayın ve dilerseniz not ekleyin.
+                  {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} adına usta atanıyor.` : 'Seçili talep yok.'}
                 </DialogDescription>
+                {modalRequest?.serviceType ? (
+                  <p className="text-sm leading-6 text-slate-600">
+                    Bu talep {modalRequest.serviceType} işlemidir. Ustaya / servise ödenecek tutar: {modalPayment.technicianAmountLabel}
+                  </p>
+                ) : null}
               </DialogHeader>
 
               {assignError ? (
@@ -717,70 +795,51 @@ export default function TechnicalService() {
               ) : null}
 
               <div className="grid gap-4 pt-2">
-                <label className="grid gap-2 text-sm font-medium text-slate-700">
-                  Usta / Çilingir adı
-                  <Input
-                    value={assignTechnician}
-                    onChange={(event) => setAssignTechnician(event.target.value)}
-                    placeholder="Usta adı"
-                  />
-                </label>
+                <fieldset className="grid gap-3">
+                  <legend className="text-sm font-medium text-slate-700">Usta / Çilingir adı</legend>
+                  <div className="grid gap-2">
+                    {TECHNICIANS.map((technician) => (
+                      <label
+                        key={technician}
+                        className="flex cursor-pointer items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300"
+                      >
+                        <input
+                          type="radio"
+                          name="assignTechnician"
+                          value={technician}
+                          checked={assignTechnicianOption === technician}
+                          onChange={() => setAssignTechnicianOption(technician)}
+                          className="mr-3 h-4 w-4 accent-primary"
+                        />
+                        {technician}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
 
-                <label className="grid gap-2 text-sm font-medium text-slate-700">
-                  Not / açıklama
-                  <textarea
-                    value={assignNote}
-                    onChange={(event) => setAssignNote(event.target.value)}
-                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                    placeholder="Not / açıklama"
-                  />
-                </label>
-              </div>
+                {assignTechnicianOption === 'Diğer' ? (
+                  <div className="grid gap-4">
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Manuel usta adı
+                      <Input
+                        value={assignOtherTechnician}
+                        onChange={(event) => setAssignOtherTechnician(event.target.value)}
+                        placeholder="Usta adı"
+                      />
+                    </label>
 
-              <DialogFooter className="gap-2">
-                <DialogClose asChild>
-                  <Button variant="secondary" type="button" onClick={handleAssignReset}>
-                    İptal
-                  </Button>
-                </DialogClose>
-                <Button
-                  type="button"
-                  onClick={handleAssignSubmit}
-                  disabled={assignLoading || !assignTechnician.trim()}
-                >
-                  {assignLoading ? 'Atanıyor...' : 'Kaydet'}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Not / açıklama
+                      <textarea
+                        value={assignNote}
+                        onChange={(event) => setAssignNote(event.target.value)}
+                        className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                        placeholder="Not / açıklama"
+                      />
+                    </label>
+                  </div>
+                ) : null}
 
-          <Dialog open={scheduleDialogOpen} onOpenChange={(open) => {
-            setScheduleDialogOpen(open)
-            if (!open) handleScheduleReset()
-          }}>
-            <DialogContent className="max-w-lg">
-              <DialogClose asChild>
-                <button
-                  type="button"
-                  className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
-                >
-                  ×
-                </button>
-              </DialogClose>
-              <DialogHeader>
-                <DialogTitle>Randevu planla</DialogTitle>
-                <DialogDescription>
-                  Seçili talebe randevu tarihi ve saati girin, isteğe bağlı not ekleyin.
-                </DialogDescription>
-              </DialogHeader>
-
-              {scheduleError ? (
-                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                  {scheduleError}
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 pt-2">
                 <div className="grid gap-2 text-sm font-medium text-slate-700">
                   <label>Randevu tarihi</label>
                   <Input
@@ -789,6 +848,7 @@ export default function TechnicalService() {
                     onChange={(event) => setScheduleDate(event.target.value)}
                   />
                 </div>
+
                 <div className="grid gap-2 text-sm font-medium text-slate-700 sm:grid-cols-[1fr_1fr]">
                   <label className="grid gap-2">
                     Saat
@@ -824,29 +884,27 @@ export default function TechnicalService() {
                     </select>
                   </label>
                 </div>
-                <label className="grid gap-2 text-sm font-medium text-slate-700">
-                  Not / açıklama
-                  <textarea
-                    value={scheduleNote}
-                    onChange={(event) => setScheduleNote(event.target.value)}
-                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                    placeholder="Not / açıklama"
-                  />
-                </label>
               </div>
 
               <DialogFooter className="gap-2">
                 <DialogClose asChild>
-                  <Button variant="secondary" type="button" onClick={handleScheduleReset}>
+                  <Button variant="secondary" type="button" onClick={handleAssignReset}>
                     İptal
                   </Button>
                 </DialogClose>
                 <Button
                   type="button"
-                  onClick={handleScheduleSubmit}
-                  disabled={scheduleLoading || !scheduleDate || !scheduleHour || !scheduleMinute}
+                  onClick={handleAssignSubmit}
+                  disabled={
+                    assignLoading ||
+                    !assignTechnicianOption ||
+                    (assignTechnicianOption === 'Diğer' && !assignOtherTechnician.trim()) ||
+                    !scheduleDate ||
+                    !scheduleHour ||
+                    !scheduleMinute
+                  }
                 >
-                  {scheduleLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                  {assignLoading ? 'Kaydediliyor...' : 'Usta Ata ve Randevu Ver'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -856,7 +914,7 @@ export default function TechnicalService() {
             setCompleteDialogOpen(open)
             if (!open) handleCompleteReset()
           }}>
-            <DialogContent className="max-w-lg">
+            <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
               <DialogClose asChild>
                 <button
                   type="button"
@@ -866,10 +924,15 @@ export default function TechnicalService() {
                 </button>
               </DialogClose>
               <DialogHeader>
-                <DialogTitle>Talebi kapat</DialogTitle>
+                <DialogTitle>Talebi kapat / iptal et</DialogTitle>
                 <DialogDescription>
-                  Bu talebi tamamlandı olarak işaretleyin ve çözüm notu ekleyin.
+                  {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} talebinin sonucunu seçin.` : 'Seçili talep yok.'}
                 </DialogDescription>
+                {modalRequest?.serviceType ? (
+                  <p className="text-sm leading-6 text-slate-600">
+                    Müşteriden alınacak tutar: {modalPayment.customerAmountLabel}
+                  </p>
+                ) : null}
               </DialogHeader>
 
               {completeError ? (
@@ -878,15 +941,41 @@ export default function TechnicalService() {
                 </div>
               ) : null}
 
-              <label className="grid gap-2 text-sm font-medium text-slate-700">
-                Kapanış notu / çözüm açıklaması
-                <textarea
-                  value={completionNote}
-                  onChange={(event) => setCompletionNote(event.target.value)}
-                  className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                  placeholder="Kapanış notu"
-                />
-              </label>
+              <div className="grid gap-4 pt-2">
+                <fieldset className="grid gap-3">
+                  <legend className="text-sm font-medium text-slate-700">Kapanış / iptal nedeni</legend>
+                  <div className="grid gap-2">
+                    {CLOSURE_REASONS.map((reason) => (
+                      <label
+                        key={reason}
+                        className="flex cursor-pointer items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300"
+                      >
+                        <input
+                          type="radio"
+                          name="completionReason"
+                          value={reason}
+                          checked={completionReason === reason}
+                          onChange={() => setCompletionReason(reason)}
+                          className="mr-3 h-4 w-4 accent-primary"
+                        />
+                        {reason}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                {completionReason === 'Diğer' ? (
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Açıklama
+                    <textarea
+                      value={completionOtherNote}
+                      onChange={(event) => setCompletionOtherNote(event.target.value)}
+                      className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                      placeholder="Açıklama"
+                    />
+                  </label>
+                ) : null}
+              </div>
 
               <DialogFooter className="gap-2">
                 <DialogClose asChild>
@@ -894,7 +983,7 @@ export default function TechnicalService() {
                     İptal
                   </Button>
                 </DialogClose>
-                    <Button type="button" onClick={handleCompleteSubmit} disabled={completeLoading}>
+                <Button type="button" onClick={handleCompleteSubmit} disabled={completeLoading || !completionReason || (completionReason === 'Diğer' && !completionOtherNote.trim())}>
                   {completeLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </Button>
               </DialogFooter>
@@ -917,7 +1006,7 @@ export default function TechnicalService() {
               <DialogHeader>
                 <DialogTitle>Talebi yeniden aç</DialogTitle>
                 <DialogDescription>
-                  Bu talebi Yeni statüsüne geri almak için bir neden girin.
+                  {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} talebi yeniden açılacak.` : 'Seçili talep yok.'}
                 </DialogDescription>
               </DialogHeader>
 
@@ -959,13 +1048,83 @@ export default function TechnicalService() {
           onReset={() => setFilters(initialFilters)}
         />
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <Dialog open={isDetailDialogOpen} onOpenChange={(open) => {
+          if (!open) {
+            detailRequestTokenRef.current += 1
+            setIsDetailDialogOpen(false)
+            setSelectedId(null)
+            setSelectedEvents([])
+            setSelectedDetailRequest(null)
+            setDetailError(null)
+          }
+        }}>
+          <DialogContent className="w-[calc(100vw-16px)] sm:w-[calc(100vw-24px)] sm:max-w-[900px] h-[96dvh] sm:h-[90vh] max-h-[96dvh] sm:max-h-[90vh] p-0 overflow-hidden flex flex-col rounded-[20px]">
+            <div className="flex h-full min-h-[420px] flex-col overflow-hidden bg-white">
+              <DialogHeader className="sticky top-0 z-20 border-b border-slate-200 bg-white px-4 py-4 md:px-6 md:py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 space-y-2">
+                    <DialogTitle className="text-base font-semibold text-slate-900">Talep Detayı</DialogTitle>
+                    <DialogDescription className="text-sm text-slate-600">
+                      Seçili talebin MRN, müşteri, durum ve öncelik bilgilerini kontrol edin.
+                    </DialogDescription>
+                  </div>
+                  <DialogClose asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
+                      aria-label="Talep detay modalini kapat"
+                    >
+                      ×
+                    </button>
+                  </DialogClose>
+                </div>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <span className="text-sm font-semibold text-slate-900">{modalDisplayMrn ?? modalRequest?.mrn ?? 'Seçili talep yok'}</span>
+                  <span className="text-sm text-slate-600 truncate">Müşteri: {modalRequest?.customer ?? '-'}</span>
+                  <span className="text-sm text-slate-600 truncate">Durum: {modalRequest?.status ?? '-'}</span>
+                  <span className="text-sm text-slate-600 truncate">Öncelik: {modalRequest?.priority ?? '-'}</span>
+                </div>
+              </DialogHeader>
+
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 pb-28 md:px-6 md:py-5 md:pb-32">
+                {detailLoading ? (
+                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
+                    Detay yükleniyor...
+                  </div>
+                ) : detailError ? (
+                  <div className="rounded-3xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700">
+                    {detailError}
+                  </div>
+                ) : selectedDetailRequest ? (
+                  <ServiceRequestDetails
+                    request={selectedDetailRequest}
+                    displayMrn={modalDisplayMrn ?? undefined}
+                    events={selectedEvents}
+                    loading={detailLoading}
+                    error={detailError}
+                    onAssign={() => setAssignDialogOpen(true)}
+                    onComplete={() => setCompleteDialogOpen(true)}
+                    onReopen={() => setReopenDialogOpen(true)}
+                  />
+                ) : (
+                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
+                    Seçilen kayıt için detay bekleniyor...
+                  </div>
+                )}
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <div className="space-y-6">
           <div className="space-y-4">
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-slate-900">Montaj / Servis Talepleri</p>
-                  <p className="mt-1 text-sm text-slate-500">Toplam {filteredRequests.length} kayıt bulundu.</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Filtre: {activeStatusFilterLabel} • Toplam {filteredRequests.length} kayıt bulundu.
+                  </p>
                 </div>
                 <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                   Liste
@@ -993,29 +1152,19 @@ export default function TechnicalService() {
               <ServiceRequestTable
                 requests={filteredRequests}
                 selectedId={selectedRequest?.id ?? ''}
-                onSelect={(request) => setSelectedId(request.id)}
+                onSelect={(request) => {
+                  detailRequestTokenRef.current += 1
+                  setSelectedListRequest(request)
+                  setSelectedDetailRequest(null)
+                  setSelectedEvents([])
+                  setDetailError(null)
+                  setSelectedId(request.id)
+                  setIsDetailDialogOpen(true)
+                }}
               />
             )}
           </div>
 
-          <div className="xl:self-start xl:sticky xl:top-28 xl:max-w-[400px]">
-            {selectedRequest ? (
-              <ServiceRequestDetails
-                request={selectedRequest}
-                events={selectedEvents}
-                loading={detailLoading}
-                error={detailError}
-                onAssign={() => setAssignDialogOpen(true)}
-                onSchedule={() => setScheduleDialogOpen(true)}
-                onComplete={() => setCompleteDialogOpen(true)}
-                onReopen={() => setReopenDialogOpen(true)}
-              />
-            ) : (
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
-                Seçili talep bulunamadı.
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </>

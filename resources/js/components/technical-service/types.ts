@@ -1,9 +1,9 @@
 export type ServiceType = 'Montaj' | 'Arıza' | 'Kontrol'
 
 export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 'Tamamlandı' | 'İptal'
+export type ServiceStatusFilter = '' | 'unassigned' | 'today_installations' | 'scheduled' | 'Tamamlandı' | 'İptal'
 
 export type ServicePriority = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
-export type ServiceRiskLevel = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
 
 export type ServiceRequest = {
   id: string
@@ -19,12 +19,10 @@ export type ServiceRequest = {
   technician: string
   appointment: string
   status: ServiceStatus
-  sla: string
   address: string
   model: string
   channel: string
   notes: string
-  riskLevel: ServiceRiskLevel
   scheduledAt?: string | null
   createdAt?: string | null
 }
@@ -42,7 +40,7 @@ export type ServiceRequestEvent = {
 
 export type ServiceFilters = {
   search: string
-  status: ServiceStatus | ''
+  status: ServiceStatusFilter
 }
 
 export type SummaryItem = {

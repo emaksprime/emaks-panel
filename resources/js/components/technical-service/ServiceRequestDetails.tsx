@@ -1,6 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { getServicePaymentInfo } from './utils'
 import type { ServiceRequest, ServiceRequestEvent } from './types'
 
 const statusVariant = (status: ServiceRequest['status']) => {
@@ -22,19 +23,6 @@ const statusVariant = (status: ServiceRequest['status']) => {
   }
 }
 
-const riskVariant = (risk: ServiceRequest['riskLevel']) => {
-  switch (risk) {
-    case 'Kritik':
-      return 'destructive'
-    case 'Yüksek':
-      return 'warning'
-    case 'Orta':
-      return 'default'
-    default:
-      return 'secondary'
-  }
-}
-
 const priorityVariant = (priority: ServiceRequest['priority']) => {
   switch (priority) {
     case 'Kritik':
@@ -50,11 +38,11 @@ const priorityVariant = (priority: ServiceRequest['priority']) => {
 
 type ServiceRequestDetailsProps = {
   request: ServiceRequest
+  displayMrn?: string
   events: ServiceRequestEvent[]
   loading: boolean
   error?: string | null
   onAssign?: () => void
-  onSchedule?: () => void
   onComplete?: () => void
   onReopen?: () => void
 }
@@ -74,32 +62,33 @@ const eventTime = (timestamp: string): string => {
 
 export function ServiceRequestDetails({
   request,
+  displayMrn,
   events,
   loading,
   error,
   onAssign,
-  onSchedule,
   onComplete,
   onReopen,
 }: ServiceRequestDetailsProps) {
+  const paymentInfo = getServicePaymentInfo(request.serviceType)
   const isActionDisabled = request.status === 'Tamamlandı' || request.status === 'İptal'
   const disabledTitle = 'Tamamlanan veya iptal edilen taleplerde işlem yapılamaz'
   const isReopenVisible = isActionDisabled
 
   return (
-    <Card className="rounded-3xl border-slate-200 bg-white shadow-sm">
-      <CardHeader className="space-y-3 px-6 py-6">
+    <Card className="rounded-3xl border-slate-200 bg-white shadow-sm break-words min-w-0">
+      <CardHeader className="space-y-3 px-6 py-4 sm:py-6 min-w-0">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Seçili MRN</p>
-            <CardTitle className="mt-2 text-xl text-slate-950">{request.mrn}</CardTitle>
+            <CardTitle className="mt-2 text-lg sm:text-xl text-slate-950">{displayMrn ?? request.mrn}</CardTitle>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={statusVariant(request.status)}>{request.status}</Badge>
             <Badge variant={priorityVariant(request.priority)}>{request.priority}</Badge>
           </div>
         </div>
-        <p className="text-sm text-slate-600">{request.customer} için servis, randevu ve SLA detaylarını takip edin.</p>
+        <p className="text-sm text-slate-600">{request.customer} için servis, randevu ve maliyet detaylarını takip edin.</p>
       </CardHeader>
 
       <CardContent className="space-y-6 px-6 pb-6">
@@ -109,10 +98,10 @@ export function ServiceRequestDetails({
             <p className="mt-3 text-sm font-semibold text-slate-900">{request.customer}</p>
             <p className="mt-1 text-sm text-slate-600">{request.phone}</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 break-words">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Adres</p>
-            <p className="mt-3 text-sm text-slate-900">{request.address}</p>
-            <p className="mt-2 text-sm text-slate-600">{request.city} / {request.district}</p>
+            <p className="mt-3 text-sm text-slate-900 break-words">{request.address}</p>
+            <p className="mt-2 text-sm text-slate-600 break-words">{request.city} / {request.district}</p>
           </div>
         </section>
 
@@ -145,25 +134,43 @@ export function ServiceRequestDetails({
               <Badge variant="secondary">{request.serviceType}</Badge>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3">
             <div className="rounded-2xl border border-slate-200 bg-white p-3">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Randevu</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{request.appointment}</p>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-white p-3">
-              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">SLA</p>
-              <p className="mt-2 text-sm font-semibold text-slate-900">{request.sla}</p>
-              <div className="mt-2 flex items-center gap-2">
-                <span className="text-xs text-slate-500">Risk</span>
-                <Badge variant={riskVariant(request.riskLevel)}>{request.riskLevel}</Badge>
-              </div>
+          </div>
+        </section>
+
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ödeme / Maliyet</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">İşlem tipi</p>
+              <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.serviceTypeLabel}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Müşteri tahsilatı</p>
+              <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.customerAmountLabel}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Usta ödemesi</p>
+              <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.technicianAmountLabel}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Yol ücreti</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{paymentInfo.travelAmountLabel}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:col-span-2">
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Toplam usta maliyeti</p>
+              <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.totalTechnicianCostLabel}</p>
             </div>
           </div>
         </section>
 
-        <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 break-words">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Notlar</p>
-          <p className="mt-2 text-sm leading-6 text-slate-700">{request.notes}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-700 break-words whitespace-pre-wrap">{request.notes}</p>
         </section>
 
         <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -198,8 +205,15 @@ export function ServiceRequestDetails({
           </div>
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-2">
+      </CardContent>
+
+      <div
+        className="sticky bottom-0 z-10 bg-white/95 border-t border-slate-200 pt-2 px-3 shadow-[0_-8px_20px_rgba(15,23,42,0.06)] backdrop-blur-sm sm:px-6 sm:pt-3"
+        style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
+      >
+        <div className="grid grid-cols-2 gap-2">
           <Button
+            className="h-9 text-xs sm:text-sm"
             type="button"
             onClick={() => onAssign?.()}
             disabled={isActionDisabled}
@@ -208,26 +222,27 @@ export function ServiceRequestDetails({
             Usta Ata
           </Button>
           <Button
-            variant="outline"
+            className="h-9 text-[0.72rem] sm:text-sm"
+            variant="secondary"
             type="button"
-            onClick={() => onSchedule?.()}
-            disabled={isActionDisabled}
-            title={isActionDisabled ? disabledTitle : undefined}
+            disabled
+            title="WhatsApp link gönderimi henüz aktif değil"
           >
-            Randevu Planla
+            WhatsApp Link Gönder
           </Button>
-          <Button variant="secondary" type="button">WhatsApp Link Gönder</Button>
           <Button
+            className="h-9 text-xs sm:text-sm"
             variant="destructive"
             type="button"
             onClick={() => !isActionDisabled && onComplete?.()}
             disabled={isActionDisabled}
             title={isActionDisabled ? disabledTitle : undefined}
           >
-            Talebi Kapat
+            Kapat / İptal Et
           </Button>
           {isReopenVisible ? (
             <Button
+              className="h-9 text-xs sm:text-sm"
               variant="outline"
               type="button"
               onClick={() => onReopen?.()}
@@ -235,8 +250,8 @@ export function ServiceRequestDetails({
               Talebi Yeniden Aç
             </Button>
           ) : null}
-        </section>
-      </CardContent>
+        </div>
+      </div>
     </Card>
   )
 }

@@ -1,8 +1,15 @@
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { ServiceFilters, ServiceStatus } from './types'
+import type { ServiceFilters, ServiceStatusFilter } from './types'
 
-const statuses: (ServiceStatus | '')[] = ['', 'Yeni', 'Atandı', 'Randevulu', 'Devam Ediyor', 'Tamamlandı', 'İptal']
+const statusOptions: { value: ServiceStatusFilter; label: string }[] = [
+  { value: '', label: 'Tümü' },
+  { value: 'unassigned', label: 'Atanmamış İşler' },
+  { value: 'today_installations', label: 'Bugünkü Montajlar' },
+  { value: 'scheduled', label: 'Randevulu' },
+  { value: 'Tamamlandı', label: 'Tamamlandı' },
+  { value: 'İptal', label: 'İptal' },
+]
 
 export function ServiceFilters({
   filters,
@@ -29,19 +36,19 @@ export function ServiceFilters({
           Durum
           <select
             value={filters.status}
-            onChange={(event) => onChange({ ...filters, status: event.target.value as ServiceStatus | '' })}
+            onChange={(event) => onChange({ ...filters, status: event.target.value as ServiceStatusFilter })}
             className="border-input h-9 rounded-md border bg-transparent px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
           >
-            {statuses.map((status) => (
-              <option key={status || 'all'} value={status}>
-                {status || 'Tümü'}
+            {statusOptions.map((option) => (
+              <option key={option.value || 'all'} value={option.value}>
+                {option.label}
               </option>
             ))}
           </select>
         </label>
 
-        <div className="flex justify-end">
-          <Button variant="outline" type="button" onClick={onReset}>
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:justify-end sm:items-center">
+          <Button className="w-full sm:w-auto" variant="outline" type="button" onClick={onReset}>
             Temizle
           </Button>
         </div>
