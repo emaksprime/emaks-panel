@@ -1211,7 +1211,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertFalse(str_starts_with($utils, "\xEF\xBB\xBF"), 'customerCrmUtils.js should not include UTF-8 BOM.');
         $this->assertStringNotContainsString('Math.random()', $statement);
-        $this->assertStringContainsString('`${evrakSeri}-${evrakSira}-${tarih}-${index}`', $statement);
+        $this->assertStringContainsString('statementNumber(row)', $statement);
+        $this->assertStringContainsString('`${statementNumber(row)}-${tarih}-${index}`', $statement);
         $this->assertStringContainsString('formatPercentOrNumber', $documentDetail);
         $this->assertStringContainsString('formatNumber', $documentDetail);
         $this->assertStringContainsString('evrak_guid', $documentDetail);
