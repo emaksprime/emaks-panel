@@ -326,6 +326,9 @@ export default function TechnicalServiceTechnicians() {
             <Button asChild variant="secondary">
               <Link href="/technical-service">Teknik Servis</Link>
             </Button>
+            <Button asChild variant="secondary">
+              <Link href="/technical-service/serial-query">Seri No Sorgu</Link>
+            </Button>
             <Button type="button" onClick={openCreate}>Yeni Usta</Button>
           </div>
         </div>

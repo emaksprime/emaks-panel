@@ -7,10 +7,12 @@ use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceMikroController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use Illuminate\Support\Facades\Route;
+use Inertia\Inertia;
 
 require __DIR__.'/settings.php';
 
@@ -40,6 +42,8 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/status', [TechnicalServiceController::class, 'updateStatus'])->name('api.technical-service.requests.status');
             Route::post('requests/{technicalServiceRequest}/assign', [TechnicalServiceController::class, 'assign'])->name('api.technical-service.requests.assign');
             Route::get('summary', [TechnicalServiceController::class, 'summary'])->name('api.technical-service.summary');
+            Route::get('mikro/serial-check', [TechnicalServiceMikroController::class, 'check'])->name('api.technical-service.mikro.serial-check');
+            Route::get('mikro/serial-history', [TechnicalServiceMikroController::class, 'history'])->name('api.technical-service.mikro.serial-history');
         });
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {
@@ -58,6 +62,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
     });
 
     Route::get('dashboard', [PanelPageController::class, 'dashboard'])->name('dashboard');
+
+    Route::get('technical-service/serial-query', fn () => Inertia::render('panel/technical-service-serial-query', [
+        'page' => [
+            'title' => 'Seri No Sorgu',
+            'slug' => 'technical_service_serial_query',
+            'routePath' => '/technical-service/serial-query',
+            'component' => 'panel/technical-service-serial-query',
+            'layoutType' => 'module',
+            'description' => 'Mikro seri no geçmişi ve montaj karar kontrolü',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:technical_service')->name('technical-service.serial-query');
 
     Route::get('{panelPath}', PanelPageController::class)
         ->where('panelPath', '.*')

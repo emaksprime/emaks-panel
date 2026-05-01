@@ -67,6 +67,57 @@ export type ServiceRequestEvent = {
   created_at: string
 }
 
+export type MikroMountStatus = 'Montaj Dahil' | 'Montaj Hariç' | 'Montaj Sonradan Dahil' | 'Seri No Bulunamadı'
+
+export type MikroSerialHistoryEvent = {
+  event_type: string
+  event_date?: string | null
+  title: string
+  description?: string | null
+  stok_adi?: string | null
+  cari_kodu?: string | null
+  cari_unvani?: string | null
+  evrak_seri?: string | null
+  evrak_sira?: string | null
+  siparis_seri?: string | null
+  siparis_sira?: string | null
+  fatura_seri?: string | null
+  fatura_sira?: string | null
+  is_latest_valid_sale: boolean
+}
+
+export type MikroMountCheckResult = {
+  found: boolean
+  montaj_durumu: MikroMountStatus
+  montaj_ek_aciklama?: string | null
+  cihaz_seri_no?: string | null
+  stok_adi?: string | null
+  irsaliye_tarihi?: string | null
+  irsaliye_seri?: string | null
+  irsaliye_sira?: string | null
+  fatura_tarihi?: string | null
+  fatura_seri?: string | null
+  fatura_sira?: string | null
+  siparis_tarihi?: string | null
+  siparis_seri?: string | null
+  siparis_sira?: string | null
+  asil_cari_kodu?: string | null
+  asil_cari_unvani?: string | null
+  sonradan_montaj_kaynagi?: string | null
+  sonradan_montaj_tarihi?: string | null
+  sonradan_montaj_aciklamasi?: string | null
+  sonradan_montaj_cari_kodu?: string | null
+  sonradan_montaj_cari_unvani?: string | null
+  farkli_cari_uyarisi: boolean
+  history?: MikroSerialHistoryEvent[]
+}
+
+export type MikroSerialHistoryResponse = {
+  serial_no: string
+  decision: MikroMountCheckResult
+  items: MikroSerialHistoryEvent[]
+}
+
 export type ServiceFilters = {
   search: string
   status: ServiceStatusFilter

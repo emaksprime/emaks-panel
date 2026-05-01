@@ -19,7 +19,7 @@ import {
   normalizeTurkishLocation,
   TURKEY_PROVINCES,
 } from '@/components/technical-service/turkey-locations'
-import type { ServiceFilters as FilterState, ServiceRequest, ServiceTechnician, SummaryItem } from '@/components/technical-service/types'
+import type { MikroMountCheckResult, ServiceFilters as FilterState, ServiceRequest, ServiceTechnician, SummaryItem } from '@/components/technical-service/types'
 
 type NewRequestForm = {
   customer: string
@@ -277,6 +277,9 @@ export default function TechnicalService() {
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
+  const [mikroMountCheck, setMikroMountCheck] = useState<MikroMountCheckResult | null>(null)
+  const [mikroMountLoading, setMikroMountLoading] = useState(false)
+  const [mikroMountError, setMikroMountError] = useState<string | null>(null)
   const selectedIdRef = useRef<string | null>(null)
   const detailRequestTokenRef = useRef(0)
   const createDistrictOptions = useMemo(() => getDistrictOptionsForProvince(createForm.city), [createForm.city])
@@ -411,6 +414,9 @@ export default function TechnicalService() {
       setSelectedEvents([])
       setSelectedListRequest(null)
       setSelectedDetailRequest(null)
+      setMikroMountCheck(null)
+      setMikroMountError(null)
+      setMikroMountLoading(false)
       setShowNearbyTechnicians(false)
       setDetailError(null)
       setDetailLoading(false)
@@ -603,6 +609,29 @@ export default function TechnicalService() {
 
   const handleCreateReset = () => {
     setCreateForm(initialRequestForm)
+  }
+
+  const handleMikroMountCheck = async () => {
+    const serialNo = modalRequest?.serialNumber?.trim()
+
+    if (!serialNo) {
+      setMikroMountError('Mikro kontrolü için seri no gerekli.')
+      return
+    }
+
+    setMikroMountLoading(true)
+    setMikroMountError(null)
+
+    try {
+      const params = new URLSearchParams({ serial_no: serialNo })
+      const response = await apiRequest(`/api/technical-service/mikro/serial-check?${params.toString()}`)
+      setMikroMountCheck(response as MikroMountCheckResult)
+    } catch (caught) {
+      setMikroMountError(caught instanceof Error ? caught.message : 'Mikro montaj kontrolü yapılamadı.')
+      setMikroMountCheck(null)
+    } finally {
+      setMikroMountLoading(false)
+    }
   }
 
   const handleAssignReset = () => {
@@ -814,6 +843,9 @@ export default function TechnicalService() {
             <Button asChild variant="secondary">
               <Link href="/technical-service/technicians">Ustalar / Çilingirler</Link>
             </Button>
+            <Button asChild variant="secondary">
+              <Link href="/technical-service/serial-query">Seri No Sorgu</Link>
+            </Button>
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
               <DialogTrigger asChild>
                 <Button type="button">Yeni Servis Talebi</Button>
@@ -980,6 +1012,27 @@ export default function TechnicalService() {
               {assignError ? (
                 <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                   {assignError}
+                </div>
+              ) : null}
+
+              {mikroMountCheck?.montaj_durumu === 'Montaj Hariç' ? (
+                <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
+                  <p className="font-semibold">Mikro kontrolü: Montaj Hariç</p>
+                  <p className="mt-1">{mikroMountCheck.montaj_ek_aciklama || 'Bu seri no için son geçerli satışta montaj ödemesi bulunamadı.'}</p>
+                </div>
+              ) : null}
+
+              {mikroMountCheck?.montaj_durumu === 'Montaj Sonradan Dahil' ? (
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
+                  <p className="font-semibold">Mikro kontrolü: Montaj Sonradan Dahil</p>
+                  <p className="mt-1">{mikroMountCheck.montaj_ek_aciklama}</p>
+                </div>
+              ) : null}
+
+              {mikroMountCheck?.farkli_cari_uyarisi ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                  <p className="font-semibold">Dikkat: Farklı cari ile sonradan montaj</p>
+                  <p className="mt-1">Sonradan montaj carisi asıl satış carisinden farklı. Atama yapmadan önce cari bilgisini kontrol edin.</p>
                 </div>
               ) : null}
 
@@ -1379,6 +1432,10 @@ export default function TechnicalService() {
                     events={selectedEvents}
                     loading={detailLoading}
                     error={detailError}
+                    mikroMountCheck={mikroMountCheck}
+                    mikroMountLoading={mikroMountLoading}
+                    mikroMountError={mikroMountError}
+                    onMikroMountCheck={() => void handleMikroMountCheck()}
                     onAssign={() => setAssignDialogOpen(true)}
                     onComplete={() => setCompleteDialogOpen(true)}
                     onReopen={() => setReopenDialogOpen(true)}
@@ -1435,6 +1492,9 @@ export default function TechnicalService() {
                   setSelectedDetailRequest(null)
                   setSelectedEvents([])
                   setDetailError(null)
+                  setMikroMountCheck(null)
+                  setMikroMountError(null)
+                  setMikroMountLoading(false)
                   setSelectedId(request.id)
                   setIsDetailDialogOpen(true)
                 }}

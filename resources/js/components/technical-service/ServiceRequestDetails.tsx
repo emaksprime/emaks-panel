@@ -2,7 +2,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { getServicePaymentInfo } from './utils'
-import type { ServiceRequest, ServiceRequestEvent } from './types'
+import type { MikroMountCheckResult, ServiceRequest, ServiceRequestEvent } from './types'
 
 const statusVariant = (status: ServiceRequest['status']) => {
   switch (status) {
@@ -42,6 +42,10 @@ type ServiceRequestDetailsProps = {
   events: ServiceRequestEvent[]
   loading: boolean
   error?: string | null
+  mikroMountCheck?: MikroMountCheckResult | null
+  mikroMountLoading?: boolean
+  mikroMountError?: string | null
+  onMikroMountCheck?: () => void
   onAssign?: () => void
   onComplete?: () => void
   onReopen?: () => void
@@ -60,12 +64,55 @@ const eventTime = (timestamp: string): string => {
   })
 }
 
+const formatOptionalDate = (value: string | null | undefined): string => {
+  if (!value) {
+    return '-'
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleDateString('tr-TR')
+}
+
+const mikroStatusClasses = (result: MikroMountCheckResult | null | undefined): string => {
+  switch (result?.montaj_durumu) {
+    case 'Montaj Dahil':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    case 'Montaj Sonradan Dahil':
+      return 'border-blue-200 bg-blue-50 text-blue-700'
+    case 'Montaj Hariç':
+      return 'border-amber-200 bg-amber-50 text-amber-800'
+    default:
+      return 'border-slate-200 bg-slate-100 text-slate-700'
+  }
+}
+
+const mikroWarningClasses = (result: MikroMountCheckResult | null | undefined): string => {
+  if (result?.montaj_durumu === 'Montaj Hariç') {
+    return 'border-amber-300 bg-amber-50 text-amber-800'
+  }
+
+  if (result?.montaj_durumu === 'Montaj Sonradan Dahil' || result?.farkli_cari_uyarisi) {
+    return 'border-blue-200 bg-blue-50 text-blue-800'
+  }
+
+  return 'border-slate-200 bg-slate-50 text-slate-700'
+}
+
 export function ServiceRequestDetails({
   request,
   displayMrn,
   events,
   loading,
   error,
+  mikroMountCheck,
+  mikroMountLoading = false,
+  mikroMountError = null,
+  onMikroMountCheck,
   onAssign,
   onComplete,
   onReopen,
@@ -79,6 +126,7 @@ export function ServiceRequestDetails({
   const isActionDisabled = request.status === 'Tamamlandı' || request.status === 'İptal'
   const disabledTitle = 'Tamamlanan veya iptal edilen taleplerde işlem yapılamaz'
   const isReopenVisible = isActionDisabled
+  const hasSerialNumber = request.serialNumber.trim() !== ''
 
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm break-words min-w-0">
@@ -126,6 +174,81 @@ export function ServiceRequestDetails({
               <span>{request.serialNumber}</span>
             </div>
           </div>
+        </section>
+
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Mikro Montaj Kontrolü</p>
+              <p className="mt-2 text-sm text-slate-600">
+                Seri no üzerinden Mikro read-only kaynağında son geçerli satış ve montaj bilgisi kontrol edilir.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => onMikroMountCheck?.()}
+              disabled={!hasSerialNumber || mikroMountLoading}
+              className="shrink-0"
+            >
+              {mikroMountLoading ? 'Kontrol ediliyor...' : 'Mikro’dan kontrol et'}
+            </Button>
+          </div>
+
+          {!hasSerialNumber ? (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+              Bu talepte seri no olmadığı için Mikro kontrolü yapılamaz.
+            </div>
+          ) : null}
+
+          {mikroMountError ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+              {mikroMountError}
+            </div>
+          ) : null}
+
+          {mikroMountCheck ? (
+            <div className="grid gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className={mikroStatusClasses(mikroMountCheck)}>
+                  {mikroMountCheck.found ? mikroMountCheck.montaj_durumu : 'Mikro’da seri no bulunamadı'}
+                </Badge>
+                {mikroMountCheck.farkli_cari_uyarisi ? (
+                  <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">
+                    Farklı Cari ile Sonradan Montaj
+                  </Badge>
+                ) : null}
+              </div>
+
+              <div className={['rounded-2xl border p-3 text-sm', mikroWarningClasses(mikroMountCheck)].join(' ')}>
+                {mikroMountCheck.found ? mikroMountCheck.montaj_ek_aciklama : 'Mikro’da seri no bulunamadı'}
+              </div>
+
+              {mikroMountCheck.farkli_cari_uyarisi ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  Sonradan montaj carisi asıl satış carisinden farklı görünüyor. Atama öncesi cari bilgisini kontrol edin.
+                </div>
+              ) : null}
+
+              {mikroMountCheck.found ? (
+                <div className="grid gap-3 text-sm sm:grid-cols-2">
+                  {[
+                    ['Stok', mikroMountCheck.stok_adi],
+                    ['Asıl Cari', [mikroMountCheck.asil_cari_kodu, mikroMountCheck.asil_cari_unvani].filter(Boolean).join(' - ')],
+                    ['İrsaliye', [formatOptionalDate(mikroMountCheck.irsaliye_tarihi), mikroMountCheck.irsaliye_seri, mikroMountCheck.irsaliye_sira].filter(Boolean).join(' / ')],
+                    ['Fatura', [formatOptionalDate(mikroMountCheck.fatura_tarihi), mikroMountCheck.fatura_seri, mikroMountCheck.fatura_sira].filter(Boolean).join(' / ')],
+                    ['Sipariş', [formatOptionalDate(mikroMountCheck.siparis_tarihi), mikroMountCheck.siparis_seri, mikroMountCheck.siparis_sira].filter(Boolean).join(' / ')],
+                    ['Sonradan Montaj', [mikroMountCheck.sonradan_montaj_kaynagi, formatOptionalDate(mikroMountCheck.sonradan_montaj_tarihi)].filter(Boolean).join(' / ')],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
+                      <p className="mt-2 text-slate-900">{value || '-'}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </section>
 
         <section className="grid gap-4 rounded-2xl border border-slate-200 p-4">

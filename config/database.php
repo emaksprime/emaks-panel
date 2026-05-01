@@ -114,6 +114,21 @@ return [
             // 'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', 'false'),
         ],
 
+        'mikro_readonly' => [
+            'driver' => 'sqlsrv',
+            'url' => env('MIKRO_READONLY_DB_URL'),
+            'host' => env('MIKRO_READONLY_DB_HOST', '10.0.29.120'),
+            'port' => env('MIKRO_READONLY_DB_PORT', '1433'),
+            'database' => env('MIKRO_READONLY_DB_DATABASE', 'MikroDesktop_EMAKS_PRIME'),
+            'username' => env('MIKRO_READONLY_DB_USERNAME'),
+            'password' => env('MIKRO_READONLY_DB_PASSWORD'),
+            'charset' => env('MIKRO_READONLY_DB_CHARSET', 'utf8'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'encrypt' => env('MIKRO_READONLY_DB_ENCRYPT', 'no'),
+            'trust_server_certificate' => env('MIKRO_READONLY_DB_TRUST_SERVER_CERTIFICATE', 'true'),
+        ],
+
     ],
 
     /*
