@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use Illuminate\Support\Facades\Route;
@@ -27,6 +28,11 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             ->name('api.data.page');
 
         Route::prefix('technical-service')->middleware('panel.access:technical_service')->group(function () {
+            Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])->name('api.technical-service.technicians.index');
+            Route::post('technicians', [TechnicalServiceTechnicianController::class, 'store'])->name('api.technical-service.technicians.store');
+            Route::patch('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'update'])->name('api.technical-service.technicians.update');
+            Route::delete('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'destroy'])->name('api.technical-service.technicians.destroy');
+            Route::post('technicians/import', [TechnicalServiceTechnicianController::class, 'importCsv'])->name('api.technical-service.technicians.import');
             Route::get('requests', [TechnicalServiceController::class, 'index'])->name('api.technical-service.requests.index');
             Route::get('requests/{technicalServiceRequest}', [TechnicalServiceController::class, 'show'])->name('api.technical-service.requests.show');
             Route::post('requests', [TechnicalServiceController::class, 'store'])->name('api.technical-service.requests.store');

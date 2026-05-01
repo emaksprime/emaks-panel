@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -29,6 +30,7 @@ class TechnicalServiceRequest extends Model
         'priority',
         'risk_level',
         'technician_name',
+        'technical_service_technician_id',
         'scheduled_at',
         'sla_due_at',
         'completed_at',
@@ -59,5 +61,10 @@ class TechnicalServiceRequest extends Model
     public function events(): HasMany
     {
         return $this->hasMany(TechnicalServiceRequestEvent::class, 'technical_service_request_id');
+    }
+
+    public function technicianRecord(): BelongsTo
+    {
+        return $this->belongsTo(TechnicalServiceTechnician::class, 'technical_service_technician_id');
     }
 }

@@ -17,7 +17,8 @@ class AssignTechnicalServiceRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'technician_name' => ['required', 'string', 'max:255'],
+            'technical_service_technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
+            'technician_name' => ['required_without:technical_service_technician_id', 'nullable', 'string', 'max:255'],
             'travel_round_trip_km' => ['required', 'numeric', 'min:0'],
             'note' => ['nullable', 'string', 'max:2000'],
         ];

@@ -17,6 +17,7 @@ export type ServiceRequest = {
   serviceType: ServiceType
   priority: ServicePriority
   technician: string
+  technicianId?: string | null
   appointment: string
   status: ServiceStatus
   address: string
@@ -30,6 +31,29 @@ export type ServiceRequest = {
   travelFeeAmount?: number | null
   travelCalculationSource?: string | null
   travelCalculatedAt?: string | null
+}
+
+export type ServiceTechnician = {
+  id: string
+  name: string
+  first_name?: string | null
+  last_name?: string | null
+  phone?: string | null
+  city?: string | null
+  district?: string | null
+  address?: string | null
+  google_plus_code?: string | null
+  google_formatted_address?: string | null
+  default_start_address?: string | null
+  default_start_plus_code?: string | null
+  active: boolean
+  note?: string | null
+  latitude?: number | string | null
+  longitude?: number | string | null
+  start_latitude?: number | string | null
+  start_longitude?: number | string | null
+  mikro_cari_kodu?: string | null
+  mikro_cari_adi?: string | null
 }
 
 export type ServiceRequestEvent = {

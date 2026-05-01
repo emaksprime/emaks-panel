@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, Link } from '@inertiajs/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -10,7 +10,16 @@ import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
 import { calculateTravelPreview, formatTechnicalServiceMrn, getServicePaymentInfo, normalizeTechnicalServiceText } from '@/components/technical-service/utils'
-import type { ServiceFilters as FilterState, ServiceRequest, SummaryItem } from '@/components/technical-service/types'
+import {
+  findProvinceByName,
+  getDistrictOptionsForProvince,
+  haversineKm,
+  normalizeDistrictName,
+  normalizeProvinceName,
+  normalizeTurkishLocation,
+  TURKEY_PROVINCES,
+} from '@/components/technical-service/turkey-locations'
+import type { ServiceFilters as FilterState, ServiceRequest, ServiceTechnician, SummaryItem } from '@/components/technical-service/types'
 
 type NewRequestForm = {
   customer: string
@@ -38,6 +47,7 @@ type ApiTechnicalServiceRequest = {
   service_type: string
   status: string
   priority: string
+  technical_service_technician_id?: number | string | null
   technician_name?: string | null
   scheduled_at?: string | null
   description?: string | null
@@ -89,14 +99,11 @@ const initialRequestForm: NewRequestForm = {
   notes: '',
 }
 
-const TECHNICIANS = [
-  'METİN USTA',
-  'BURHAN USTA',
-  'FATİH USTA',
-  'EMRE USTA',
-  'BARIŞ USTA',
-  'Diğer',
-] as const
+const selectClassName = 'h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]'
+
+const normalizeFormCity = (value: string | null | undefined) => normalizeProvinceName(value) ?? String(value ?? '').trim()
+const normalizeFormDistrict = (city: string | null | undefined, value: string | null | undefined) =>
+  normalizeDistrictName(city, value) ?? String(value ?? '').trim()
 
 const CLOSURE_REASONS = [
   'Montaj tamamlandı',
@@ -156,6 +163,48 @@ function parseNullableNumber(value: number | string | null | undefined): number 
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function technicianDisplayName(technician: ServiceTechnician): string {
+  return [technician.first_name, technician.last_name].filter(Boolean).join(' ').trim() || technician.name
+}
+
+function normalizeLocationText(value: string | null | undefined): string {
+  return normalizeTurkishLocation(value)
+}
+
+type TechnicianMatch = {
+  technician: ServiceTechnician
+  badge: 'Aynı ilçe' | 'Aynı il' | 'Yakın il / diğer'
+  rank: number
+  distanceKm: number | null
+  sameCity: boolean
+}
+
+function technicianMatchInfo(technician: ServiceTechnician, request: ServiceRequest | null): TechnicianMatch {
+  const technicianCity = normalizeLocationText(technician.city)
+  const technicianDistrict = normalizeLocationText(technician.district)
+  const requestCity = normalizeLocationText(request?.city)
+  const requestDistrict = normalizeLocationText(request?.district)
+  const technicianProvince = findProvinceByName(technician.city)
+  const requestProvince = findProvinceByName(request?.city)
+  const technicianLat = parseNullableNumber(technician.start_latitude ?? technician.latitude) ?? technicianProvince?.latitude ?? null
+  const technicianLng = parseNullableNumber(technician.start_longitude ?? technician.longitude) ?? technicianProvince?.longitude ?? null
+  const requestLat = requestProvince?.latitude ?? null
+  const requestLng = requestProvince?.longitude ?? null
+  const sameCity = technicianCity !== '' && technicianCity === requestCity
+  const sameDistrict = sameCity && technicianDistrict !== '' && technicianDistrict === requestDistrict
+  const distanceKm = haversineKm(technicianLat, technicianLng, requestLat, requestLng)
+
+  if (sameDistrict) {
+    return { technician, badge: 'Aynı ilçe', rank: 0, distanceKm, sameCity }
+  }
+
+  if (sameCity) {
+    return { technician, badge: 'Aynı il', rank: 1, distanceKm, sameCity }
+  }
+
+  return { technician, badge: 'Yakın il / diğer', rank: 2, distanceKm, sameCity }
+}
+
 function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
   return {
     id: String(request.id),
@@ -169,6 +218,9 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     serialNumber: request.serial_number ?? '',
     serviceType: request.service_type,
     priority: request.priority,
+    technicianId: request.technical_service_technician_id === null || request.technical_service_technician_id === undefined
+      ? null
+      : String(request.technical_service_technician_id),
     technician: request.technician_name ?? 'Atanmadı',
     appointment: formatDateTime(request.scheduled_at),
     status: request.status,
@@ -188,6 +240,8 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
 export default function TechnicalService() {
   const [filters, setFilters] = useState<FilterState>(initialFilters)
   const [requests, setRequests] = useState<ServiceRequest[]>([])
+  const [technicians, setTechnicians] = useState<ServiceTechnician[]>([])
+  const [techniciansLoading, setTechniciansLoading] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedListRequest, setSelectedListRequest] = useState<ServiceRequest | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -206,6 +260,7 @@ export default function TechnicalService() {
   const [assignNote, setAssignNote] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
+  const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleHour, setScheduleHour] = useState('')
   const [scheduleMinute, setScheduleMinute] = useState('')
@@ -224,6 +279,9 @@ export default function TechnicalService() {
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
   const selectedIdRef = useRef<string | null>(null)
   const detailRequestTokenRef = useRef(0)
+  const createDistrictOptions = useMemo(() => getDistrictOptionsForProvince(createForm.city), [createForm.city])
+  const hasCreateDistrictFallback = createForm.district.trim() !== ''
+    && !createDistrictOptions.some((district) => district.normalizedName === normalizeTurkishLocation(createForm.district))
 
   const loadRequests = async () => {
     setLoading(true)
@@ -250,6 +308,23 @@ export default function TechnicalService() {
       setError(caught instanceof Error ? caught.message : 'Özet verisi alınamadı.')
     } finally {
       setSummaryLoading(false)
+    }
+  }
+
+  const loadTechnicians = async () => {
+    setTechniciansLoading(true)
+
+    try {
+      const response = await apiRequest('/api/technical-service/technicians?active=1')
+      const items = Array.isArray(response.items) ? response.items : []
+      setTechnicians(items.map((technician: ServiceTechnician) => ({
+        ...technician,
+        id: String(technician.id),
+      })))
+    } catch (caught) {
+      setAssignError(caught instanceof Error ? caught.message : 'Usta listesi alınamadı.')
+    } finally {
+      setTechniciansLoading(false)
     }
   }
 
@@ -327,11 +402,16 @@ export default function TechnicalService() {
   }, [])
 
   useEffect(() => {
+    void loadTechnicians()
+  }, [])
+
+  useEffect(() => {
     if (!selectedId) {
       detailRequestTokenRef.current += 1
       setSelectedEvents([])
       setSelectedListRequest(null)
       setSelectedDetailRequest(null)
+      setShowNearbyTechnicians(false)
       setDetailError(null)
       setDetailLoading(false)
       return
@@ -447,6 +527,24 @@ export default function TechnicalService() {
     assignTravelPreview.roundTripKm,
     assignTravelPreview.travelFeeAmount,
   )
+  const technicianMatches = technicians
+    .map((technician) => technicianMatchInfo(technician, modalRequest))
+    .sort((a, b) => {
+      if (a.rank !== b.rank) {
+        return a.rank - b.rank
+      }
+
+      if (a.distanceKm !== null && b.distanceKm !== null && a.distanceKm !== b.distanceKm) {
+        return a.distanceKm - b.distanceKm
+      }
+
+      return technicianDisplayName(a.technician).localeCompare(technicianDisplayName(b.technician), 'tr')
+    })
+  const sameCityTechnicians = technicianMatches.filter((match) => match.sameCity)
+  const otherCityTechnicians = technicianMatches.filter((match) => !match.sameCity)
+  const visibleTechnicianMatches = showNearbyTechnicians
+    ? technicianMatches
+    : sameCityTechnicians
 
   const unassignedCount = requests.filter((request) => {
     const isOpen = request.status !== 'Tamamlandı' && request.status !== 'İptal'
@@ -483,7 +581,24 @@ export default function TechnicalService() {
   ]
 
   const handleCreateChange = (field: keyof NewRequestForm, value: string) => {
-    setCreateForm((current) => ({ ...current, [field]: value }))
+    setCreateForm((current) => {
+      if (field === 'city') {
+        return {
+          ...current,
+          city: normalizeFormCity(value),
+          district: '',
+        }
+      }
+
+      if (field === 'district') {
+        return {
+          ...current,
+          district: normalizeFormDistrict(current.city, value),
+        }
+      }
+
+      return { ...current, [field]: value }
+    })
   }
 
   const handleCreateReset = () => {
@@ -498,6 +613,7 @@ export default function TechnicalService() {
     setScheduleHour('')
     setScheduleMinute('')
     setTravelRoundTripKm('')
+    setShowNearbyTechnicians(false)
     setAssignError(null)
   }
 
@@ -546,7 +662,11 @@ export default function TechnicalService() {
       return
     }
 
-    const selectedTechnician = assignTechnicianOption === 'Diğer' ? assignOtherTechnician.trim() : assignTechnicianOption
+    const isManualTechnician = assignTechnicianOption === 'other'
+    const selectedTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption)
+    const selectedTechnician = isManualTechnician
+      ? assignOtherTechnician.trim()
+      : selectedTechnicianRecord ? technicianDisplayName(selectedTechnicianRecord) : ''
     if (!selectedTechnician) {
       setAssignError('Lütfen bir usta seçin veya manuel isim girin.')
       return
@@ -572,9 +692,11 @@ export default function TechnicalService() {
       await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
         method: 'POST',
         body: JSON.stringify({
-          technician_name: selectedTechnician,
+          ...(isManualTechnician
+            ? { technician_name: selectedTechnician }
+            : { technical_service_technician_id: assignTechnicianOption }),
           travel_round_trip_km: parsedTravelRoundTripKm,
-          note: assignTechnicianOption === 'Diğer' ? assignNote || null : null,
+          note: isManualTechnician ? assignNote || null : null,
         }),
       })
 
@@ -652,8 +774,8 @@ export default function TechnicalService() {
         body: JSON.stringify({
           customer_name: createForm.customer,
           customer_phone: createForm.phone,
-          customer_city: createForm.city,
-          customer_district: createForm.district,
+          customer_city: normalizeFormCity(createForm.city),
+          customer_district: normalizeFormDistrict(createForm.city, createForm.district),
           service_address: createForm.address,
           product_name: createForm.product,
           serial_number: createForm.serialNumber || null,
@@ -688,10 +810,14 @@ export default function TechnicalService() {
               description="Montaj ve servis taleplerini takip edin, randevu ve talep detaylarını görüntüleyin."
             />
           </div>
-          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-            <DialogTrigger asChild>
-              <Button type="button">Yeni Servis Talebi</Button>
-            </DialogTrigger>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="secondary">
+              <Link href="/technical-service/technicians">Ustalar / Çilingirler</Link>
+            </Button>
+            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+              <DialogTrigger asChild>
+                <Button type="button">Yeni Servis Talebi</Button>
+              </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Yeni Servis Talebi</DialogTitle>
@@ -727,19 +853,37 @@ export default function TechnicalService() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="grid gap-2 text-sm font-medium text-slate-700">
                     İl
-                    <Input
+                    <select
                       value={createForm.city}
                       onChange={(event) => handleCreateChange('city', event.target.value)}
-                      placeholder="İl"
-                    />
+                      className={selectClassName}
+                    >
+                      <option value="">Seçiniz</option>
+                      {TURKEY_PROVINCES.map((province) => (
+                        <option key={province.plateCode} value={province.name}>
+                          {province.name}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label className="grid gap-2 text-sm font-medium text-slate-700">
                     İlçe
-                    <Input
+                    <select
                       value={createForm.district}
                       onChange={(event) => handleCreateChange('district', event.target.value)}
-                      placeholder="İlçe"
-                    />
+                      disabled={!createForm.city}
+                      className={selectClassName}
+                    >
+                      <option value="">{createForm.city ? 'Seçiniz' : 'Önce il seçiniz'}</option>
+                      {hasCreateDistrictFallback ? (
+                        <option value={createForm.district}>Mevcut değer: {createForm.district}</option>
+                      ) : null}
+                      {createDistrictOptions.map((district) => (
+                        <option key={district.normalizedName} value={district.name}>
+                          {district.name}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                 </div>
 
@@ -777,7 +921,7 @@ export default function TechnicalService() {
                   <select
                     value={createForm.serviceType}
                     onChange={(event) => handleCreateChange('serviceType', event.target.value)}
-                    className="border-input h-9 rounded-md border bg-transparent px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                    className={selectClassName}
                   >
                     <option value="">Seçiniz</option>
                     <option value="Montaj">Montaj</option>
@@ -805,7 +949,8 @@ export default function TechnicalService() {
                 </Button>
               </DialogFooter>
             </DialogContent>
-          </Dialog>
+            </Dialog>
+          </div>
 
           <Dialog open={assignDialogOpen} onOpenChange={(open) => {
             setAssignDialogOpen(open)
@@ -842,26 +987,80 @@ export default function TechnicalService() {
                 <fieldset className="grid gap-3">
                   <legend className="text-sm font-medium text-slate-700">Usta / Çilingir adı</legend>
                   <div className="grid gap-2">
-                    {TECHNICIANS.map((technician) => (
-                      <label
-                        key={technician}
-                        className="flex cursor-pointer items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300"
-                      >
-                        <input
-                          type="radio"
-                          name="assignTechnician"
-                          value={technician}
-                          checked={assignTechnicianOption === technician}
-                          onChange={() => setAssignTechnicianOption(technician)}
-                          className="mr-3 h-4 w-4 accent-primary"
-                        />
-                        {technician}
-                      </label>
+                    {techniciansLoading ? (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+                        Usta listesi yükleniyor...
+                      </div>
+                    ) : null}
+                    {!techniciansLoading && technicians.length === 0 ? (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                        Aktif usta kaydı bulunamadı. Manuel giriş için Diğer seçeneğini kullanabilirsiniz.
+                      </div>
+                    ) : null}
+                    {!techniciansLoading && technicians.length > 0 && sameCityTechnicians.length > 0 ? (
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Aynı şehirdeki ustalar</p>
+                    ) : null}
+                    {!techniciansLoading && technicians.length > 0 && sameCityTechnicians.length === 0 ? (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                        Bu taleple aynı şehirde aktif usta bulunamadı.
+                      </div>
+                    ) : null}
+                    {visibleTechnicianMatches.map((match, index) => (
+                      <div key={match.technician.id} className="grid gap-2">
+                        {showNearbyTechnicians && index === sameCityTechnicians.length && otherCityTechnicians.length > 0 ? (
+                          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Yakın / diğer şehirlerdeki ustalar</p>
+                        ) : null}
+                        <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300">
+                          <input
+                            type="radio"
+                            name="assignTechnician"
+                            value={match.technician.id}
+                            checked={assignTechnicianOption === match.technician.id}
+                            onChange={() => setAssignTechnicianOption(match.technician.id)}
+                            className="mt-1 h-4 w-4 accent-primary"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold">{technicianDisplayName(match.technician)}</span>
+                              <span className={[
+                                'rounded-full px-2 py-0.5 text-[0.68rem] font-semibold',
+                                match.rank === 0 ? 'bg-emerald-50 text-emerald-700' : match.rank === 1 ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600',
+                              ].join(' ')}>
+                                {match.badge}
+                              </span>
+                            </span>
+                            <span className="mt-1 block text-xs font-normal text-slate-500">
+                              {[match.technician.phone, [match.technician.city, match.technician.district].filter(Boolean).join(' / ')].filter(Boolean).join(' · ') || 'İletişim / konum bilgisi yok'}
+                            </span>
+                            {(match.technician.mikro_cari_adi || match.technician.mikro_cari_kodu || match.distanceKm !== null) ? (
+                              <span className="mt-1 block text-xs font-normal text-slate-500">
+                                {[match.technician.mikro_cari_adi || match.technician.mikro_cari_kodu, match.distanceKm !== null ? `Yaklaşık ${match.distanceKm.toLocaleString('tr-TR')} km` : null].filter(Boolean).join(' · ')}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      </div>
                     ))}
+                    {!showNearbyTechnicians && otherCityTechnicians.length > 0 ? (
+                      <Button type="button" variant="secondary" onClick={() => setShowNearbyTechnicians(true)}>
+                        Diğer / Yakın İlleri Göster
+                      </Button>
+                    ) : null}
+                    <label className="flex cursor-pointer items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300">
+                      <input
+                        type="radio"
+                        name="assignTechnician"
+                        value="other"
+                        checked={assignTechnicianOption === 'other'}
+                        onChange={() => setAssignTechnicianOption('other')}
+                        className="mr-3 h-4 w-4 accent-primary"
+                      />
+                      Diğer
+                      </label>
                   </div>
                 </fieldset>
 
-                {assignTechnicianOption === 'Diğer' ? (
+                {assignTechnicianOption === 'other' ? (
                   <div className="grid gap-4">
                     <label className="grid gap-2 text-sm font-medium text-slate-700">
                       Manuel usta adı
@@ -973,7 +1172,7 @@ export default function TechnicalService() {
                   disabled={
                     assignLoading ||
                     !assignTechnicianOption ||
-                    (assignTechnicianOption === 'Diğer' && !assignOtherTechnician.trim()) ||
+                    (assignTechnicianOption === 'other' && !assignOtherTechnician.trim()) ||
                     !scheduleDate ||
                     !scheduleHour ||
                     !scheduleMinute ||

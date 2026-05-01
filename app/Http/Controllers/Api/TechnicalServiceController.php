@@ -8,6 +8,7 @@ use App\Http\Requests\StoreTechnicalServiceRequest;
 use App\Http\Requests\UpdateTechnicalServiceRequest;
 use App\Http\Requests\UpdateTechnicalServiceRequestStatus;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceTechnician;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -189,7 +190,13 @@ class TechnicalServiceController extends Controller
     public function assign(AssignTechnicalServiceRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         $payload = $request->validated();
-        $technicalServiceRequest->technician_name = $payload['technician_name'];
+        $technician = isset($payload['technical_service_technician_id'])
+            ? TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id'])
+            : null;
+        $technicianName = $technician?->name ?? $payload['technician_name'];
+
+        $technicalServiceRequest->technical_service_technician_id = $technician?->id;
+        $technicalServiceRequest->technician_name = $technicianName;
         $travelSummary = $this->calculateTravelCosts((float) $payload['travel_round_trip_km']);
         $technicalServiceRequest->fill($travelSummary);
         $technicalServiceRequest->updated_by_user_id = $request->user()?->id;
@@ -203,7 +210,8 @@ class TechnicalServiceController extends Controller
             'to_status' => null,
             'author_user_id' => $request->user()?->id,
             'metadata' => [
-                'technician_name' => $payload['technician_name'],
+                'technical_service_technician_id' => $technician?->id,
+                'technician_name' => $technicianName,
                 'travel' => $travelSummary,
             ],
         ]);
