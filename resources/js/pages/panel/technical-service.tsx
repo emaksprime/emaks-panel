@@ -19,7 +19,15 @@ import {
   normalizeTurkishLocation,
   TURKEY_PROVINCES,
 } from '@/components/technical-service/turkey-locations'
-import type { MikroMountCheckResult, ServiceFilters as FilterState, ServiceRequest, ServiceTechnician, SummaryItem } from '@/components/technical-service/types'
+import type {
+  MikroMountCheckResult,
+  MikroSerialHistoryResponse,
+  ServiceFilters as FilterState,
+  ServiceRequest,
+  ServiceTechnician,
+  SummaryItem,
+  WarrantySerialResponse,
+} from '@/components/technical-service/types'
 
 type NewRequestForm = {
   customer: string
@@ -310,8 +318,12 @@ export default function TechnicalService() {
   const [mikroMountCheck, setMikroMountCheck] = useState<MikroMountCheckResult | null>(null)
   const [mikroMountLoading, setMikroMountLoading] = useState(false)
   const [mikroMountError, setMikroMountError] = useState<string | null>(null)
+  const [warranty, setWarranty] = useState<WarrantySerialResponse | null>(null)
+  const [warrantyLoading, setWarrantyLoading] = useState(false)
+  const [warrantyError, setWarrantyError] = useState<string | null>(null)
   const selectedIdRef = useRef<string | null>(null)
   const detailRequestTokenRef = useRef(0)
+  const serialLookupTokenRef = useRef(0)
   const createDistrictOptions = useMemo(() => getDistrictOptionsForProvince(createForm.city), [createForm.city])
   const hasCreateDistrictFallback = createForm.district.trim() !== ''
     && !createDistrictOptions.some((district) => district.normalizedName === normalizeTurkishLocation(createForm.district))
@@ -447,6 +459,9 @@ export default function TechnicalService() {
       setMikroMountCheck(null)
       setMikroMountError(null)
       setMikroMountLoading(false)
+      setWarranty(null)
+      setWarrantyError(null)
+      setWarrantyLoading(false)
       setShowNearbyTechnicians(false)
       setDetailError(null)
       setDetailLoading(false)
@@ -641,28 +656,58 @@ export default function TechnicalService() {
     setCreateForm(initialRequestForm)
   }
 
-  const handleMikroMountCheck = async () => {
-    const serialNo = modalRequest?.serialNumber?.trim()
+  useEffect(() => {
+    const serialNo = selectedDetailRequest?.serialNumber?.trim() ?? ''
+    const lookupToken = serialLookupTokenRef.current + 1
+    serialLookupTokenRef.current = lookupToken
+
+    setMikroMountCheck(null)
+    setMikroMountError(null)
+    setWarranty(null)
+    setWarrantyError(null)
 
     if (!serialNo) {
-      setMikroMountError('Mikro kontrolü için seri no gerekli.')
+      setMikroMountLoading(false)
+      setWarrantyLoading(false)
       return
     }
 
-    setMikroMountLoading(true)
-    setMikroMountError(null)
+    const isCurrentLookup = () => serialLookupTokenRef.current === lookupToken
+    const params = new URLSearchParams({ serial_no: serialNo })
 
-    try {
-      const params = new URLSearchParams({ serial_no: serialNo })
-      const response = await apiRequest(`/api/technical-service/mikro/serial-check?${params.toString()}`)
-      setMikroMountCheck(response as MikroMountCheckResult)
-    } catch (caught) {
-      setMikroMountError(caught instanceof Error ? caught.message : 'Mikro montaj kontrolü yapılamadı.')
-      setMikroMountCheck(null)
-    } finally {
+    setMikroMountLoading(true)
+    setWarrantyLoading(true)
+
+    void Promise.allSettled([
+      apiRequest(`/api/technical-service/mikro/serial-history?${params.toString()}`),
+      apiRequest(`/api/technical-service/warranty/serial?${params.toString()}`),
+    ]).then(([historyResponse, warrantyResponse]) => {
+      if (!isCurrentLookup()) {
+        return
+      }
+
+      if (historyResponse.status === 'fulfilled') {
+        setMikroMountCheck((historyResponse.value as MikroSerialHistoryResponse).decision)
+      } else {
+        setMikroMountCheck(null)
+        setMikroMountError(historyResponse.reason instanceof Error ? historyResponse.reason.message : 'Mikro montaj kontrolü yapılamadı.')
+      }
+
+      if (warrantyResponse.status === 'fulfilled') {
+        setWarranty(warrantyResponse.value as WarrantySerialResponse)
+      } else {
+        setWarranty(null)
+        setWarrantyError(warrantyResponse.reason instanceof Error ? warrantyResponse.reason.message : 'Garanti bilgisi alınamadı.')
+      }
+    }).finally(() => {
+      if (!isCurrentLookup()) {
+        return
+      }
+
       setMikroMountLoading(false)
-    }
-  }
+      setWarrantyLoading(false)
+    })
+  }, [selectedDetailRequest?.serialNumber])
 
   const handleAssignReset = () => {
     setAssignTechnicianOption('')
@@ -1535,6 +1580,9 @@ export default function TechnicalService() {
             setSelectedEvents([])
             setSelectedDetailRequest(null)
             setDetailError(null)
+            setWarranty(null)
+            setWarrantyError(null)
+            setWarrantyLoading(false)
           }
         }}>
           <DialogContent className="w-[calc(100vw-16px)] sm:w-[calc(100vw-24px)] sm:max-w-[900px] h-[96dvh] sm:h-[90vh] max-h-[96dvh] sm:max-h-[90vh] p-0 overflow-hidden flex flex-col rounded-[20px]">
@@ -1584,7 +1632,9 @@ export default function TechnicalService() {
                     mikroMountCheck={mikroMountCheck}
                     mikroMountLoading={mikroMountLoading}
                     mikroMountError={mikroMountError}
-                    onMikroMountCheck={() => void handleMikroMountCheck()}
+                    warranty={warranty}
+                    warrantyLoading={warrantyLoading}
+                    warrantyError={warrantyError}
                     onAssign={() => setAssignDialogOpen(true)}
                     onComplete={openCompleteDialog}
                     onReopen={() => setReopenDialogOpen(true)}
@@ -1644,6 +1694,9 @@ export default function TechnicalService() {
                   setMikroMountCheck(null)
                   setMikroMountError(null)
                   setMikroMountLoading(false)
+                  setWarranty(null)
+                  setWarrantyError(null)
+                  setWarrantyLoading(false)
                   setSelectedId(request.id)
                   setIsDetailDialogOpen(true)
                 }}
