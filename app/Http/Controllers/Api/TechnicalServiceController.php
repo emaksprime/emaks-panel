@@ -311,6 +311,163 @@ class TechnicalServiceController extends Controller
         ]);
     }
 
+    public function operationsDashboard(Request $request): JsonResponse
+    {
+        $filters = $request->validate([
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date'],
+            'status' => ['nullable', 'string', 'max:64'],
+            'service_type' => ['nullable', 'string', 'max:128'],
+            'city' => ['nullable', 'string', 'max:255'],
+            'technician_name' => ['nullable', 'string', 'max:255'],
+            'warranty_started' => ['nullable', 'boolean'],
+            'overdue' => ['nullable', 'boolean'],
+        ]);
+
+        $requests = $this->operationsDashboardQuery($filters)
+            ->orderByRaw('scheduled_at IS NULL')
+            ->orderBy('scheduled_at')
+            ->orderByDesc('created_at')
+            ->get();
+
+        $openStatuses = ['Tamamlandı', 'İptal'];
+        $todayAppointments = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)
+            ->values();
+        $overdue = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $this->isOverdueRequest($request))
+            ->values();
+        $warrantyStarted = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $request->service_type === 'Montaj' && $request->installation_completed_at !== null)
+            ->values();
+        $pastScheduledNotCompleted = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $this->isPastScheduledNotCompleted($request))
+            ->values();
+
+        return response()->json([
+            'summary' => [
+                'today_appointments' => $todayAppointments->count(),
+                'pending' => $requests->where('status', 'Yeni')->count(),
+                'assigned' => $requests->where('status', 'Atandı')->count(),
+                'scheduled' => $requests->where('status', 'Randevulu')->count(),
+                'in_progress' => $requests->where('status', 'Devam Ediyor')->count(),
+                'completed' => $requests->where('status', 'Tamamlandı')->count(),
+                'cancelled' => $requests->where('status', 'İptal')->count(),
+                'overdue' => $overdue->count(),
+                'warranty_started' => $warrantyStarted->count(),
+                'past_scheduled_not_completed' => $pastScheduledNotCompleted->count(),
+            ],
+            'today_appointments' => $todayAppointments->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request))->all(),
+            'overdue_requests' => $overdue->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request, true))->all(),
+            'warranty_started_requests' => $warrantyStarted->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request))->all(),
+            'past_scheduled_not_completed' => $pastScheduledNotCompleted->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request, true))->all(),
+            'technician_summary' => $requests
+                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->technician_name) !== '' ? $request->technician_name : 'Atanmadı')
+                ->map(fn ($items, string $technicianName) => [
+                    'technician_name' => $technicianName,
+                    'today_jobs' => $items->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)->count(),
+                    'open_jobs' => $items->whereNotIn('status', $openStatuses)->count(),
+                    'completed_jobs' => $items->where('status', 'Tamamlandı')->count(),
+                    'overdue_jobs' => $items->filter(fn (TechnicalServiceRequest $request) => $this->isOverdueRequest($request))->count(),
+                ])
+                ->sortByDesc('open_jobs')
+                ->values()
+                ->all(),
+            'city_summary' => $requests
+                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->customer_city) !== '' ? $request->customer_city : 'Belirtilmedi')
+                ->map(fn ($items, string $city) => [
+                    'city' => $city,
+                    'open_requests' => $items->whereNotIn('status', $openStatuses)->count(),
+                    'today_appointments' => $items->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)->count(),
+                    'overdue_requests' => $items->filter(fn (TechnicalServiceRequest $request) => $this->isOverdueRequest($request))->count(),
+                ])
+                ->sortByDesc('open_requests')
+                ->values()
+                ->all(),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function operationsDashboardQuery(array $filters)
+    {
+        return TechnicalServiceRequest::query()
+            ->when(! empty($filters['date_from']), fn ($query) => $query->whereDate('scheduled_at', '>=', $filters['date_from']))
+            ->when(! empty($filters['date_to']), fn ($query) => $query->whereDate('scheduled_at', '<=', $filters['date_to']))
+            ->when(! empty($filters['status']), fn ($query) => $query->where('status', $filters['status']))
+            ->when(! empty($filters['service_type']), fn ($query) => $query->where('service_type', $filters['service_type']))
+            ->when(! empty($filters['city']), fn ($query) => $query->where('customer_city', $filters['city']))
+            ->when(! empty($filters['technician_name']), fn ($query) => $query->where('technician_name', $filters['technician_name']))
+            ->when(array_key_exists('warranty_started', $filters), function ($query) use ($filters) {
+                return filter_var($filters['warranty_started'], FILTER_VALIDATE_BOOL)
+                    ? $query->whereNotNull('installation_completed_at')
+                    : $query->whereNull('installation_completed_at');
+            })
+            ->when(array_key_exists('overdue', $filters) && filter_var($filters['overdue'], FILTER_VALIDATE_BOOL), function ($query) {
+                $query->whereNotNull('scheduled_at')
+                    ->where('scheduled_at', '<', now())
+                    ->whereNotIn('status', ['Tamamlandı', 'İptal']);
+            });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function operationRequestPayload(TechnicalServiceRequest $request, bool $includeOverdue = false): array
+    {
+        return [
+            'id' => $request->id,
+            'mrn' => $request->mrn,
+            'customer_name' => $request->customer_name,
+            'customer_city' => $request->customer_city,
+            'customer_district' => $request->customer_district,
+            'product_name' => $request->product_name,
+            'product_model' => $request->product_model,
+            'serial_number' => $request->serial_number,
+            'service_type' => $request->service_type,
+            'technician_name' => $request->technician_name,
+            'scheduled_at' => $request->scheduled_at?->toISOString(),
+            'scheduled_time' => $request->scheduled_at?->format('H:i'),
+            'status' => $request->status,
+            'installation_completed_at' => $request->installation_completed_at?->toISOString(),
+            'warranty_started_at' => $request->installation_completed_at?->toDateString(),
+            'overdue_label' => $includeOverdue ? $this->overdueLabel($request) : null,
+        ];
+    }
+
+    private function isOverdueRequest(TechnicalServiceRequest $request): bool
+    {
+        return $request->scheduled_at !== null
+            && $request->scheduled_at->isPast()
+            && ! in_array($request->status, ['Tamamlandı', 'İptal'], true);
+    }
+
+    private function isPastScheduledNotCompleted(TechnicalServiceRequest $request): bool
+    {
+        return $request->scheduled_at !== null
+            && $request->scheduled_at->isPast()
+            && $request->installation_completed_at === null
+            && ! in_array($request->status, ['Tamamlandı', 'İptal'], true);
+    }
+
+    private function overdueLabel(TechnicalServiceRequest $request): ?string
+    {
+        if (! $request->scheduled_at) {
+            return null;
+        }
+
+        $minutes = max(0, (int) $request->scheduled_at->diffInMinutes(now()));
+        $days = intdiv($minutes, 1440);
+        $hours = intdiv($minutes % 1440, 60);
+
+        if ($days > 0) {
+            return $hours > 0 ? "{$days} gün {$hours} saat gecikmiş" : "{$days} gün gecikmiş";
+        }
+
+        return $hours > 0 ? "{$hours} saat gecikmiş" : "{$minutes} dakika gecikmiş";
+    }
+
     private function generateMrn(): string
     {
         $today = now()->format('Ymd');

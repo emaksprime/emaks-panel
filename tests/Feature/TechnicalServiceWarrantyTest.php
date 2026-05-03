@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\WarrantyCard;
 use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\WarrantyService;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -300,6 +301,115 @@ class TechnicalServiceWarrantyTest extends TestCase
         $request->refresh();
         $this->assertNull($request->completed_at);
         $this->assertNull($request->reopened_at);
+    }
+
+    public function test_operations_dashboard_counts_today_appointments_overdue_and_warranty_started_requests(): void
+    {
+        CarbonImmutable::setTestNow('2026-05-03 12:00:00');
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $today = $this->technicalServiceRequest([
+            'mrn' => 'MRN-TODAY',
+            'customer_name' => 'Bugün Müşteri',
+            'customer_city' => 'Adana',
+            'customer_district' => 'Seyhan',
+            'product_name' => 'Kapı',
+            'product_model' => 'M1',
+            'serial_number' => 'SN-TODAY',
+            'service_type' => 'Montaj',
+            'status' => 'Randevulu',
+            'technician_name' => 'Usta A',
+            'scheduled_at' => '2026-05-03 15:00:00',
+            'completed_at' => null,
+            'installation_completed_at' => null,
+        ]);
+        $overdue = $this->technicalServiceRequest([
+            'mrn' => 'MRN-OVERDUE',
+            'customer_city' => 'Ankara',
+            'status' => 'Randevulu',
+            'technician_name' => 'Usta A',
+            'scheduled_at' => '2026-05-01 09:00:00',
+            'completed_at' => null,
+            'installation_completed_at' => null,
+        ]);
+        $warrantyStarted = $this->technicalServiceRequest([
+            'mrn' => 'MRN-WARRANTY',
+            'customer_city' => 'Adana',
+            'service_type' => 'Montaj',
+            'status' => 'Tamamlandı',
+            'technician_name' => 'Usta B',
+            'scheduled_at' => '2026-05-02 09:00:00',
+            'completed_at' => '2026-05-02 18:00:00',
+            'installation_completed_at' => '2026-05-02 10:00:00',
+        ]);
+        $this->technicalServiceRequest([
+            'mrn' => 'MRN-CANCELLED-OLD',
+            'status' => 'İptal',
+            'scheduled_at' => '2026-05-01 09:00:00',
+            'completed_at' => null,
+            'installation_completed_at' => null,
+        ]);
+
+        $payload = $this->actingAs($user)
+            ->getJson('/api/technical-service/operations-dashboard')
+            ->assertOk()
+            ->json();
+
+        $this->assertSame(1, $payload['summary']['today_appointments']);
+        $this->assertSame(1, $payload['summary']['overdue']);
+        $this->assertSame(1, $payload['summary']['warranty_started']);
+        $this->assertSame(1, $payload['summary']['past_scheduled_not_completed']);
+        $this->assertSame($today->mrn, $payload['today_appointments'][0]['mrn']);
+        $this->assertSame($overdue->mrn, $payload['overdue_requests'][0]['mrn']);
+        $this->assertSame($warrantyStarted->mrn, $payload['warranty_started_requests'][0]['mrn']);
+        $this->assertStringContainsString('gecikmiş', $payload['overdue_requests'][0]['overdue_label']);
+    }
+
+    public function test_operations_dashboard_groups_technician_and_city_summaries(): void
+    {
+        CarbonImmutable::setTestNow('2026-05-03 12:00:00');
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->technicalServiceRequest([
+            'customer_city' => 'Adana',
+            'status' => 'Randevulu',
+            'technician_name' => 'Usta A',
+            'scheduled_at' => '2026-05-03 15:00:00',
+            'completed_at' => null,
+            'installation_completed_at' => null,
+        ]);
+        $this->technicalServiceRequest([
+            'customer_city' => 'Adana',
+            'status' => 'Devam Ediyor',
+            'technician_name' => 'Usta A',
+            'scheduled_at' => '2026-05-01 10:00:00',
+            'completed_at' => null,
+            'installation_completed_at' => null,
+        ]);
+        $this->technicalServiceRequest([
+            'customer_city' => 'İstanbul',
+            'status' => 'Tamamlandı',
+            'technician_name' => 'Usta B',
+            'scheduled_at' => '2026-05-02 10:00:00',
+            'completed_at' => '2026-05-02 12:00:00',
+            'installation_completed_at' => '2026-05-02 11:00:00',
+        ]);
+
+        $payload = $this->actingAs($user)
+            ->getJson('/api/technical-service/operations-dashboard')
+            ->assertOk()
+            ->json();
+
+        $ustaA = collect($payload['technician_summary'])->firstWhere('technician_name', 'Usta A');
+        $adana = collect($payload['city_summary'])->firstWhere('city', 'Adana');
+
+        $this->assertSame(1, $ustaA['today_jobs']);
+        $this->assertSame(2, $ustaA['open_jobs']);
+        $this->assertSame(0, $ustaA['completed_jobs']);
+        $this->assertSame(1, $ustaA['overdue_jobs']);
+        $this->assertSame(2, $adana['open_requests']);
+        $this->assertSame(1, $adana['today_appointments']);
+        $this->assertSame(1, $adana['overdue_requests']);
     }
 
     public function test_completing_installation_request_requires_actual_installation_date(): void

@@ -919,6 +919,9 @@ export default function TechnicalService() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="secondary">
+              <Link href="/technical-service/dashboard">Operasyon Dashboard</Link>
+            </Button>
+            <Button asChild variant="secondary">
               <Link href="/technical-service/technicians">Ustalar / Çilingirler</Link>
             </Button>
             <Button asChild variant="secondary">

@@ -43,6 +43,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/status', [TechnicalServiceController::class, 'updateStatus'])->name('api.technical-service.requests.status');
             Route::post('requests/{technicalServiceRequest}/assign', [TechnicalServiceController::class, 'assign'])->name('api.technical-service.requests.assign');
             Route::get('summary', [TechnicalServiceController::class, 'summary'])->name('api.technical-service.summary');
+            Route::get('operations-dashboard', [TechnicalServiceController::class, 'operationsDashboard'])->name('api.technical-service.operations-dashboard');
             Route::get('mikro/serial-check', [TechnicalServiceMikroController::class, 'check'])->name('api.technical-service.mikro.serial-check');
             Route::get('mikro/serial-history', [TechnicalServiceMikroController::class, 'history'])->name('api.technical-service.mikro.serial-history');
             Route::get('warranty/serial', [TechnicalServiceWarrantyController::class, 'serial'])->name('api.technical-service.warranty.serial');
@@ -76,6 +77,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:technical_service')->name('technical-service.serial-query');
+
+    Route::get('technical-service/dashboard', fn () => Inertia::render('panel/technical-service-dashboard', [
+        'page' => [
+            'title' => 'Teknik Servis İç Operasyon Pilot Dashboard',
+            'slug' => 'technical_service_operations_dashboard',
+            'routePath' => '/technical-service/dashboard',
+            'component' => 'panel/technical-service-dashboard',
+            'layoutType' => 'module',
+            'description' => 'İç operasyon teknik servis takip ekranı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:technical_service')->name('technical-service.operations-dashboard');
 
     Route::get('{panelPath}', PanelPageController::class)
         ->where('panelPath', '.*')
