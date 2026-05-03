@@ -51,6 +51,16 @@ const eventBadgeClassName = (event: MikroSerialHistoryEvent): string => {
   }
 }
 
+const formatSonradanMontaj = (decision: MikroMountCheckResult): string => {
+  const sourceLine = [
+    decision.sonradan_montaj_kaynagi,
+    decision.sonradan_montaj_tarihi ? formatDate(decision.sonradan_montaj_tarihi) : null,
+  ].filter(Boolean).join(' / ')
+  const cariLine = [decision.sonradan_montaj_cari_kodu, decision.sonradan_montaj_cari_unvani].filter(Boolean).join(' - ')
+
+  return [sourceLine, cariLine].filter(Boolean).join('\n')
+}
+
 export default function TechnicalServiceSerialQuery() {
   const [serialNo, setSerialNo] = useState('')
   const [result, setResult] = useState<MikroSerialHistoryResponse | null>(null)
@@ -162,11 +172,11 @@ export default function TechnicalServiceSerialQuery() {
                   ['İrsaliye', [formatDate(decision.irsaliye_tarihi), decision.irsaliye_seri, decision.irsaliye_sira].filter(Boolean).join(' / ')],
                   ['Fatura', [formatDate(decision.fatura_tarihi), decision.fatura_seri, decision.fatura_sira].filter(Boolean).join(' / ')],
                   ['Sipariş', [formatDate(decision.siparis_tarihi), decision.siparis_seri, decision.siparis_sira].filter(Boolean).join(' / ')],
-                  ['Sonradan Montaj', [decision.sonradan_montaj_kaynagi, formatDate(decision.sonradan_montaj_tarihi)].filter(Boolean).join(' / ')],
+                  ['Sonradan Montaj', formatSonradanMontaj(decision)],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
-                    <p className="mt-2 break-words text-slate-900">{value || '-'}</p>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-slate-900">{value || '-'}</p>
                   </div>
                 ))}
               </div>
@@ -177,8 +187,8 @@ export default function TechnicalServiceSerialQuery() {
         {result ? (
           <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">Mikro Geçmişi</h2>
-              <p className="mt-1 text-sm text-slate-500">Satış, iade, tekrar satış, fatura, sipariş ve sonradan montaj hareketleri kronolojik gösterilir.</p>
+              <h2 className="text-lg font-semibold text-slate-950">Cihaz Hareket Hikayesi</h2>
+              <p className="mt-1 text-sm text-slate-500">Seri numarasına ait satış, iade, tekrar satış, fatura, sipariş ve sonradan montaj hareketleri kronolojik olarak gösterilir.</p>
             </div>
 
             {result.items.length === 0 ? (
@@ -213,6 +223,8 @@ export default function TechnicalServiceSerialQuery() {
                       <span>Evrak: {[event.evrak_seri, event.evrak_sira].filter(Boolean).join(' / ') || '-'}</span>
                       <span>Sipariş: {[event.siparis_seri, event.siparis_sira].filter(Boolean).join(' / ') || '-'}</span>
                       <span>Fatura: {[event.fatura_seri, event.fatura_sira].filter(Boolean).join(' / ') || '-'}</span>
+                      <span>Hareket Grup Kodu 1: {event.hareket_grup_kodu_1 || '-'}</span>
+                      <span>Sorumluluk Kodu: {event.sorumluluk_kodu || '-'}</span>
                     </div>
 
                     {event.description ? (

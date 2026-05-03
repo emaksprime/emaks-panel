@@ -78,6 +78,16 @@ const formatOptionalDate = (value: string | null | undefined): string => {
   return date.toLocaleDateString('tr-TR')
 }
 
+const formatSonradanMontaj = (result: MikroMountCheckResult): string => {
+  const sourceLine = [
+    result.sonradan_montaj_kaynagi,
+    result.sonradan_montaj_tarihi ? formatOptionalDate(result.sonradan_montaj_tarihi) : null,
+  ].filter(Boolean).join(' / ')
+  const cariLine = [result.sonradan_montaj_cari_kodu, result.sonradan_montaj_cari_unvani].filter(Boolean).join(' - ')
+
+  return [sourceLine, cariLine].filter(Boolean).join('\n')
+}
+
 const mikroStatusClasses = (result: MikroMountCheckResult | null | undefined): string => {
   switch (result?.montaj_durumu) {
     case 'Montaj Dahil':
@@ -238,11 +248,11 @@ export function ServiceRequestDetails({
                     ['İrsaliye', [formatOptionalDate(mikroMountCheck.irsaliye_tarihi), mikroMountCheck.irsaliye_seri, mikroMountCheck.irsaliye_sira].filter(Boolean).join(' / ')],
                     ['Fatura', [formatOptionalDate(mikroMountCheck.fatura_tarihi), mikroMountCheck.fatura_seri, mikroMountCheck.fatura_sira].filter(Boolean).join(' / ')],
                     ['Sipariş', [formatOptionalDate(mikroMountCheck.siparis_tarihi), mikroMountCheck.siparis_seri, mikroMountCheck.siparis_sira].filter(Boolean).join(' / ')],
-                    ['Sonradan Montaj', [mikroMountCheck.sonradan_montaj_kaynagi, formatOptionalDate(mikroMountCheck.sonradan_montaj_tarihi)].filter(Boolean).join(' / ')],
+                    ['Sonradan Montaj', formatSonradanMontaj(mikroMountCheck)],
                   ].map(([label, value]) => (
                     <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
-                      <p className="mt-2 text-slate-900">{value || '-'}</p>
+                      <p className="mt-2 whitespace-pre-wrap break-words text-slate-900">{value || '-'}</p>
                     </div>
                   ))}
                 </div>

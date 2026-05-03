@@ -182,6 +182,8 @@ class MikroSerialNumberService
             'siparis_sira' => $this->nullableString($row['siparis_sira'] ?? null),
             'fatura_seri' => $this->nullableString($row['fatura_seri'] ?? null),
             'fatura_sira' => $this->nullableString($row['fatura_sira'] ?? null),
+            'hareket_grup_kodu_1' => $this->nullableString($row['hareket_grup_kodu_1'] ?? null),
+            'sorumluluk_kodu' => $this->nullableString($row['sorumluluk_kodu'] ?? null),
             'is_latest_valid_sale' => (bool) ($row['is_latest_valid_sale'] ?? false),
         ];
     }
@@ -442,6 +444,8 @@ serial_stock_movements AS (
         sh.sth_sip_uid AS siparis_guid,
         sh.sth_fat_uid AS fatura_guid,
         sh.sth_aciklama AS description,
+        CAST(sh.sth_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(COALESCE(NULLIF(LTRIM(RTRIM(sh.sth_cari_srm_merkezi)), ''), NULLIF(LTRIM(RTRIM(sh.sth_stok_srm_merkezi)), '')) AS NVARCHAR(50)) AS sorumluluk_kodu,
         s.sto_isim AS stok_adi,
         c.cari_unvan1 AS cari_unvani
     FROM CIHAZ_HAREKETLERI AS ch
@@ -502,6 +506,8 @@ SELECT
     CAST(sip.sip_evrakno_sira AS NVARCHAR(50)) AS siparis_sira,
     CAST(NULL AS NVARCHAR(50)) AS fatura_seri,
     m.fatura_sira,
+    m.hareket_grup_kodu_1,
+    m.sorumluluk_kodu,
     CASE WHEN latest.stok_hareket_guid = m.stok_hareket_guid THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS is_latest_valid_sale
 FROM serial_stock_movements AS m
 LEFT JOIN SIPARISLER AS sip ON sip.sip_Guid = m.siparis_guid
@@ -523,6 +529,8 @@ UNION ALL
     x.siparis_sira,
     x.fatura_seri,
     x.fatura_sira,
+    x.hareket_grup_kodu_1,
+    x.sorumluluk_kodu,
     CAST(0 AS bit) AS is_latest_valid_sale
 FROM (
     SELECT
@@ -534,7 +542,9 @@ FROM (
         CAST(sip.sip_evrakno_seri AS NVARCHAR(50)) AS siparis_seri,
         CAST(sip.sip_evrakno_sira AS NVARCHAR(50)) AS siparis_sira,
         CAST(NULL AS NVARCHAR(50)) AS fatura_seri,
-        CAST(NULL AS NVARCHAR(50)) AS fatura_sira
+        CAST(NULL AS NVARCHAR(50)) AS fatura_sira,
+        CAST(sip.sip_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(COALESCE(NULLIF(LTRIM(RTRIM(sip.sip_cari_sormerk)), ''), NULLIF(LTRIM(RTRIM(sip.sip_stok_sormerk)), '')) AS NVARCHAR(50)) AS sorumluluk_kodu
     FROM SIPARISLER AS sip
     CROSS JOIN query_params AS params
     WHERE sip.sip_stok_kod = params.installation_stock_code
@@ -551,7 +561,9 @@ FROM (
         CAST(NULL AS NVARCHAR(50)) AS siparis_seri,
         CAST(NULL AS NVARCHAR(50)) AS siparis_sira,
         CAST(NULL AS NVARCHAR(50)) AS fatura_seri,
-        CAST(sth.sth_belge_no AS NVARCHAR(50)) AS fatura_sira
+        CAST(sth.sth_belge_no AS NVARCHAR(50)) AS fatura_sira,
+        CAST(sth.sth_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(COALESCE(NULLIF(LTRIM(RTRIM(sth.sth_cari_srm_merkezi)), ''), NULLIF(LTRIM(RTRIM(sth.sth_stok_srm_merkezi)), '')) AS NVARCHAR(50)) AS sorumluluk_kodu
     FROM STOK_HAREKETLERI AS sth
     CROSS JOIN query_params AS params
     WHERE sth.sth_stok_kod = params.installation_stock_code
@@ -568,7 +580,9 @@ FROM (
         CAST(NULL AS NVARCHAR(50)) AS siparis_seri,
         CAST(NULL AS NVARCHAR(50)) AS siparis_sira,
         CAST(cha.cha_evrakno_seri AS NVARCHAR(50)) AS fatura_seri,
-        CAST(cha.cha_evrakno_sira AS NVARCHAR(50)) AS fatura_sira
+        CAST(cha.cha_evrakno_sira AS NVARCHAR(50)) AS fatura_sira,
+        CAST(cha.cha_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(cha.cha_srmrkkodu AS NVARCHAR(50)) AS sorumluluk_kodu
     FROM CARI_HESAP_HAREKETLERI AS cha
     CROSS JOIN query_params AS params
     CROSS JOIN latest_valid_sale AS latest_sale
@@ -577,7 +591,7 @@ FROM (
       AND ISNULL(cha.cha_aciklama, '') LIKE '%' + params.serial_no + '%'
 ) AS x
 LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = x.cari_kodu
-ORDER BY event_date ASC, event_type ASC
+ORDER BY event_date DESC, event_type ASC
 SQL;
     }
 }

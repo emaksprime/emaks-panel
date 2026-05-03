@@ -83,6 +83,8 @@ export type MikroSerialHistoryEvent = {
   siparis_sira?: string | null
   fatura_seri?: string | null
   fatura_sira?: string | null
+  hareket_grup_kodu_1?: string | null
+  sorumluluk_kodu?: string | null
   is_latest_valid_sale: boolean
 }
 
