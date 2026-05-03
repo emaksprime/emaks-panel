@@ -26,6 +26,7 @@ export type ServiceRequest = {
   notes: string
   scheduledAt?: string | null
   createdAt?: string | null
+  completedAt?: string | null
   travelRoundTripKm?: number | null
   travelBillableKm?: number | null
   travelFeeAmount?: number | null
@@ -93,6 +94,7 @@ export type MikroMountCheckResult = {
   montaj_durumu: MikroMountStatus
   montaj_ek_aciklama?: string | null
   cihaz_seri_no?: string | null
+  stok_kodu?: string | null
   stok_adi?: string | null
   irsaliye_tarihi?: string | null
   irsaliye_seri?: string | null
@@ -118,6 +120,37 @@ export type MikroSerialHistoryResponse = {
   serial_no: string
   decision: MikroMountCheckResult
   items: MikroSerialHistoryEvent[]
+}
+
+export type WarrantyStatus =
+  | 'Garanti Başlamadı'
+  | 'Garanti Aktif'
+  | 'Garanti Bitti'
+  | 'Değişimle Kapandı'
+  | 'Yeni SN’ye Devredildi'
+  | 'Yeniden Satış Bekliyor'
+
+export type WarrantySerialResponse = {
+  serial_no: string
+  status: WarrantyStatus
+  warranty_started_at?: string | null
+  warranty_ends_at?: string | null
+  remaining_days?: number | null
+  warranty_period_months: number
+  source?: string | null
+  last_sale?: {
+    date?: string | null
+    customer_code?: string | null
+    customer_name?: string | null
+    document_no?: string | null
+    fingerprint?: string | null
+  } | null
+  installation: {
+    completed_at?: string | null
+    source?: string | null
+  }
+  warnings: string[]
+  card?: Record<string, unknown> | null
 }
 
 export type ServiceFilters = {

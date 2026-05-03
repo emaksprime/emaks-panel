@@ -9,10 +9,13 @@ use App\Http\Requests\UpdateTechnicalServiceRequest;
 use App\Http\Requests\UpdateTechnicalServiceRequestStatus;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\TechnicalService\MikroSerialNumberService;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceController extends Controller
 {
@@ -152,15 +155,28 @@ class TechnicalServiceController extends Controller
     {
         $payload = $request->validated();
         $previousStatus = $technicalServiceRequest->status;
+        $isReopen = $payload['status'] === 'Yeni' && in_array($previousStatus, ['Tamamlandı', 'İptal'], true);
+        $previousCompletedAt = $technicalServiceRequest->completed_at;
+        $this->validateInstallationAfterLatestSale($technicalServiceRequest, $payload);
         $technicalServiceRequest->status = $payload['status'];
         $technicalServiceRequest->updated_by_user_id = $request->user()?->id;
 
-        if ($payload['status'] === 'Yeni') {
+        if ($isReopen) {
+            $technicalServiceRequest->cancelled_at = null;
+            $technicalServiceRequest->reopened_at = now();
+            $technicalServiceRequest->reopened_by_user_id = $request->user()?->id;
+            $technicalServiceRequest->reopen_reason = $payload['reopen_reason'] ?? null;
+            $technicalServiceRequest->reopen_note = $payload['reopen_note'] ?? ($payload['note'] ?? null);
+            $technicalServiceRequest->reopen_count = ((int) $technicalServiceRequest->reopen_count) + 1;
+        } elseif ($payload['status'] === 'Yeni') {
             $technicalServiceRequest->completed_at = null;
             $technicalServiceRequest->cancelled_at = null;
         } elseif ($payload['status'] === 'Tamamlandı') {
             $technicalServiceRequest->completed_at = now();
             $technicalServiceRequest->cancelled_at = null;
+            if ($technicalServiceRequest->service_type === 'Montaj' && ! empty($payload['installation_completed_at'])) {
+                $technicalServiceRequest->installation_completed_at = CarbonImmutable::parse($payload['installation_completed_at']);
+            }
             $technicalServiceRequest->resolution_notes = $payload['resolution_notes'] ?? $payload['note'] ?? null;
         } elseif ($payload['status'] === 'İptal') {
             $technicalServiceRequest->completed_at = null;
@@ -170,21 +186,62 @@ class TechnicalServiceController extends Controller
         $technicalServiceRequest->save();
 
         $eventTitle = 'Durum değişti';
-        if ($payload['status'] === 'Yeni' && in_array($previousStatus, ['Tamamlandı', 'İptal'], true)) {
+        $eventType = 'status_change';
+        if ($isReopen) {
             $eventTitle = 'Talep yeniden açıldı';
+            $eventType = 'technical_service_request_reopened';
         }
 
         $technicalServiceRequest->events()->create([
-            'event_type' => 'status_change',
+            'event_type' => $eventType,
             'title' => $eventTitle,
-            'note' => $payload['note'] ?? ($payload['resolution_notes'] ?? null),
+            'note' => $payload['reopen_note'] ?? $payload['note'] ?? ($payload['resolution_notes'] ?? null),
             'from_status' => $previousStatus,
             'to_status' => $payload['status'],
             'author_user_id' => $request->user()?->id,
-            'metadata' => [],
+            'metadata' => $isReopen ? [
+                'old_status' => $previousStatus,
+                'new_status' => $payload['status'],
+                'reason' => $payload['reopen_reason'] ?? null,
+                'note' => $payload['reopen_note'] ?? ($payload['note'] ?? null),
+                'user_id' => $request->user()?->id,
+                'completed_at_preserved' => $previousCompletedAt !== null,
+                'completed_at' => $previousCompletedAt?->toISOString(),
+            ] : [
+                'installation_completed_at' => $technicalServiceRequest->installation_completed_at?->toISOString(),
+                'installation_completion_note' => $payload['installation_completion_note'] ?? null,
+            ],
         ]);
 
         return response()->json(['request' => $technicalServiceRequest]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function validateInstallationAfterLatestSale(TechnicalServiceRequest $request, array $payload): void
+    {
+        if (
+            ($payload['status'] ?? null) !== 'Tamamlandı'
+            || $request->service_type !== 'Montaj'
+            || empty($payload['installation_completed_at'])
+            || empty($request->serial_number)
+        ) {
+            return;
+        }
+
+        $latestSale = app(MikroSerialNumberService::class)->latestValidSale($request->serial_number);
+        $saleDate = $latestSale['date'] ?? null;
+
+        if (! $saleDate) {
+            return;
+        }
+
+        if (CarbonImmutable::parse($payload['installation_completed_at'])->lessThan(CarbonImmutable::parse($saleDate)->startOfDay())) {
+            throw ValidationException::withMessages([
+                'installation_completed_at' => 'Fiili montaj tarihi son geçerli Mikro satış tarihinden önce olamaz.',
+            ]);
+        }
     }
 
     public function assign(AssignTechnicalServiceRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse

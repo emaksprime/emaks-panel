@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
+use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use Illuminate\Support\Facades\Route;
@@ -44,6 +45,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::get('summary', [TechnicalServiceController::class, 'summary'])->name('api.technical-service.summary');
             Route::get('mikro/serial-check', [TechnicalServiceMikroController::class, 'check'])->name('api.technical-service.mikro.serial-check');
             Route::get('mikro/serial-history', [TechnicalServiceMikroController::class, 'history'])->name('api.technical-service.mikro.serial-history');
+            Route::get('warranty/serial', [TechnicalServiceWarrantyController::class, 'serial'])->name('api.technical-service.warranty.serial');
         });
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {

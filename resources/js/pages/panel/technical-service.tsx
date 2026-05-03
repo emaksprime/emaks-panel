@@ -50,6 +50,7 @@ type ApiTechnicalServiceRequest = {
   technical_service_technician_id?: number | string | null
   technician_name?: string | null
   scheduled_at?: string | null
+  completed_at?: string | null
   description?: string | null
   resolution_notes?: string | null
   source_channel?: string | null
@@ -115,6 +116,15 @@ const CLOSURE_REASONS = [
   'Diğer',
 ] as const
 
+const REOPEN_REASONS = [
+  'Yanlışlıkla tamamlandı',
+  'Eksik fotoğraf / belge',
+  'Müşteri onayı hatası',
+  'Usta yanlış kapattı',
+  'Operasyon düzeltmesi',
+  'Diğer',
+] as const
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return 'Belirlenmedi'
@@ -130,6 +140,22 @@ function formatDateTime(value: string | null | undefined): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   })
+}
+
+function toDateTimeLocalValue(value: string | null | undefined): string {
+  const date = value ? new Date(value) : new Date()
+
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  const pad = (part: number) => String(part).padStart(2, '0')
+
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join('-') + `T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function normalizeSearchText(value: string | null | undefined): string {
@@ -229,6 +255,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     channel: request.source_channel ?? '',
     scheduledAt: request.scheduled_at ?? null,
     createdAt: request.created_at ?? null,
+    completedAt: request.completed_at ?? null,
     travelRoundTripKm: parseNullableNumber(request.travel_round_trip_km),
     travelBillableKm: parseNullableNumber(request.travel_billable_km),
     travelFeeAmount: parseNullableNumber(request.travel_fee_amount),
@@ -268,9 +295,12 @@ export default function TechnicalService() {
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
   const [completionReason, setCompletionReason] = useState('')
   const [completionOtherNote, setCompletionOtherNote] = useState('')
+  const [installationCompletedAt, setInstallationCompletedAt] = useState('')
+  const [installationCompletionNote, setInstallationCompletionNote] = useState('')
   const [completeLoading, setCompleteLoading] = useState(false)
   const [completeError, setCompleteError] = useState<string | null>(null)
   const [reopenDialogOpen, setReopenDialogOpen] = useState(false)
+  const [reopenReason, setReopenReason] = useState('')
   const [reopenNote, setReopenNote] = useState('')
   const [reopenLoading, setReopenLoading] = useState(false)
   const [reopenError, setReopenError] = useState<string | null>(null)
@@ -649,16 +679,34 @@ export default function TechnicalService() {
   const handleCompleteReset = () => {
     setCompletionReason('')
     setCompletionOtherNote('')
+    setInstallationCompletedAt('')
+    setInstallationCompletionNote('')
     setCompleteError(null)
   }
 
+  const openCompleteDialog = () => {
+    setInstallationCompletedAt(toDateTimeLocalValue(modalRequest?.scheduledAt ?? null))
+    setCompleteDialogOpen(true)
+  }
+
   const handleReopenReset = () => {
+    setReopenReason('')
     setReopenNote('')
     setReopenError(null)
   }
 
   const handleReopenSubmit = async () => {
     if (!selectedId) {
+      return
+    }
+
+    if (!reopenReason) {
+      setReopenError('Yeniden açma nedeni seçin.')
+      return
+    }
+
+    if (reopenReason === 'Diğer' && !reopenNote.trim()) {
+      setReopenError('Diğer nedeni seçildiğinde açıklama zorunludur.')
       return
     }
 
@@ -670,7 +718,9 @@ export default function TechnicalService() {
         method: 'POST',
         body: JSON.stringify({
           status: 'Yeni',
-          note: reopenNote || null,
+          reopen_reason: reopenReason,
+          reopen_note: reopenNote || null,
+          note: reopenNote || reopenReason,
         }),
       })
 
@@ -768,6 +818,27 @@ export default function TechnicalService() {
     }
 
     const nextStatus = completionReason === 'Montaj tamamlandı' ? 'Tamamlandı' : 'İptal'
+    const isCompletingInstallation = nextStatus === 'Tamamlandı' && modalRequest?.serviceType === 'Montaj'
+
+    if (isCompletingInstallation && !installationCompletedAt) {
+      setCompleteError('Fiili montaj tarihi zorunludur.')
+      return
+    }
+
+    if (isCompletingInstallation) {
+      const actualDate = new Date(installationCompletedAt)
+      const scheduledDate = modalRequest?.scheduledAt ? new Date(modalRequest.scheduledAt) : null
+      const nowDate = new Date()
+      const actualDateKey = actualDate.toISOString().slice(0, 10)
+      const scheduledDateKey = scheduledDate && !Number.isNaN(scheduledDate.getTime()) ? scheduledDate.toISOString().slice(0, 10) : null
+      const differsFromSchedule = scheduledDateKey !== null && actualDateKey !== scheduledDateKey
+      const olderThanOneDay = nowDate.getTime() - actualDate.getTime() > 24 * 60 * 60 * 1000
+
+      if ((differsFromSchedule || olderThanOneDay) && !installationCompletionNote.trim()) {
+        setCompleteError('Fiili montaj tarihi randevudan farklıysa veya kapanıştan 1 günden fazla eskiyse açıklama zorunludur.')
+        return
+      }
+    }
 
     setCompleteLoading(true)
     setCompleteError(null)
@@ -778,6 +849,13 @@ export default function TechnicalService() {
         body: JSON.stringify({
           status: nextStatus,
           resolution_notes: notes || null,
+          ...(isCompletingInstallation
+            ? {
+                installation_completed_at: installationCompletedAt,
+                installation_completion_note: installationCompletionNote || null,
+                note: installationCompletionNote || notes || null,
+              }
+            : {}),
         }),
       })
 
@@ -1305,6 +1383,33 @@ export default function TechnicalService() {
                     />
                   </label>
                 ) : null}
+
+                {completionReason === 'Montaj tamamlandı' && modalRequest?.serviceType === 'Montaj' ? (
+                  <div className="grid gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <div className="text-sm leading-6 text-amber-800">
+                      Garanti, talebin panelde kapatıldığı tarihte değil, fiili montaj tarihinde başlar.
+                    </div>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Fiili Montaj Tarihi
+                      <Input
+                        type="datetime-local"
+                        value={installationCompletedAt}
+                        max={toDateTimeLocalValue(null)}
+                        onChange={(event) => setInstallationCompletedAt(event.target.value)}
+                      />
+                      <span className="text-xs font-normal text-slate-600">Garanti bu tarihten itibaren başlar.</span>
+                    </label>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Fiili montaj açıklaması
+                      <textarea
+                        value={installationCompletionNote}
+                        onChange={(event) => setInstallationCompletionNote(event.target.value)}
+                        className="min-h-[84px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                        placeholder="Randevu tarihinden farklıysa veya geçmiş tarih girildiyse açıklama zorunlu"
+                      />
+                    </label>
+                  </div>
+                ) : null}
               </div>
 
               <DialogFooter className="gap-2">
@@ -1313,7 +1418,16 @@ export default function TechnicalService() {
                     İptal
                   </Button>
                 </DialogClose>
-                <Button type="button" onClick={handleCompleteSubmit} disabled={completeLoading || !completionReason || (completionReason === 'Diğer' && !completionOtherNote.trim())}>
+                <Button
+                  type="button"
+                  onClick={handleCompleteSubmit}
+                  disabled={
+                    completeLoading ||
+                    !completionReason ||
+                    (completionReason === 'Diğer' && !completionOtherNote.trim()) ||
+                    (completionReason === 'Montaj tamamlandı' && modalRequest?.serviceType === 'Montaj' && !installationCompletedAt)
+                  }
+                >
                   {completeLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </Button>
               </DialogFooter>
@@ -1346,13 +1460,45 @@ export default function TechnicalService() {
                 </div>
               ) : null}
 
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm leading-6 text-rose-700">
+                Bu talep daha önce tamamlandıysa garanti başlangıcı geri alınmaz. Yeniden açma işlemi sadece operasyonel düzeltme içindir.
+              </div>
+
+              {modalRequest?.serviceType === 'Montaj' && modalRequest.completedAt ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-800">
+                  Bu montaj talebi tamamlanmış görünüyor. Garanti başladıysa önerilen aksiyon yeni bağlı servis/takip talebi açmaktır.
+                </div>
+              ) : null}
+
+              <fieldset className="grid gap-3">
+                <legend className="text-sm font-medium text-slate-700">Yeniden açma nedeni</legend>
+                <div className="grid gap-2">
+                  {REOPEN_REASONS.map((reason) => (
+                    <label
+                      key={reason}
+                      className="flex cursor-pointer items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300"
+                    >
+                      <input
+                        type="radio"
+                        name="reopenReason"
+                        value={reason}
+                        checked={reopenReason === reason}
+                        onChange={() => setReopenReason(reason)}
+                        className="mr-3 h-4 w-4 accent-primary"
+                      />
+                      {reason}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
               <label className="grid gap-2 text-sm font-medium text-slate-700">
-                Yeniden açma nedeni / açıklama
+                Açıklama
                 <textarea
                   value={reopenNote}
                   onChange={(event) => setReopenNote(event.target.value)}
                   className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                  placeholder="Yeniden açma nedeni"
+                  placeholder={reopenReason === 'Diğer' ? 'Açıklama zorunlu' : 'Opsiyonel açıklama'}
                 />
               </label>
 
@@ -1362,7 +1508,7 @@ export default function TechnicalService() {
                     İptal
                   </Button>
                 </DialogClose>
-                <Button type="button" onClick={handleReopenSubmit} disabled={reopenLoading}>
+                <Button type="button" onClick={handleReopenSubmit} disabled={reopenLoading || !reopenReason || (reopenReason === 'Diğer' && !reopenNote.trim())}>
                   {reopenLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </Button>
               </DialogFooter>
@@ -1437,7 +1583,7 @@ export default function TechnicalService() {
                     mikroMountError={mikroMountError}
                     onMikroMountCheck={() => void handleMikroMountCheck()}
                     onAssign={() => setAssignDialogOpen(true)}
-                    onComplete={() => setCompleteDialogOpen(true)}
+                    onComplete={openCompleteDialog}
                     onReopen={() => setReopenDialogOpen(true)}
                   />
                 ) : (

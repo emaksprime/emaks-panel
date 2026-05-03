@@ -100,6 +100,60 @@ class MikroSerialNumberService
         ];
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function latestValidSale(string $serialNo): ?array
+    {
+        $serialNo = $this->cleanSerialNo($serialNo);
+        $history = $this->history($serialNo);
+        $decision = $history['decision'] ?? [];
+
+        if (! is_array($decision) || ! ($decision['found'] ?? false)) {
+            return null;
+        }
+
+        $latestSale = collect($history['items'] ?? [])
+            ->first(fn ($item) => is_array($item) && ($item['is_latest_valid_sale'] ?? false));
+
+        if (! is_array($latestSale)) {
+            return null;
+        }
+
+        $date = $latestSale['event_date'] ?? ($decision['irsaliye_tarihi'] ?? null);
+        $customerCode = $latestSale['cari_kodu'] ?? ($decision['asil_cari_kodu'] ?? null);
+        $customerName = $latestSale['cari_unvani'] ?? ($decision['asil_cari_unvani'] ?? null);
+        $documentNo = $this->documentNo(
+            $latestSale['evrak_seri'] ?? ($decision['irsaliye_seri'] ?? null),
+            $latestSale['evrak_sira'] ?? ($decision['irsaliye_sira'] ?? null),
+        );
+        $fingerprintParts = [
+            $serialNo,
+            $date,
+            $customerCode,
+            $documentNo,
+            $latestSale['fatura_sira'] ?? ($decision['fatura_sira'] ?? null),
+            $latestSale['siparis_seri'] ?? ($decision['siparis_seri'] ?? null),
+            $latestSale['siparis_sira'] ?? ($decision['siparis_sira'] ?? null),
+            $latestSale['stok_adi'] ?? ($decision['stok_adi'] ?? null),
+        ];
+
+        return [
+            'serial_no' => $serialNo,
+            'stock_code' => $this->nullableString($decision['stok_kodu'] ?? null),
+            'stock_name' => $this->nullableString($latestSale['stok_adi'] ?? ($decision['stok_adi'] ?? null)),
+            'date' => $this->nullableDate($date),
+            'customer_code' => $this->nullableString($customerCode),
+            'customer_name' => $this->nullableString($customerName),
+            'document_type' => 'İrsaliye',
+            'document_no' => $documentNo,
+            'fingerprint' => hash('sha256', implode('|', array_map(fn ($value) => trim((string) ($value ?? '')), $fingerprintParts))),
+            'installation_signal_date' => $this->nullableDate($decision['sonradan_montaj_tarihi'] ?? null),
+            'installation_signal_source' => $this->nullableString($decision['sonradan_montaj_kaynagi'] ?? null),
+            'different_customer_installation_warning' => (bool) ($decision['farkli_cari_uyarisi'] ?? false),
+        ];
+    }
+
     private function cleanSerialNo(string $serialNo): string
     {
         return trim($serialNo);
@@ -141,6 +195,7 @@ class MikroSerialNumberService
             'montaj_durumu' => (string) ($row['montaj_durumu'] ?? ($found ? 'Montaj Hariç' : 'Seri No Bulunamadı')),
             'montaj_ek_aciklama' => (string) ($row['montaj_ek_aciklama'] ?? ''),
             'cihaz_seri_no' => $this->nullableString($row['cihaz_seri_no'] ?? null),
+            'stok_kodu' => $this->nullableString($row['stok_kodu'] ?? null),
             'stok_adi' => $this->nullableString($row['stok_adi'] ?? null),
             'irsaliye_tarihi' => $this->nullableDate($row['irsaliye_tarihi'] ?? null),
             'irsaliye_seri' => $this->nullableString($row['irsaliye_seri'] ?? null),
@@ -206,6 +261,16 @@ class MikroSerialNumberService
         }
 
         return is_string($value) ? $value : (string) $value;
+    }
+
+    private function documentNo(mixed $series, mixed $number): ?string
+    {
+        $parts = array_filter([
+            $this->nullableString($series),
+            $this->nullableString($number),
+        ]);
+
+        return $parts === [] ? null : implode('/', $parts);
     }
 
     private function decisionSql(): string
@@ -392,6 +457,7 @@ SELECT
         ELSE 'Son geçerli satış için Mikro’da montaj ödemesi bulunamadı.'
     END AS montaj_ek_aciklama,
     ls.cihaz_seri_no,
+    ls.stok_kodu,
     ls.stok_adi,
     ls.hareket_tarihi AS irsaliye_tarihi,
     ls.irsaliye_seri,
