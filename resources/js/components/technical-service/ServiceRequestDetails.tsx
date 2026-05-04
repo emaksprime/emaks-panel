@@ -2,7 +2,7 @@ import { Link } from '@inertiajs/react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { getServicePaymentInfo } from './utils'
+import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 import type { MikroMountCheckResult, ServiceRequest, ServiceRequestEvent, WarrantySerialResponse } from './types'
 
 const statusVariant = (status: ServiceRequest['status']) => {
@@ -55,30 +55,11 @@ type ServiceRequestDetailsProps = {
 }
 
 const eventTime = (timestamp: string): string => {
-  const date = new Date(timestamp)
-
-  if (Number.isNaN(date.getTime())) {
-    return 'Bilinmiyor'
-  }
-
-  return date.toLocaleString('tr-TR', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  })
+  return formatTechnicalServiceDateTime(timestamp, 'Bilinmiyor')
 }
 
 const formatOptionalDate = (value: string | null | undefined): string => {
-  if (!value) {
-    return '-'
-  }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleDateString('tr-TR')
+  return formatTechnicalServiceDate(value)
 }
 
 const formatDocument = (...parts: Array<string | null | undefined>): string => parts.filter(Boolean).join(' / ')

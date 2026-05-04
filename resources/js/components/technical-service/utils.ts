@@ -1,5 +1,88 @@
 import type { ServiceRequest } from './types'
 
+const padDateTimePart = (part: number): string => String(part).padStart(2, '0')
+
+export function formatTechnicalServiceDate(value: string | null | undefined): string {
+  if (!value) {
+    return '-'
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return [
+    padDateTimePart(date.getDate()),
+    padDateTimePart(date.getMonth() + 1),
+    date.getFullYear(),
+  ].join('.')
+}
+
+export function formatTechnicalServiceTime(value: string | null | undefined): string {
+  if (!value) {
+    return '-'
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return `${padDateTimePart(date.getHours())}:${padDateTimePart(date.getMinutes())}`
+}
+
+export function formatTechnicalServiceDateTime(value: string | null | undefined, fallback = '-'): string {
+  if (!value) {
+    return fallback
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return fallback
+  }
+
+  return `${formatTechnicalServiceDate(value)} ${formatTechnicalServiceTime(value)}`
+}
+
+export function toTechnicalServiceDateInputValue(value: string | null | undefined): string {
+  const date = value ? new Date(value) : new Date()
+
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  return [
+    date.getFullYear(),
+    padDateTimePart(date.getMonth() + 1),
+    padDateTimePart(date.getDate()),
+  ].join('-')
+}
+
+export function toTechnicalServiceTimeInputValue(value: string | null | undefined): string {
+  const date = value ? new Date(value) : new Date()
+
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  return `${padDateTimePart(date.getHours())}:${padDateTimePart(date.getMinutes())}`
+}
+
+export function toTechnicalServiceDateTimeInputValue(value: string | null | undefined): string {
+  const date = toTechnicalServiceDateInputValue(value)
+  const time = toTechnicalServiceTimeInputValue(value)
+
+  return date && time ? `${date}T${time}` : ''
+}
+
+export function combineTechnicalServiceDateTime(date: string, time: string): string {
+  return date && time ? `${date}T${time}:00` : ''
+}
+
 export function normalizeTechnicalServiceText(value: string | null | undefined): string {
   return String(value ?? '')
     .trim()

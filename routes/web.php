@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
@@ -44,6 +45,12 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/assign', [TechnicalServiceController::class, 'assign'])->name('api.technical-service.requests.assign');
             Route::get('summary', [TechnicalServiceController::class, 'summary'])->name('api.technical-service.summary');
             Route::get('operations-dashboard', [TechnicalServiceController::class, 'operationsDashboard'])->name('api.technical-service.operations-dashboard');
+            Route::post('earnings/periods/calculate', [TechnicalServiceEarningController::class, 'calculate'])->name('api.technical-service.earnings.periods.calculate');
+            Route::get('earnings', [TechnicalServiceEarningController::class, 'index'])->name('api.technical-service.earnings.index');
+            Route::get('earnings/{earning}', [TechnicalServiceEarningController::class, 'show'])->name('api.technical-service.earnings.show');
+            Route::patch('earnings/{earning}', [TechnicalServiceEarningController::class, 'update'])->name('api.technical-service.earnings.update');
+            Route::post('earnings/{earning}/mark-paid', [TechnicalServiceEarningController::class, 'markPaid'])->name('api.technical-service.earnings.mark-paid');
+            Route::get('earnings/{earning}/whatsapp-text', [TechnicalServiceEarningController::class, 'whatsappText'])->name('api.technical-service.earnings.whatsapp-text');
             Route::get('mikro/serial-check', [TechnicalServiceMikroController::class, 'check'])->name('api.technical-service.mikro.serial-check');
             Route::get('mikro/serial-history', [TechnicalServiceMikroController::class, 'history'])->name('api.technical-service.mikro.serial-history');
             Route::get('warranty/serial', [TechnicalServiceWarrantyController::class, 'serial'])->name('api.technical-service.warranty.serial');
@@ -89,6 +96,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:technical_service')->name('technical-service.operations-dashboard');
+
+    Route::get('technical-service/earnings', fn () => Inertia::render('panel/technical-service-earnings', [
+        'page' => [
+            'title' => 'Servis Hakedişleri',
+            'slug' => 'technical_service_earnings',
+            'routePath' => '/technical-service/earnings',
+            'component' => 'panel/technical-service-earnings',
+            'layoutType' => 'module',
+            'description' => 'Servis ve çilingir aylık hakediş takip ekranı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:technical_service')->name('technical-service.earnings');
 
     Route::get('{panelPath}', PanelPageController::class)
         ->where('panelPath', '.*')

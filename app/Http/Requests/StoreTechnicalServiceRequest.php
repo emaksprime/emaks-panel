@@ -37,6 +37,7 @@ class StoreTechnicalServiceRequest extends FormRequest
             'description' => ['nullable', 'string', 'max:2000'],
             'resolution_notes' => ['nullable', 'string', 'max:2000'],
             'source_channel' => ['nullable', 'string', 'max:128'],
+            'technician_payment_amount' => ['nullable', 'numeric', 'min:0'],
         ];
     }
 }

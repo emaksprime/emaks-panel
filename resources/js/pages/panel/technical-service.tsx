@@ -9,7 +9,15 @@ import { ServiceSummaryCards } from '@/components/technical-service/ServiceSumma
 import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
-import { calculateTravelPreview, formatTechnicalServiceMrn, getServicePaymentInfo, normalizeTechnicalServiceText } from '@/components/technical-service/utils'
+import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
+import {
+  calculateTravelPreview,
+  formatTechnicalServiceDateTime,
+  formatTechnicalServiceMrn,
+  getServicePaymentInfo,
+  normalizeTechnicalServiceText,
+  toTechnicalServiceDateTimeInputValue,
+} from '@/components/technical-service/utils'
 import {
   findProvinceByName,
   getDistrictOptionsForProvince,
@@ -133,39 +141,6 @@ const REOPEN_REASONS = [
   'Diğer',
 ] as const
 
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) {
-    return 'Belirlenmedi'
-  }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return 'Belirlenmedi'
-  }
-
-  return date.toLocaleString('tr-TR', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-}
-
-function toDateTimeLocalValue(value: string | null | undefined): string {
-  const date = value ? new Date(value) : new Date()
-
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-
-  const pad = (part: number) => String(part).padStart(2, '0')
-
-  return [
-    date.getFullYear(),
-    pad(date.getMonth() + 1),
-    pad(date.getDate()),
-  ].join('-') + `T${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
 function normalizeSearchText(value: string | null | undefined): string {
   return normalizeTechnicalServiceText(value)
     .replace(/[-\s\p{Punctuation}]+/gu, '')
@@ -256,7 +231,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
       ? null
       : String(request.technical_service_technician_id),
     technician: request.technician_name ?? 'Atanmadı',
-    appointment: formatDateTime(request.scheduled_at),
+    appointment: formatTechnicalServiceDateTime(request.scheduled_at, 'Belirlenmedi'),
     status: request.status,
     address: request.service_address,
     notes: request.description ?? request.resolution_notes ?? '',
@@ -730,7 +705,7 @@ export default function TechnicalService() {
   }
 
   const openCompleteDialog = () => {
-    setInstallationCompletedAt(toDateTimeLocalValue(modalRequest?.scheduledAt ?? null))
+    setInstallationCompletedAt(toTechnicalServiceDateTimeInputValue(modalRequest?.scheduledAt ?? null))
     setCompleteDialogOpen(true)
   }
 
@@ -871,6 +846,11 @@ export default function TechnicalService() {
     }
 
     if (isCompletingInstallation) {
+      if (!/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(installationCompletedAt)) {
+        setCompleteError('Fiili montaj saati 00:00 - 23:59 aralığında HH:mm formatında olmalıdır.')
+        return
+      }
+
       const actualDate = new Date(installationCompletedAt)
       const scheduledDate = modalRequest?.scheduledAt ? new Date(modalRequest.scheduledAt) : null
       const nowDate = new Date()
@@ -965,6 +945,9 @@ export default function TechnicalService() {
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="secondary">
               <Link href="/technical-service/dashboard">Operasyon Dashboard</Link>
+            </Button>
+            <Button asChild variant="secondary">
+              <Link href="/technical-service/earnings">Hakedişler</Link>
             </Button>
             <Button asChild variant="secondary">
               <Link href="/technical-service/technicians">Ustalar / Çilingirler</Link>
@@ -1439,11 +1422,10 @@ export default function TechnicalService() {
                     </div>
                     <label className="grid gap-2 text-sm font-medium text-slate-700">
                       Fiili Montaj Tarihi
-                      <Input
-                        type="datetime-local"
+                      <DateTimeFields
                         value={installationCompletedAt}
-                        max={toDateTimeLocalValue(null)}
-                        onChange={(event) => setInstallationCompletedAt(event.target.value)}
+                        max={toTechnicalServiceDateTimeInputValue(null)}
+                        onChange={setInstallationCompletedAt}
                       />
                       <span className="text-xs font-normal text-slate-600">Garanti bu tarihten itibaren başlar.</span>
                     </label>

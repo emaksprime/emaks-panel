@@ -47,6 +47,7 @@ class TechnicalServiceRequest extends Model
         'travel_round_trip_km',
         'travel_billable_km',
         'travel_fee_amount',
+        'technician_payment_amount',
         'travel_calculation_source',
         'travel_calculated_at',
         'created_by_user_id',
@@ -64,6 +65,7 @@ class TechnicalServiceRequest extends Model
         'travel_round_trip_km' => 'decimal:2',
         'travel_billable_km' => 'decimal:2',
         'travel_fee_amount' => 'decimal:2',
+        'technician_payment_amount' => 'decimal:2',
         'travel_calculated_at' => 'datetime',
     ];
 

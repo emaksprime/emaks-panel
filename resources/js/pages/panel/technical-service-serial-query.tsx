@@ -5,20 +5,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
+import { formatTechnicalServiceDate } from '@/components/technical-service/utils'
 import type { MikroMountCheckResult, MikroSerialHistoryEvent, MikroSerialHistoryResponse, WarrantySerialResponse } from '@/components/technical-service/types'
 
 const formatDate = (value: string | null | undefined): string => {
-  if (!value) {
-    return '-'
-  }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleDateString('tr-TR')
+  return formatTechnicalServiceDate(value)
 }
 
 const statusClassName = (decision: MikroMountCheckResult | null | undefined): string => {

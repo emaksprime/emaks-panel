@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
+import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 
 type OperationRequest = {
   id: number | string
@@ -86,17 +87,7 @@ const cardClassName = (tone: string): string => {
 }
 
 const formatDateTime = (value: string | null | undefined): string => {
-  if (!value) {
-    return '-'
-  }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })
+  return formatTechnicalServiceDateTime(value)
 }
 
 function RequestList({ title, items, tone = 'slate', showOverdue = false, showWarranty = false }: {
@@ -205,6 +196,7 @@ export default function TechnicalServiceDashboard() {
           />
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="secondary"><Link href="/technical-service">Talepler</Link></Button>
+            <Button asChild variant="secondary"><Link href="/technical-service/earnings">Hakedişler</Link></Button>
             <Button asChild variant="secondary"><Link href="/technical-service/serial-query">Seri No Sorgu</Link></Button>
             <Button type="button" onClick={() => void loadDashboard()} disabled={loading}>
               {loading ? 'Yükleniyor...' : 'Yenile'}
