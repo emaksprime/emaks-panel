@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Services\TechnicalService\WarrantyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use RuntimeException;
 
 class TechnicalServiceWarrantyController extends Controller
 {
@@ -20,6 +21,16 @@ class TechnicalServiceWarrantyController extends Controller
             'serial_no' => ['required', 'string', 'min:2', 'max:128'],
         ]);
 
-        return response()->json($this->warranties->statusForSerial($payload['serial_no']));
+        try {
+            return response()->json($this->warranties->statusForSerial($payload['serial_no']));
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'ok' => false,
+                'error' => $exception->getMessage(),
+                'rows' => [],
+                'meta' => [],
+                'request' => [],
+            ], 502);
+        }
     }
 }

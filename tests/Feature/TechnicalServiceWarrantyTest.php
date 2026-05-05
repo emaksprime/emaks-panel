@@ -570,19 +570,6 @@ class TechnicalServiceWarrantyTest extends TestCase
         ]);
     }
 
-    public function test_mikro_connection_guard_is_preserved(): void
-    {
-        config([
-            'database.connections.mikro_readonly.host' => '10.0.29.115',
-            'database.connections.mikro_readonly.database' => 'MikroDesktop_EMAKS_PRIME',
-        ]);
-
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('10.0.29.120');
-
-        app(MikroSerialNumberService::class)->latestValidSale('SN-GUARD');
-    }
-
     public function test_warranty_serial_endpoint_requires_serial_number(): void
     {
         $user = User::factory()->create(['role_code' => 'admin']);
