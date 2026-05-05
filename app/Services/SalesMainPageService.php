@@ -8,7 +8,6 @@ use App\Models\PageConfig;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
-use RuntimeException;
 
 class SalesMainPageService
 {
@@ -79,20 +78,7 @@ class SalesMainPageService
         $source = $this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source();
 
         $effectiveRepresentativeCode = $this->effectiveRepresentativeCode($user, $scope);
-        $allowed = collect($source->allowed_params ?? []);
-        $whitelistedParameters = collect([
-            'date_from' => $filters['date_from'],
-            'date_to' => $filters['date_to'],
-            'grain' => $filters['grain'],
-            'detail_type' => $filters['detail_type'],
-            'scope_key' => $normalizedScopeKey,
-            'rep_code' => $effectiveRepresentativeCode,
-            'cari_filter' => $filters['cari_filter'],
-            'customer_filter' => $filters['cari_filter'],
-            'search' => $input['search'] ?? null,
-            'page' => $input['page'] ?? 1,
-            'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
-        ])->only($allowed)->all();
+        $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input);
 
         $this->compileTemplate($source, $whitelistedParameters);
 
@@ -102,11 +88,21 @@ class SalesMainPageService
             : collect($source->preview_payload[$filters['detail_type']] ?? []);
 
         if ($rows->isEmpty()) {
-            if ($filters['cari_filter'] !== '') {
-                return $this->emptySalesDataset($user, $page, $source, $scope, $filters, $normalizedScopeKey, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult);
-            }
+            $fallbackSource = $this->fallbackSourceForEmptyRows($source, $normalizedScopeKey);
 
-            throw new RuntimeException('Seçili filtrelerde satış kaydı bulunamadı.');
+            if ($fallbackSource !== null) {
+                $source = $fallbackSource;
+                $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input);
+                $this->compileTemplate($source, $whitelistedParameters);
+
+                $rows = $this->usesN8nGateway($source)
+                    ? collect($this->fetchN8nRows($source, $filters, $scope, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult))
+                    : collect($source->preview_payload[$filters['detail_type']] ?? []);
+            }
+        }
+
+        if ($rows->isEmpty()) {
+            return $this->emptySalesDataset($user, $page, $source, $scope, $filters, $normalizedScopeKey, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult);
         }
 
         $groupRows = $rows
@@ -226,6 +222,9 @@ class SalesMainPageService
     ): array {
         $periodLabel = $this->periodLabel($filters['date_from'], $filters['date_to']);
         $isLive = $this->usesN8nGateway($source);
+        $notice = $filters['cari_filter'] !== ''
+            ? 'Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.'
+            : 'Seçili filtrelerde satış kaydı bulunamadı.';
 
         return [
             'filters' => [
@@ -280,7 +279,7 @@ class SalesMainPageService
                 'driver' => $source->db_type,
                 'status' => $source->active ? 'active' : 'inactive',
                 'mode' => $isLive ? 'live' : 'preview',
-                'notice' => 'Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.',
+                'notice' => $notice,
                 'whitelistedParameters' => $whitelistedParameters,
                 'gatewayMeta' => $gatewayResult['meta'] ?? null,
                 'gatewayRequest' => $gatewayResult['request'] ?? null,
@@ -316,6 +315,44 @@ class SalesMainPageService
     private function normalizeScopeKey(string $scopeKey): string
     {
         return str_replace('-', '_', $scopeKey);
+    }
+
+    /**
+     * @param  array<string, string>  $filters
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function whitelistedParameters(DataSource $source, array $filters, ?string $effectiveRepresentativeCode, array $input): array
+    {
+        return collect([
+            'date_from' => $filters['date_from'],
+            'date_to' => $filters['date_to'],
+            'grain' => $filters['grain'],
+            'detail_type' => $filters['detail_type'],
+            'scope_key' => $filters['scope_key'],
+            'rep_code' => $effectiveRepresentativeCode,
+            'cari_filter' => $filters['cari_filter'],
+            'customer_filter' => $filters['cari_filter'],
+            'search' => $input['search'] ?? null,
+            'page' => $input['page'] ?? 1,
+            'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
+        ])->only(collect($source->allowed_params ?? []))->all();
+    }
+
+    private function fallbackSourceForEmptyRows(DataSource $source, string $scopeKey): ?DataSource
+    {
+        if ($source->code === 'sales_main_dashboard') {
+            return null;
+        }
+
+        if (! in_array($this->normalizeScopeKey($scopeKey), ['online_perakende', 'bayi_proje'], true)) {
+            return null;
+        }
+
+        return DataSource::query()
+            ->where('code', 'sales_main_dashboard')
+            ->where('active', true)
+            ->first();
     }
 
     /**
@@ -429,6 +466,11 @@ class SalesMainPageService
         $canSeeAll = $this->access->userCanAccess($user, 'sales_main_all');
         $userRepCode = trim((string) ($user?->temsilci_kodu ?? ''));
         $scopeRepCode = trim((string) ($scope['repCode'] ?? ''));
+        $scopeResourceCode = $this->scopeResourceCode($scope);
+
+        if (in_array($scopeResourceCode, ['sales_online', 'sales_bayi'], true)) {
+            return null;
+        }
 
         if ($canSeeAll) {
             if (($scope['allowAll'] ?? false) === true && ($scope['salesView'] ?? 'tumu') === 'tumu') {

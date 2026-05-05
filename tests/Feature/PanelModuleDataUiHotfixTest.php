@@ -14,6 +14,7 @@ use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 class PanelModuleDataUiHotfixTest extends TestCase
@@ -455,10 +456,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
     public function test_sales_selected_customer_empty_rows_return_empty_dataset_without_502(): void
     {
         Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
-                'ok' => true,
-                'rows' => [],
-            ]),
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::sequence()
+                ->push(['ok' => true, 'rows' => []])
+                ->push(['ok' => true, 'rows' => []]),
         ]);
 
         $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
@@ -471,11 +471,150 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertSame('sales_online_perakende_detail', $payload['queryMeta']['dataSource']);
+        $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
         $this->assertSame('Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.', $payload['queryMeta']['notice']);
         $this->assertSame([], $payload['table']['rows']);
         $this->assertEquals(0, $payload['kpis'][0]['raw']);
         $this->assertEquals(0, $payload['chart']['totalNet']);
+    }
+
+    public function test_sales_empty_rows_return_empty_dataset_without_customer_filter(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
+        $this->assertSame('Seçili filtrelerde satış kaydı bulunamadı.', $payload['queryMeta']['notice']);
+        $this->assertSame([], $payload['table']['rows']);
+        $this->assertEquals(0, $payload['chart']['totalNet']);
+    }
+
+    public function test_sales_online_and_bayi_scope_allow_without_representative_code_sends_null_rep_code(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Grup A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $onlineUser = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
+        UserAccess::query()->create([
+            'user_id' => $onlineUser->id,
+            'resource_code' => 'sales_online',
+            'can_view' => true,
+        ]);
+
+        $onlinePayload = app(SalesMainPageService::class)->dataset($onlineUser, [
+            'scope_key' => 'online_perakende',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('sales_online_perakende_detail', $onlinePayload['queryMeta']['dataSource']);
+        $this->assertSame('online_perakende', $onlinePayload['scope']['key']);
+        $this->assertNull($onlinePayload['scope']['effectiveRepresentativeCode']);
+        $this->assertNull($onlinePayload['queryMeta']['gatewayRequest']['rep_code'] ?? null);
+
+        $bayiUser = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
+        UserAccess::query()->create([
+            'user_id' => $bayiUser->id,
+            'resource_code' => 'sales_bayi',
+            'can_view' => true,
+        ]);
+
+        $bayiPayload = app(SalesMainPageService::class)->dataset($bayiUser, [
+            'scope_key' => 'bayi_proje',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('sales_bayi_proje_detail', $bayiPayload['queryMeta']['dataSource']);
+        $this->assertSame('bayi_proje', $bayiPayload['scope']['key']);
+        $this->assertNull($bayiPayload['scope']['effectiveRepresentativeCode']);
+        $this->assertNull($bayiPayload['queryMeta']['gatewayRequest']['rep_code'] ?? null);
+    }
+
+    public function test_sales_online_empty_special_source_falls_back_to_main_dashboard_with_same_scope(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::sequence()
+                ->push(['ok' => true, 'rows' => []])
+                ->push([
+                    'ok' => true,
+                    'rows' => [
+                        [
+                            'satir_tipi' => 'GRUP',
+                            'siralama_1' => 1,
+                            'cari_grup_adi' => 'Online Grup',
+                            'adet' => 2,
+                            'ciro' => 250,
+                        ],
+                    ],
+                ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'online_perakende',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
+        $this->assertSame('online_perakende', $payload['scope']['key']);
+        $this->assertEquals(250, $payload['chart']['totalNet']);
+
+        Http::assertSentCount(2);
+    }
+
+    public function test_user_without_sales_scope_cannot_fetch_sales_dataset(): void
+    {
+        $user = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
+
+        try {
+            app(SalesMainPageService::class)->dataset($user, [
+                'scope_key' => 'online_perakende',
+                'detail_type' => 'cari',
+                'grain' => 'week',
+                'date_from' => '2026-04-01',
+                'date_to' => '2026-04-28',
+                'bypass_cache' => true,
+            ]);
+
+            $this->fail('Yetkisiz satis scope istegi 403 ile kesilmeliydi.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
     }
 
     public function test_sales_konsinye_rows_are_excluded_from_totals_while_teshir_rows_are_included(): void
@@ -907,6 +1046,128 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['scope_key'] ?? null) === 'umit'
                 && ($payload['rep_code'] ?? null) === '0003';
         });
+    }
+
+    public function test_explicit_representative_scope_works_without_user_representative_code(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Salih Grup',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
+
+        foreach (['sales_main', 'sales_rep_salih_cakir'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => true,
+            ]);
+        }
+
+        $service = app(SalesMainPageService::class);
+        $keys = collect($service->config($user, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('salih', $keys);
+        $this->assertNotContains('all', $keys);
+
+        $payload = $service->dataset($user, [
+            'scope_key' => 'salih',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('salih', $payload['scope']['key']);
+        $this->assertSame('0024', $payload['scope']['effectiveRepresentativeCode']);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['scope_key'] ?? null) === 'salih'
+                && ($payload['rep_code'] ?? null) === '0024';
+        });
+    }
+
+    public function test_sales_main_entry_with_explicit_rep_scopes_does_not_grant_all_scope(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Temsilci Grup',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'viewer', 'temsilci_kodu' => null]);
+
+        foreach (['sales_main', 'sales_rep_salih_cakir', 'sales_rep_umit_yildiz'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => true,
+            ]);
+        }
+
+        $service = app(SalesMainPageService::class);
+        $keys = collect($service->config($user, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertSame(['umit', 'salih'], $keys);
+        $this->assertNotContains('all', $keys);
+
+        $payload = $service->dataset($user, [
+            'scope_key' => 'umit',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('umit', $payload['scope']['key']);
+        $this->assertSame('0003', $payload['scope']['effectiveRepresentativeCode']);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['scope_key'] ?? null) === 'umit'
+                && ($payload['rep_code'] ?? null) === '0003';
+        });
+    }
+
+    public function test_super_admin_sees_all_sales_scopes(): void
+    {
+        $keys = collect(app(SalesMainPageService::class)
+            ->config(User::factory()->create(['role_code' => 'admin']), 'sales_main')['managementScopes'])
+            ->pluck('key')
+            ->all();
+
+        $this->assertContains('all', $keys);
+        $this->assertContains('salih', $keys);
+        $this->assertContains('umit', $keys);
+        $this->assertContains('bulent_saglam', $keys);
+        $this->assertContains('online_perakende', $keys);
+        $this->assertContains('bayi_proje', $keys);
     }
 
     public function test_sales_customer_breakdown_keeps_customer_rows_under_groups(): void
