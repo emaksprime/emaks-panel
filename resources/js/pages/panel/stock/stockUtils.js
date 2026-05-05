@@ -44,6 +44,14 @@ export function stockCategoryCode(row) {
     return String(valueFrom(row, 'categoryCode') ?? '').trim();
 }
 
+export function stockCategoryKey(row) {
+    return stockCategoryCode(row) || stockCategory(row);
+}
+
+export function stockCategoryLabel(row) {
+    return stockCategory(row) || stockCategoryCode(row);
+}
+
 export function stockModel(row) {
     return String(valueFrom(row, 'modelName') ?? '').trim();
 }
@@ -53,10 +61,46 @@ export function stockQuantity(row) {
 }
 
 export function categoryOptions(rows) {
-    const options = Array.from(new Set(rows.map((row) => stockCategory(row)).filter(Boolean)))
-        .sort((a, b) => a.localeCompare(b, 'tr-TR'));
+    const options = new Map();
 
-    return [ALL_CATEGORIES, ...options];
+    rows.forEach((row) => {
+        const value = stockCategoryKey(row);
+        const label = stockCategoryLabel(row);
+
+        if (!value && !label) {
+            return;
+        }
+
+        const key = normalizeSearchText(value || label);
+
+        if (!options.has(key)) {
+            options.set(key, {
+                value: value || label,
+                label: label || value,
+            });
+        }
+    });
+
+    return [
+        { value: ALL_CATEGORIES, label: ALL_CATEGORIES },
+        ...Array.from(options.values()).sort((a, b) => a.label.localeCompare(b.label, 'tr-TR')),
+    ];
+}
+
+export function resolveCategoryFilter(category, options = []) {
+    const value = String(category ?? '').trim();
+
+    if (!value || value === ALL_CATEGORIES) {
+        return ALL_CATEGORIES;
+    }
+
+    const normalizedValue = normalizeSearchText(value);
+    const match = options.find((option) => (
+        normalizeSearchText(option.value) === normalizedValue
+        || normalizeSearchText(option.label) === normalizedValue
+    ));
+
+    return match?.value ?? ALL_CATEGORIES;
 }
 
 export function criticalSettingFor(row, settings = []) {
@@ -111,7 +155,12 @@ export function filterStockRows(rows, filters = {}) {
             return false;
         }
 
-        if (category && category !== ALL_CATEGORIES && normalizedCategory !== normalizeSearchText(stockCategory(row))) {
+        if (
+            category
+            && category !== ALL_CATEGORIES
+            && ![stockCategoryKey(row), stockCategory(row), stockCategoryCode(row)]
+                .some((value) => normalizeSearchText(value) === normalizedCategory)
+        ) {
             return false;
         }
 

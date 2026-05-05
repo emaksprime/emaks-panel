@@ -223,6 +223,58 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('display_text', $query);
     }
 
+    public function test_sales_datasources_apply_stock_category_code_whitelist_in_base_sales_rows(): void
+    {
+        $whitelistCodes = ['A1', 'AS1', 'D1', 'G1', 'K1', 'KA1', 'M1', 'O1', 'OT1', 'YM1'];
+        $sources = [
+            'sales_main_dashboard' => [
+                'join' => 'LEFT JOIN STOKLAR sto WITH (NOLOCK)',
+                'filter' => "LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN",
+                'fallback' => "AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN",
+            ],
+            'sales_online_perakende_detail' => [
+                'join' => 'LEFT JOIN STOKLAR sto WITH (NOLOCK)',
+                'filter' => "LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN",
+                'fallback' => "AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN",
+            ],
+            'sales_bayi_proje_detail' => [
+                'join' => 'LEFT JOIN STOKLAR sto WITH (NOLOCK)',
+                'filter' => "LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN",
+                'fallback' => "AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN",
+            ],
+            'sales_customer_search' => [
+                'join' => 'INNER JOIN dbo.STOKLAR sto WITH (NOLOCK)',
+                'filter' => "LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN",
+                'fallback' => null,
+            ],
+        ];
+
+        foreach ($sources as $sourceCode => $expectations) {
+            $query = (string) DataSource::query()->where('code', $sourceCode)->value('query_template');
+
+            $this->assertStringContainsString($expectations['join'], $query, "{$sourceCode} STOKLAR join eksik.");
+            $this->assertStringContainsString($expectations['filter'], $query, "{$sourceCode} kategori whitelist filtresi eksik.");
+            $this->assertStringNotContainsString("N'X1'", $query, "{$sourceCode} whitelist dışı kategori kodu içeriyor.");
+
+            foreach ($whitelistCodes as $categoryCode) {
+                $this->assertStringContainsString("N'{$categoryCode}'", $query, "{$sourceCode} {$categoryCode} whitelist kodunu içermiyor.");
+            }
+
+            if ($expectations['fallback'] !== null) {
+                $this->assertStringContainsString($expectations['fallback'], $query, "{$sourceCode} kategori_kodu_raw fallback filtresi eksik.");
+            }
+
+            $filterPosition = strpos($query, (string) $expectations['filter']);
+            $basePosition = $sourceCode === 'sales_customer_search'
+                ? strpos($query, 'filtered AS')
+                : strpos($query, 'INTO #filtered');
+
+            $this->assertNotFalse($basePosition, "{$sourceCode} base filtered bloğu bulunamadı.");
+            $this->assertNotFalse($filterPosition, "{$sourceCode} whitelist filtresi bulunamadı.");
+            $this->assertGreaterThan($basePosition, $filterPosition, "{$sourceCode} whitelist filtresi base satış satırları sonrası uygulanmalı.");
+        }
+    }
+
     public function test_sales_customer_search_sends_search_to_gateway_payload(): void
     {
         DB::table('panel.data_source_cache')->delete();

@@ -10,6 +10,7 @@ import {
     categoryOptions,
     decorateStockRows,
     filterStockRows,
+    resolveCategoryFilter,
     sortStockRows,
     stockCategory,
     stockCategoryCode,
@@ -253,12 +254,15 @@ export default function StockDashboard({ page, mode = 'list' }) {
         };
     }, [refreshKey, filters.bypass_cache]);
 
+    const rawRowsCount = Array.isArray(stockData.rows) ? stockData.rows.length : 0;
     const decoratedRows = decorateStockRows(stockData.rows, settingsData.rows);
+    const options = categoryOptions(decoratedRows);
+    const activeCategory = resolveCategoryFilter(filters.category, options);
     const filteredRows = sortStockRows(filterStockRows(decoratedRows, {
         ...filters,
+        category: activeCategory,
         mode,
     }));
-    const options = categoryOptions(decoratedRows);
     const criticalCount = decoratedRows.filter((row) => row.isCritical).length;
     const totalQuantity = decoratedRows.reduce((sum, row) => sum + stockQuantity(row), 0);
     const canManageCritical = settingsData.can_manage;
@@ -401,16 +405,13 @@ export default function StockDashboard({ page, mode = 'list' }) {
                     </label>
 
                     <select
-                        value={filters.category}
+                        value={activeCategory}
                         onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}
                         className="h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-blue-400 focus:bg-white"
                     >
                         {options.map((option) => (
-                            <option key={option} value={option}>{option}</option>
+                            <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
-                        {!options.includes(DEFAULT_STOCK_CATEGORY) && (
-                            <option value={DEFAULT_STOCK_CATEGORY}>{DEFAULT_STOCK_CATEGORY}</option>
-                        )}
                     </select>
 
                     <button
@@ -429,7 +430,12 @@ export default function StockDashboard({ page, mode = 'list' }) {
                     {loading && <LoadingOverlay />}
 
                     {filteredRows.length === 0 && !loading ? (
-                        <EmptyState title="Canlı veri bulunamadı" message={mode === 'critical' ? 'Eşik altına düşen admin tanımlı kritik stok yok.' : 'Seçili filtrelerde stok satırı yok.'} />
+                        <EmptyState
+                            title={rawRowsCount === 0 ? 'Canlı veri bulunamadı' : 'Seçili filtrelerde stok satırı yok'}
+                            message={rawRowsCount === 0
+                                ? 'Canlı stok verisi dönmedi.'
+                                : (mode === 'critical' ? 'Eşik altına düşen admin tanımlı kritik stok yok.' : 'Arama veya kategori filtresini değiştirin.')}
+                        />
                     ) : (
                         <>
                             <div className="hidden overflow-x-auto md:block">
