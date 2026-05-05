@@ -1,6 +1,7 @@
 import { Head, Link } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
+import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -196,9 +197,7 @@ export default function TechnicalServiceDashboard() {
             description="İç ekip için günlük randevu, gecikme, garanti ve operasyon takip ekranı."
           />
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="secondary"><Link href="/technical-service">Talepler</Link></Button>
-            <Button asChild variant="secondary"><Link href="/technical-service/earnings">Hakedişler</Link></Button>
-            <Button asChild variant="secondary"><Link href="/technical-service/serial-query">Seri No Sorgu</Link></Button>
+            <TechnicalServicePageLinks />
             <Button type="button" onClick={() => void loadDashboard()} disabled={loading}>
               {loading ? 'Yükleniyor...' : 'Yenile'}
             </Button>

@@ -67,7 +67,7 @@ class AdminController extends Controller
                     'access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', true)->pluck('resource_code')->unique()->values(),
                     'denied_access' => UserAccess::query()->where('user_id', $user->id)->where('can_view', false)->pluck('resource_code')->unique()->values(),
                 ]),
-            'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description']),
+            'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description', 'is_super_admin']),
             'resources' => Resource::query()
                 ->where('active', true)
                 ->orderBy('type')
@@ -111,6 +111,7 @@ class AdminController extends Controller
             'access.*' => ['string', Rule::exists(Resource::class, 'code')],
             'denied_access' => ['array'],
             'denied_access.*' => ['string', Rule::exists(Resource::class, 'code')],
+            'strict_access' => ['boolean'],
         ]);
 
         $payload = [
@@ -130,8 +131,23 @@ class AdminController extends Controller
             ? tap(User::query()->findOrFail($data['id']))->update($payload)
             : User::query()->create($payload);
 
+        $targetRole = Role::query()->where('code', $data['role_code'])->first();
+        $allowed = collect($data['access'] ?? [])->unique()->values();
         $denied = collect($data['denied_access'] ?? [])->unique()->values();
-        $allowed = collect($data['access'] ?? [])->unique()->diff($denied)->values();
+
+        if (($data['strict_access'] ?? false) && ! ($targetRole?->is_super_admin ?? false)) {
+            $allowed = $allowed
+                ->push('dashboard')
+                ->unique()
+                ->values();
+            $denied = Resource::query()
+                ->where('active', true)
+                ->pluck('code')
+                ->diff($allowed)
+                ->values();
+        }
+
+        $allowed = $allowed->diff($denied)->values();
 
         UserAccess::query()->where('user_id', $user->id)->delete();
         foreach ($allowed as $resourceCode) {
@@ -168,6 +184,7 @@ class AdminController extends Controller
             str_starts_with($code, 'sales_') || $code === 'sales_main' => 'Satış Yönetimi',
             str_starts_with($code, 'stock') => 'Stok Yönetimi',
             str_starts_with($code, 'orders') => 'Sipariş Yönetimi',
+            str_starts_with($code, 'technical_service') => 'Teknik Servis',
             str_starts_with($code, 'cari') || str_starts_with($code, 'customer') || $code === 'customers' || str_starts_with($code, 'finance_cari') => 'Müşteri Yönetimi',
             str_starts_with($code, 'proforma') => 'Proforma',
             str_starts_with($code, 'admin') || $code === 'user_admin' || $code === 'dashboard' => 'Sistem Yönetimi',

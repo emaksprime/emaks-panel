@@ -13,12 +13,14 @@ const blank = {
     force_password_change: false,
     access: [],
     denied_access: [],
+    strict_access: false,
 };
 
 const groupOrder = [
     'Satış Yönetimi',
     'Stok Yönetimi',
     'Sipariş Yönetimi',
+    'Teknik Servis',
     'Müşteri Yönetimi',
     'Proforma',
     'Sistem Yönetimi',
@@ -148,11 +150,28 @@ export default function AdminUsers() {
             ...current,
             access: data.resources.map((resource) => resource.code),
             denied_access: [],
+            strict_access: false,
         }));
     };
 
     const clearAccess = () => {
-        setForm((current) => ({ ...current, access: [], denied_access: [] }));
+        setForm((current) => ({ ...current, access: [], denied_access: [], strict_access: false }));
+    };
+
+    const applyStrictSelectedAccess = () => {
+        if (selectedRole?.is_super_admin) {
+            return;
+        }
+
+        const activeResourceCodes = data.resources.map((resource) => resource.code);
+        const selected = new Set([...form.access, 'dashboard']);
+
+        setForm((current) => ({
+            ...current,
+            access: activeResourceCodes.filter((code) => selected.has(code)),
+            denied_access: activeResourceCodes.filter((code) => !selected.has(code)),
+            strict_access: true,
+        }));
     };
 
     return (
@@ -376,6 +395,14 @@ export default function AdminUsers() {
                             <div className="flex gap-2">
                                 <button type="button" onClick={selectAll} className="text-xs font-semibold text-slate-700">
                                     Tümüne izin ver
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={applyStrictSelectedAccess}
+                                    disabled={selectedRole?.is_super_admin}
+                                    className="text-xs font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-400"
+                                >
+                                    Sadece seçilenlere izin ver
                                 </button>
                                 <button type="button" onClick={clearAccess} className="text-xs font-semibold text-slate-500">
                                     Role bırak

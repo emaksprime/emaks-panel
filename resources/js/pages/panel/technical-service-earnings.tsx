@@ -1,6 +1,7 @@
-import { Head, Link } from '@inertiajs/react'
+import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
+import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -238,8 +239,7 @@ export default function TechnicalServiceEarnings() {
             description="Servis ve çilingir bazlı aylık hakediş kontrolü."
           />
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="secondary"><Link href="/technical-service">Talepler</Link></Button>
-            <Button asChild variant="secondary"><Link href="/technical-service/dashboard">Operasyon Dashboard</Link></Button>
+            <TechnicalServicePageLinks />
             <Button type="button" onClick={() => void loadEarnings()} disabled={loading}>{loading ? 'Yükleniyor...' : 'Yenile'}</Button>
           </div>
         </div>

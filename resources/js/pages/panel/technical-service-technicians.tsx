@@ -1,6 +1,7 @@
-import { Head, Link } from '@inertiajs/react'
+import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
+import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import {
   getDistrictOptionsForProvince,
   normalizeDistrictName,
@@ -327,12 +328,7 @@ export default function TechnicalServiceTechnicians() {
             description="Teknik servis atamalarında kullanılacak usta kayıtlarını yönetin."
           />
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="secondary">
-              <Link href="/technical-service">Teknik Servis</Link>
-            </Button>
-            <Button asChild variant="secondary">
-              <Link href="/technical-service/serial-query">Seri No Sorgu</Link>
-            </Button>
+            <TechnicalServicePageLinks />
             <Button type="button" onClick={openCreate}>Yeni Usta</Button>
           </div>
         </div>

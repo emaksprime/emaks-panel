@@ -1,6 +1,7 @@
-import { Head, Link } from '@inertiajs/react'
+import { Head } from '@inertiajs/react'
 import { useState } from 'react'
 import Heading from '@/components/heading'
+import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import type { MikroMountCheckResult, MikroSerialHistoryEvent, MikroSerialHistoryResponse, WarrantySerialResponse } from '@/components/technical-service/types'
 import { formatTechnicalServiceDate } from '@/components/technical-service/utils'
 import { Badge } from '@/components/ui/badge'
@@ -135,12 +136,7 @@ export default function TechnicalServiceSerialQuery() {
             description="Mikro geçmişini seri no üzerinden okuyun ve montaj kararını son geçerli satışa göre görün."
           />
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="secondary">
-              <Link href="/technical-service">Teknik Servis</Link>
-            </Button>
-            <Button asChild variant="secondary">
-              <Link href="/technical-service/technicians">Ustalar / Çilingirler</Link>
-            </Button>
+            <TechnicalServicePageLinks />
           </div>
         </div>
 

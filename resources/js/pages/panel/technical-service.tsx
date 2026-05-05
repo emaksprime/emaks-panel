@@ -1,4 +1,4 @@
-import { Head, Link } from '@inertiajs/react'
+import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Heading from '@/components/heading'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
@@ -6,6 +6,7 @@ import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
 import { ServiceSummaryCards } from '@/components/technical-service/ServiceSummaryCards'
+import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import {
   findProvinceByName,
   getDistrictOptionsForProvince,
@@ -989,18 +990,7 @@ export default function TechnicalService() {
             />
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="secondary">
-              <Link href="/technical-service/dashboard">Operasyon Dashboard</Link>
-            </Button>
-            <Button asChild variant="secondary">
-              <Link href="/technical-service/earnings">Hakedişler</Link>
-            </Button>
-            <Button asChild variant="secondary">
-              <Link href="/technical-service/technicians">Ustalar / Çilingirler</Link>
-            </Button>
-            <Button asChild variant="secondary">
-              <Link href="/technical-service/serial-query">Seri No Sorgu</Link>
-            </Button>
+            <TechnicalServicePageLinks />
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
               <DialogTrigger asChild>
                 <Button type="button">Yeni Servis Talebi</Button>
