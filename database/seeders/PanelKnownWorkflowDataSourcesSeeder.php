@@ -68,10 +68,7 @@ END;
         1,
         1
     )
-    INNER JOIN dbo.STOKLAR s WITH (NOLOCK)
-        ON s.sto_kod = LTRIM(RTRIM(ISNULL(msg_S_2663, N'')))
     WHERE ISNULL(LTRIM(RTRIM(msg_S_1032)), N'') <> N''
-        AND ISNULL(s.sto_kategori_kodu, N'') IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
 ),
 filtered AS
 (
@@ -94,6 +91,8 @@ filtered AS
     FROM cube c
     INNER JOIN dbo.CARI_HESAPLAR cari WITH (NOLOCK)
         ON cari.cari_kod = c.cari_kodu
+    INNER JOIN dbo.STOKLAR sto WITH (NOLOCK)
+        ON sto.sto_kod = c.stok_kodu_raw
     LEFT JOIN dbo.CARI_HESAP_GRUPLARI grp WITH (NOLOCK)
         ON grp.crg_kod = cari.cari_grup_kodu
     WHERE
@@ -102,6 +101,7 @@ filtered AS
             c.belge_tipi IN (N'DEĞİŞİM', N'PROJE İÇİN NUMUNE ÜRÜN')
             AND ABS(c.net_tutar) < 10
         )
+        AND LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
         AND (@CanViewAll = 1 OR LTRIM(RTRIM(ISNULL(cari.cari_temsilci_kodu, N''))) = @RepCode)
         AND (
             @ScopeKey NOT IN (N'online_perakende', N'bayi_proje')

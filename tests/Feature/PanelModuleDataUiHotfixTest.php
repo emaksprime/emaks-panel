@@ -231,23 +231,28 @@ class PanelModuleDataUiHotfixTest extends TestCase
             $query = (string) DataSource::query()->where('code', $sourceCode)->value('query_template');
 
             $this->assertNotSame('', trim($query), "{$sourceCode} query_template boş olamaz.");
-            $this->assertStringContainsString('INNER JOIN dbo.STOKLAR s WITH (NOLOCK)', $query, "{$sourceCode} satış satırlarını STOKLAR ile filtrelemeli.");
-            $this->assertStringContainsString('s.sto_kategori_kodu', $query, "{$sourceCode} filtreyi STOKLAR.sto_kategori_kodu üzerinden kurmalı.");
-            $this->assertStringContainsString("ISNULL(s.sto_kategori_kodu, N'') IN", $query, "{$sourceCode} kategori whitelist filtresi eksik.");
+            if ($sourceCode === 'sales_customer_search') {
+                $this->assertStringContainsString('INNER JOIN dbo.STOKLAR sto WITH (NOLOCK)', $query, "{$sourceCode} sales customer search STOKLAR ile filtrelemeli.");
+                $this->assertStringContainsString("LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN", $query, "{$sourceCode} kategori whitelist filtresi eksik.");
+            } else {
+                $this->assertStringContainsString('LEFT JOIN STOKLAR sto WITH (NOLOCK)', $query, "{$sourceCode} #filtered aşamasında STOKLAR join etmeli.");
+                $this->assertStringContainsString("LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN", $query, "{$sourceCode} STOKLAR kategori whitelist filtresi eksik.");
+                $this->assertStringContainsString("AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN", $query, "{$sourceCode} msg_S_0012 kategori fallback filtresi eksik.");
+            }
             $this->assertStringNotContainsString("N'X1'", $query, "{$sourceCode} whitelist dışı kategori kodu içermemeli.");
 
             foreach ($whitelist as $categoryCode) {
                 $this->assertStringContainsString("N'{$categoryCode}'", $query, "{$sourceCode} {$categoryCode} kategori kodunu içermeli.");
             }
 
-            $filterPosition = strpos($query, 's.sto_kategori_kodu');
+            $filterPosition = strpos($query, 'sto.sto_kategori_kodu');
             $downstreamPosition = $sourceCode === 'sales_customer_search'
                 ? strpos($query, 'filtered AS')
                 : strpos($query, 'INTO #filtered');
 
             $this->assertIsInt($filterPosition, "{$sourceCode} whitelist pozisyonu bulunamadı.");
             $this->assertIsInt($downstreamPosition, "{$sourceCode} downstream satış toplamı pozisyonu bulunamadı.");
-            $this->assertLessThan($downstreamPosition, $filterPosition, "{$sourceCode} whitelist filtresi kaynak satış hareketi seviyesinde uygulanmalı.");
+            $this->assertGreaterThan($downstreamPosition, $filterPosition, "{$sourceCode} whitelist filtresi #filtered satış hareketi seviyesinde uygulanmalı.");
         }
     }
 
