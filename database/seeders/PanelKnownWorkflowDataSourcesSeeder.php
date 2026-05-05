@@ -184,6 +184,33 @@ SQL_SALES_CUSTOMER_SEARCH,
         );
 
         $this->upsert(
+            'technical_service_serial_check',
+            'Teknik Servis Seri No Montaj Kontrol',
+            $this->technicalServiceSerialDecisionQuery(),
+            ['serial_no', 'bypass_cache'],
+            'PR #36 MikroSerialNumberService montaj karar sorgusu n8n gateway datasource olarak çalışır.',
+            'MikroSerialNumberService.php'
+        );
+
+        $this->upsert(
+            'technical_service_serial_history',
+            'Teknik Servis Seri No Hareket Geçmişi',
+            $this->technicalServiceSerialHistoryQuery(),
+            ['serial_no', 'bypass_cache'],
+            'PR #36 MikroSerialNumberService seri hareket geçmişi sorgusu n8n gateway datasource olarak çalışır.',
+            'MikroSerialNumberService.php'
+        );
+
+        $this->upsert(
+            'technical_service_warranty_serial',
+            'Teknik Servis Garanti Seri Sorgu',
+            $this->technicalServiceSerialHistoryQuery(),
+            ['serial_no', 'bypass_cache'],
+            'Garanti başlangıcı için son geçerli Mikro satış fingerprint verisi n8n gateway üzerinden okunur.',
+            'MikroSerialNumberService.php'
+        );
+
+        $this->upsert(
             'stock_dashboard',
             'Stok Dashboard',
             <<<'SQL_STOCK'
@@ -1165,6 +1192,396 @@ SQL_PROFORMA_DISCOUNT_DEFS,
     /**
      * @param  array<int, string>  $allowedParams
      */
+    private function technicalServiceSerialDecisionQuery(): string
+    {
+        return <<<'SQL_TECH_SERIAL_DECISION'
+WITH query_params AS (
+    SELECT
+        LTRIM(RTRIM(N'[[serial_no]]')) AS serial_no,
+        N'W-MONTAJ-1' AS installation_stock_code
+),
+serial_stock_movements AS (
+    SELECT
+        ch.ChHar_SeriNo AS cihaz_seri_no,
+        sh.sth_Guid AS stok_hareket_guid,
+        sh.sth_tarih AS hareket_tarihi,
+        sh.sth_evraktip AS evrak_tip,
+        sh.sth_tip AS hareket_tip,
+        sh.sth_cins AS hareket_cins,
+        sh.sth_normal_iade AS normal_iade,
+        CAST(sh.sth_evrakno_seri AS NVARCHAR(50)) AS irsaliye_seri,
+        CAST(sh.sth_evrakno_sira AS NVARCHAR(50)) AS irsaliye_sira,
+        sh.sth_belge_tarih AS fatura_tarihi,
+        CAST(sh.sth_belge_no AS NVARCHAR(50)) AS fatura_belge_no,
+        sh.sth_stok_kod AS stok_kodu,
+        sh.sth_cari_kodu AS cari_kodu,
+        sh.sth_sip_uid AS siparis_guid,
+        sh.sth_fat_uid AS fatura_guid,
+        sh.sth_aciklama AS hareket_aciklama,
+        s.sto_isim AS stok_adi,
+        c.cari_unvan1 AS cari_unvani
+    FROM CIHAZ_HAREKETLERI AS ch
+    INNER JOIN STOK_HAREKETLERI AS sh ON sh.sth_Guid = ch.ChHar_master_uid
+    LEFT JOIN STOKLAR AS s ON s.sto_kod = sh.sth_stok_kod
+    LEFT JOIN CARI_HESAPLAR AS c ON c.cari_kod = sh.sth_cari_kodu
+    CROSS JOIN query_params AS params
+    WHERE LTRIM(RTRIM(ch.ChHar_SeriNo)) = params.serial_no
+),
+sale_candidates AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            ORDER BY hareket_tarihi DESC, irsaliye_seri DESC, irsaliye_sira DESC, stok_hareket_guid DESC
+        ) AS sale_rank
+    FROM serial_stock_movements AS sale
+    WHERE hareket_tip = 1
+      AND ISNULL(normal_iade, 0) = 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM serial_stock_movements AS later_return
+          WHERE later_return.hareket_tarihi > sale.hareket_tarihi
+            AND later_return.hareket_tip = 0
+            AND ISNULL(later_return.normal_iade, 0) = 1
+            AND NOT EXISTS (
+                SELECT 1
+                FROM serial_stock_movements AS later_sale
+                WHERE later_sale.hareket_tarihi > later_return.hareket_tarihi
+                  AND later_sale.hareket_tip = 1
+                  AND ISNULL(later_sale.normal_iade, 0) = 0
+            )
+      )
+),
+last_sale AS (
+    SELECT TOP 1 *
+    FROM sale_candidates
+    WHERE sale_rank = 1
+),
+order_installation AS (
+    SELECT TOP 1
+        sip.sip_tarih AS kaynak_tarihi,
+        CAST(sip.sip_evrakno_seri AS NVARCHAR(50)) AS kaynak_seri,
+        CAST(sip.sip_evrakno_sira AS NVARCHAR(50)) AS kaynak_sira,
+        sip.sip_aciklama AS kaynak_aciklama,
+        sip.sip_musteri_kod AS kaynak_cari_kodu,
+        cari.cari_unvan1 AS kaynak_cari_unvani
+    FROM SIPARISLER AS sip
+    INNER JOIN last_sale AS ls ON ls.siparis_guid = sip.sip_Guid
+    LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = sip.sip_musteri_kod
+    CROSS JOIN query_params AS params
+    WHERE sip.sip_stok_kod = params.installation_stock_code
+),
+invoice_installation AS (
+    SELECT TOP 1
+        cha.cha_tarihi AS kaynak_tarihi,
+        CAST(cha.cha_evrakno_seri AS NVARCHAR(50)) AS kaynak_seri,
+        CAST(cha.cha_evrakno_sira AS NVARCHAR(50)) AS kaynak_sira,
+        cha.cha_aciklama AS kaynak_aciklama,
+        cha.cha_kod AS kaynak_cari_kodu,
+        cari.cari_unvan1 AS kaynak_cari_unvani
+    FROM CARI_HESAP_HAREKETLERI AS cha
+    INNER JOIN last_sale AS ls ON ls.fatura_guid = cha.cha_Guid
+    LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = cha.cha_kod
+    WHERE UPPER(ISNULL(cha.cha_aciklama, N'')) LIKE N'%MONTAJ%'
+),
+linked_stock_installation AS (
+    SELECT TOP 1
+        montaj.sth_tarih AS kaynak_tarihi,
+        CAST(montaj.sth_evrakno_seri AS NVARCHAR(50)) AS kaynak_seri,
+        CAST(montaj.sth_evrakno_sira AS NVARCHAR(50)) AS kaynak_sira,
+        montaj.sth_aciklama AS kaynak_aciklama,
+        montaj.sth_cari_kodu AS kaynak_cari_kodu,
+        cari.cari_unvan1 AS kaynak_cari_unvani
+    FROM STOK_HAREKETLERI AS montaj
+    INNER JOIN last_sale AS ls ON ls.fatura_guid = montaj.sth_fat_uid
+    LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = montaj.sth_cari_kodu
+    CROSS JOIN query_params AS params
+    WHERE montaj.sth_stok_kod = params.installation_stock_code
+      AND montaj.sth_tarih >= CONVERT(date, '2026-04-01')
+),
+later_installation AS (
+    SELECT TOP 1 *
+    FROM (
+        SELECT
+            N'Sipariş' AS kaynak,
+            sip.sip_tarih AS kaynak_tarihi,
+            sip.sip_aciklama AS kaynak_aciklama,
+            sip.sip_musteri_kod AS kaynak_cari_kodu,
+            cari.cari_unvan1 AS kaynak_cari_unvani
+        FROM SIPARISLER AS sip
+        CROSS JOIN last_sale AS ls
+        CROSS JOIN query_params AS params
+        LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = sip.sip_musteri_kod
+        WHERE sip.sip_tarih >= ls.hareket_tarihi
+          AND sip.sip_stok_kod = params.installation_stock_code
+          AND ISNULL(sip.sip_aciklama, N'') LIKE N'%' + params.serial_no + N'%'
+
+        UNION ALL
+
+        SELECT
+            N'Stok Hareketi' AS kaynak,
+            sth.sth_tarih AS kaynak_tarihi,
+            sth.sth_aciklama AS kaynak_aciklama,
+            sth.sth_cari_kodu AS kaynak_cari_kodu,
+            cari.cari_unvan1 AS kaynak_cari_unvani
+        FROM STOK_HAREKETLERI AS sth
+        CROSS JOIN last_sale AS ls
+        CROSS JOIN query_params AS params
+        LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = sth.sth_cari_kodu
+        WHERE sth.sth_tarih >= ls.hareket_tarihi
+          AND sth.sth_stok_kod = params.installation_stock_code
+          AND ISNULL(sth.sth_aciklama, N'') LIKE N'%' + params.serial_no + N'%'
+
+        UNION ALL
+
+        SELECT
+            N'Cari Hizmet' AS kaynak,
+            ISNULL(cha.cha_create_date, cha.cha_tarihi) AS kaynak_tarihi,
+            cha.cha_aciklama AS kaynak_aciklama,
+            cha.cha_kod AS kaynak_cari_kodu,
+            cari.cari_unvan1 AS kaynak_cari_unvani
+        FROM CARI_HESAP_HAREKETLERI AS cha
+        CROSS JOIN last_sale AS ls
+        CROSS JOIN query_params AS params
+        LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = cha.cha_kod
+        WHERE ISNULL(cha.cha_create_date, cha.cha_tarihi) > ls.hareket_tarihi
+          AND cha.cha_kasa_hizkod LIKE N'MONTAJ%'
+          AND ISNULL(cha.cha_aciklama, N'') LIKE N'%' + params.serial_no + N'%'
+    ) AS later_rows
+    ORDER BY kaynak_tarihi ASC
+)
+SELECT
+    CAST(1 AS bit) AS found,
+    CASE
+        WHEN ls.hareket_tarihi < CONVERT(date, '2025-07-01') THEN N'Montaj Dahil'
+        WHEN EXISTS (SELECT 1 FROM order_installation) THEN N'Montaj Dahil'
+        WHEN EXISTS (SELECT 1 FROM invoice_installation) THEN N'Montaj Dahil'
+        WHEN EXISTS (SELECT 1 FROM linked_stock_installation) THEN N'Montaj Dahil'
+        WHEN EXISTS (SELECT 1 FROM later_installation) THEN N'Montaj Sonradan Dahil'
+        ELSE N'Montaj Hariç'
+    END AS montaj_durumu,
+    CASE
+        WHEN ls.hareket_tarihi < CONVERT(date, '2025-07-01') THEN N'2025-07-01 öncesi satışlar montaj dahil kabul edilir.'
+        WHEN EXISTS (SELECT 1 FROM order_installation) THEN N'Son geçerli satış siparişinde montaj satırı bulundu.'
+        WHEN EXISTS (SELECT 1 FROM invoice_installation) THEN N'Son geçerli satış faturasında MONTAJ hizmet satırı bulundu.'
+        WHEN EXISTS (SELECT 1 FROM linked_stock_installation) THEN N'2026-04-01 sonrası faturaya bağlı W-MONTAJ-1 stok hareketi bulundu.'
+        WHEN EXISTS (
+            SELECT 1
+            FROM later_installation AS later_check
+            CROSS JOIN last_sale AS sale_check
+            WHERE later_check.kaynak_cari_kodu IS NOT NULL
+              AND sale_check.cari_kodu IS NOT NULL
+              AND later_check.kaynak_cari_kodu <> sale_check.cari_kodu
+        ) THEN N'Farklı Cari ile Sonradan Montaj'
+        WHEN EXISTS (SELECT 1 FROM later_installation) THEN N'Son geçerli satıştan sonra seri no açıklamalı montaj kaydı bulundu.'
+        ELSE N'Son geçerli satış için Mikro’da montaj ödemesi bulunamadı.'
+    END AS montaj_ek_aciklama,
+    ls.cihaz_seri_no,
+    ls.stok_kodu,
+    ls.stok_adi,
+    ls.hareket_tarihi AS irsaliye_tarihi,
+    ls.irsaliye_seri,
+    ls.irsaliye_sira,
+    ls.fatura_tarihi,
+    CAST(NULL AS NVARCHAR(50)) AS fatura_seri,
+    ls.fatura_belge_no AS fatura_sira,
+    sip.sip_tarih AS siparis_tarihi,
+    CAST(sip.sip_evrakno_seri AS NVARCHAR(50)) AS siparis_seri,
+    CAST(sip.sip_evrakno_sira AS NVARCHAR(50)) AS siparis_sira,
+    ls.cari_kodu AS asil_cari_kodu,
+    ls.cari_unvani AS asil_cari_unvani,
+    later.kaynak AS sonradan_montaj_kaynagi,
+    later.kaynak_tarihi AS sonradan_montaj_tarihi,
+    later.kaynak_aciklama AS sonradan_montaj_aciklamasi,
+    later.kaynak_cari_kodu AS sonradan_montaj_cari_kodu,
+    later.kaynak_cari_unvani AS sonradan_montaj_cari_unvani,
+    CASE
+        WHEN later.kaynak_cari_kodu IS NOT NULL
+         AND ls.cari_kodu IS NOT NULL
+         AND later.kaynak_cari_kodu <> ls.cari_kodu THEN CAST(1 AS bit)
+        ELSE CAST(0 AS bit)
+    END AS farkli_cari_uyarisi
+FROM last_sale AS ls
+LEFT JOIN SIPARISLER AS sip ON sip.sip_Guid = ls.siparis_guid
+OUTER APPLY (SELECT TOP 1 * FROM later_installation) AS later
+SQL_TECH_SERIAL_DECISION;
+    }
+
+    private function technicalServiceSerialHistoryQuery(): string
+    {
+        return <<<'SQL_TECH_SERIAL_HISTORY'
+WITH query_params AS (
+    SELECT
+        LTRIM(RTRIM(N'[[serial_no]]')) AS serial_no,
+        N'W-MONTAJ-1' AS installation_stock_code
+),
+serial_stock_movements AS (
+    SELECT
+        ch.ChHar_SeriNo AS cihaz_seri_no,
+        sh.sth_Guid AS stok_hareket_guid,
+        sh.sth_tarih AS hareket_tarihi,
+        sh.sth_tip AS hareket_tip,
+        sh.sth_normal_iade AS normal_iade,
+        CAST(sh.sth_evrakno_seri AS NVARCHAR(50)) AS evrak_seri,
+        CAST(sh.sth_evrakno_sira AS NVARCHAR(50)) AS evrak_sira,
+        CAST(sh.sth_belge_no AS NVARCHAR(50)) AS fatura_sira,
+        sh.sth_stok_kod AS stok_kodu,
+        sh.sth_cari_kodu AS cari_kodu,
+        sh.sth_sip_uid AS siparis_guid,
+        sh.sth_fat_uid AS fatura_guid,
+        sh.sth_aciklama AS description,
+        CAST(sh.sth_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(COALESCE(NULLIF(LTRIM(RTRIM(sh.sth_cari_srm_merkezi)), N''), NULLIF(LTRIM(RTRIM(sh.sth_stok_srm_merkezi)), N'')) AS NVARCHAR(50)) AS sorumluluk_kodu,
+        s.sto_isim AS stok_adi,
+        c.cari_unvan1 AS cari_unvani
+    FROM CIHAZ_HAREKETLERI AS ch
+    INNER JOIN STOK_HAREKETLERI AS sh ON sh.sth_Guid = ch.ChHar_master_uid
+    LEFT JOIN STOKLAR AS s ON s.sto_kod = sh.sth_stok_kod
+    LEFT JOIN CARI_HESAPLAR AS c ON c.cari_kod = sh.sth_cari_kodu
+    CROSS JOIN query_params AS params
+    WHERE LTRIM(RTRIM(ch.ChHar_SeriNo)) = params.serial_no
+),
+sale_candidates AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            ORDER BY hareket_tarihi DESC, evrak_seri DESC, evrak_sira DESC, stok_hareket_guid DESC
+        ) AS sale_rank
+    FROM serial_stock_movements AS sale
+    WHERE hareket_tip = 1
+      AND ISNULL(normal_iade, 0) = 0
+),
+latest_valid_sale AS (
+    SELECT TOP 1 *
+    FROM sale_candidates AS sale
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM serial_stock_movements AS later_return
+        WHERE later_return.hareket_tarihi > sale.hareket_tarihi
+          AND later_return.hareket_tip = 0
+          AND ISNULL(later_return.normal_iade, 0) = 1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM serial_stock_movements AS later_sale
+              WHERE later_sale.hareket_tarihi > later_return.hareket_tarihi
+                AND later_sale.hareket_tip = 1
+                AND ISNULL(later_sale.normal_iade, 0) = 0
+          )
+    )
+    ORDER BY hareket_tarihi DESC, evrak_seri DESC, evrak_sira DESC, stok_hareket_guid DESC
+)
+SELECT
+    CASE
+        WHEN m.hareket_tip = 1 AND ISNULL(m.normal_iade, 0) = 0 THEN N'satış'
+        WHEN m.hareket_tip = 0 AND ISNULL(m.normal_iade, 0) = 1 THEN N'iade'
+        ELSE N'stok_hareketi'
+    END AS event_type,
+    m.hareket_tarihi AS event_date,
+    CASE
+        WHEN m.hareket_tip = 1 AND ISNULL(m.normal_iade, 0) = 0 THEN N'Satış / çıkış'
+        WHEN m.hareket_tip = 0 AND ISNULL(m.normal_iade, 0) = 1 THEN N'İade / giriş'
+        ELSE N'Stok hareketi'
+    END AS title,
+    m.description,
+    m.stok_kodu,
+    m.stok_adi,
+    m.cari_kodu,
+    m.cari_unvani,
+    m.evrak_seri,
+    m.evrak_sira,
+    CAST(sip.sip_evrakno_seri AS NVARCHAR(50)) AS siparis_seri,
+    CAST(sip.sip_evrakno_sira AS NVARCHAR(50)) AS siparis_sira,
+    CAST(NULL AS NVARCHAR(50)) AS fatura_seri,
+    m.fatura_sira,
+    m.hareket_grup_kodu_1,
+    m.sorumluluk_kodu,
+    CASE WHEN latest.stok_hareket_guid = m.stok_hareket_guid THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS is_latest_valid_sale
+FROM serial_stock_movements AS m
+LEFT JOIN SIPARISLER AS sip ON sip.sip_Guid = m.siparis_guid
+OUTER APPLY (SELECT TOP 1 * FROM latest_valid_sale) AS latest
+
+UNION ALL
+
+SELECT
+    N'sonradan_montaj' AS event_type,
+    x.event_date,
+    N'Sonradan montaj' AS title,
+    x.description,
+    CAST(NULL AS NVARCHAR(50)) AS stok_kodu,
+    CAST(NULL AS NVARCHAR(255)) AS stok_adi,
+    x.cari_kodu,
+    cari.cari_unvan1 AS cari_unvani,
+    x.evrak_seri,
+    x.evrak_sira,
+    x.siparis_seri,
+    x.siparis_sira,
+    x.fatura_seri,
+    x.fatura_sira,
+    x.hareket_grup_kodu_1,
+    x.sorumluluk_kodu,
+    CAST(0 AS bit) AS is_latest_valid_sale
+FROM (
+    SELECT
+        sip.sip_tarih AS event_date,
+        sip.sip_aciklama AS description,
+        sip.sip_musteri_kod AS cari_kodu,
+        CAST(sip.sip_evrakno_seri AS NVARCHAR(50)) AS evrak_seri,
+        CAST(sip.sip_evrakno_sira AS NVARCHAR(50)) AS evrak_sira,
+        CAST(sip.sip_evrakno_seri AS NVARCHAR(50)) AS siparis_seri,
+        CAST(sip.sip_evrakno_sira AS NVARCHAR(50)) AS siparis_sira,
+        CAST(NULL AS NVARCHAR(50)) AS fatura_seri,
+        CAST(NULL AS NVARCHAR(50)) AS fatura_sira,
+        CAST(sip.sip_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(COALESCE(NULLIF(LTRIM(RTRIM(sip.sip_cari_sormerk)), N''), NULLIF(LTRIM(RTRIM(sip.sip_stok_sormerk)), N'')) AS NVARCHAR(50)) AS sorumluluk_kodu
+    FROM SIPARISLER AS sip
+    CROSS JOIN query_params AS params
+    WHERE sip.sip_stok_kod = params.installation_stock_code
+      AND ISNULL(sip.sip_aciklama, N'') LIKE N'%' + params.serial_no + N'%'
+
+    UNION ALL
+
+    SELECT
+        sth.sth_tarih AS event_date,
+        sth.sth_aciklama AS description,
+        sth.sth_cari_kodu AS cari_kodu,
+        CAST(sth.sth_evrakno_seri AS NVARCHAR(50)) AS evrak_seri,
+        CAST(sth.sth_evrakno_sira AS NVARCHAR(50)) AS evrak_sira,
+        CAST(NULL AS NVARCHAR(50)) AS siparis_seri,
+        CAST(NULL AS NVARCHAR(50)) AS siparis_sira,
+        CAST(NULL AS NVARCHAR(50)) AS fatura_seri,
+        CAST(sth.sth_belge_no AS NVARCHAR(50)) AS fatura_sira,
+        CAST(sth.sth_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(COALESCE(NULLIF(LTRIM(RTRIM(sth.sth_cari_srm_merkezi)), N''), NULLIF(LTRIM(RTRIM(sth.sth_stok_srm_merkezi)), N'')) AS NVARCHAR(50)) AS sorumluluk_kodu
+    FROM STOK_HAREKETLERI AS sth
+    CROSS JOIN query_params AS params
+    WHERE sth.sth_stok_kod = params.installation_stock_code
+      AND ISNULL(sth.sth_aciklama, N'') LIKE N'%' + params.serial_no + N'%'
+
+    UNION ALL
+
+    SELECT
+        ISNULL(cha.cha_create_date, cha.cha_tarihi) AS event_date,
+        cha.cha_aciklama AS description,
+        cha.cha_kod AS cari_kodu,
+        CAST(cha.cha_evrakno_seri AS NVARCHAR(50)) AS evrak_seri,
+        CAST(cha.cha_evrakno_sira AS NVARCHAR(50)) AS evrak_sira,
+        CAST(NULL AS NVARCHAR(50)) AS siparis_seri,
+        CAST(NULL AS NVARCHAR(50)) AS siparis_sira,
+        CAST(cha.cha_evrakno_seri AS NVARCHAR(50)) AS fatura_seri,
+        CAST(cha.cha_evrakno_sira AS NVARCHAR(50)) AS fatura_sira,
+        CAST(cha.cha_HareketGrupKodu1 AS NVARCHAR(50)) AS hareket_grup_kodu_1,
+        CAST(cha.cha_srmrkkodu AS NVARCHAR(50)) AS sorumluluk_kodu
+    FROM CARI_HESAP_HAREKETLERI AS cha
+    CROSS JOIN query_params AS params
+    CROSS JOIN latest_valid_sale AS latest_sale
+    WHERE ISNULL(cha.cha_create_date, cha.cha_tarihi) > latest_sale.hareket_tarihi
+      AND cha.cha_kasa_hizkod LIKE N'MONTAJ%'
+      AND ISNULL(cha.cha_aciklama, N'') LIKE N'%' + params.serial_no + N'%'
+) AS x
+LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = x.cari_kodu
+ORDER BY event_date DESC, event_type ASC
+SQL_TECH_SERIAL_HISTORY;
+    }
+
     private function upsert(
         string $code,
         string $name,

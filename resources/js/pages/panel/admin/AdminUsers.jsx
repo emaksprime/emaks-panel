@@ -20,6 +20,7 @@ const groupOrder = [
     'Satış Yönetimi',
     'Stok Yönetimi',
     'Sipariş Yönetimi',
+    'Teknik Servis',
     'Müşteri Yönetimi',
     'Proforma',
     'Sistem Yönetimi',

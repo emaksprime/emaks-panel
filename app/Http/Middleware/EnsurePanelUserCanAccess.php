@@ -14,9 +14,13 @@ class EnsurePanelUserCanAccess
     ) {
     }
 
-    public function handle(Request $request, Closure $next, string $resourceCode): Response
+    public function handle(Request $request, Closure $next, string ...$resourceCodes): Response
     {
-        abort_unless($this->access->userCanAccess($request->user(), $resourceCode), 403);
+        $canAccess = collect($resourceCodes)
+            ->filter()
+            ->contains(fn (string $resourceCode) => $this->access->userCanAccess($request->user(), $resourceCode));
+
+        abort_unless($canAccess, 403);
 
         return $next($request);
     }

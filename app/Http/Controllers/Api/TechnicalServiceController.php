@@ -1,0 +1,505 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\AssignTechnicalServiceRequest;
+use App\Http\Requests\StoreTechnicalServiceRequest;
+use App\Http\Requests\UpdateTechnicalServiceRequest;
+use App\Http\Requests\UpdateTechnicalServiceRequestStatus;
+use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceTechnician;
+use App\Services\TechnicalService\MikroSerialNumberService;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
+
+class TechnicalServiceController extends Controller
+{
+    public function index(Request $request): JsonResponse
+    {
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:255'],
+            'status' => ['nullable', 'string', 'max:64'],
+            'service_type' => ['nullable', 'string', 'max:128'],
+            'priority' => ['nullable', 'string', 'max:64'],
+            'risk_level' => ['nullable', 'string', 'max:64'],
+            'technician_name' => ['nullable', 'string', 'max:255'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:200'],
+        ]);
+
+        $query = TechnicalServiceRequest::query();
+
+        if (! empty($filters['search'])) {
+            $query->where(function ($query) use ($filters) {
+                $query->where('mrn', 'ilike', "%{$filters['search']}%")
+                    ->orWhere('customer_name', 'ilike', "%{$filters['search']}%")
+                    ->orWhere('product_name', 'ilike', "%{$filters['search']}%")
+                    ->orWhere('serial_number', 'ilike', "%{$filters['search']}%")
+                    ->orWhere('technician_name', 'ilike', "%{$filters['search']}%");
+            });
+        }
+
+        foreach (['status', 'service_type', 'priority', 'risk_level', 'technician_name'] as $field) {
+            if (! empty($filters[$field])) {
+                $query->where($field, $filters[$field]);
+            }
+        }
+
+        $limit = $filters['limit'] ?? 25;
+
+        $paginator = $query
+            ->orderByDesc('scheduled_at')
+            ->orderByDesc('created_at')
+            ->paginate($limit);
+
+        return response()->json([
+            'items' => $paginator->items(),
+            'pagination' => [
+                'total' => $paginator->total(),
+                'per_page' => $paginator->perPage(),
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+            ],
+        ]);
+    }
+
+    public function show(TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        return response()->json([
+            'request' => $technicalServiceRequest->load([
+                'events' => function ($query) {
+                    $query->orderBy('created_at');
+                },
+            ]),
+        ]);
+    }
+
+    public function store(StoreTechnicalServiceRequest $request): JsonResponse
+    {
+        $user = $request->user();
+        $payload = $request->validated();
+
+        $payload['status'] = $payload['status'] ?? 'Yeni';
+        $payload['priority'] = $payload['priority'] ?? 'Orta';
+        $payload['risk_level'] = $payload['risk_level'] ?? 'Orta';
+        $payload['created_by_user_id'] = $user?->id;
+        $payload['updated_by_user_id'] = $user?->id;
+
+        $requestModel = DB::transaction(function () use ($payload, $user) {
+            $payload['mrn'] = $this->generateMrn();
+
+            $requestModel = TechnicalServiceRequest::create($payload);
+
+            $requestModel->events()->create([
+                'event_type' => 'created',
+                'title' => 'Talep oluşturuldu',
+                'note' => 'Teknik servis talebi oluşturuldu.',
+                'from_status' => null,
+                'to_status' => $requestModel->status,
+                'author_user_id' => $user?->id,
+                'metadata' => [
+                    'source_channel' => $payload['source_channel'] ?? null,
+                ],
+            ]);
+
+            return $requestModel;
+        });
+
+        return response()->json(['request' => $requestModel->load('events')], 201);
+    }
+
+    public function update(UpdateTechnicalServiceRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        $payload = $request->validated();
+        $payload['updated_by_user_id'] = $request->user()?->id;
+
+        $scheduleNote = $payload['schedule_note'] ?? null;
+        unset($payload['schedule_note']);
+
+        $travelSummary = null;
+        if (array_key_exists('travel_round_trip_km', $payload) && $payload['travel_round_trip_km'] !== null) {
+            $travelSummary = $this->calculateTravelCosts((float) $payload['travel_round_trip_km']);
+            $payload = array_merge($payload, $travelSummary);
+        }
+
+        $previousStatus = $technicalServiceRequest->status;
+        $isScheduling = array_key_exists('scheduled_at', $payload) && ! empty($payload['scheduled_at']);
+
+        if ($isScheduling && empty($payload['status'])) {
+            $payload['status'] = 'Randevulu';
+        }
+
+        $technicalServiceRequest->update($payload);
+
+        if ($isScheduling) {
+            $technicalServiceRequest->events()->create([
+                'event_type' => 'scheduled',
+                'title' => 'Randevu planlandı',
+                'note' => $scheduleNote,
+                'from_status' => $previousStatus,
+                'to_status' => $technicalServiceRequest->status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => $travelSummary ? ['travel' => $travelSummary] : [],
+            ]);
+        }
+
+        return response()->json(['request' => $technicalServiceRequest]);
+    }
+
+    public function updateStatus(UpdateTechnicalServiceRequestStatus $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        $payload = $request->validated();
+        $previousStatus = $technicalServiceRequest->status;
+        $isReopen = $payload['status'] === 'Yeni' && in_array($previousStatus, ['Tamamlandı', 'İptal'], true);
+        $previousCompletedAt = $technicalServiceRequest->completed_at;
+        $this->validateInstallationAfterLatestSale($technicalServiceRequest, $payload);
+        $technicalServiceRequest->status = $payload['status'];
+        $technicalServiceRequest->updated_by_user_id = $request->user()?->id;
+
+        if ($isReopen) {
+            $technicalServiceRequest->cancelled_at = null;
+            $technicalServiceRequest->reopened_at = now();
+            $technicalServiceRequest->reopened_by_user_id = $request->user()?->id;
+            $technicalServiceRequest->reopen_reason = $payload['reopen_reason'] ?? null;
+            $technicalServiceRequest->reopen_note = $payload['reopen_note'] ?? ($payload['note'] ?? null);
+            $technicalServiceRequest->reopen_count = ((int) $technicalServiceRequest->reopen_count) + 1;
+        } elseif ($payload['status'] === 'Yeni') {
+            $technicalServiceRequest->completed_at = null;
+            $technicalServiceRequest->cancelled_at = null;
+        } elseif ($payload['status'] === 'Tamamlandı') {
+            $technicalServiceRequest->completed_at = now();
+            $technicalServiceRequest->cancelled_at = null;
+            if ($technicalServiceRequest->service_type === 'Montaj' && ! empty($payload['installation_completed_at'])) {
+                $technicalServiceRequest->installation_completed_at = CarbonImmutable::parse($payload['installation_completed_at']);
+            }
+            $technicalServiceRequest->resolution_notes = $payload['resolution_notes'] ?? $payload['note'] ?? null;
+        } elseif ($payload['status'] === 'İptal') {
+            $technicalServiceRequest->completed_at = null;
+            $technicalServiceRequest->cancelled_at = now();
+        }
+
+        $technicalServiceRequest->save();
+
+        $eventTitle = 'Durum değişti';
+        $eventType = 'status_change';
+        if ($isReopen) {
+            $eventTitle = 'Talep yeniden açıldı';
+            $eventType = 'technical_service_request_reopened';
+        }
+
+        $technicalServiceRequest->events()->create([
+            'event_type' => $eventType,
+            'title' => $eventTitle,
+            'note' => $payload['reopen_note'] ?? $payload['note'] ?? ($payload['resolution_notes'] ?? null),
+            'from_status' => $previousStatus,
+            'to_status' => $payload['status'],
+            'author_user_id' => $request->user()?->id,
+            'metadata' => $isReopen ? [
+                'old_status' => $previousStatus,
+                'new_status' => $payload['status'],
+                'reason' => $payload['reopen_reason'] ?? null,
+                'note' => $payload['reopen_note'] ?? ($payload['note'] ?? null),
+                'user_id' => $request->user()?->id,
+                'completed_at_preserved' => $previousCompletedAt !== null,
+                'completed_at' => $previousCompletedAt?->toISOString(),
+            ] : [
+                'installation_completed_at' => $technicalServiceRequest->installation_completed_at?->toISOString(),
+                'installation_completion_note' => $payload['installation_completion_note'] ?? null,
+            ],
+        ]);
+
+        return response()->json(['request' => $technicalServiceRequest]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function validateInstallationAfterLatestSale(TechnicalServiceRequest $request, array $payload): void
+    {
+        if (
+            ($payload['status'] ?? null) !== 'Tamamlandı'
+            || $request->service_type !== 'Montaj'
+            || empty($payload['installation_completed_at'])
+            || empty($request->serial_number)
+        ) {
+            return;
+        }
+
+        $latestSale = app(MikroSerialNumberService::class)->latestValidSale($request->serial_number);
+        $saleDate = $latestSale['date'] ?? null;
+
+        if (! $saleDate) {
+            return;
+        }
+
+        if (CarbonImmutable::parse($payload['installation_completed_at'])->lessThan(CarbonImmutable::parse($saleDate)->startOfDay())) {
+            throw ValidationException::withMessages([
+                'installation_completed_at' => 'Fiili montaj tarihi son geçerli Mikro satış tarihinden önce olamaz.',
+            ]);
+        }
+    }
+
+    public function assign(AssignTechnicalServiceRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        $payload = $request->validated();
+        $technician = isset($payload['technical_service_technician_id'])
+            ? TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id'])
+            : null;
+        $technicianName = $technician?->name ?? $payload['technician_name'];
+
+        $technicalServiceRequest->technical_service_technician_id = $technician?->id;
+        $technicalServiceRequest->technician_name = $technicianName;
+        $travelSummary = $this->calculateTravelCosts((float) $payload['travel_round_trip_km']);
+        $technicalServiceRequest->fill($travelSummary);
+        $technicalServiceRequest->updated_by_user_id = $request->user()?->id;
+        $technicalServiceRequest->save();
+
+        $technicalServiceRequest->events()->create([
+            'event_type' => 'assignment',
+            'title' => 'Teknisyen atandı',
+            'note' => $payload['note'] ?? null,
+            'from_status' => null,
+            'to_status' => null,
+            'author_user_id' => $request->user()?->id,
+            'metadata' => [
+                'technical_service_technician_id' => $technician?->id,
+                'technician_name' => $technicianName,
+                'travel' => $travelSummary,
+            ],
+        ]);
+
+        return response()->json(['request' => $technicalServiceRequest]);
+    }
+
+    public function summary(): JsonResponse
+    {
+        $total = TechnicalServiceRequest::count();
+
+        $statusCounts = TechnicalServiceRequest::query()
+            ->select('status')
+            ->selectRaw('count(*) as total')
+            ->groupBy('status')
+            ->get()
+            ->mapWithKeys(fn ($row) => [$row->status => $row->total]);
+
+        $priorityCounts = TechnicalServiceRequest::query()
+            ->select('priority')
+            ->selectRaw('count(*) as total')
+            ->groupBy('priority')
+            ->get()
+            ->mapWithKeys(fn ($row) => [$row->priority => $row->total]);
+
+        $riskCounts = TechnicalServiceRequest::query()
+            ->select('risk_level')
+            ->selectRaw('count(*) as total')
+            ->groupBy('risk_level')
+            ->get()
+            ->mapWithKeys(fn ($row) => [$row->risk_level => $row->total]);
+
+        return response()->json([
+            'total_requests' => $total,
+            'ongoing_requests' => TechnicalServiceRequest::whereNotIn('status', ['Tamamlandı', 'İptal'])->count(),
+            'status_counts' => $statusCounts,
+            'priority_counts' => $priorityCounts,
+            'risk_level_counts' => $riskCounts,
+            'scheduled_today' => TechnicalServiceRequest::whereDate('scheduled_at', today())->count(),
+        ]);
+    }
+
+    public function operationsDashboard(Request $request): JsonResponse
+    {
+        $filters = $request->validate([
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date'],
+            'status' => ['nullable', 'string', 'max:64'],
+            'service_type' => ['nullable', 'string', 'max:128'],
+            'city' => ['nullable', 'string', 'max:255'],
+            'technician_name' => ['nullable', 'string', 'max:255'],
+            'warranty_started' => ['nullable', 'boolean'],
+            'overdue' => ['nullable', 'boolean'],
+        ]);
+
+        $requests = $this->operationsDashboardQuery($filters)
+            ->orderByRaw('scheduled_at IS NULL')
+            ->orderBy('scheduled_at')
+            ->orderByDesc('created_at')
+            ->get();
+
+        $openStatuses = ['Tamamlandı', 'İptal'];
+        $todayAppointments = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)
+            ->values();
+        $overdue = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $this->isOverdueRequest($request))
+            ->values();
+        $warrantyStarted = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $request->service_type === 'Montaj' && $request->installation_completed_at !== null)
+            ->values();
+        $pastScheduledNotCompleted = $requests
+            ->filter(fn (TechnicalServiceRequest $request) => $this->isPastScheduledNotCompleted($request))
+            ->values();
+
+        return response()->json([
+            'summary' => [
+                'today_appointments' => $todayAppointments->count(),
+                'pending' => $requests->where('status', 'Yeni')->count(),
+                'assigned' => $requests->where('status', 'Atandı')->count(),
+                'scheduled' => $requests->where('status', 'Randevulu')->count(),
+                'in_progress' => $requests->where('status', 'Devam Ediyor')->count(),
+                'completed' => $requests->where('status', 'Tamamlandı')->count(),
+                'cancelled' => $requests->where('status', 'İptal')->count(),
+                'overdue' => $overdue->count(),
+                'warranty_started' => $warrantyStarted->count(),
+                'past_scheduled_not_completed' => $pastScheduledNotCompleted->count(),
+            ],
+            'today_appointments' => $todayAppointments->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request))->all(),
+            'overdue_requests' => $overdue->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request, true))->all(),
+            'warranty_started_requests' => $warrantyStarted->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request))->all(),
+            'past_scheduled_not_completed' => $pastScheduledNotCompleted->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request, true))->all(),
+            'technician_summary' => $requests
+                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->technician_name) !== '' ? $request->technician_name : 'Atanmadı')
+                ->map(fn ($items, string $technicianName) => [
+                    'technician_name' => $technicianName,
+                    'today_jobs' => $items->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)->count(),
+                    'open_jobs' => $items->whereNotIn('status', $openStatuses)->count(),
+                    'completed_jobs' => $items->where('status', 'Tamamlandı')->count(),
+                    'overdue_jobs' => $items->filter(fn (TechnicalServiceRequest $request) => $this->isOverdueRequest($request))->count(),
+                ])
+                ->sortByDesc('open_jobs')
+                ->values()
+                ->all(),
+            'city_summary' => $requests
+                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->customer_city) !== '' ? $request->customer_city : 'Belirtilmedi')
+                ->map(fn ($items, string $city) => [
+                    'city' => $city,
+                    'open_requests' => $items->whereNotIn('status', $openStatuses)->count(),
+                    'today_appointments' => $items->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)->count(),
+                    'overdue_requests' => $items->filter(fn (TechnicalServiceRequest $request) => $this->isOverdueRequest($request))->count(),
+                ])
+                ->sortByDesc('open_requests')
+                ->values()
+                ->all(),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function operationsDashboardQuery(array $filters)
+    {
+        return TechnicalServiceRequest::query()
+            ->when(! empty($filters['date_from']), fn ($query) => $query->whereDate('scheduled_at', '>=', $filters['date_from']))
+            ->when(! empty($filters['date_to']), fn ($query) => $query->whereDate('scheduled_at', '<=', $filters['date_to']))
+            ->when(! empty($filters['status']), fn ($query) => $query->where('status', $filters['status']))
+            ->when(! empty($filters['service_type']), fn ($query) => $query->where('service_type', $filters['service_type']))
+            ->when(! empty($filters['city']), fn ($query) => $query->where('customer_city', $filters['city']))
+            ->when(! empty($filters['technician_name']), fn ($query) => $query->where('technician_name', $filters['technician_name']))
+            ->when(array_key_exists('warranty_started', $filters), function ($query) use ($filters) {
+                return filter_var($filters['warranty_started'], FILTER_VALIDATE_BOOL)
+                    ? $query->whereNotNull('installation_completed_at')
+                    : $query->whereNull('installation_completed_at');
+            })
+            ->when(array_key_exists('overdue', $filters) && filter_var($filters['overdue'], FILTER_VALIDATE_BOOL), function ($query) {
+                $query->whereNotNull('scheduled_at')
+                    ->where('scheduled_at', '<', now())
+                    ->whereNotIn('status', ['Tamamlandı', 'İptal']);
+            });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function operationRequestPayload(TechnicalServiceRequest $request, bool $includeOverdue = false): array
+    {
+        return [
+            'id' => $request->id,
+            'mrn' => $request->mrn,
+            'customer_name' => $request->customer_name,
+            'customer_city' => $request->customer_city,
+            'customer_district' => $request->customer_district,
+            'product_name' => $request->product_name,
+            'product_model' => $request->product_model,
+            'serial_number' => $request->serial_number,
+            'service_type' => $request->service_type,
+            'technician_name' => $request->technician_name,
+            'scheduled_at' => $request->scheduled_at?->toISOString(),
+            'scheduled_time' => $request->scheduled_at?->format('H:i'),
+            'status' => $request->status,
+            'installation_completed_at' => $request->installation_completed_at?->toISOString(),
+            'warranty_started_at' => $request->installation_completed_at?->toDateString(),
+            'overdue_label' => $includeOverdue ? $this->overdueLabel($request) : null,
+        ];
+    }
+
+    private function isOverdueRequest(TechnicalServiceRequest $request): bool
+    {
+        return $request->scheduled_at !== null
+            && $request->scheduled_at->isPast()
+            && ! in_array($request->status, ['Tamamlandı', 'İptal'], true);
+    }
+
+    private function isPastScheduledNotCompleted(TechnicalServiceRequest $request): bool
+    {
+        return $request->scheduled_at !== null
+            && $request->scheduled_at->isPast()
+            && $request->installation_completed_at === null
+            && ! in_array($request->status, ['Tamamlandı', 'İptal'], true);
+    }
+
+    private function overdueLabel(TechnicalServiceRequest $request): ?string
+    {
+        if (! $request->scheduled_at) {
+            return null;
+        }
+
+        $minutes = max(0, (int) $request->scheduled_at->diffInMinutes(now()));
+        $days = intdiv($minutes, 1440);
+        $hours = intdiv($minutes % 1440, 60);
+
+        if ($days > 0) {
+            return $hours > 0 ? "{$days} gün {$hours} saat gecikmiş" : "{$days} gün gecikmiş";
+        }
+
+        return $hours > 0 ? "{$hours} saat gecikmiş" : "{$minutes} dakika gecikmiş";
+    }
+
+    private function generateMrn(): string
+    {
+        $today = now()->format('Ymd');
+        $last = TechnicalServiceRequest::query()
+            ->where('mrn', 'like', "MRN-{$today}-%")
+            ->orderByDesc('id')
+            ->value('mrn');
+
+        $sequence = 1;
+
+        if ($last !== null && preg_match('/-(\d{4})$/', $last, $matches)) {
+            $sequence = (int) $matches[1] + 1;
+        }
+
+        return sprintf('MRN-%s-%04d', $today, $sequence);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function calculateTravelCosts(float $roundTripKm): array
+    {
+        $roundTripKm = round(max($roundTripKm, 0), 2);
+        $billableKm = round(max($roundTripKm - 30, 0), 2);
+        $travelFee = round($billableKm * 10, 2);
+
+        return [
+            'travel_round_trip_km' => $roundTripKm,
+            'travel_billable_km' => $billableKm,
+            'travel_fee_amount' => $travelFee,
+            'travel_calculation_source' => 'manual',
+            'travel_calculated_at' => now(),
+        ];
+    }
+}

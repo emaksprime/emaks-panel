@@ -14,6 +14,7 @@ const moduleItems = [
     { label: 'Satış Yönetimi', href: '/sales/main', match: ['/sales/main', '/sales/online', '/sales/bayi'] },
     { label: 'Stok Yönetimi', href: '/stock', match: ['/stock', '/stock/critical'] },
     { label: 'Sipariş Yönetimi', href: '/orders', match: ['/orders', '/orders/alinan', '/orders/verilen'] },
+    { label: 'Teknik Servis', href: '/technical-service', match: ['/technical-service', '/technical-service/dashboard', '/technical-service/serial-query', '/technical-service/technicians', '/technical-service/earnings', '/technical-service/admin'] },
     { label: 'Müşteri Yönetimi', href: '/cari', match: ['/cari', '/cari/balance', '/cari/detail'] },
     { label: 'Proforma', href: '/proforma', match: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'] },
 ];
@@ -37,14 +38,18 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
 
                     <nav className="flex min-w-0 gap-2 overflow-x-auto pb-1 lg:justify-center lg:pb-0">
                         {moduleItems
-                            .filter((item) => visibleHrefs.has(item.href) || item.match.some((href) => visibleHrefs.has(href)))
+                            .map((item) => ({
+                                ...item,
+                                visibleHref: item.match.find((href) => visibleHrefs.has(href)) ?? (visibleHrefs.has(item.href) ? item.href : null),
+                            }))
+                            .filter((item) => item.visibleHref !== null)
                             .map((item) => {
                                 const active = item.match.includes(routePath);
 
                                 return (
                                     <Link
                                         key={item.href}
-                                        href={item.href}
+                                        href={item.visibleHref ?? item.href}
                                         className={[
                                             'shrink-0 rounded-full border px-3 py-2 text-sm font-semibold transition xl:px-4',
                                             active
