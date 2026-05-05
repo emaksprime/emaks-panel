@@ -134,6 +134,45 @@ class PanelPermissionVisibilityTest extends TestCase
         }
     }
 
+    public function test_technical_role_only_sees_technical_stock_and_order_pages(): void
+    {
+        $user = User::factory()->create(['role_code' => 'technical']);
+
+        $payload = $this->actingAs($user)->getJson('/api/navigation')->assertOk()->json();
+        $hrefs = collect($payload['groups'])
+            ->flatMap(fn (array $group) => $group['items'] ?? [])
+            ->pluck('href')
+            ->values()
+            ->all();
+
+        foreach ([
+            '/technical-service',
+            '/technical-service/dashboard',
+            '/technical-service/serial-query',
+            '/technical-service/technicians',
+            '/stock',
+            '/stock/critical',
+            '/orders',
+            '/orders/alinan',
+            '/orders/verilen',
+        ] as $path) {
+            $this->assertContains($path, $hrefs);
+            $this->actingAs($user)->get($path)->assertOk();
+        }
+
+        foreach ([
+            '/sales/main',
+            '/sales/online',
+            '/sales/bayi',
+            '/cari',
+            '/proforma',
+            '/admin',
+        ] as $path) {
+            $this->assertNotContains($path, $hrefs);
+            $this->actingAs($user)->get($path)->assertForbidden();
+        }
+    }
+
     public function test_exact_user_data_api_access_is_enforced_before_gateway_call(): void
     {
         Http::fake([
