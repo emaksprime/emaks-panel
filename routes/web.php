@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
+use App\Http\Controllers\Api\StockCriticalSettingController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
@@ -30,6 +31,16 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         Route::post('data/{code}', PageDataController::class)
             ->where('code', '[A-Za-z0-9_-]+')
             ->name('api.data.page');
+        Route::get('stock/critical-settings', [StockCriticalSettingController::class, 'index'])
+            ->middleware('panel.access:stock,stock_critical')
+            ->name('api.stock.critical-settings.index');
+        Route::post('stock/critical-settings', [StockCriticalSettingController::class, 'store'])
+            ->middleware('panel.access:stock,stock_critical')
+            ->name('api.stock.critical-settings.store');
+        Route::delete('stock/critical-settings/{stockCode}', [StockCriticalSettingController::class, 'destroy'])
+            ->where('stockCode', '.*')
+            ->middleware('panel.access:stock,stock_critical')
+            ->name('api.stock.critical-settings.destroy');
 
         Route::prefix('technical-service')->group(function () {
             Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])
