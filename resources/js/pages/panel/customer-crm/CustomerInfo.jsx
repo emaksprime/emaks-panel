@@ -1,4 +1,4 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+import { Head, Link } from '@inertiajs/react';
 import { useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '@/lib/api';
 import { EmptyState, ErrorBanner, LoadingOverlay } from '@/components/primecrm/StateBlocks.jsx';
@@ -141,10 +141,120 @@ function orderText(value, emptyText) {
 
 function StatusBox({ label, value, tone = 'border-slate-200 bg-slate-50 text-slate-700' }) {
     return (
-        <span className={`inline-flex min-w-36 flex-col rounded-xl border px-3 py-2 text-left text-xs leading-5 ${tone}`}>
+        <span className={`inline-flex w-full min-w-0 flex-col rounded-xl border px-3 py-2 text-left text-xs leading-5 ${tone}`}>
             <strong className="text-[11px] font-semibold uppercase tracking-[0.08em] opacity-70">{label}</strong>
             <span className="font-semibold">{value}</span>
         </span>
+    );
+}
+
+function customerListValues(row) {
+    const code = customerCode(row) || '-';
+    const name = companyName(row) || '-';
+    const secondName = readText(row, ['firma_unvani_2', 'FirmaUnvani2']);
+    const group = readText(row, ['grup', 'Grup']) || '-';
+    const rep = representative(row);
+    const balanceValue = amount(row, ['bakiye_durumu', 'bakiye', 'BakiyeDurumu']);
+    const approvedValue = amount(row, ['acik_siparis_tutar', 'onayli_acik_siparis_tutari', 'AcikSiparisTutar']);
+    const totalValue = amount(row, ['genel_durum_tutar', 'genel_durum', 'GenelDurumTutar']);
+    const pendingValue = amount(row, ['bekleyen_siparis_tutar', 'onay_bekleyen_siparis_tutari', 'BekleyenSiparisTutar']);
+
+    return {
+        code,
+        name,
+        secondName,
+        group,
+        rep,
+        balanceValue,
+        approvedValue,
+        totalValue,
+        pendingValue,
+        href: detailHref(code),
+    };
+}
+
+function balanceValues(row) {
+    const code = customerCode(row) || '-';
+    const rep = representative(row);
+    const net = amount(row, ['net_bakiye', 'bakiye_durumu', 'bakiye', 'BakiyeDurumu']);
+    const borc = amount(row, ['borc']) || (net < 0 ? Math.abs(net) : 0);
+    const alacak = amount(row, ['alacak']) || (net > 0 ? net : 0);
+
+    return {
+        code,
+        name: companyName(row) || '-',
+        group: readText(row, ['grup', 'Grup']) || '-',
+        rep,
+        net,
+        borc,
+        alacak,
+        href: detailHref(code),
+    };
+}
+
+function CustomerMobileCard({ row }) {
+    const item = customerListValues(row);
+
+    return (
+        <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <h3 className="whitespace-normal break-words text-base font-semibold leading-6 text-slate-950" title={item.name}>{item.name}</h3>
+                    {item.secondName ? <p className="mt-1 whitespace-normal break-words text-xs leading-5 text-slate-500">{item.secondName}</p> : null}
+                    <p className="mt-2 font-mono text-xs font-semibold text-slate-500">{item.code}</p>
+                </div>
+                <Link href={item.href} className="shrink-0 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
+                    Ekstre
+                </Link>
+            </div>
+            <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                    <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-400">Grup</dt>
+                    <dd className="mt-1 whitespace-normal break-words text-slate-700">{item.group}</dd>
+                </div>
+                <div>
+                    <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-400">Temsilci</dt>
+                    <dd className="mt-1 whitespace-normal break-words text-slate-700">{item.rep.name || '-'}</dd>
+                    {item.rep.code ? <dd className="font-mono text-xs text-slate-400">{item.rep.code}</dd> : null}
+                </div>
+                <StatusBox label={balanceText(item.balanceValue)} value={formatMoney(item.balanceValue)} tone={moneyTone(item.balanceValue)} />
+                <StatusBox label={item.approvedValue > 0 ? 'Onaylı' : 'Açık sipariş yok'} value={orderText(item.approvedValue, 'Yok')} />
+                <StatusBox label={generalText(item.totalValue)} value={formatMoney(item.totalValue)} tone={moneyTone(item.totalValue)} />
+                <StatusBox label={item.pendingValue > 0 ? 'Onay bekleyen' : 'Bekleyen yok'} value={orderText(item.pendingValue, 'Yok')} />
+            </dl>
+        </article>
+    );
+}
+
+function BalanceMobileCard({ row }) {
+    const item = balanceValues(row);
+
+    return (
+        <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <h3 className="whitespace-normal break-words text-base font-semibold leading-6 text-slate-950" title={item.name}>{item.name}</h3>
+                    <p className="mt-2 font-mono text-xs font-semibold text-slate-500">{item.code}</p>
+                </div>
+                <Link href={item.href} className="shrink-0 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
+                    Ekstre
+                </Link>
+            </div>
+            <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                    <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-400">Grup</dt>
+                    <dd className="mt-1 whitespace-normal break-words text-slate-700">{item.group}</dd>
+                </div>
+                <div>
+                    <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-400">Temsilci</dt>
+                    <dd className="mt-1 whitespace-normal break-words text-slate-700">{item.rep.name || '-'}</dd>
+                    {item.rep.code ? <dd className="font-mono text-xs text-slate-400">{item.rep.code}</dd> : null}
+                </div>
+                <StatusBox label="Borç" value={formatMoney(item.borc)} />
+                <StatusBox label="Alacak" value={formatMoney(item.alacak)} />
+                <StatusBox label="Net Bakiye" value={formatMoney(item.net)} tone={moneyTone(item.net)} />
+            </dl>
+        </article>
     );
 }
 
@@ -203,67 +313,63 @@ function CustomerListTable({ rows }) {
                     {rows.length} kayıt
                 </span>
             </div>
-            <div className="w-full overflow-x-auto">
-                <table className="w-full min-w-[1320px] table-auto divide-y divide-slate-200 text-sm">
+            <div className="grid gap-3 bg-slate-50 p-3 md:hidden">
+                {rows.map((row, index) => (
+                    <CustomerMobileCard key={`${customerCode(row) || 'customer'}-${index}`} row={row} />
+                ))}
+            </div>
+            <div className="hidden w-full md:block">
+                <table className="w-full table-fixed divide-y divide-slate-200 text-sm">
                     <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
                         <tr>
-                            <th className="w-36 px-4 py-3 text-left">{LIST_COLUMNS[0]}</th>
-                            <th className="min-w-[360px] px-4 py-3 text-left">{LIST_COLUMNS[1]}</th>
-                            <th className="w-44 px-4 py-3 text-left">{LIST_COLUMNS[2]}</th>
-                            <th className="w-44 px-4 py-3 text-left">{LIST_COLUMNS[3]}</th>
-                            <th className="w-44 px-4 py-3 text-right">{LIST_COLUMNS[4]}</th>
-                            <th className="w-44 px-4 py-3 text-right">{LIST_COLUMNS[5]}</th>
-                            <th className="w-44 px-4 py-3 text-right">{LIST_COLUMNS[6]}</th>
-                            <th className="w-44 px-4 py-3 text-right">{LIST_COLUMNS[7]}</th>
-                            <th className="w-28 px-4 py-3 text-right">Ekstre</th>
+                            <th className="w-[140px] px-3 py-3 text-left">{LIST_COLUMNS[0]}</th>
+                            <th className="px-3 py-3 text-left">{LIST_COLUMNS[1]}</th>
+                            <th className="w-[110px] px-3 py-3 text-left">{LIST_COLUMNS[2]}</th>
+                            <th className="w-[140px] px-3 py-3 text-left">{LIST_COLUMNS[3]}</th>
+                            <th className="w-[136px] px-3 py-3 text-right">{LIST_COLUMNS[4]}</th>
+                            <th className="w-[136px] px-3 py-3 text-right">{LIST_COLUMNS[5]}</th>
+                            <th className="w-[136px] px-3 py-3 text-right">{LIST_COLUMNS[6]}</th>
+                            <th className="w-[136px] px-3 py-3 text-right">{LIST_COLUMNS[7]}</th>
+                            <th className="w-[90px] px-3 py-3 text-right">Ekstre</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
                         {rows.map((row, index) => {
-                            const code = customerCode(row) || '-';
-                            const name = companyName(row) || '-';
-                            const secondName = readText(row, ['firma_unvani_2', 'FirmaUnvani2']);
-                            const group = readText(row, ['grup', 'Grup']) || '-';
-                            const rep = representative(row);
-                            const balanceValue = amount(row, ['bakiye_durumu', 'bakiye', 'BakiyeDurumu']);
-                            const approvedValue = amount(row, ['acik_siparis_tutar', 'onayli_acik_siparis_tutari', 'AcikSiparisTutar']);
-                            const totalValue = amount(row, ['genel_durum_tutar', 'genel_durum', 'GenelDurumTutar']);
-                            const pendingValue = amount(row, ['bekleyen_siparis_tutar', 'onay_bekleyen_siparis_tutari', 'BekleyenSiparisTutar']);
-                            const href = detailHref(code);
+                            const item = customerListValues(row);
 
                             return (
                                 <tr
-                                    key={`${code}-${index}`}
+                                    key={`${item.code}-${index}`}
                                     className="cursor-pointer align-top hover:bg-slate-50"
                                     onClick={() => {
-                                        window.location.href = href;
+                                        window.location.href = item.href;
                                     }}
                                 >
-                                    <td className="px-4 py-4 font-mono text-xs font-semibold text-slate-600">{code}</td>
-                                    <td className="px-4 py-4">
-                                        <p className="whitespace-normal break-words text-sm font-semibold leading-5 text-slate-900" title={name}>{name}</p>
-                                        {secondName ? <p className="mt-1 whitespace-normal break-words text-xs leading-5 text-slate-500">{secondName}</p> : null}
+                                    <td className="px-3 py-4 font-mono text-xs font-semibold text-slate-600">{item.code}</td>
+                                    <td className="px-3 py-4">
+                                        <p className="whitespace-normal break-words text-sm font-semibold leading-5 text-slate-900" title={item.name}>{item.name}</p>
+                                        {item.secondName ? <p className="mt-1 whitespace-normal break-words text-xs leading-5 text-slate-500">{item.secondName}</p> : null}
                                     </td>
-                                    <td className="px-4 py-4 whitespace-normal break-words">{group}</td>
-                                    <td className="px-4 py-4">
-                                        <p className="whitespace-normal break-words">{rep.name || '-'}</p>
-                                        {rep.code ? <p className="mt-0.5 font-mono text-xs text-slate-400">{rep.code}</p> : null}
+                                    <td className="px-3 py-4 whitespace-normal break-words">{item.group}</td>
+                                    <td className="px-3 py-4">
+                                        <p className="whitespace-normal break-words">{item.rep.name || '-'}</p>
+                                        {item.rep.code ? <p className="mt-0.5 font-mono text-xs text-slate-400">{item.rep.code}</p> : null}
                                     </td>
-                                    <td className="px-4 py-4 text-right">
-                                        <StatusBox label={balanceText(balanceValue)} value={formatMoney(balanceValue)} tone={moneyTone(balanceValue)} />
+                                    <td className="px-3 py-4 text-right">
+                                        <StatusBox label={balanceText(item.balanceValue)} value={formatMoney(item.balanceValue)} tone={moneyTone(item.balanceValue)} />
                                     </td>
-                                    <td className="px-4 py-4 text-right">
-                                        <StatusBox label={approvedValue > 0 ? 'Onaylı' : 'Açık sipariş yok'} value={orderText(approvedValue, 'Yok')} />
+                                    <td className="px-3 py-4 text-right">
+                                        <StatusBox label={item.approvedValue > 0 ? 'Onaylı' : 'Açık sipariş yok'} value={orderText(item.approvedValue, 'Yok')} />
                                     </td>
-                                    <td className="px-4 py-4 text-right">
-                                        <StatusBox label={generalText(totalValue)} value={formatMoney(totalValue)} tone={moneyTone(totalValue)} />
+                                    <td className="px-3 py-4 text-right">
+                                        <StatusBox label={generalText(item.totalValue)} value={formatMoney(item.totalValue)} tone={moneyTone(item.totalValue)} />
                                     </td>
-                                    <td className="px-4 py-4 text-right">
-                                        <StatusBox label={pendingValue > 0 ? 'Onay bekleyen' : 'Bekleyen yok'} value={orderText(pendingValue, 'Yok')} />
+                                    <td className="px-3 py-4 text-right">
+                                        <StatusBox label={item.pendingValue > 0 ? 'Onay bekleyen' : 'Bekleyen yok'} value={orderText(item.pendingValue, 'Yok')} />
                                     </td>
-                                    <td className="px-4 py-4 text-right">
+                                    <td className="px-3 py-4 text-right">
                                         <Link
-                                            href={href}
+                                            href={item.href}
                                             onClick={(event) => event.stopPropagation()}
                                             className="inline-flex rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100"
                                         >
@@ -292,12 +398,17 @@ function CustomerBalanceTable({ rows }) {
                     {rows.length} kayıt
                 </span>
             </div>
-            <div className="w-full overflow-x-auto">
-                <table className="w-full min-w-[1120px] table-auto divide-y divide-slate-200 text-sm">
+            <div className="grid gap-3 bg-slate-50 p-3 md:hidden">
+                {rows.map((row, index) => (
+                    <BalanceMobileCard key={`${customerCode(row) || 'balance'}-${index}`} row={row} />
+                ))}
+            </div>
+            <div className="hidden w-full md:block">
+                <table className="w-full table-fixed divide-y divide-slate-200 text-sm">
                     <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
                         <tr>
                             {BALANCE_COLUMNS.map((column) => (
-                                <th key={column} className={`px-4 py-3 ${['Borç', 'Alacak', 'Net Bakiye', 'Ekstre'].includes(column) ? 'text-right' : 'text-left'}`}>
+                                <th key={column} className={`px-3 py-3 ${['Borç', 'Alacak', 'Net Bakiye', 'Ekstre'].includes(column) ? 'text-right' : 'text-left'}`}>
                                     {column}
                                 </th>
                             ))}
@@ -305,29 +416,24 @@ function CustomerBalanceTable({ rows }) {
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
                         {rows.map((row, index) => {
-                            const code = customerCode(row) || '-';
-                            const rep = representative(row);
-                            const net = amount(row, ['net_bakiye', 'bakiye_durumu', 'bakiye', 'BakiyeDurumu']);
-                            const borc = amount(row, ['borc']) || (net < 0 ? Math.abs(net) : 0);
-                            const alacak = amount(row, ['alacak']) || (net > 0 ? net : 0);
-                            const name = companyName(row) || '-';
+                            const item = balanceValues(row);
 
                             return (
-                                <tr key={`${code}-${index}`} className="align-top hover:bg-slate-50">
-                                    <td className="w-36 px-4 py-4 font-mono text-xs font-semibold text-slate-600">{code}</td>
-                                    <td className="min-w-[360px] px-4 py-4">
-                                        <p className="whitespace-normal break-words font-semibold leading-5 text-slate-900" title={name}>{name}</p>
+                                <tr key={`${item.code}-${index}`} className="align-top hover:bg-slate-50">
+                                    <td className="w-[140px] px-3 py-4 font-mono text-xs font-semibold text-slate-600">{item.code}</td>
+                                    <td className="px-3 py-4">
+                                        <p className="whitespace-normal break-words font-semibold leading-5 text-slate-900" title={item.name}>{item.name}</p>
                                     </td>
-                                    <td className="w-44 px-4 py-4 whitespace-normal break-words">{readText(row, ['grup', 'Grup']) || '-'}</td>
-                                    <td className="w-44 px-4 py-4">
-                                        <p className="whitespace-normal break-words">{rep.name || '-'}</p>
-                                        {rep.code ? <p className="mt-0.5 font-mono text-xs text-slate-400">{rep.code}</p> : null}
+                                    <td className="w-[110px] px-3 py-4 whitespace-normal break-words">{item.group}</td>
+                                    <td className="w-[140px] px-3 py-4">
+                                        <p className="whitespace-normal break-words">{item.rep.name || '-'}</p>
+                                        {item.rep.code ? <p className="mt-0.5 font-mono text-xs text-slate-400">{item.rep.code}</p> : null}
                                     </td>
-                                    <td className="w-36 px-4 py-4 text-right tabular-nums">{formatMoney(borc)}</td>
-                                    <td className="w-36 px-4 py-4 text-right tabular-nums">{formatMoney(alacak)}</td>
-                                    <td className="w-36 px-4 py-4 text-right tabular-nums">{formatMoney(net)}</td>
-                                    <td className="w-28 px-4 py-4 text-right">
-                                        <Link href={detailHref(code)} className="inline-flex rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100">
+                                    <td className="w-32 px-3 py-4 text-right tabular-nums">{formatMoney(item.borc)}</td>
+                                    <td className="w-32 px-3 py-4 text-right tabular-nums">{formatMoney(item.alacak)}</td>
+                                    <td className="w-32 px-3 py-4 text-right tabular-nums">{formatMoney(item.net)}</td>
+                                    <td className="w-[90px] px-3 py-4 text-right">
+                                        <Link href={item.href} className="inline-flex rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100">
                                             Ekstre
                                         </Link>
                                     </td>
@@ -341,8 +447,14 @@ function CustomerBalanceTable({ rows }) {
     );
 }
 
+function representativeScopeCode(queryMeta) {
+    const request = queryMeta?.gatewayRequest ?? {};
+    const params = request?.params ?? {};
+
+    return String(request?.rep_code ?? params?.rep_code ?? '').trim();
+}
+
 function CustomerInfoBase({ mode = 'list' }) {
-    const { props } = usePage();
     const isBalance = mode === 'balance';
     const [searchDraft, setSearchDraft] = useState('');
     const [search, setSearch] = useState('');
@@ -352,12 +464,10 @@ function CustomerInfoBase({ mode = 'list' }) {
     const [queryMeta, setQueryMeta] = useState(null);
     const [refreshTick, setRefreshTick] = useState(0);
     const sourcePath = isBalance ? '/api/data/cari_balance' : '/api/data/cari';
-    const user = props?.auth?.user ?? {};
-    const repCode = user?.rep_code ?? user?.temsilci_kodu ?? user?.representative_code ?? '';
-    const canViewAll = Boolean(user?.can_view_all ?? user?.is_admin ?? user?.isAdmin ?? user?.admin);
-    const listSubtitle = canViewAll
-        ? 'Tüm müşteri kartlarında cari bilgi, bakiye ve sipariş durumu.'
-        : `Sadece temsilci kodunuzdaki müşteriler listelenir. Temsilci kodu: ${repCode || '-'}`;
+    const activeRepCode = representativeScopeCode(queryMeta);
+    const listSubtitle = activeRepCode
+        ? `Sadece temsilci kodunuzdaki müşteriler listelenir. Temsilci kodu: ${activeRepCode}`
+        : 'Tüm müşteri kartlarında cari bilgi, bakiye ve sipariş durumu.';
 
     useEffect(() => {
         let cancelled = false;
