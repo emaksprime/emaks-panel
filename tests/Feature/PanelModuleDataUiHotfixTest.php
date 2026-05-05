@@ -223,6 +223,34 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('display_text', $query);
     }
 
+    public function test_sales_datasources_apply_stock_category_code_whitelist_in_base_sales_rows(): void
+    {
+        $whitelist = ['A1', 'AS1', 'D1', 'G1', 'K1', 'KA1', 'M1', 'O1', 'OT1', 'YM1'];
+
+        foreach (['sales_main_dashboard', 'sales_online_perakende_detail', 'sales_bayi_proje_detail', 'sales_customer_search'] as $sourceCode) {
+            $query = (string) DataSource::query()->where('code', $sourceCode)->value('query_template');
+
+            $this->assertNotSame('', trim($query), "{$sourceCode} query_template boş olamaz.");
+            $this->assertStringContainsString('INNER JOIN dbo.STOKLAR s WITH (NOLOCK)', $query, "{$sourceCode} satış satırlarını STOKLAR ile filtrelemeli.");
+            $this->assertStringContainsString('s.sto_kategori_kodu', $query, "{$sourceCode} filtreyi STOKLAR.sto_kategori_kodu üzerinden kurmalı.");
+            $this->assertStringContainsString("ISNULL(s.sto_kategori_kodu, N'') IN", $query, "{$sourceCode} kategori whitelist filtresi eksik.");
+            $this->assertStringNotContainsString("N'X1'", $query, "{$sourceCode} whitelist dışı kategori kodu içermemeli.");
+
+            foreach ($whitelist as $categoryCode) {
+                $this->assertStringContainsString("N'{$categoryCode}'", $query, "{$sourceCode} {$categoryCode} kategori kodunu içermeli.");
+            }
+
+            $filterPosition = strpos($query, 's.sto_kategori_kodu');
+            $downstreamPosition = $sourceCode === 'sales_customer_search'
+                ? strpos($query, 'filtered AS')
+                : strpos($query, 'INTO #filtered');
+
+            $this->assertIsInt($filterPosition, "{$sourceCode} whitelist pozisyonu bulunamadı.");
+            $this->assertIsInt($downstreamPosition, "{$sourceCode} downstream satış toplamı pozisyonu bulunamadı.");
+            $this->assertLessThan($downstreamPosition, $filterPosition, "{$sourceCode} whitelist filtresi kaynak satış hareketi seviyesinde uygulanmalı.");
+        }
+    }
+
     public function test_sales_customer_search_sends_search_to_gateway_payload(): void
     {
         DB::table('panel.data_source_cache')->delete();

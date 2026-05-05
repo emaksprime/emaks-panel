@@ -60,7 +60,10 @@ FROM dbo.fn_Stok_Masraf_Musteri_Grup_Hareket_Kubu(
     1,
     1
 )
-WHERE ISNULL(LTRIM(RTRIM(msg_S_1032)), N'') <> N'';
+INNER JOIN dbo.STOKLAR s WITH (NOLOCK)
+    ON s.sto_kod = LTRIM(RTRIM(ISNULL(msg_S_2663, N'')))
+WHERE ISNULL(LTRIM(RTRIM(msg_S_1032)), N'') <> N''
+    AND ISNULL(s.sto_kategori_kodu, N'') IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1');
 
 SELECT
     CASE
