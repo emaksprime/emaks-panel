@@ -28,11 +28,44 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $admin = User::factory()->create(['role_code' => 'admin']);
         $sales = User::factory()->create(['role_code' => 'sales']);
         $stock = User::factory()->create(['role_code' => 'stock']);
-        $orders = User::factory()->create(['role_code' => 'orders']);
         $technical = User::factory()->create(['role_code' => 'technical']);
-        $customer = User::factory()->create(['role_code' => 'customer']);
         $dashboardOnly = User::factory()->create(['role_code' => 'viewer']);
+        $ordersOnly = User::factory()->create(['role_code' => 'viewer']);
+        $customerOnly = User::factory()->create(['role_code' => 'viewer']);
         $proformaOnly = User::factory()->create(['role_code' => 'viewer']);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $dashboardOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+        foreach (['stock', 'stock_critical', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $ordersOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $customerOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+        UserAccess::query()->create([
+            'user_id' => $customerOnly->id,
+            'resource_code' => 'customers',
+            'can_view' => true,
+        ]);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $proformaOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
         UserAccess::query()->create([
             'user_id' => $proformaOnly->id,
             'resource_code' => 'proforma',
@@ -43,8 +76,8 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $this->assertSame('/sales/main', $navigation->firstAccessibleRouteFor($sales));
         $this->assertSame('/technical-service', $navigation->firstAccessibleRouteFor($technical));
         $this->assertSame('/stock', $navigation->firstAccessibleRouteFor($stock));
-        $this->assertSame('/orders', $navigation->firstAccessibleRouteFor($orders));
-        $this->assertSame('/cari', $navigation->firstAccessibleRouteFor($customer));
+        $this->assertSame('/orders', $navigation->firstAccessibleRouteFor($ordersOnly));
+        $this->assertSame('/cari', $navigation->firstAccessibleRouteFor($customerOnly));
         $this->assertSame('/proforma', $navigation->firstAccessibleRouteFor($proformaOnly));
         $this->assertSame('/dashboard', $navigation->firstAccessibleRouteFor($dashboardOnly));
     }
@@ -58,6 +91,13 @@ class LoginRedirectPermissionCleanupTest extends TestCase
             'resource_code' => 'dashboard',
             'can_view' => false,
         ]);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
 
         $this->assertNull($navigation->firstAccessibleRouteFor($user));
         $this->assertSame('/dashboard', $navigation->homePathFor($user));
@@ -98,6 +138,13 @@ class LoginRedirectPermissionCleanupTest extends TestCase
             'resource_code' => 'customers',
             'can_view' => true,
         ]);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $customersOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
 
         $this->post(route('login.store'), [
             'email' => $technical->username,

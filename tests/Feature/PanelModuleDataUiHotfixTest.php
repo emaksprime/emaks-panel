@@ -6,6 +6,7 @@ use App\Models\DataSource;
 use App\Models\Page;
 use App\Models\PageConfig;
 use App\Models\User;
+use App\Models\UserAccess;
 use App\Services\SalesMainPageService;
 use Database\Seeders\PanelDataSourcesSeeder;
 use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
@@ -799,7 +800,112 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
             return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
                 && ($payload['scope_key'] ?? null) === 'bulent_saglam'
-                && ($payload['rep_code'] ?? null) === '0024';
+            && ($payload['rep_code'] ?? null) === '0024';
+        });
+    }
+
+    public function test_sales_representative_scopes_follow_own_rep_explicit_allow_and_deny_rules(): void
+    {
+        $service = app(SalesMainPageService::class);
+        $salih = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0024']);
+
+        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('salih', $keys);
+        $this->assertNotContains('all', $keys);
+        $this->assertNotContains('umit', $keys);
+        $this->assertNotContains('bulent_saglam', $keys);
+
+        UserAccess::query()->create([
+            'user_id' => $salih->id,
+            'resource_code' => 'sales_rep_umit_yildiz',
+            'can_view' => true,
+        ]);
+
+        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('salih', $keys);
+        $this->assertContains('umit', $keys);
+        $this->assertNotContains('bulent_saglam', $keys);
+        $this->assertNotContains('all', $keys);
+
+        UserAccess::query()->create([
+            'user_id' => $salih->id,
+            'resource_code' => 'sales_rep_bulent_saglam',
+            'can_view' => true,
+        ]);
+
+        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('salih', $keys);
+        $this->assertContains('umit', $keys);
+        $this->assertContains('bulent_saglam', $keys);
+        $this->assertNotContains('all', $keys);
+
+        UserAccess::query()->create([
+            'user_id' => $salih->id,
+            'resource_code' => 'sales_main_all',
+            'can_view' => true,
+        ]);
+
+        $keys = collect($service->config($salih, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('all', $keys);
+
+        $deniedSalih = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0024']);
+        UserAccess::query()->create([
+            'user_id' => $deniedSalih->id,
+            'resource_code' => 'sales_rep_salih_cakir',
+            'can_view' => false,
+        ]);
+
+        $keys = collect($service->config($deniedSalih, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertNotContains('salih', $keys);
+    }
+
+    public function test_explicit_representative_scope_uses_scope_rep_code_in_gateway_payload(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Grup A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $salih = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0024']);
+        UserAccess::query()->create([
+            'user_id' => $salih->id,
+            'resource_code' => 'sales_rep_umit_yildiz',
+            'can_view' => true,
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset($salih, [
+            'scope_key' => 'umit',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('umit', $payload['scope']['key']);
+        $this->assertSame('0003', $payload['scope']['effectiveRepresentativeCode']);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['scope_key'] ?? null) === 'umit'
+                && ($payload['rep_code'] ?? null) === '0003';
         });
     }
 

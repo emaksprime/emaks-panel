@@ -234,26 +234,26 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         $service = app(PanelAccessService::class);
         $user = User::factory()->create(['role_code' => 'viewer']);
 
-        Resource::query()->firstOrCreate(['code' => 'stock'], ['name' => 'Stok', 'type' => 'page', 'active' => true]);
+        Resource::query()->firstOrCreate(['code' => 'customers'], ['name' => 'Müşteri', 'type' => 'page', 'active' => true]);
 
-        $this->assertFalse($service->userCanAccess($user, 'stock'));
+        $this->assertFalse($service->userCanAccess($user, 'customers'));
 
         UserAccess::query()->create([
             'user_id' => $user->id,
-            'resource_code' => 'stock',
+            'resource_code' => 'customers',
             'can_view' => true,
         ]);
 
-        $this->assertTrue($service->userCanAccess($user->refresh(), 'stock'));
+        $this->assertTrue($service->userCanAccess($user->refresh(), 'customers'));
 
         RoleResourcePermission::query()->updateOrCreate(
-            ['role_code' => 'viewer', 'resource_code' => 'stock'],
+            ['role_code' => 'viewer', 'resource_code' => 'customers'],
             ['can_view' => true],
         );
 
-        UserAccess::query()->where('user_id', $user->id)->where('resource_code', 'stock')->update(['can_view' => false]);
+        UserAccess::query()->where('user_id', $user->id)->where('resource_code', 'customers')->update(['can_view' => false]);
 
-        $this->assertFalse($service->userCanAccess($user->refresh(), 'stock'));
+        $this->assertFalse($service->userCanAccess($user->refresh(), 'customers'));
     }
 
     public function test_inactive_user_cannot_login(): void
