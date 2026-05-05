@@ -34,6 +34,7 @@ import type {
 import CustomerDocumentDetailPage from './customer-crm/CustomerDocumentDetail.jsx';
 import CustomerInfoPage, { CustomerBalancePage } from './customer-crm/CustomerInfo.jsx';
 import CustomerStatementPage from './customer-crm/CustomerStatement.jsx';
+import StockDashboard from './stock/StockDashboard.jsx';
 
 type PanelPageProps = {
     page: PanelPagePayload;
@@ -426,6 +427,14 @@ export default function PanelPage({
 
     if (matchesPage('cari_document_detail', '/cari/document-detail')) {
         return <CustomerDocumentDetailPage />;
+    }
+
+    if (matchesPage('stock', '/stock')) {
+        return <StockDashboard page={page} mode="list" />;
+    }
+
+    if (matchesPage('stock_critical', '/stock/critical')) {
+        return <StockDashboard page={page} mode="critical" />;
     }
 
     return (
