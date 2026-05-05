@@ -10,6 +10,7 @@ use App\Services\PanelPageDataService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use RuntimeException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 class PageDataController extends Controller
 {
@@ -44,7 +45,7 @@ class PageDataController extends Controller
         abort_unless(
             $page !== null
                 ? $access->userCanAccess($user, $page->resource_code ?? $page->code)
-                : $access->userCanAccess($user, (string) $sourceResourceCode),
+                : $this->userCanAccessDataSource($access, $user, (string) $source?->code, (string) $sourceResourceCode),
             403,
         );
 
@@ -55,8 +56,14 @@ class PageDataController extends Controller
             'detail_type' => ['nullable', 'in:cari,urun'],
             'scope_key' => ['nullable', 'string', 'max:80'],
             'rep_code' => ['nullable', 'string', 'max:40'],
+            'customer_filter' => ['nullable', 'string', 'max:1000'],
+            'cari_filter' => ['nullable', 'string', 'max:1000'],
             'customer_code' => ['nullable', 'string', 'max:80'],
             'proforma_no' => ['nullable', 'string', 'max:80'],
+            'guid' => ['nullable', 'string', 'max:120'],
+            'hareket_guid' => ['nullable', 'string', 'max:120'],
+            'document_guid' => ['nullable', 'string', 'max:120'],
+            'evrak_guid' => ['nullable', 'string', 'max:120'],
             'price_list' => ['nullable', 'integer'],
             'discount_code' => ['nullable', 'string', 'max:80'],
             'search' => ['nullable', 'string', 'max:255'],
@@ -65,6 +72,14 @@ class PageDataController extends Controller
             'bypass_cache' => ['nullable', 'boolean'],
         ]);
 
+        if (($source?->code ?? null) === 'sales_customer_search') {
+            $validated['scope_key'] = $this->normalizeSalesCustomerSearchScope(
+                $access,
+                $user,
+                (string) ($validated['scope_key'] ?? 'all'),
+            );
+        }
+
         try {
             return response()->json(
                 $page !== null
@@ -72,6 +87,10 @@ class PageDataController extends Controller
                     : $pageData->datasetForSource($user, (string) $source?->code, (string) $sourceResourceCode, $validated),
             );
         } catch (RuntimeException $exception) {
+            if ($exception instanceof HttpExceptionInterface) {
+                throw $exception;
+            }
+
             return response()->json([
                 'message' => $this->friendlyErrorMessage($page, $sourceResourceCode),
                 'mode' => 'page_data_error',
@@ -102,6 +121,56 @@ class PageDataController extends Controller
             return 'proforma';
         }
 
+        if (str_starts_with($sourceCode, 'sales_')) {
+            return 'sales_main';
+        }
+
         return $sourceCode;
+    }
+
+    private function userCanAccessDataSource(PanelAccessService $access, mixed $user, string $sourceCode, string $resourceCode): bool
+    {
+        if ($sourceCode === 'sales_customer_search') {
+            return $access->userCanAccess($user, 'sales_main')
+                || $access->userCanAccess($user, 'sales_online')
+                || $access->userCanAccess($user, 'sales_bayi');
+        }
+
+        return $access->userCanAccess($user, $resourceCode);
+    }
+
+    private function normalizeSalesCustomerSearchScope(PanelAccessService $access, mixed $user, string $scopeKey): string
+    {
+        $scopeKey = str_replace('-', '_', trim($scopeKey) !== '' ? trim($scopeKey) : 'all');
+
+        if ($access->userCanAccess($user, 'sales_main_all')) {
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'online_perakende') {
+            abort_unless($access->userCanAccess($user, 'sales_online'), 403);
+
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'bayi_proje') {
+            abort_unless($access->userCanAccess($user, 'sales_bayi'), 403);
+
+            return $scopeKey;
+        }
+
+        if ($access->userCanAccess($user, 'sales_main')) {
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'all' && $access->userCanAccess($user, 'sales_online')) {
+            return 'online_perakende';
+        }
+
+        if ($scopeKey === 'all' && $access->userCanAccess($user, 'sales_bayi')) {
+            return 'bayi_proje';
+        }
+
+        abort(403);
     }
 }

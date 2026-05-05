@@ -23,6 +23,8 @@ class SalesMainDataRequest extends FormRequest
             'detail_type' => ['nullable', 'in:cari,urun'],
             'scope_key' => ['nullable', 'string', 'max:64'],
             'rep_code' => ['nullable', 'string', 'max:40'],
+            'customer_filter' => ['nullable', 'string', 'max:1000'],
+            'cari_filter' => ['nullable', 'string', 'max:1000'],
             'search' => ['nullable', 'string', 'max:255'],
             'page' => ['nullable', 'integer', 'min:1'],
             'bypass_cache' => ['nullable', 'boolean'],

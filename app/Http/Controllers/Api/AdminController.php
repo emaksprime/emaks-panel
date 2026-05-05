@@ -39,7 +39,7 @@ class AdminController extends Controller
                 'datasources' => DataSource::query()->count(),
                 'logs' => \App\Models\AuditLog::query()->count(),
             ],
-            'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description']),
+            'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description', 'is_super_admin']),
             'urls' => [
                 'publicUrl' => config('panel.public_url'),
                 'apiBaseUrl' => config('panel.api_base_url'),
@@ -131,15 +131,17 @@ class AdminController extends Controller
             ? tap(User::query()->findOrFail($data['id']))->update($payload)
             : User::query()->create($payload);
 
-        $targetRole = Role::query()->where('code', $data['role_code'])->first();
-        $allowed = collect($data['access'] ?? [])->unique()->values();
-        $denied = collect($data['denied_access'] ?? [])->unique()->values();
+        $role = Role::query()->where('code', $data['role_code'])->first();
+        $denied = collect($data['denied_access'] ?? [])->filter()->unique()->values();
+        $allowed = collect($data['access'] ?? [])->filter()->unique()->values();
 
-        if (($data['strict_access'] ?? false) && ! ($targetRole?->is_super_admin ?? false)) {
+        if ((bool) ($data['strict_access'] ?? false) && ! (bool) ($role?->is_super_admin ?? false)) {
             $allowed = $allowed
                 ->push('dashboard')
+                ->filter()
                 ->unique()
                 ->values();
+
             $denied = Resource::query()
                 ->where('active', true)
                 ->pluck('code')

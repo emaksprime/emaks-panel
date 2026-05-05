@@ -115,23 +115,27 @@ class PanelNavigationService
             'icon' => $page->icon,
             'heroEyebrow' => $page->pageConfig?->layout_json['heroEyebrow'] ?? null,
             'previewNotice' => $page->pageConfig?->layout_json['previewNotice'] ?? null,
-            'moduleTabs' => $page->pageConfig?->layout_json['moduleTabs'] ?? [],
+            'moduleTabs' => $this->filterNavigableItems($page->pageConfig?->layout_json['moduleTabs'] ?? [], $user),
             'buttons' => $page->buttons
                 ->filter(fn (Button $button) => $button->is_visible)
-                ->filter(fn (Button $button) => $button->resource_code === null || $this->access->userCanAccess($user, $button->resource_code))
-                ->map(fn (Button $button) => [
-                    'id' => $button->id,
-                    'label' => $button->label,
-                    'slug' => $button->code,
-                    'variant' => $button->variant,
-                    'actionType' => $button->action_type,
-                    'actionTarget' => $button->action_target,
-                    'position' => $button->position ?? 'page_top',
-                    'confirmationRequired' => (bool) ($button->confirmation_required ?? false),
-                    'confirmationText' => $button->confirmation_text,
-                    'canExecute' => $button->resource_code === null || $this->access->userCanAccess($user, $button->resource_code),
-                    'icon' => null,
-                ])
+                ->filter(fn (Button $button) => $this->userCanAccessButton($button, $user))
+                ->map(function (Button $button) use ($user) {
+                    $resourceCode = $this->buttonResourceCode($button);
+
+                    return [
+                        'id' => $button->id,
+                        'label' => $button->label,
+                        'slug' => $button->code,
+                        'variant' => $button->variant,
+                        'actionType' => $button->action_type,
+                        'actionTarget' => $button->action_target,
+                        'position' => $button->position ?? 'page_top',
+                        'confirmationRequired' => (bool) ($button->confirmation_required ?? false),
+                        'confirmationText' => $button->confirmation_text,
+                        'canExecute' => $resourceCode === null || $this->access->userCanAccess($user, $resourceCode),
+                        'icon' => null,
+                    ];
+                })
                 ->values()
                 ->all(),
         ];
@@ -232,6 +236,74 @@ class PanelNavigationService
             'workflowUrls' => config('panel.workflow_urls'),
             'generatedAt' => now()->toIso8601String(),
         ];
+    }
+
+    private function userCanAccessButton(Button $button, ?User $user): bool
+    {
+        $resourceCode = $this->buttonResourceCode($button);
+
+        return $resourceCode === null || $this->access->userCanAccess($user, $resourceCode);
+    }
+
+    private function buttonResourceCode(Button $button): ?string
+    {
+        $resourceCode = trim((string) ($button->resource_code ?? ''));
+
+        if ($resourceCode !== '') {
+            return $resourceCode;
+        }
+
+        if ($button->action_type !== 'navigate') {
+            return null;
+        }
+
+        $targetPage = $this->targetPageFor($button->action_target);
+
+        return $targetPage?->resource_code ?? $targetPage?->code;
+    }
+
+    /**
+     * @param  array<int, mixed>  $items
+     * @return array<int, mixed>
+     */
+    private function filterNavigableItems(array $items, ?User $user): array
+    {
+        return collect($items)
+            ->filter(function (mixed $item) use ($user): bool {
+                if (! is_array($item) || ! array_key_exists('href', $item)) {
+                    return true;
+                }
+
+                return $this->userCanAccessRoute($user, (string) ($item['href'] ?? ''));
+            })
+            ->values()
+            ->all();
+    }
+
+    private function userCanAccessRoute(?User $user, ?string $target): bool
+    {
+        $targetPage = $this->targetPageFor($target);
+
+        if (! $targetPage) {
+            return true;
+        }
+
+        return $this->access->userCanAccess($user, $targetPage->resource_code ?? $targetPage->code);
+    }
+
+    private function targetPageFor(?string $target): ?Page
+    {
+        if (! $target) {
+            return null;
+        }
+
+        $path = parse_url($target, PHP_URL_PATH);
+        $path = is_string($path) && $path !== '' ? $path : $target;
+
+        return Page::query()
+            ->where('route', $this->normalizePath($path))
+            ->where('active', true)
+            ->first();
     }
 
     private function normalizePath(?string $path): string

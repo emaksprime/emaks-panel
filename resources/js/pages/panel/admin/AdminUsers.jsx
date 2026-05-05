@@ -83,6 +83,8 @@ export default function AdminUsers() {
             (groupOrder.indexOf(right) === -1 ? 999 : groupOrder.indexOf(right)),
     );
     const selectedRole = data.roles.find((role) => role.code === form.role_code);
+    const selectedRoleIsSuperAdmin = Boolean(selectedRole?.is_super_admin ?? selectedRole?.isSuperAdmin);
+    const activeResourceCodes = data.resources.map((resource) => resource.code);
     const roleAllowedResources = new Set(data.rolePermissions?.[form.role_code] ?? []);
 
     const save = async (event) => {
@@ -115,6 +117,7 @@ export default function AdminUsers() {
             password: '',
             access: user.access ?? [],
             denied_access: user.denied_access ?? [],
+            strict_access: false,
         });
         setStatus({ type: 'idle', message: '' });
     };
@@ -155,23 +158,38 @@ export default function AdminUsers() {
     };
 
     const clearAccess = () => {
-        setForm((current) => ({ ...current, access: [], denied_access: [], strict_access: false }));
+        setForm((current) => ({
+            ...current,
+            access: [],
+            denied_access: [],
+            strict_access: false,
+        }));
     };
 
-    const applyStrictSelectedAccess = () => {
-        if (selectedRole?.is_super_admin) {
+    const applyStrictAccess = () => {
+        if (selectedRoleIsSuperAdmin) {
+            setStatus({
+                type: 'error',
+                message: 'Super admin rolü sadece seçilen kaynaklarla sınırlandırılamaz.',
+            });
+
             return;
         }
 
-        const activeResourceCodes = data.resources.map((resource) => resource.code);
-        const selected = new Set([...form.access, 'dashboard']);
+        setForm((current) => {
+            const allowed = [...new Set([...(current.access ?? []), 'dashboard'])];
 
-        setForm((current) => ({
-            ...current,
-            access: activeResourceCodes.filter((code) => selected.has(code)),
-            denied_access: activeResourceCodes.filter((code) => !selected.has(code)),
-            strict_access: true,
-        }));
+            return {
+                ...current,
+                access: allowed,
+                denied_access: activeResourceCodes.filter((code) => !allowed.includes(code)),
+                strict_access: true,
+            };
+        });
+        setStatus({
+            type: 'success',
+            message: 'Sadece seçilen kaynaklar izinli, diğer aktif kaynaklar engelli olarak işaretlendi.',
+        });
     };
 
     return (
@@ -398,9 +416,9 @@ export default function AdminUsers() {
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={applyStrictSelectedAccess}
-                                    disabled={selectedRole?.is_super_admin}
-                                    className="text-xs font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-400"
+                                    onClick={applyStrictAccess}
+                                    disabled={selectedRoleIsSuperAdmin}
+                                    className="text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:text-slate-300"
                                 >
                                     Sadece seçilenlere izin ver
                                 </button>
@@ -409,6 +427,9 @@ export default function AdminUsers() {
                                 </button>
                             </div>
                         </div>
+                        <p className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                            Sadece seçilenlere izin ver aksiyonu, seçili kaynakları izin listesine alır ve diğer tüm aktif kaynakları kullanıcı bazlı engel listesine yazar.
+                        </p>
 
                         <div className="max-h-72 overflow-auto rounded-xl border border-slate-200">
                             {groupedResourceEntries.map(([type, resources]) => (

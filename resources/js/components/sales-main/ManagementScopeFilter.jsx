@@ -1,6 +1,6 @@
 import { router } from '@inertiajs/react';
 
-export function ManagementScopeFilter({ scopes = [], activeKey, onChange, loading }) {
+export function ManagementScopeFilter({ scopes = [], activeKey, onChange, loading, filters = {} }) {
     return (
         <div className="flex flex-wrap gap-2">
             {scopes.map((scope) => (
@@ -10,7 +10,17 @@ export function ManagementScopeFilter({ scopes = [], activeKey, onChange, loadin
                     disabled={loading}
                     onClick={() => {
                         if (scope.navigateTo) {
-                            router.visit(scope.navigateTo);
+                            router.visit(scope.navigateTo, {
+                                data: {
+                                    grain: filters.grain,
+                                    date_from: filters.date_from,
+                                    date_to: filters.date_to,
+                                    detail_type: filters.detail_type,
+                                    scope_key: scope.key,
+                                },
+                                preserveScroll: true,
+                                preserveState: false,
+                            });
                             return;
                         }
 

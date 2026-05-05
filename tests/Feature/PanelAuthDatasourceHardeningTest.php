@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\DataSource;
-use App\Models\Page;
 use App\Models\PageConfig;
 use App\Models\Resource;
 use App\Models\RoleResourcePermission;
@@ -48,6 +47,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
             'customers_list',
             'customers_balance',
             'customer_detail',
+            'customer_documents',
             'customer_statement',
             'proforma_customer_search',
             'proforma_stock_search',
@@ -60,7 +60,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
             $this->assertNotSame('', trim((string) $source->query_template), "Datasource [{$code}] query_template bos olmamali.");
         }
 
-        foreach (['customer_documents', 'proforma_list', 'proforma_detail', 'proforma_draft', 'proforma_items'] as $code) {
+        foreach (['proforma_list', 'proforma_detail', 'proforma_draft', 'proforma_items'] as $code) {
             $this->assertDatabaseHas('panel.data_sources', ['code' => $code]);
         }
     }
@@ -216,44 +216,9 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         $this->assertSame('Ürün / Müşteri Özeti', $urunPayload['breakdown']['title']);
     }
 
-    public function test_empty_customer_document_and_proforma_queries_return_friendly_messages_without_gateway_call(): void
+    public function test_empty_proforma_queries_return_friendly_messages_without_gateway_call(): void
     {
-        $customerDocumentsSource = DataSource::query()->where('code', 'customer_documents')->firstOrFail();
-        $this->assertSame('', trim((string) $customerDocumentsSource->query_template));
-
-        Page::query()->updateOrCreate(
-            ['code' => 'customer_documents'],
-            [
-                'name' => 'Müşteri Evrakları',
-                'route' => '/customer/documents',
-                'component' => 'panel/page',
-                'layout_type' => 'module',
-                'icon' => 'wallet',
-                'description' => 'Müşteri evrak testi',
-                'resource_code' => 'customers',
-                'page_order' => 999,
-                'active' => true,
-            ],
-        );
-
-        PageConfig::query()->updateOrCreate(
-            ['page_code' => 'customer_documents'],
-            [
-                'layout_json' => [],
-                'filters_json' => [],
-                'datasource_id' => $customerDocumentsSource->id,
-            ],
-        );
-
         Http::fake();
-
-        $customer = User::factory()->create(['role_code' => 'customer']);
-
-        $this->actingAs($customer)
-            ->postJson('/api/data/customer_documents')
-            ->assertOk()
-            ->assertJsonPath('rows', [])
-            ->assertJsonPath('queryMeta.notice', 'Müşteri veri kaynağı henüz tanımlı değil.');
 
         $this->actingAs(User::factory()->create(['role_code' => 'proforma']))
             ->postJson('/api/data/proforma')

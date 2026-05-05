@@ -75,10 +75,6 @@ class PanelPageDataService
      */
     public function datasetForSource(User $user, string $sourceCode, string $resourceCode, array $input = []): array
     {
-        if (! $this->access->userCanAccess($user, $resourceCode)) {
-            abort(403);
-        }
-
         $source = DataSource::query()
             ->where('code', str_replace('-', '_', $sourceCode))
             ->where('active', true)
@@ -92,6 +88,14 @@ class PanelPageDataService
         ]);
 
         $filters = $this->normalizeFilters($input);
+
+        if (! $this->userCanAccessSource($user, $source->code, $resourceCode)) {
+            abort(403);
+        }
+
+        if ($source->code === 'sales_customer_search') {
+            $filters['scope_key'] = $this->normalizeSalesCustomerSearchScope($user, $filters['scope_key']);
+        }
 
         if ($source->db_type === 'n8n_json' && trim((string) $source->query_template) === '') {
             return $this->emptyDataset($page, $filters, $this->missingQueryMessage($page));
@@ -123,15 +127,83 @@ class PanelPageDataService
         ];
     }
 
+    private function userCanAccessSource(User $user, string $sourceCode, string $resourceCode): bool
+    {
+        if ($sourceCode === 'sales_customer_search') {
+            return $this->access->userCanAccess($user, 'sales_main')
+                || $this->access->userCanAccess($user, 'sales_online')
+                || $this->access->userCanAccess($user, 'sales_bayi');
+        }
+
+        return $this->access->userCanAccess($user, $resourceCode);
+    }
+
+    private function normalizeSalesCustomerSearchScope(User $user, string $scopeKey): string
+    {
+        $scopeKey = $this->normalizeScopeKey($scopeKey);
+
+        if ($this->access->userCanAccess($user, 'sales_main_all')) {
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'online_perakende') {
+            abort_unless($this->access->userCanAccess($user, 'sales_online'), 403);
+
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'bayi_proje') {
+            abort_unless($this->access->userCanAccess($user, 'sales_bayi'), 403);
+
+            return $scopeKey;
+        }
+
+        if ($this->access->userCanAccess($user, 'sales_main')) {
+            return $scopeKey;
+        }
+
+        if ($scopeKey === 'all' && $this->access->userCanAccess($user, 'sales_online')) {
+            return 'online_perakende';
+        }
+
+        if ($scopeKey === 'all' && $this->access->userCanAccess($user, 'sales_bayi')) {
+            return 'bayi_proje';
+        }
+
+        abort(403);
+    }
+
+    private function normalizeScopeKey(string $scopeKey): string
+    {
+        $scopeKey = trim($scopeKey);
+
+        return str_replace('-', '_', $scopeKey !== '' ? $scopeKey : 'all');
+    }
+
     /**
      * @param  array<string, mixed>  $filters
      * @return array<string, mixed>
      */
     private function payloadFor(DataSource $source, array $filters, User $user): array
     {
+        $representativeCode = trim((string) ($user->temsilci_kodu ?? '')) ?: null;
+        $customerScopeKey = $filters['customer_scope_key'] ?? null;
+        $customerGroupScope = $filters['customer_group_scope'] ?? null;
+
+        if (str_starts_with($source->code, 'sales_') && $this->access->userCanAccess($user, 'sales_main_all')) {
+            $representativeCode = null;
+        }
+
+        if ($this->isCustomerDataSource($source->code)) {
+            [$customerScopeKey, $representativeCode] = $this->customerScopeFor($user);
+            $customerGroupScope = $customerScopeKey;
+        }
+
         $payload = [
             ...$filters,
-            'rep_code' => trim((string) ($user->temsilci_kodu ?? '')) ?: null,
+            'rep_code' => $representativeCode,
+            'customer_scope_key' => $customerScopeKey,
+            'customer_group_scope' => $customerGroupScope,
             'role_code' => $user->role_code,
             'search' => $filters['search'] ?? null,
             'page' => $filters['page'] ?? 1,
@@ -147,6 +219,43 @@ class PanelPageDataService
         return collect($payload)
             ->only([...$allowed, 'role_code', 'bypass_cache'])
             ->all();
+    }
+
+    private function isCustomerDataSource(string $sourceCode): bool
+    {
+        return str_starts_with($sourceCode, 'customer_')
+            || str_starts_with($sourceCode, 'customers_');
+    }
+
+    /**
+     * @return array{0: string, 1: string|null}
+     */
+    private function customerScopeFor(User $user): array
+    {
+        if ($this->access->isPrivileged($user) || $this->access->userCanAccess($user, 'customers_all')) {
+            return ['all', null];
+        }
+
+        $canSeeOnline = $this->access->userCanAccess($user, 'customers_online');
+        $canSeeBayi = $this->access->userCanAccess($user, 'customers_bayi');
+
+        if ($canSeeOnline && $canSeeBayi) {
+            return ['all_segments', null];
+        }
+
+        if ($canSeeOnline) {
+            return ['online_perakende', null];
+        }
+
+        if ($canSeeBayi) {
+            return ['bayi_proje', null];
+        }
+
+        if ($this->access->userCanAccess($user, 'customers_own_rep')) {
+            return ['own_rep', trim((string) ($user->temsilci_kodu ?? '')) ?: null];
+        }
+
+        abort(403);
     }
 
     /**
@@ -231,7 +340,13 @@ class PanelPageDataService
                 ? (string) ($input['detail_type'] ?? 'cari')
                 : 'cari',
             'scope_key' => (string) ($input['scope_key'] ?? 'all'),
+            'customer_filter' => $this->normalizeListFilter($input['customer_filter'] ?? $input['cari_filter'] ?? ''),
+            'cari_filter' => $this->normalizeListFilter($input['cari_filter'] ?? $input['customer_filter'] ?? ''),
             'customer_code' => (string) ($input['customer_code'] ?? ''),
+            'guid' => (string) ($input['guid'] ?? ''),
+            'hareket_guid' => (string) ($input['hareket_guid'] ?? ''),
+            'document_guid' => (string) ($input['document_guid'] ?? ''),
+            'evrak_guid' => (string) ($input['evrak_guid'] ?? ''),
             'proforma_no' => (string) ($input['proforma_no'] ?? ''),
             'price_list' => $input['price_list'] ?? null,
             'discount_code' => (string) ($input['discount_code'] ?? ''),
@@ -240,6 +355,23 @@ class PanelPageDataService
             'limit' => max(1, min(500, (int) ($input['limit'] ?? 100))),
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
         ];
+    }
+
+    private function normalizeListFilter(mixed $value): string
+    {
+        if (is_array($value)) {
+            return collect($value)
+                ->map(fn (mixed $item) => trim((string) $item))
+                ->filter()
+                ->unique()
+                ->implode(',');
+        }
+
+        return collect(explode(',', (string) $value))
+            ->map(fn (string $item) => trim($item))
+            ->filter()
+            ->unique()
+            ->implode(',');
     }
 
     private function normalizeDate(mixed $value, string $grain, bool $isStart, CarbonImmutable $today): string

@@ -1,3 +1,5 @@
+import { HighlightedAccountLabel } from './HighlightedAccountLabel.jsx';
+
 function polarSegment(item, index, offset) {
     const radius = 82;
     const circumference = 2 * Math.PI * radius;
@@ -51,7 +53,7 @@ export function SalesPieChart({ chart }) {
                         <circle cx="110" cy="110" r="82" fill="none" stroke="#e2e8f0" strokeWidth="28" />
                         {segments.map((item) => (
                             <circle
-                                key={item.label}
+                                key={item.customerCode ?? item.label}
                                 cx="110"
                                 cy="110"
                                 r="82"
@@ -86,15 +88,25 @@ export function SalesPieChart({ chart }) {
 
             <div className="grid min-w-0 content-start gap-3 lg:grid-cols-2">
                 {items.map((item) => (
-                    <div key={item.label} className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-slate-100 px-3 py-2 transition hover:border-blue-100 hover:bg-blue-50/40">
+                    <div key={item.customerCode ?? item.label} className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border border-slate-100 px-3 py-2 transition hover:border-blue-100 hover:bg-blue-50/40">
                         <span className="size-3 rounded-sm" style={{ backgroundColor: item.color }} />
                         <div className="min-w-0">
-                            <p className="truncate font-medium text-slate-900" title={item.label}>{item.label}</p>
+                            <p className="whitespace-normal break-words font-medium leading-5 text-slate-900" title={item.label}>
+                                <HighlightedAccountLabel value={item.label} />
+                            </p>
+                            {(item.customerCode || item.groupLabel) && (
+                                <p className="mt-1 whitespace-normal break-words text-xs font-medium text-slate-500">
+                                    {[item.customerCode, item.groupLabel].filter(Boolean).join(' · ')}
+                                </p>
+                            )}
                             <p className="text-sm text-slate-500">{item.quantityLabel} adet</p>
                         </div>
                         <div className="min-w-[118px] text-right">
                             <p className="whitespace-nowrap font-semibold text-slate-950">{item.amountLabel}</p>
                             <p className="text-sm text-slate-500">%{item.percentage}</p>
+                            {item.excludedFromTotal && (
+                                <p className="text-xs font-semibold text-amber-600">Toplam dışı</p>
+                            )}
                         </div>
                     </div>
                 ))}

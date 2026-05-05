@@ -7,6 +7,15 @@ import { ManagementScopeFilter } from '@/components/sales-main/ManagementScopeFi
 import { KpiCards } from '@/components/sales-main/KpiCards.jsx';
 import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
+import { CustomerFilterPicker } from '@/components/sales-main/CustomerFilterPicker.jsx';
+
+function queryParam(name) {
+    if (typeof window === 'undefined') {
+        return null;
+    }
+
+    return new URLSearchParams(window.location.search).get(name);
+}
 
 export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const config = salesMainConfig;
@@ -14,13 +23,15 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
     const [data, setData] = useState(salesMainData);
     const [filters, setFilters] = useState(() => ({
-        date_from: salesMainData?.filters?.dateFrom ?? monthStart,
-        date_to: salesMainData?.filters?.dateTo ?? today,
-        grain: salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
-        detail_type: salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
-        scope_key: salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
+        date_from: queryParam('date_from') ?? salesMainData?.filters?.dateFrom ?? monthStart,
+        date_to: queryParam('date_to') ?? salesMainData?.filters?.dateTo ?? today,
+        grain: queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
+        detail_type: queryParam('detail_type') ?? salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
+        scope_key: queryParam('scope_key') ?? salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
+        customer_filter: salesMainData?.filters?.customerFilter ?? '',
         bypass_cache: false,
     }));
+    const [selectedCustomers, setSelectedCustomers] = useState([]);
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const pageTitle = 'Satış Yönetimi';
@@ -28,12 +39,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     useEffect(() => {
         setData(salesMainData);
-        setFilters((current) => ({
-            ...current,
-            detail_type: config?.defaults?.detailType ?? current.detail_type,
-            scope_key: config?.defaults?.scopeKey ?? current.scope_key,
-        }));
-    }, [config?.defaults?.detailType, config?.defaults?.scopeKey, salesMainData]);
+    }, [salesMainData]);
 
     useEffect(() => {
         let active = true;
@@ -72,16 +78,37 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
         setFilters((current) => ({ ...current, ...patch }));
     };
 
+    const handleScopeChange = (patch) => {
+        setSelectedCustomers([]);
+        updateFilters({
+            ...patch,
+            customer_filter: '',
+            cari_filter: '',
+            bypass_cache: true,
+        });
+    };
+
+    const updateCustomers = (customers) => {
+        setSelectedCustomers(customers);
+        const csv = customers.map((customer) => customer.code).filter(Boolean).join(',');
+
+        updateFilters({
+            customer_filter: csv,
+            cari_filter: csv,
+            bypass_cache: true,
+        });
+    };
+
     return (
         <>
             <Head title="Satış Yönetimi" />
-            <main className="grid gap-5 bg-[#f3f7fb] p-4 md:p-6">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div>
+            <main className="grid gap-4 bg-[#f3f7fb] p-3 sm:gap-5 sm:p-4 md:p-6">
+                <div className="grid gap-4 sm:flex sm:flex-wrap sm:items-start sm:justify-between">
+                    <div className="min-w-0">
                         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">
                             Emaks Prime
                         </p>
-                        <h1 className="mt-2 text-3xl font-semibold text-slate-950 [font-family:var(--font-display)]">
+                        <h1 className="mt-2 text-2xl font-semibold text-slate-950 [font-family:var(--font-display)] sm:text-3xl">
                             {pageTitle}
                         </h1>
                         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
@@ -96,7 +123,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                     <button
                         type="button"
                         onClick={() => updateFilters({ bypass_cache: !filters.bypass_cache })}
-                        className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-white px-4 py-3 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50"
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-blue-100 bg-white px-4 py-3 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 sm:w-auto"
                     >
                         <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
                         Yenile
@@ -104,7 +131,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                 </div>
 
                 <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_auto] xl:items-start xl:justify-between">
                         <div className="grid gap-2">
                             <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                                 Kapsam
@@ -112,8 +139,9 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                             <ManagementScopeFilter
                                 scopes={config?.managementScopes ?? []}
                                 activeKey={filters.scope_key}
-                                onChange={updateFilters}
+                                onChange={handleScopeChange}
                                 loading={loading}
+                                filters={filters}
                             />
                         </div>
                         <div className="grid gap-2">
@@ -148,6 +176,16 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         }}
                         onChange={updateFilters}
                         loading={loading}
+                    />
+                    <CustomerFilterPicker
+                        selected={selectedCustomers}
+                        onChange={updateCustomers}
+                        loading={loading}
+                        scopeKey={filters.scope_key}
+                        dateFrom={filters.date_from}
+                        dateTo={filters.date_to}
+                        grain={filters.grain}
+                        detailType={filters.detail_type}
                     />
                 </section>
 

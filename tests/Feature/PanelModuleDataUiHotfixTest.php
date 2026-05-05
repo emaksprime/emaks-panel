@@ -172,7 +172,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertTrue($onlineSource->active);
         $this->assertNotSame('', trim((string) $onlineSource->query_template));
         $this->assertSame(
-            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
             $onlineSource->allowed_params,
         );
         foreach (['120.01', '120.02', '120.03', '120.04', '120.05', '120.06', '120.07', '120.08', '120.09', '120.16'] as $groupCode) {
@@ -182,6 +182,574 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame('sales_bayi_proje_detail', $bayi['dataSource']['slug']);
         $this->assertSame('bayi_proje', $bayi['defaults']['scopeKey']);
         $this->assertSame('panel/sales-main', $bayi['page']['component']);
+    }
+
+    public function test_sales_customer_search_datasource_uses_primecrm_customer_lookup(): void
+    {
+        $source = DataSource::query()->where('code', 'sales_customer_search')->firstOrFail();
+        $query = (string) $source->query_template;
+
+        $this->assertSame('n8n_json', $source->db_type);
+        $this->assertContains('search', $source->allowed_params);
+        $this->assertContains('rep_code', $source->allowed_params);
+        $this->assertContains('scope_key', $source->allowed_params);
+        $this->assertContains('date_from', $source->allowed_params);
+        $this->assertContains('date_to', $source->allowed_params);
+        $this->assertContains('grain', $source->allowed_params);
+        $this->assertContains('detail_type', $source->allowed_params);
+        $this->assertContains('limit', $source->allowed_params);
+        $this->assertStringContainsString('DECLARE @Search', $query);
+        $this->assertStringContainsString('DECLARE @RepCode', $query);
+        $this->assertStringContainsString('DECLARE @ScopeKey', $query);
+        $this->assertStringContainsString('DECLARE @date_from', $query);
+        $this->assertStringContainsString('DECLARE @date_to', $query);
+        $this->assertStringContainsString('DECLARE @CanViewAll', $query);
+        $this->assertStringContainsString('fn_Stok_Masraf_Musteri_Grup_Hareket_Kubu', $query);
+        $this->assertStringContainsString('CARI_HESAPLAR', $query);
+        $this->assertStringContainsString('CARI_HESAP_GRUPLARI', $query);
+        $this->assertStringContainsString("@ScopeKey = N'online_perakende'", $query);
+        $this->assertStringContainsString("@ScopeKey = N'bayi_proje'", $query);
+        $this->assertStringContainsString("ISNULL(cari.cari_grup_kodu, N'') IN", $query);
+        $this->assertStringContainsString("cari.cari_grup_kodu NOT IN", $query);
+        $this->assertStringContainsString('cari.cari_kod LIKE', $query);
+        $this->assertStringContainsString('cari.cari_unvan1 LIKE', $query);
+        $this->assertStringContainsString('grp.crg_isim', $query);
+        $this->assertStringContainsString('cari.cari_temsilci_kodu', $query);
+        $this->assertStringContainsString('ORDER BY', $query);
+        $this->assertStringContainsString('toplam_ciro DESC', $query);
+        $this->assertStringContainsString('cari_kodu ASC', $query);
+        $this->assertStringContainsString('display_text', $query);
+    }
+
+    public function test_sales_customer_search_sends_search_to_gateway_payload(): void
+    {
+        DB::table('panel.data_source_cache')->delete();
+
+        $source = DataSource::query()->where('code', 'sales_customer_search')->firstOrFail();
+        $this->assertTrue($source->active);
+        $this->assertNotSame('', trim((string) $source->query_template));
+
+        Http::fake([
+            '*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'cari_kodu' => '120.00.001',
+                        'cari_unvani' => 'Mehmet Test',
+                        'cari_grubu' => 'Test Grup',
+                        'display_text' => 'Mehmet Test | 120.00.001 | Test Grup',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'admin', 'aktif' => true]);
+        DB::table('panel.user_access')->updateOrInsert(
+            ['user_id' => $user->id, 'resource_code' => 'sales_main'],
+            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $response = $this->actingAs($user)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'online_perakende',
+                'date_from' => '2026-04-29',
+                'date_to' => '2026-04-29',
+                'grain' => 'day',
+                'detail_type' => 'cari',
+                'limit' => 80,
+                'bypass_cache' => true,
+            ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('rows.0.cari_kodu', '120.00.001');
+        $response->assertJsonPath('rows.0.cari_unvani', 'Mehmet Test');
+
+        Http::assertSentCount(1);
+        [$request] = Http::recorded()->first();
+        $payload = $request->data();
+
+        $this->assertSame('sales_customer_search', $payload['source_code'] ?? null);
+        $this->assertSame('mehmet', $payload['search'] ?? null);
+        $this->assertSame('mehmet', $payload['params']['search'] ?? null);
+        $this->assertSame('online_perakende', $payload['scope_key'] ?? null);
+        $this->assertSame('online_perakende', $payload['params']['scope_key'] ?? null);
+        $this->assertSame('2026-04-29', $payload['date_from'] ?? null);
+        $this->assertSame('2026-04-29', $payload['params']['date_from'] ?? null);
+        $this->assertSame('2026-04-29', $payload['date_to'] ?? null);
+        $this->assertSame('2026-04-29', $payload['params']['date_to'] ?? null);
+        $this->assertSame('day', $payload['grain'] ?? null);
+        $this->assertSame('day', $payload['params']['grain'] ?? null);
+        $this->assertSame('cari', $payload['detail_type'] ?? null);
+        $this->assertSame('cari', $payload['params']['detail_type'] ?? null);
+        $this->assertTrue($payload['bypass_cache'] ?? false);
+        $this->assertTrue($payload['params']['bypass_cache'] ?? false);
+        $this->assertContains('search', $payload['allowed_params'] ?? []);
+
+        Http::assertSent(function ($request): bool {
+            $payload = $request->data();
+
+            return ($payload['source_code'] ?? null) === 'sales_customer_search'
+                && ($payload['search'] ?? null) === 'mehmet'
+                && ($payload['params']['search'] ?? null) === 'mehmet'
+                && ($payload['scope_key'] ?? null) === 'online_perakende'
+                && ($payload['params']['scope_key'] ?? null) === 'online_perakende'
+                && ($payload['date_from'] ?? null) === '2026-04-29'
+                && ($payload['params']['date_from'] ?? null) === '2026-04-29'
+                && ($payload['date_to'] ?? null) === '2026-04-29'
+                && ($payload['params']['date_to'] ?? null) === '2026-04-29'
+                && ($payload['grain'] ?? null) === 'day'
+                && ($payload['params']['grain'] ?? null) === 'day'
+                && ($payload['detail_type'] ?? null) === 'cari'
+                && ($payload['params']['detail_type'] ?? null) === 'cari'
+                && ($payload['bypass_cache'] ?? null) === true
+                && ($payload['params']['bypass_cache'] ?? null) === true
+                && in_array('search', $payload['allowed_params'] ?? [], true);
+        });
+    }
+
+    public function test_sales_customer_search_enforces_scope_access(): void
+    {
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $onlineUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
+        DB::table('panel.user_access')->updateOrInsert(
+            ['user_id' => $onlineUser->id, 'resource_code' => 'sales_online'],
+            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $this->actingAs($onlineUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'all',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = $request->data();
+
+            return ($payload['source_code'] ?? null) === 'sales_customer_search'
+                && ($payload['scope_key'] ?? null) === 'online_perakende'
+                && ($payload['params']['scope_key'] ?? null) === 'online_perakende';
+        });
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $bayiUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
+        DB::table('panel.user_access')->updateOrInsert(
+            ['user_id' => $bayiUser->id, 'resource_code' => 'sales_bayi'],
+            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $this->actingAs($bayiUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'online_perakende',
+                'bypass_cache' => true,
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_sales_datasources_accept_customer_filter_and_send_cari_filter_to_gateway(): void
+    {
+        foreach (['sales_main_dashboard', 'sales_online_perakende_detail', 'sales_bayi_proje_detail'] as $sourceCode) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+
+            $this->assertContains('cari_filter', $source->allowed_params);
+            $this->assertContains('customer_filter', $source->allowed_params);
+        }
+
+        $salesMainQuery = (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template');
+
+        $this->assertStringContainsString('DECLARE @cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('@cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('STRING_SPLIT(@cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('c.cari_kodu = @cari_filter', $salesMainQuery);
+        $this->assertStringContainsString('ch.cari_unvan1 LIKE', $salesMainQuery);
+        $this->assertStringContainsString('INNER JOIN CARI_HESAPLAR ch', $salesMainQuery);
+        $this->assertStringContainsString('konsinye_tutari', $salesMainQuery);
+        $this->assertStringContainsString('excluded_from_total', $salesMainQuery);
+        $this->assertStringContainsString("N'KONSINYE' AS satir_tipi", $salesMainQuery);
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Grup A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'online_perakende',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'customer_filter' => 'C-1,C-2',
+            'bypass_cache' => true,
+        ]);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_online_perakende_detail'
+                && ($payload['cari_filter'] ?? null) === 'C-1,C-2'
+                && ($payload['customer_filter'] ?? null) === 'C-1,C-2'
+                && ($payload['scope_key'] ?? null) === 'online_perakende'
+                && ($payload['params']['cari_filter'] ?? null) === 'C-1,C-2'
+                && ($payload['params']['customer_filter'] ?? null) === 'C-1,C-2';
+        });
+
+        app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'bayi_proje',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'customer_filter' => 'B-1',
+            'bypass_cache' => true,
+        ]);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_bayi_proje_detail'
+                && ($payload['cari_filter'] ?? null) === 'B-1'
+                && ($payload['customer_filter'] ?? null) === 'B-1'
+                && ($payload['scope_key'] ?? null) === 'bayi_proje';
+        });
+
+        app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'customer_filter' => 'A-1',
+            'bypass_cache' => true,
+        ]);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['cari_filter'] ?? null) === 'A-1'
+                && ($payload['customer_filter'] ?? null) === 'A-1'
+                && ($payload['scope_key'] ?? null) === 'all';
+        });
+    }
+
+    public function test_sales_selected_customer_empty_rows_return_empty_dataset_without_502(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'online_perakende',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'customer_filter' => 'C-404',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('sales_online_perakende_detail', $payload['queryMeta']['dataSource']);
+        $this->assertSame('Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.', $payload['queryMeta']['notice']);
+        $this->assertSame([], $payload['table']['rows']);
+        $this->assertEquals(0, $payload['kpis'][0]['raw']);
+        $this->assertEquals(0, $payload['chart']['totalNet']);
+    }
+
+    public function test_sales_konsinye_rows_are_excluded_from_totals_while_teshir_rows_are_included(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Normal Grup',
+                        'adet' => 1,
+                        'ciro' => 100,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'Normal Grup',
+                        'cari_kodu' => 'C-1',
+                        'satir_adi' => 'Normal Müşteri',
+                        'adet' => 1,
+                        'ciro' => 100,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 2,
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'cari_kodu' => 'C-2.TESHIR',
+                        'satir_adi' => 'Teşhir Müşteri - TEŞHİR HESABI',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 999998,
+                        'cari_grup_adi' => 'KONSİNYE',
+                        'adet' => 0,
+                        'ciro' => 900,
+                        'excluded_from_total' => 1,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'KONSINYE',
+                        'cari_grup_adi' => 'KONSİNYE',
+                        'cari_kodu' => 'C-1.KONSINYE',
+                        'satir_adi' => 'KONSİNYE - Normal Müşteri',
+                        'adet' => 1,
+                        'ciro' => 900,
+                        'excluded_from_total' => 1,
+                        'konsinye_tutari' => 900,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertEquals(400, $payload['kpis'][0]['raw']);
+        $this->assertEquals(400, $payload['chart']['totalNet']);
+        $this->assertSame(['Normal Grup', 'Teşhir Grup'], array_column($payload['chart']['items'], 'label'));
+        $this->assertSame('Teşhir Grup', $payload['table']['rows'][1]['label']);
+        $this->assertFalse($payload['table']['rows'][1]['excludedFromTotal']);
+        $this->assertSame('C-2.TESHIR', $payload['table']['rows'][1]['children'][0]['customerCode']);
+        $this->assertFalse($payload['table']['rows'][1]['children'][0]['excludedFromTotal']);
+        $this->assertSame('KONSİNYE', $payload['table']['rows'][2]['label']);
+        $this->assertSame('KONSINYE', $payload['table']['rows'][2]['children'][0]['type']);
+        $this->assertTrue($payload['table']['rows'][2]['children'][0]['excludedFromTotal']);
+    }
+
+    public function test_sales_customer_filter_chart_uses_customer_items_with_account_flags(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'BAYİ',
+                        'adet' => 2,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'BAYİ',
+                        'cari_kodu' => 'C-1',
+                        'satir_adi' => 'AYNI FİRMA',
+                        'adet' => 1,
+                        'ciro' => 100,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'BAYİ',
+                        'cari_kodu' => 'C-2',
+                        'satir_adi' => 'AYNI FİRMA',
+                        'adet' => 1,
+                        'ciro' => 200,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 2,
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'CARI',
+                        'cari_grup_adi' => 'Teşhir Grup',
+                        'cari_kodu' => 'C-3.TESHIR',
+                        'satir_adi' => 'TEŞHİR MÜŞTERİ - TEŞHİR HESABI',
+                        'adet' => 1,
+                        'ciro' => 300,
+                        'excluded_from_total' => 0,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 999998,
+                        'cari_grup_adi' => 'KONSİNYE',
+                        'adet' => 1,
+                        'ciro' => 900,
+                        'excluded_from_total' => 1,
+                        'konsinye_tutari' => 900,
+                    ],
+                    [
+                        'satir_tipi' => 'KONSINYE',
+                        'cari_grup_adi' => 'KONSİNYE',
+                        'cari_kodu' => 'C-1.KONSINYE',
+                        'satir_adi' => 'KONSİNYE - AYNI FİRMA',
+                        'adet' => 1,
+                        'ciro' => 900,
+                        'excluded_from_total' => 1,
+                        'konsinye_tutari' => 900,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'customer_filter' => 'C-1,C-2,C-3.TESHIR,C-1.KONSINYE',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('Seçili Müşteri Karşılaştırması', $payload['chart']['title']);
+        $this->assertEquals(600, $payload['chart']['totalNet']);
+        $this->assertSame(['C-3.TESHIR', 'C-2', 'C-1', 'C-1.KONSINYE'], array_column($payload['chart']['items'], 'customerCode'));
+        $this->assertSame(['TEŞHİR MÜŞTERİ - TEŞHİR HESABI', 'AYNI FİRMA', 'AYNI FİRMA', 'KONSİNYE - AYNI FİRMA'], array_column($payload['chart']['items'], 'label'));
+        $this->assertNotContains('BAYİ', array_column($payload['chart']['items'], 'label'));
+        $this->assertFalse($payload['chart']['items'][0]['excludedFromTotal']);
+        $this->assertTrue($payload['chart']['items'][0]['isTeshir']);
+        $this->assertEquals(50.0, $payload['chart']['items'][0]['percentage']);
+        $this->assertSame('AYNI FİRMA', $payload['chart']['items'][1]['label']);
+        $this->assertSame('AYNI FİRMA', $payload['chart']['items'][2]['label']);
+        $this->assertNotSame($payload['chart']['items'][1]['customerCode'], $payload['chart']['items'][2]['customerCode']);
+        $this->assertSame('KONSİNYE', $payload['chart']['items'][3]['groupLabel']);
+        $this->assertTrue($payload['chart']['items'][3]['excludedFromTotal']);
+        $this->assertTrue($payload['chart']['items'][3]['isConsignment']);
+        $this->assertSame(0, $payload['chart']['items'][3]['percentage']);
+    }
+
+    public function test_sales_customer_picker_and_mobile_breakdown_contract_exist(): void
+    {
+        $dashboard = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
+        $picker = file_get_contents(resource_path('js/components/sales-main/CustomerFilterPicker.jsx')) ?: '';
+        $managementScopeFilter = file_get_contents(resource_path('js/components/sales-main/ManagementScopeFilter.jsx')) ?: '';
+        $pieChart = file_get_contents(resource_path('js/components/sales-main/SalesPieChart.jsx')) ?: '';
+        $highlightedLabel = file_get_contents(resource_path('js/components/sales-main/HighlightedAccountLabel.jsx')) ?: '';
+        $table = file_get_contents(resource_path('js/components/sales-main/data-table/DataTable.jsx')) ?: '';
+        $expandableRows = file_get_contents(resource_path('js/components/sales-main/data-table/ExpandableRows.jsx')) ?: '';
+
+        $this->assertStringContainsString('CustomerFilterPicker', $dashboard);
+        $this->assertStringContainsString('scopeKey={filters.scope_key}', $dashboard);
+        $this->assertStringContainsString('dateFrom={filters.date_from}', $dashboard);
+        $this->assertStringContainsString('dateTo={filters.date_to}', $dashboard);
+        $this->assertStringContainsString('grain={filters.grain}', $dashboard);
+        $this->assertStringContainsString('detailType={filters.detail_type}', $dashboard);
+        $this->assertStringContainsString("queryParam('grain')", $dashboard);
+        $this->assertStringContainsString("queryParam('date_from')", $dashboard);
+        $this->assertStringContainsString("queryParam('date_to')", $dashboard);
+        $this->assertStringContainsString("queryParam('detail_type')", $dashboard);
+        $this->assertStringContainsString("queryParam('scope_key')", $dashboard);
+        $this->assertStringContainsString('const handleScopeChange', $dashboard);
+        $this->assertStringContainsString('setSelectedCustomers([])', $dashboard);
+        $this->assertStringContainsString("customer_filter: ''", $dashboard);
+        $this->assertStringContainsString("cari_filter: ''", $dashboard);
+        $this->assertStringContainsString('onChange={handleScopeChange}', $dashboard);
+        $this->assertStringContainsString('filters={filters}', $dashboard);
+        $this->assertStringNotContainsString('detail_type: config?.defaults?.detailType ?? current.detail_type', $dashboard);
+        $this->assertStringNotContainsString('scope_key: config?.defaults?.scopeKey ?? current.scope_key', $dashboard);
+        $this->assertStringContainsString('customer_filter', $dashboard);
+        $this->assertStringContainsString('cari_filter: csv', $dashboard);
+        $this->assertStringNotContainsString("scope_key: 'all'", $dashboard);
+        $this->assertStringNotContainsString('router.visit', $dashboard);
+        $this->assertStringNotContainsString('window.location =', $dashboard);
+        $this->assertStringNotContainsString('window.history', $dashboard);
+        $this->assertStringContainsString('bypass_cache: true', $dashboard);
+        $this->assertStringContainsString('/api/data/sales_customer_search', $picker);
+        $this->assertStringContainsString('scope_key: scopeKey', $picker);
+        $this->assertStringContainsString('date_from: dateFrom', $picker);
+        $this->assertStringContainsString('date_to: dateTo', $picker);
+        $this->assertStringContainsString('grain', $picker);
+        $this->assertStringContainsString('detail_type: detailType', $picker);
+        $this->assertStringContainsString('limit: 80', $picker);
+        $this->assertStringContainsString('selected.map((item) => item.code)', $picker);
+        $this->assertStringContainsString('candidate.code === item.code', $picker);
+        $this->assertStringContainsString('selectedCodes.has(customer.code)', $picker);
+        $this->assertStringContainsString('Müşteri bulunamadı', $picker);
+        $this->assertStringContainsString('HighlightedAccountLabel', $picker);
+        $this->assertStringContainsString('HighlightedAccountLabel', $pieChart);
+        $this->assertStringContainsString('customerCode', $pieChart);
+        $this->assertStringContainsString('groupLabel', $pieChart);
+        $this->assertStringContainsString('TEŞHİR HESABI', $highlightedLabel);
+        $this->assertStringContainsString('KONSİNYE HESABI', $highlightedLabel);
+        $this->assertStringContainsString('<strong', $highlightedLabel);
+        $this->assertStringNotContainsString('dangerouslySetInnerHTML', $highlightedLabel);
+        $this->assertStringContainsString('filters = {}', $managementScopeFilter);
+        $this->assertStringContainsString('router.visit(scope.navigateTo', $managementScopeFilter);
+        $this->assertStringContainsString('grain: filters.grain', $managementScopeFilter);
+        $this->assertStringContainsString('date_from: filters.date_from', $managementScopeFilter);
+        $this->assertStringContainsString('date_to: filters.date_to', $managementScopeFilter);
+        $this->assertStringContainsString('detail_type: filters.detail_type', $managementScopeFilter);
+        $this->assertStringContainsString('scope_key: scope.key', $managementScopeFilter);
+        $this->assertStringContainsString('preserveScroll: true', $managementScopeFilter);
+        $this->assertStringContainsString('preserveState: false', $managementScopeFilter);
+        $this->assertStringContainsString('md:hidden', $table);
+        $this->assertStringContainsString('MobileRow', $table);
+        $this->assertStringContainsString('min-w-[1100px]', $table);
+        $this->assertStringContainsString('whitespace-normal', $table);
+        $this->assertStringContainsString('break-words', $table);
+        $this->assertStringContainsString('HighlightedAccountLabel', $table);
+        $this->assertStringContainsString('min-w-[560px]', $expandableRows);
+        $this->assertStringContainsString('whitespace-normal', $expandableRows);
+        $this->assertStringContainsString('break-words', $expandableRows);
+        $this->assertStringContainsString('HighlightedAccountLabel', $expandableRows);
+        $this->assertStringNotContainsString('truncate', $table);
+        $this->assertStringNotContainsString('truncate', $expandableRows);
+        $this->assertStringNotContainsString('line-clamp-2', $table);
+        $this->assertStringContainsString('row.id ?? row.label', $table);
+        $this->assertStringContainsString('row.id ?? row.label', $expandableRows);
+        $this->assertStringNotContainsString('key={row.label}', $table);
+        $this->assertStringNotContainsString('key={row.label}', $expandableRows);
     }
 
     public function test_sales_bulent_scope_uses_sales_main_with_representative_code(): void
@@ -320,6 +888,44 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringNotContainsString('Roota Çıkmamalı', json_encode($payload['breakdown']['groups'], JSON_UNESCAPED_UNICODE));
     }
 
+    public function test_sales_breakdown_keeps_same_title_customers_distinct_by_cari_code(): void
+    {
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['satir_tipi' => 'GRUP', 'cari_grup_adi' => 'Group A', 'adet' => 2, 'ciro' => 200],
+                    ['satir_tipi' => 'CARI', 'cari_grup_adi' => 'Group A', 'cari_kodu' => '120.00.001', 'satir_adi' => 'Same Title', 'adet' => 1, 'ciro' => 100],
+                    ['satir_tipi' => 'CARI', 'cari_grup_adi' => 'Group A', 'cari_kodu' => '320.02.355', 'satir_adi' => 'Same Title', 'adet' => 1, 'ciro' => 100],
+                    ['satir_tipi' => 'URUN', 'cari_grup_adi' => 'Group A', 'parent_key' => '120.00.001', 'satir_adi' => 'Product A', 'adet' => 1, 'ciro' => 100],
+                    ['satir_tipi' => 'URUN', 'cari_grup_adi' => 'Group A', 'parent_key' => '320.02.355', 'satir_adi' => 'Product B', 'adet' => 1, 'ciro' => 100],
+                ],
+            ]),
+        ]);
+
+        $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'bypass_cache' => true,
+        ]);
+
+        $group = $payload['breakdown']['groups'][0];
+
+        $this->assertSame('GRUP:Group A', $group['id']);
+        $this->assertCount(2, $group['children']);
+        $this->assertSame('Same Title', $group['children'][0]['label']);
+        $this->assertSame('Same Title', $group['children'][1]['label']);
+        $this->assertSame('CARI:120.00.001', $group['children'][0]['id']);
+        $this->assertSame('CARI:320.02.355', $group['children'][1]['id']);
+        $this->assertSame('120.00.001', $group['children'][0]['customerCode']);
+        $this->assertSame('320.02.355', $group['children'][1]['customerCode']);
+        $this->assertStringStartsWith('URUN:120.00.001:', $group['children'][0]['children'][0]['id']);
+        $this->assertStringStartsWith('URUN:320.02.355:', $group['children'][1]['children'][0]['id']);
+    }
+
     public function test_user_facing_metadata_uses_customer_terminology(): void
     {
         $this->assertSame('Müşteri Yönetimi', Page::query()->where('code', 'cari')->value('name'));
@@ -331,7 +937,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringNotContainsString('Cari Yönetimi', $labels);
     }
 
-    public function test_customer_pages_and_drawer_use_customer_datasources(): void
+    public function test_customer_pages_use_customer_datasources_without_list_drawer(): void
     {
         $this->assertSame(
             'customers_list',
@@ -342,14 +948,249 @@ class PanelModuleDataUiHotfixTest extends TestCase
             PageConfig::query()->with('dataSource')->where('page_code', 'cari_balance')->firstOrFail()->dataSource?->code,
         );
 
-        $drawer = file_get_contents(resource_path('js/components/primecrm/CustomerDetailDrawer.jsx')) ?: '';
+        $component = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx')) ?: '';
 
-        $this->assertStringContainsString('Genel Bilgi', $drawer);
-        $this->assertStringContainsString('Bakiye', $drawer);
-        $this->assertStringContainsString('Ekstre', $drawer);
-        $this->assertStringContainsString('/api/data/customer_detail', $drawer);
-        $this->assertStringContainsString('/api/data/customer_statement', $drawer);
-        $this->assertStringNotContainsString('Evraklar', $drawer);
+        $this->assertStringContainsString('/api/data/cari', $component);
+        $this->assertStringContainsString('/api/data/cari_balance', $component);
+        $this->assertStringContainsString('/cari/detail?code=', $component);
+        $this->assertStringNotContainsString('CustomerDetailDrawer', $component);
+        $this->assertStringNotContainsString('Müşteri kodu bulunamadı', $component);
+    }
+
+    public function test_customer_crm_pages_use_primecrm_list_and_balance_contracts(): void
+    {
+        $page = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
+        $component = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx')) ?: '';
+
+        $this->assertStringContainsString('page.code ?? page.slug', $page);
+        $this->assertStringContainsString('routePath = String', $page);
+        $this->assertStringContainsString('matchesPage', $page);
+        $this->assertStringContainsString("matchesPage('cari', '/cari')", $page);
+        $this->assertStringContainsString('<CustomerInfoPage />', $page);
+        $this->assertStringContainsString("matchesPage('cari_balance', '/cari/balance')", $page);
+        $this->assertStringContainsString('<CustomerBalancePage />', $page);
+        $this->assertStringContainsString("matchesPage('cari_detail', '/cari/detail')", $page);
+        $this->assertStringContainsString('<CustomerStatementPage />', $page);
+        $this->assertStringContainsString("matchesPage('cari_document_detail', '/cari/document-detail')", $page);
+        $this->assertStringContainsString('<CustomerDocumentDetailPage />', $page);
+
+        foreach ([
+            'Cari Kodu',
+            'Firma Ünvanı',
+            'Grup',
+            'Temsilci',
+            'Bakiye Durumu',
+            'Onaylı Açık Sipariş',
+            'Genel Durum',
+            'Onay Bekleyen Sipariş',
+        ] as $column) {
+            $this->assertStringContainsString($column, $component);
+        }
+
+        $this->assertStringContainsString('Cari kodu, firma adı, grup veya temsilci ara', $component);
+        $this->assertStringContainsString('Sonuçlar', $component);
+        $this->assertStringContainsString('Cari satırına tıklayarak hesap ekstresini görüntüleyebilirsiniz.', $component);
+        $this->assertStringContainsString('{rows.length} kayıt', $component);
+        $this->assertStringNotContainsString('min-w-[1320px]', $component);
+        $this->assertStringNotContainsString('min-w-[1120px]', $component);
+        $this->assertStringContainsString('md:hidden', $component);
+        $this->assertStringContainsString('hidden w-full md:block', $component);
+        $this->assertStringContainsString('representativeScopeCode(queryMeta)', $component);
+        $this->assertStringNotContainsString('props?.auth?.user', $component);
+        $this->assertStringContainsString('whitespace-normal break-words', $component);
+        $this->assertStringContainsString('/api/data/cari', $component);
+        $this->assertStringContainsString('/api/data/cari_balance', $component);
+    }
+
+    public function test_customer_balance_screen_is_customer_based_not_group_summary(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx')) ?: '';
+        $balanceColumnsOffset = strpos($component, 'const BALANCE_COLUMNS');
+
+        $this->assertNotFalse($balanceColumnsOffset);
+        $this->assertLessThan(
+            strpos($component, "'Grup'", $balanceColumnsOffset),
+            strpos($component, "'Cari Kodu'", $balanceColumnsOffset),
+            'Müşteri Bakiyesi ilk kolonu Grup olmamalı.',
+        );
+
+        foreach (['Cari Kodu', 'Firma Ünvanı', 'Grup', 'Temsilci', 'Borç', 'Alacak', 'Net Bakiye', 'Ekstre'] as $column) {
+            $this->assertStringContainsString($column, $component);
+        }
+
+        $query = (string) DataSource::query()->where('code', 'customers_balance')->value('query_template');
+
+        $this->assertStringContainsString('musteri_kodu', $query);
+        $this->assertStringContainsString('firma_unvani', $query);
+        $this->assertStringContainsString('temsilci_kodu', $query);
+        $this->assertStringContainsString('net_bakiye', $query);
+        $this->assertStringNotContainsString('GROUP BY GRUP', strtoupper($query));
+    }
+
+    public function test_customer_list_datasource_returns_primecrm_summary_and_row_fields(): void
+    {
+        $query = (string) DataSource::query()->where('code', 'customers_list')->value('query_template');
+
+        $this->assertStringContainsString('SiparisOzet', $query);
+        $this->assertStringContainsString('AcikSiparisTutar', $query);
+        $this->assertStringContainsString('GenelDurumTutar', $query);
+        $this->assertStringContainsString('toplam_alacak_bakiyesi', $query);
+        $this->assertStringContainsString('toplam_borc_bakiyesi', $query);
+        $this->assertStringContainsString('toplam_onayli_acik_siparis', $query);
+        $this->assertStringContainsString('toplam_onay_bekleyen_siparis', $query);
+        $this->assertStringContainsString('genel_sonuc', $query);
+        $this->assertStringContainsString('SummaryTotals', $query);
+        $this->assertStringContainsString('ToplamAlacakBakiyesi', $query);
+        $this->assertStringContainsString('ToplamBorcBakiyesi', $query);
+        $this->assertStringContainsString('ToplamCariSayisi', $query);
+    }
+
+    public function test_customer_datasource_payload_scopes_admin_and_normal_users(): void
+    {
+        DB::table('panel.data_source_cache')->delete();
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $admin = User::factory()->create([
+            'role_code' => 'admin',
+            'temsilci_kodu' => '0003',
+            'aktif' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/data/cari', [
+                'search' => '',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = method_exists($request, 'data') ? $request->data() : [];
+            $params = $payload['params'] ?? [];
+
+            return ($payload['source_code'] ?? null) === 'customers_list'
+                && array_key_exists('rep_code', $payload)
+                && $payload['rep_code'] === null
+                && array_key_exists('rep_code', $params)
+                && $params['rep_code'] === null
+                && ($params['customer_scope_key'] ?? null) === 'all'
+                && ($params['customer_group_scope'] ?? null) === 'all';
+        });
+
+        $normalUser = User::factory()->create([
+            'role_code' => 'customer',
+            'temsilci_kodu' => '0003',
+            'aktif' => true,
+        ]);
+
+        $this->actingAs($normalUser)
+            ->postJson('/api/data/cari_balance', [
+                'search' => '',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = method_exists($request, 'data') ? $request->data() : [];
+            $params = $payload['params'] ?? [];
+
+            return ($payload['source_code'] ?? null) === 'customers_balance'
+                && ($payload['rep_code'] ?? null) === '0003'
+                && ($params['rep_code'] ?? null) === '0003'
+                && ($params['customer_scope_key'] ?? null) === 'own_rep'
+                && ($params['customer_group_scope'] ?? null) === 'own_rep';
+        });
+    }
+
+    public function test_customer_datasources_include_row_scope_params_and_filters(): void
+    {
+        foreach (['customers_all', 'customers_online', 'customers_bayi', 'customers_own_rep'] as $resourceCode) {
+            $this->assertDatabaseHas('panel.resources', [
+                'code' => $resourceCode,
+                'type' => 'scope',
+            ]);
+        }
+
+        foreach (['customers_list', 'customers_balance', 'customer_detail', 'customer_statement', 'customer_documents'] as $sourceCode) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+            $query = (string) $source->query_template;
+
+            $this->assertContains('customer_scope_key', $source->allowed_params);
+            $this->assertContains('customer_group_scope', $source->allowed_params);
+            $this->assertStringContainsString('@CustomerScopeKey', $query);
+            $this->assertStringContainsString("N'online_perakende'", $query);
+            $this->assertStringContainsString("N'bayi_proje'", $query);
+            $this->assertStringContainsString("N'own_rep'", $query);
+            $this->assertStringContainsString('cari_grup_kodu', $query);
+        }
+    }
+
+    public function test_customer_detail_and_document_drilldowns_have_empty_states_without_request(): void
+    {
+        $statement = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerStatement.jsx')) ?: '';
+        $document = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerDocumentDetail.jsx')) ?: '';
+
+        $this->assertStringContainsString('if (!canLoad)', $statement);
+        $this->assertStringContainsString('Önce Müşteri Listesi’nden bir cari seçin.', $statement);
+        $this->assertStringContainsString('yearStartDate()', $statement);
+        $this->assertStringContainsString('${today.getFullYear()}-01-01', $statement);
+        $this->assertStringNotContainsString('monthStart', $statement);
+        $this->assertStringContainsString('Filtrele', $statement);
+        $this->assertStringContainsString('/api/data/customer_statement', $statement);
+        $this->assertStringContainsString('/api/data/customer_detail', $statement);
+
+        $this->assertStringContainsString('if (!guid)', $document);
+        $this->assertStringContainsString('Evrak listesinde Detay Gör ile geçiş yapınız.', $document);
+        $this->assertStringContainsString('/api/data/customer_documents', $document);
+        $this->assertStringContainsString("rowsByKind(rows, ['header'])", $document);
+        $this->assertStringContainsString("rowsByKind(rows, ['cari', 'movement'])", $document);
+        $this->assertStringContainsString("rowsByKind(rows, ['stock', 'stok'])", $document);
+    }
+
+    public function test_customer_crm_long_company_names_are_not_truncated(): void
+    {
+        foreach ([
+            resource_path('js/pages/panel/customer-crm/CustomerInfo.jsx'),
+            resource_path('js/pages/panel/customer-crm/CustomerStatement.jsx'),
+            resource_path('js/pages/panel/customer-crm/CustomerDocumentDetail.jsx'),
+        ] as $path) {
+            $component = file_get_contents($path) ?: '';
+
+            $this->assertStringNotContainsString('truncate', $component);
+            $this->assertStringContainsString('whitespace-normal', $component);
+            $this->assertStringContainsString('break-words', $component);
+        }
+    }
+
+    public function test_customer_documents_datasource_uses_primecrm_document_detail_queries(): void
+    {
+        $source = DataSource::query()->where('code', 'customer_documents')->firstOrFail();
+        $query = (string) $source->query_template;
+
+        $this->assertNotSame('', trim($query));
+        $this->assertStringContainsString('CARI_HESAP_HAREKETLERI', $query);
+        $this->assertStringContainsString('STOK_HAREKETLERI', $query);
+        $this->assertStringContainsString("N'header' AS line_type", $query);
+        $this->assertStringContainsString("N'cari' AS line_type", $query);
+        $this->assertStringContainsString("N'stock' AS line_type", $query);
+
+        $allowed = (array) $source->allowed_params;
+        $this->assertContains('guid', $allowed);
+        $this->assertContains('hareket_guid', $allowed);
+        $this->assertContains('document_guid', $allowed);
+        $this->assertContains('evrak_guid', $allowed);
+    }
+
+    public function test_customer_detail_and_document_pages_are_drilldowns_not_main_tabs(): void
+    {
+        $cariDetailPageId = Page::query()->where('code', 'cari_detail')->value('id');
+        $cariTabs = PageConfig::query()->where('page_code', 'cari')->firstOrFail()->layout_json['moduleTabs'] ?? [];
+        $tabLabels = collect($cariTabs)->pluck('label')->all();
+
+        $this->assertFalse((bool) DB::table('panel.page_menu')->where('page_id', $cariDetailPageId)->value('is_visible'));
+        $this->assertSame(['Müşteri Listesi', 'Müşteri Bakiyesi'], $tabLabels);
     }
 
     public function test_customer_datasource_codes_can_be_called_without_page_records(): void
@@ -374,6 +1215,135 @@ class PanelModuleDataUiHotfixTest extends TestCase
             ->postJson('/api/data/customer_statement', ['customer_code' => 'M-1'])
             ->assertOk()
             ->assertJsonPath('queryMeta.dataSource', 'customer_statement');
+    }
+
+    public function test_customer_documents_data_source_allows_guid_aliases_in_request_and_gateway_payload(): void
+    {
+        $source = DataSource::query()->where('code', 'customer_documents')->firstOrFail();
+
+        $source->update([
+            'db_type' => 'n8n_json',
+            'query_template' => 'SELECT 1',
+            'allowed_params' => [
+                'guid',
+                'hareket_guid',
+                'document_guid',
+                'evrak_guid',
+                'customer_code',
+                'document_id',
+                'bypass_cache',
+            ],
+            'connection_meta' => [
+                'driver' => 'n8n_json',
+                'method' => 'POST',
+                'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
+                'response_rows_key' => 'rows',
+                'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
+                'source_reference' => 'CariService.cs',
+            ],
+            'active' => true,
+        ]);
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'admin', 'aktif' => true]);
+        DB::table('panel.user_access')->updateOrInsert(
+            ['user_id' => $user->id, 'resource_code' => 'customers'],
+            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $this->actingAs($user)
+            ->postJson('/api/data/customer_documents', [
+                'guid' => 'GUID-01',
+                'hareket_guid' => 'HAREKET-GUID-01',
+                'document_guid' => 'DOCUMENT-GUID-01',
+                'evrak_guid' => 'EVRAK-GUID-01',
+                'bypass_cache' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.dataSource', 'customer_documents');
+
+        Http::assertSent(function ($request): bool {
+            $payload = method_exists($request, 'data') ? $request->data() : null;
+
+            if (! is_array($payload) || $payload === []) {
+                $decodedBody = json_decode((string) $request->body(), true);
+                if (is_array($decodedBody)) {
+                    $payload = $decodedBody;
+                }
+            }
+
+            if (! is_array($payload)) {
+                return false;
+            }
+
+            $params = is_array($payload['params'] ?? null) ? $payload['params'] : [];
+
+            $guid = $payload['guid'] ?? null;
+            $hareketGuid = $payload['hareket_guid'] ?? null;
+            $documentGuid = $payload['document_guid'] ?? null;
+            $evrakGuid = $payload['evrak_guid'] ?? null;
+
+            return ($payload['source_code'] ?? null) === 'customer_documents'
+                && (($guid ?? ($params['guid'] ?? null)) === 'GUID-01')
+                && (($hareketGuid ?? ($params['hareket_guid'] ?? null)) === 'HAREKET-GUID-01')
+                && (($documentGuid ?? ($params['document_guid'] ?? null)) === 'DOCUMENT-GUID-01')
+                && (($evrakGuid ?? ($params['evrak_guid'] ?? null)) === 'EVRAK-GUID-01');
+        });
+    }
+
+    public function test_customer_crm_helpers_and_customer_statement_key_use_no_randomness(): void
+    {
+        $utils = file_get_contents(base_path('resources/js/pages/panel/customer-crm/customerCrmUtils.js')) ?: '';
+        $statement = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerStatement.jsx')) ?: '';
+        $documentDetail = file_get_contents(resource_path('js/pages/panel/customer-crm/CustomerDocumentDetail.jsx')) ?: '';
+
+        $this->assertFalse(str_starts_with($utils, "\xEF\xBB\xBF"), 'customerCrmUtils.js should not include UTF-8 BOM.');
+        $this->assertStringNotContainsString('Math.random()', $statement);
+        $this->assertStringContainsString('statementNumber(row)', $statement);
+        $this->assertStringContainsString('`${statementNumber(row)}-${tarih}-${index}`', $statement);
+        $this->assertStringContainsString('formatPercentOrNumber', $documentDetail);
+        $this->assertStringContainsString('formatNumber', $documentDetail);
+        $this->assertStringContainsString('evrak_guid', $documentDetail);
+
+        [$exitCode, $output, $error] = $this->runNodeModule(<<<'JS'
+            import { formatPercentOrNumber, formatNumber } from './resources/js/pages/panel/customer-crm/customerCrmUtils.js';
+
+            console.log(
+                JSON.stringify({
+                    quantityInteger: formatNumber(5),
+                    quantityDecimal: formatNumber(12.5),
+                    discountPercent: formatPercentOrNumber('%33,50'),
+                    discountNumber: formatPercentOrNumber(33.5),
+                }),
+            );
+JS);
+
+        $this->assertSame(0, $exitCode, $error);
+
+        $results = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertStringNotContainsString('TL', $results['quantityInteger']);
+        $this->assertStringNotContainsString('TL', $results['quantityDecimal']);
+        $this->assertStringNotContainsString('TL', $results['discountPercent']);
+        $this->assertStringNotContainsString('TL', $results['discountNumber']);
+        $this->assertSame('%33,50', $results['discountPercent']);
+    }
+
+    public function test_customer_documents_allowed_params_include_guid_aliases_in_seeded_source(): void
+    {
+        $allowed = (array) (DataSource::query()->where('code', 'customer_documents')->value('allowed_params') ?? []);
+
+        $this->assertContains('guid', $allowed);
+        $this->assertContains('hareket_guid', $allowed);
+        $this->assertContains('document_guid', $allowed);
+        $this->assertContains('evrak_guid', $allowed);
+        $this->assertContains('bypass_cache', $allowed);
     }
 
     public function test_proforma_create_contract_uses_customer_search_aliases_discounts_and_local_draft(): void
