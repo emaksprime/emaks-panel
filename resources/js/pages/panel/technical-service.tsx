@@ -1,23 +1,11 @@
 import { Head, Link } from '@inertiajs/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Heading from '@/components/heading'
-import { apiRequest } from '@/lib/api'
-import { ServiceSummaryCards } from '@/components/technical-service/ServiceSummaryCards'
+import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
 import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
-import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
-import {
-  calculateTravelPreview,
-  formatTechnicalServiceDateTime,
-  formatTechnicalServiceMrn,
-  getServicePaymentInfo,
-  normalizeTechnicalServiceText,
-  toTechnicalServiceDateTimeInputValue,
-} from '@/components/technical-service/utils'
+import { ServiceSummaryCards } from '@/components/technical-service/ServiceSummaryCards'
 import {
   findProvinceByName,
   getDistrictOptionsForProvince,
@@ -36,6 +24,18 @@ import type {
   SummaryItem,
   WarrantySerialResponse,
 } from '@/components/technical-service/types'
+import {
+  calculateTravelPreview,
+  formatTechnicalServiceDateTime,
+  formatTechnicalServiceMrn,
+  getServicePaymentInfo,
+  normalizeTechnicalServiceText,
+  toTechnicalServiceDateTimeInputValue,
+} from '@/components/technical-service/utils'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { apiRequest } from '@/lib/api'
 
 type NewRequestForm = {
   customer: string
@@ -169,6 +169,7 @@ function parseNullableNumber(value: number | string | null | undefined): number 
   }
 
   const parsed = typeof value === 'number' ? value : Number(value)
+
   return Number.isFinite(parsed) ? parsed : null
 }
 
@@ -303,7 +304,7 @@ export default function TechnicalService() {
   const hasCreateDistrictFallback = createForm.district.trim() !== ''
     && !createDistrictOptions.some((district) => district.normalizedName === normalizeTurkishLocation(createForm.district))
 
-  const loadRequests = async () => {
+  const loadRequests = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -316,9 +317,9 @@ export default function TechnicalService() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  const loadSummary = async () => {
+  const loadSummary = useCallback(async () => {
     setSummaryLoading(true)
 
     try {
@@ -329,9 +330,9 @@ export default function TechnicalService() {
     } finally {
       setSummaryLoading(false)
     }
-  }
+  }, [])
 
-  const loadTechnicians = async () => {
+  const loadTechnicians = useCallback(async () => {
     setTechniciansLoading(true)
 
     try {
@@ -346,13 +347,13 @@ export default function TechnicalService() {
     } finally {
       setTechniciansLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
 
-  const loadRequestDetail = async (id: string) => {
+  const loadRequestDetail = useCallback(async (id: string) => {
     const requestId = String(id)
     const requestToken = detailRequestTokenRef.current + 1
     detailRequestTokenRef.current = requestToken
@@ -365,14 +366,17 @@ export default function TechnicalService() {
 
     try {
       const response = await apiRequest(`/api/technical-service/requests/${id}`)
+
       if (!isCurrentRequest()) {
         return
       }
 
       const request = response.request
+
       if (!request) {
         setDetailError('Talep detayları bulunamadı.')
         setDetailLoading(false)
+
         return
       }
 
@@ -388,6 +392,7 @@ export default function TechnicalService() {
         setSelectedDetailRequest(null)
         setSelectedEvents([])
         setDetailLoading(false)
+
         return
       }
 
@@ -406,45 +411,63 @@ export default function TechnicalService() {
       setSelectedEvents([])
       setSelectedDetailRequest(null)
     } finally {
-      if (!isCurrentRequest()) {
-        return
+      if (isCurrentRequest()) {
+        setDetailLoading(false)
       }
-      setDetailLoading(false)
     }
-  }
+  }, [requests, selectedListRequest])
 
   useEffect(() => {
-    void loadSummary()
-  }, [])
+    void Promise.resolve().then(loadSummary)
+  }, [loadSummary])
 
   useEffect(() => {
-    void loadRequests()
-  }, [])
+    void Promise.resolve().then(loadRequests)
+  }, [loadRequests])
 
   useEffect(() => {
-    void loadTechnicians()
-  }, [])
+    void Promise.resolve().then(loadTechnicians)
+  }, [loadTechnicians])
 
   useEffect(() => {
+    let cancelled = false
+
     if (!selectedId) {
       detailRequestTokenRef.current += 1
-      setSelectedEvents([])
-      setSelectedListRequest(null)
-      setSelectedDetailRequest(null)
-      setMikroMountCheck(null)
-      setMikroMountError(null)
-      setMikroMountLoading(false)
-      setWarranty(null)
-      setWarrantyError(null)
-      setWarrantyLoading(false)
-      setShowNearbyTechnicians(false)
-      setDetailError(null)
-      setDetailLoading(false)
-      return
+      void Promise.resolve().then(() => {
+        if (cancelled) {
+          return
+        }
+
+        setSelectedEvents([])
+        setSelectedListRequest(null)
+        setSelectedDetailRequest(null)
+        setMikroMountCheck(null)
+        setMikroMountError(null)
+        setMikroMountLoading(false)
+        setWarranty(null)
+        setWarrantyError(null)
+        setWarrantyLoading(false)
+        setShowNearbyTechnicians(false)
+        setDetailError(null)
+        setDetailLoading(false)
+      })
+
+      return () => {
+        cancelled = true
+      }
     }
 
-    void loadRequestDetail(selectedId)
-  }, [selectedId])
+    void Promise.resolve().then(() => {
+      if (!cancelled) {
+        void loadRequestDetail(selectedId)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [loadRequestDetail, selectedId])
 
   const filteredRequests = useMemo(() => {
     const search = normalizeSearchText(filters.search)
@@ -454,6 +477,7 @@ export default function TechnicalService() {
 
     const isTodayAppointment = (request: ServiceRequest) => {
       const scheduled = request.scheduledAt ? new Date(request.scheduledAt) : null
+
       return scheduled !== null && scheduled >= todayStart && scheduled < todayEnd
     }
 
@@ -464,18 +488,21 @@ export default function TechnicalService() {
     const compareRequests = (a: ServiceRequest, b: ServiceRequest) => {
       const aUnassigned = a.technician === 'Atanmadı' || a.technician.trim() === ''
       const bUnassigned = b.technician === 'Atanmadı' || b.technician.trim() === ''
+
       if (aUnassigned !== bUnassigned) {
         return aUnassigned ? -1 : 1
       }
 
       const aToday = isTodayAppointment(a)
       const bToday = isTodayAppointment(b)
+
       if (aToday !== bToday) {
         return aToday ? -1 : 1
       }
 
       const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0
       const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0
+
       return bCreated - aCreated
     }
 
@@ -575,6 +602,7 @@ export default function TechnicalService() {
   const unassignedCount = requests.filter((request) => {
     const isOpen = request.status !== 'Tamamlandı' && request.status !== 'İptal'
     const isUnassigned = !request.technician?.trim() || request.technician === 'Atanmadı'
+
     return isOpen && isUnassigned
   }).length
   const activeStatusFilterLabel = statusFilterLabel(filters.status)
@@ -635,52 +663,57 @@ export default function TechnicalService() {
     const serialNo = selectedDetailRequest?.serialNumber?.trim() ?? ''
     const lookupToken = serialLookupTokenRef.current + 1
     serialLookupTokenRef.current = lookupToken
-
-    setMikroMountCheck(null)
-    setMikroMountError(null)
-    setWarranty(null)
-    setWarrantyError(null)
-
-    if (!serialNo) {
-      setMikroMountLoading(false)
-      setWarrantyLoading(false)
-      return
-    }
-
     const isCurrentLookup = () => serialLookupTokenRef.current === lookupToken
-    const params = new URLSearchParams({ serial_no: serialNo })
 
-    setMikroMountLoading(true)
-    setWarrantyLoading(true)
-
-    void Promise.allSettled([
-      apiRequest(`/api/technical-service/mikro/serial-history?${params.toString()}`),
-      apiRequest(`/api/technical-service/warranty/serial?${params.toString()}`),
-    ]).then(([historyResponse, warrantyResponse]) => {
+    void Promise.resolve().then(() => {
       if (!isCurrentLookup()) {
         return
       }
 
-      if (historyResponse.status === 'fulfilled') {
-        setMikroMountCheck((historyResponse.value as MikroSerialHistoryResponse).decision)
-      } else {
-        setMikroMountCheck(null)
-        setMikroMountError(historyResponse.reason instanceof Error ? historyResponse.reason.message : 'Mikro montaj kontrolü yapılamadı.')
-      }
+      setMikroMountCheck(null)
+      setMikroMountError(null)
+      setWarranty(null)
+      setWarrantyError(null)
 
-      if (warrantyResponse.status === 'fulfilled') {
-        setWarranty(warrantyResponse.value as WarrantySerialResponse)
-      } else {
-        setWarranty(null)
-        setWarrantyError(warrantyResponse.reason instanceof Error ? warrantyResponse.reason.message : 'Garanti bilgisi alınamadı.')
-      }
-    }).finally(() => {
-      if (!isCurrentLookup()) {
+      if (!serialNo) {
+        setMikroMountLoading(false)
+        setWarrantyLoading(false)
+
         return
       }
 
-      setMikroMountLoading(false)
-      setWarrantyLoading(false)
+      const params = new URLSearchParams({ serial_no: serialNo })
+
+      setMikroMountLoading(true)
+      setWarrantyLoading(true)
+
+      void Promise.allSettled([
+        apiRequest(`/api/technical-service/mikro/serial-history?${params.toString()}`),
+        apiRequest(`/api/technical-service/warranty/serial?${params.toString()}`),
+      ]).then(([historyResponse, warrantyResponse]) => {
+        if (!isCurrentLookup()) {
+          return
+        }
+
+        if (historyResponse.status === 'fulfilled') {
+          setMikroMountCheck((historyResponse.value as MikroSerialHistoryResponse).decision)
+        } else {
+          setMikroMountCheck(null)
+          setMikroMountError(historyResponse.reason instanceof Error ? historyResponse.reason.message : 'Mikro montaj kontrolü yapılamadı.')
+        }
+
+        if (warrantyResponse.status === 'fulfilled') {
+          setWarranty(warrantyResponse.value as WarrantySerialResponse)
+        } else {
+          setWarranty(null)
+          setWarrantyError(warrantyResponse.reason instanceof Error ? warrantyResponse.reason.message : 'Garanti bilgisi alınamadı.')
+        }
+      }).finally(() => {
+        if (isCurrentLookup()) {
+          setMikroMountLoading(false)
+          setWarrantyLoading(false)
+        }
+      })
     })
   }, [selectedDetailRequest?.serialNumber])
 
@@ -722,11 +755,13 @@ export default function TechnicalService() {
 
     if (!reopenReason) {
       setReopenError('Yeniden açma nedeni seçin.')
+
       return
     }
 
     if (reopenReason === 'Diğer' && !reopenNote.trim()) {
       setReopenError('Diğer nedeni seçildiğinde açıklama zorunludur.')
+
       return
     }
 
@@ -766,19 +801,24 @@ export default function TechnicalService() {
     const selectedTechnician = isManualTechnician
       ? assignOtherTechnician.trim()
       : selectedTechnicianRecord ? technicianDisplayName(selectedTechnicianRecord) : ''
+
     if (!selectedTechnician) {
       setAssignError('Lütfen bir usta seçin veya manuel isim girin.')
+
       return
     }
 
     if (!scheduleDate || !scheduleHour || !scheduleMinute) {
       setAssignError('Lütfen randevu tarihi ve saatini seçin.')
+
       return
     }
 
     const parsedTravelRoundTripKm = Number(travelRoundTripKm)
+
     if (travelRoundTripKm.trim() === '' || !Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
       setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
+
       return
     }
 
@@ -826,14 +866,17 @@ export default function TechnicalService() {
 
     if (!completionReason) {
       setCompleteError('Lütfen bir kapanış nedeni seçin.')
+
       return
     }
 
     const isOtherReason = completionReason === 'Diğer'
     const notes = isOtherReason ? completionOtherNote.trim() : completionReason
+
     if (isOtherReason && !notes) {
       setCompleteError('Lütfen açıklama girin.')
       setCompleteLoading(false)
+
       return
     }
 
@@ -842,12 +885,14 @@ export default function TechnicalService() {
 
     if (isCompletingInstallation && !installationCompletedAt) {
       setCompleteError('Fiili montaj tarihi zorunludur.')
+
       return
     }
 
     if (isCompletingInstallation) {
       if (!/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(installationCompletedAt)) {
         setCompleteError('Fiili montaj saati 00:00 - 23:59 aralığında HH:mm formatında olmalıdır.')
+
         return
       }
 
@@ -861,6 +906,7 @@ export default function TechnicalService() {
 
       if ((differsFromSchedule || olderThanOneDay) && !installationCompletionNote.trim()) {
         setCompleteError('Fiili montaj tarihi randevudan farklıysa veya kapanıştan 1 günden fazla eskiyse açıklama zorunludur.')
+
         return
       }
     }
@@ -1095,7 +1141,10 @@ export default function TechnicalService() {
 
           <Dialog open={assignDialogOpen} onOpenChange={(open) => {
             setAssignDialogOpen(open)
-            if (!open) handleAssignReset()
+
+            if (!open) {
+              handleAssignReset()
+            }
           }}>
             <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
               <DialogClose asChild>
@@ -1265,6 +1314,7 @@ export default function TechnicalService() {
                       <option value="">Saat</option>
                       {Array.from({ length: 24 }, (_, index) => {
                         const value = String(index).padStart(2, '0')
+
                         return (
                           <option key={value} value={value}>
                             {value}
@@ -1351,7 +1401,10 @@ export default function TechnicalService() {
 
           <Dialog open={completeDialogOpen} onOpenChange={(open) => {
             setCompleteDialogOpen(open)
-            if (!open) handleCompleteReset()
+
+            if (!open) {
+              handleCompleteReset()
+            }
           }}>
             <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
               <DialogClose asChild>
@@ -1466,7 +1519,10 @@ export default function TechnicalService() {
 
           <Dialog open={reopenDialogOpen} onOpenChange={(open) => {
             setReopenDialogOpen(open)
-            if (!open) handleReopenReset()
+
+            if (!open) {
+              handleReopenReset()
+            }
           }}>
             <DialogContent className="max-w-lg">
               <DialogClose asChild>

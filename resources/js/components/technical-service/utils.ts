@@ -102,6 +102,7 @@ const normalizeLocationCode = (value?: string) => {
     .replace(/Ö/g, 'O')
     .replace(/Ç/g, 'C')
   const letters = mapped.replace(/[^A-Z]/g, '')
+
   return (letters.slice(0, 3) || 'XXX').padEnd(3, 'X')
 }
 

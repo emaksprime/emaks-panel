@@ -1,10 +1,6 @@
 import { Head, Link } from '@inertiajs/react'
-import { useEffect, useMemo, useState } from 'react'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
-import { apiRequest } from '@/lib/api'
 import {
   getDistrictOptionsForProvince,
   normalizeDistrictName,
@@ -13,6 +9,10 @@ import {
   TURKEY_PROVINCES,
 } from '@/components/technical-service/turkey-locations'
 import type { ServiceTechnician } from '@/components/technical-service/types'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { apiRequest } from '@/lib/api'
 
 type TechnicianForm = {
   first_name: string
@@ -103,6 +103,7 @@ const nullableNumber = (value: string) => {
   }
 
   const parsed = Number(value)
+
   return Number.isFinite(parsed) ? parsed : null
 }
 
@@ -123,7 +124,7 @@ export default function TechnicalServiceTechnicians() {
   const hasDistrictFallback = form.district.trim() !== ''
     && !districtOptions.some((district) => district.normalizedName === normalizeTurkishLocation(form.district))
 
-  const loadTechnicians = async () => {
+  const loadTechnicians = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -139,11 +140,11 @@ export default function TechnicalServiceTechnicians() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    void loadTechnicians()
-  }, [])
+    void Promise.resolve().then(loadTechnicians)
+  }, [loadTechnicians])
 
   const filteredTechnicians = useMemo(() => {
     const normalizedSearch = search.trim().toLocaleLowerCase('tr-TR')
@@ -224,6 +225,7 @@ export default function TechnicalServiceTechnicians() {
   const saveTechnician = async () => {
     if (!form.first_name.trim()) {
       setSaveError('Usta adı zorunlu.')
+
       return
     }
 
@@ -278,6 +280,7 @@ export default function TechnicalServiceTechnicians() {
         skipped_count: 0,
         errors: [{ row: 0, reason: 'CSV dosyası seçilmedi.', data: [] }],
       })
+
       return
     }
 
@@ -301,6 +304,7 @@ export default function TechnicalServiceTechnicians() {
 
       if (!response.ok) {
         setImportResult(result as ImportResult)
+
         return
       }
 

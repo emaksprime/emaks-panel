@@ -1,12 +1,12 @@
 import { Head, Link } from '@inertiajs/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
+import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
-import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 
 type Technician = {
   id: number | string
@@ -136,21 +136,24 @@ export default function TechnicalServiceEarnings() {
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ year, month })
+
     if (technicianId) {
       params.set('technician_id', technicianId)
     }
+
     if (status) {
       params.set('status', status)
     }
+
     return params.toString()
   }, [month, status, technicianId, year])
 
-  const loadTechnicians = async () => {
+  const loadTechnicians = useCallback(async () => {
     const response = await apiRequest('/api/technical-service/technicians?active=1')
     setTechnicians(Array.isArray(response.items) ? response.items : [])
-  }
+  }, [])
 
-  const loadEarnings = async () => {
+  const loadEarnings = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -162,7 +165,7 @@ export default function TechnicalServiceEarnings() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [query])
 
   const calculatePeriod = async () => {
     setCalculating(true)
@@ -207,12 +210,12 @@ export default function TechnicalServiceEarnings() {
   }
 
   useEffect(() => {
-    void loadTechnicians()
-  }, [])
+    void Promise.resolve().then(loadTechnicians)
+  }, [loadTechnicians])
 
   useEffect(() => {
-    void loadEarnings()
-  }, [query])
+    void Promise.resolve().then(loadEarnings)
+  }, [loadEarnings])
 
   const summary = data?.summary ?? {
     technician_count: 0,

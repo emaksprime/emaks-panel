@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge'
-import { formatTechnicalServiceMrn } from './utils'
 import type { ServiceRequest } from './types'
+import { formatTechnicalServiceMrn } from './utils'
 
 const statusVariant = (status: ServiceRequest['status']) => {
   switch (status) {

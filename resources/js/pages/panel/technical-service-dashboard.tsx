@@ -1,11 +1,11 @@
 import { Head, Link } from '@inertiajs/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
+import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
-import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 
 type OperationRequest = {
   id: number | string
@@ -164,10 +164,11 @@ export default function TechnicalServiceDashboard() {
         params.set(key, value)
       }
     })
+
     return params.toString()
   }, [filters])
 
-  const loadDashboard = async () => {
+  const loadDashboard = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -179,11 +180,11 @@ export default function TechnicalServiceDashboard() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [query])
 
   useEffect(() => {
-    void loadDashboard()
-  }, [query])
+    void Promise.resolve().then(loadDashboard)
+  }, [loadDashboard])
 
   return (
     <>

@@ -1,12 +1,12 @@
 import { Head, Link } from '@inertiajs/react'
 import { useState } from 'react'
 import Heading from '@/components/heading'
+import type { MikroMountCheckResult, MikroSerialHistoryEvent, MikroSerialHistoryResponse, WarrantySerialResponse } from '@/components/technical-service/types'
+import { formatTechnicalServiceDate } from '@/components/technical-service/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
-import { formatTechnicalServiceDate } from '@/components/technical-service/utils'
-import type { MikroMountCheckResult, MikroSerialHistoryEvent, MikroSerialHistoryResponse, WarrantySerialResponse } from '@/components/technical-service/types'
 
 const formatDate = (value: string | null | undefined): string => {
   return formatTechnicalServiceDate(value)
@@ -86,6 +86,7 @@ export default function TechnicalServiceSerialQuery() {
       setResult(null)
       setWarranty(null)
       setWarrantyError(null)
+
       return
     }
 
