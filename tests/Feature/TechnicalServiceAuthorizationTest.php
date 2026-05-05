@@ -189,6 +189,9 @@ class TechnicalServiceAuthorizationTest extends TestCase
 
         $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_admin')['group'] ?? null);
         $this->assertTrue($resources->pluck('code')->contains('technical_service_earnings_pay'));
+        $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_serial_check')['group'] ?? null);
+        $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_serial_history')['group'] ?? null);
+        $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_warranty_serial')['group'] ?? null);
     }
 
     public function test_strict_access_writes_allowlist_and_denylist_for_technical_service_resources(): void

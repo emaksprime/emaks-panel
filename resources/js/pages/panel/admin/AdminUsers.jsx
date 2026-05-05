@@ -41,6 +41,29 @@ function groupResources(resources) {
     }, {});
 }
 
+const typeLabels = {
+    page: 'Ekranlar',
+    action: 'Butonlar/Aksiyonlar',
+    data_source: 'Veri kaynakları',
+    scope: 'Kapsamlar/Scope’lar',
+};
+
+const typeOrder = ['page', 'action', 'data_source', 'scope', 'other'];
+
+function resourceTypeLabel(type) {
+    return typeLabels[type] ?? 'Diğer izinler';
+}
+
+function groupResourcesByType(resources) {
+    return resources.reduce((groups, resource) => {
+        const key = typeLabels[resource.type] ? resource.type : 'other';
+        return {
+            ...groups,
+            [key]: [...(groups[key] ?? []), resource],
+        };
+    }, {});
+}
+
 export default function AdminUsers() {
     const [data, setData] = useState({ users: [], roles: [], resources: [], rolePermissions: {} });
     const [form, setForm] = useState(blank);
@@ -146,6 +169,44 @@ export default function AdminUsers() {
         }
 
         return 'inherit';
+    };
+
+    const effectiveAccess = (code) => {
+        const state = accessState(code);
+
+        if (state === 'allow') {
+            return true;
+        }
+
+        if (state === 'deny') {
+            return false;
+        }
+
+        return roleAllowedResources.has(code);
+    };
+
+    const moduleAccessState = (resources) => {
+        const enabledCount = resources.filter((resource) => effectiveAccess(resource.code)).length;
+
+        if (enabledCount === 0) {
+            return 'none';
+        }
+
+        return enabledCount === resources.length ? 'all' : 'partial';
+    };
+
+    const setModuleAccess = (resources, enabled) => {
+        const codes = resources.map((resource) => resource.code);
+
+        setForm((current) => ({
+            ...current,
+            access: enabled
+                ? [...new Set([...(current.access ?? []), ...codes])]
+                : (current.access ?? []).filter((code) => !codes.includes(code)),
+            denied_access: enabled
+                ? (current.denied_access ?? []).filter((code) => !codes.includes(code))
+                : [...new Set([...(current.denied_access ?? []), ...codes])],
+        }));
     };
 
     const selectAll = () => {
@@ -431,36 +492,68 @@ export default function AdminUsers() {
                             Sadece seçilenlere izin ver aksiyonu, seçili kaynakları izin listesine alır ve diğer tüm aktif kaynakları kullanıcı bazlı engel listesine yazar.
                         </p>
 
-                        <div className="max-h-72 overflow-auto rounded-xl border border-slate-200">
-                            {groupedResourceEntries.map(([type, resources]) => (
-                                <div key={type} className="border-b border-slate-100 last:border-b-0">
-                                    <div className="bg-slate-50 px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                        {type}
-                                    </div>
-                                    <div className="grid gap-1 p-3">
-                                        {resources.map((resource) => (
-                                            <div key={resource.code} className="grid gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_140px] sm:items-center">
-                                                <span className="min-w-0">
-                                                    <span className="font-medium text-slate-800">{resource.name}</span>
-                                                    <span className="ml-2 text-xs text-slate-400">{resource.code}</span>
-                                                    <span className="mt-1 block text-xs text-slate-500">
-                                                        Rol kararı: {roleAllowedResources.has(resource.code) ? 'izinli' : 'kapalı'}
-                                                    </span>
-                                                </span>
-                                                <select
-                                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
-                                                    value={accessState(resource.code)}
-                                                    onChange={(event) => setAccessState(resource.code, event.target.value)}
-                                                >
-                                                    <option value="inherit">Rol kararını kullan</option>
-                                                    <option value="allow">İzin ver</option>
-                                                    <option value="deny">Engelle</option>
-                                                </select>
+                        <div className="max-h-[34rem] overflow-auto rounded-xl border border-slate-200">
+                            {groupedResourceEntries.map(([groupName, resources]) => {
+                                const access = moduleAccessState(resources);
+                                const resourcesByType = groupResourcesByType(resources);
+
+                                return (
+                                    <div key={groupName} className="border-b border-slate-100 last:border-b-0">
+                                        <div className="flex items-start justify-between gap-3 bg-slate-50 px-4 py-3">
+                                            <div>
+                                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                                    {groupName}
+                                                </p>
+                                                <p className="mt-1 text-[11px] font-medium text-slate-500">
+                                                    Durum: {access === 'all' ? 'Tüm modül açık' : access === 'partial' ? 'Kısmi erişim' : 'Modül kapalı'}
+                                                </p>
                                             </div>
-                                        ))}
+                                            <label className="flex shrink-0 items-center gap-2 text-xs font-semibold text-slate-700">
+                                                Bu modüle erişim
+                                                <input
+                                                    type="checkbox"
+                                                    checked={access !== 'none'}
+                                                    onChange={(event) => setModuleAccess(resources, event.target.checked)}
+                                                />
+                                            </label>
+                                        </div>
+
+                                        <div className="grid gap-3 p-3">
+                                            {typeOrder
+                                                .filter((type) => resourcesByType[type]?.length)
+                                                .map((type) => (
+                                                    <div key={`${groupName}-${type}`} className="rounded-xl border border-slate-100">
+                                                        <div className="border-b border-slate-100 bg-white px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                                            {resourceTypeLabel(type)}
+                                                        </div>
+                                                        <div className="grid gap-1 p-2">
+                                                            {resourcesByType[type].map((resource) => (
+                                                                <div key={resource.code} className="grid gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_140px] sm:items-center">
+                                                                    <span className="min-w-0">
+                                                                        <span className="font-medium text-slate-800">{resource.name}</span>
+                                                                        <span className="ml-2 text-xs text-slate-400">{resource.code}</span>
+                                                                        <span className="mt-1 block text-xs text-slate-500">
+                                                                            Rol kararı: {roleAllowedResources.has(resource.code) ? 'izinli' : 'kapalı'} · Etkin durum: {effectiveAccess(resource.code) ? 'açık' : 'kapalı'}
+                                                                        </span>
+                                                                    </span>
+                                                                    <select
+                                                                        className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-slate-400"
+                                                                        value={accessState(resource.code)}
+                                                                        onChange={(event) => setAccessState(resource.code, event.target.value)}
+                                                                    >
+                                                                        <option value="inherit">Rol kararını kullan</option>
+                                                                        <option value="allow">İzin ver</option>
+                                                                        <option value="deny">Engelle</option>
+                                                                    </select>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                        </div>
                                     </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
 

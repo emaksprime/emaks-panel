@@ -55,6 +55,23 @@ class PanelAccessService
         return $roleCanAccess;
     }
 
+    public function userHasDenyOverride(User|int|null $user, string $resourceCode): bool
+    {
+        $resolvedUser = $user instanceof User
+            ? $user
+            : ($user ? User::query()->find($user) : null);
+
+        if (! $resolvedUser) {
+            return false;
+        }
+
+        return UserAccess::query()
+            ->where('user_id', $resolvedUser->id)
+            ->where('resource_code', $resourceCode)
+            ->where('can_view', false)
+            ->exists();
+    }
+
     /**
      * @return Collection<int, string>
      */

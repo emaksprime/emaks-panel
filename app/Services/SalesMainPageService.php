@@ -334,13 +334,20 @@ class SalesMainPageService
         $userRepCode = trim((string) ($user?->temsilci_kodu ?? ''));
 
         return $scopes
-            ->filter(function (array $scope) use ($canSeeAll, $userRepCode, $canSeeOnline, $canSeeBayi) {
+            ->filter(function (array $scope) use ($user, $canSeeAll, $userRepCode, $canSeeOnline, $canSeeBayi) {
+                $normalizedKey = $this->normalizeScopeKey((string) ($scope['key'] ?? ''));
+                $scopeResourceCode = $this->scopeResourceCode($scope);
+
+                if ($scopeResourceCode !== null && $this->access->userHasDenyOverride($user, $scopeResourceCode)) {
+                    return false;
+                }
+
                 if ($canSeeAll) {
                     return true;
                 }
 
                 if (($scope['navigateTo'] ?? null) !== null) {
-                    return match ($this->normalizeScopeKey((string) ($scope['key'] ?? ''))) {
+                    return match ($normalizedKey) {
                         'online_perakende' => $canSeeOnline,
                         'bayi_proje' => $canSeeBayi,
                         default => false,
@@ -351,9 +358,50 @@ class SalesMainPageService
                     return false;
                 }
 
-                return $userRepCode !== '' && $userRepCode === $scope['repCode'];
+                if ($scopeResourceCode !== null && $this->access->userCanAccess($user, $scopeResourceCode)) {
+                    return true;
+                }
+
+                return $this->isOwnRepresentativeScope($userRepCode, $scope);
             })
             ->values();
+    }
+
+    private function scopeResourceCode(array $scope): ?string
+    {
+        $configuredResourceCode = trim((string) ($scope['resourceCode'] ?? ''));
+
+        if ($configuredResourceCode !== '') {
+            return $configuredResourceCode;
+        }
+
+        return match ($this->normalizeScopeKey((string) ($scope['key'] ?? ''))) {
+            'all' => 'sales_main_all',
+            'online_perakende' => 'sales_online',
+            'bayi_proje' => 'sales_bayi',
+            'umit' => 'sales_rep_umit_yildiz',
+            'salih' => 'sales_rep_salih_cakir',
+            'bulent_saglam' => 'sales_rep_bulent_saglam',
+            default => null,
+        };
+    }
+
+    private function isOwnRepresentativeScope(string $userRepCode, array $scope): bool
+    {
+        if ($userRepCode === '') {
+            return false;
+        }
+
+        return $this->ownRepresentativeScopeResourceCode($userRepCode) === $this->scopeResourceCode($scope);
+    }
+
+    private function ownRepresentativeScopeResourceCode(string $repCode): ?string
+    {
+        return match ($repCode) {
+            '0003' => 'sales_rep_umit_yildiz',
+            '0024' => 'sales_rep_salih_cakir',
+            default => null,
+        };
     }
 
     private function configuredManagementScopes(array $filters): Collection
@@ -372,6 +420,7 @@ class SalesMainPageService
             'salesView' => 'temsilci',
             'note' => 'Bülent Sağlam temsilci kapsamı',
             'navigateTo' => null,
+            'resourceCode' => 'sales_rep_bulent_saglam',
         ]);
     }
 
@@ -389,7 +438,7 @@ class SalesMainPageService
             return $scopeRepCode !== '' ? $scopeRepCode : null;
         }
 
-        return $userRepCode !== '' ? $userRepCode : ($scopeRepCode !== '' ? $scopeRepCode : null);
+        return $scopeRepCode !== '' ? $scopeRepCode : ($userRepCode !== '' ? $userRepCode : null);
     }
 
     /**

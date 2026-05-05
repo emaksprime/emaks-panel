@@ -182,7 +182,7 @@ class AdminController extends Controller
     private function resourceGroupFor(string $code, ?string $type): string
     {
         return match (true) {
-            $type === 'data_source' || $code === 'data_sources' => 'Veri Kaynakları',
+            $code === 'data_sources' => 'Veri Kaynakları',
             str_starts_with($code, 'sales_') || $code === 'sales_main' => 'Satış Yönetimi',
             str_starts_with($code, 'stock') => 'Stok Yönetimi',
             str_starts_with($code, 'orders') => 'Sipariş Yönetimi',
@@ -190,6 +190,7 @@ class AdminController extends Controller
             str_starts_with($code, 'cari') || str_starts_with($code, 'customer') || $code === 'customers' || str_starts_with($code, 'finance_cari') => 'Müşteri Yönetimi',
             str_starts_with($code, 'proforma') => 'Proforma',
             str_starts_with($code, 'admin') || $code === 'user_admin' || $code === 'dashboard' => 'Sistem Yönetimi',
+            $type === 'data_source' => 'Veri Kaynakları',
             default => 'Sistem Yönetimi',
         };
     }

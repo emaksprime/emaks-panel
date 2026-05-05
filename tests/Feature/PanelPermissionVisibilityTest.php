@@ -130,8 +130,24 @@ class PanelPermissionVisibilityTest extends TestCase
         }
 
         foreach (['/sales/main', '/sales/bayi', '/cari', '/proforma', '/admin'] as $path) {
-            $this->actingAs($user)->get($path)->assertForbidden();
+            $this->actingAs($user)
+                ->get($path)
+                ->assertForbidden()
+                ->assertSee('Yetki bulunmamaktadır.', false);
         }
+    }
+
+    public function test_module_layout_uses_first_visible_route_for_module_buttons(): void
+    {
+        $moduleLayout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
+
+        $this->assertStringContainsString('selectModuleHref', $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/sales/main', '/sales/online', '/sales/bayi']", $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/stock', '/stock/critical']", $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/orders', '/orders/alinan', '/orders/verilen']", $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/cari', '/cari/balance']", $moduleLayout);
+        $this->assertStringContainsString('visibleHrefs', $moduleLayout);
+        $this->assertStringNotContainsString('visibleHref: item.match.find', $moduleLayout);
     }
 
     public function test_technical_role_only_sees_technical_stock_and_order_pages(): void
@@ -173,6 +189,28 @@ class PanelPermissionVisibilityTest extends TestCase
         }
     }
 
+    public function test_default_roles_can_see_stock_and_order_pages_unless_user_deny_blocks_them(): void
+    {
+        $access = app(PanelAccessService::class);
+
+        foreach (['sales', 'stock', 'orders', 'technical', 'customer', 'proforma', 'viewer'] as $roleCode) {
+            $user = User::factory()->create(['role_code' => $roleCode]);
+
+            foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+                $this->assertTrue($access->userCanAccess($user, $resourceCode), "{$roleCode} should access {$resourceCode}");
+            }
+        }
+
+        $viewer = User::factory()->create(['role_code' => 'viewer']);
+        UserAccess::query()->create([
+            'user_id' => $viewer->id,
+            'resource_code' => 'stock',
+            'can_view' => false,
+        ]);
+
+        $this->assertFalse($access->userCanAccess($viewer->refresh(), 'stock'));
+    }
+
     public function test_exact_user_data_api_access_is_enforced_before_gateway_call(): void
     {
         Http::fake([
@@ -195,7 +233,8 @@ class PanelPermissionVisibilityTest extends TestCase
 
         $this->actingAs($user)
             ->postJson('/api/data/cari', ['bypass_cache' => true])
-            ->assertForbidden();
+            ->assertForbidden()
+            ->assertJsonPath('message', 'Yetki bulunmamaktadır.');
     }
 
     public function test_user_deny_override_blocks_role_permission(): void
@@ -292,6 +331,12 @@ class PanelPermissionVisibilityTest extends TestCase
 
         $this->assertStringContainsString('Sadece seçilenlere izin ver', $component);
         $this->assertStringContainsString('strict_access', $component);
+        $this->assertStringContainsString('Bu modüle erişim', $component);
+        $this->assertStringContainsString('Ekranlar', $component);
+        $this->assertStringContainsString('Butonlar/Aksiyonlar', $component);
+        $this->assertStringContainsString('Veri kaynakları', $component);
+        $this->assertStringContainsString('Kapsamlar/Scope', $component);
+        $this->assertStringContainsString('setModuleAccess', $component);
     }
 
     /**
