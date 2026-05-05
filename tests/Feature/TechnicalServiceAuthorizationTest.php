@@ -41,6 +41,19 @@ class TechnicalServiceAuthorizationTest extends TestCase
         $this->actingAs($user)->postJson('/api/technical-service/requests', [])->assertForbidden();
     }
 
+    public function test_technical_role_has_operational_technical_service_access_without_earnings_or_admin(): void
+    {
+        $user = User::factory()->create(['role_code' => 'technical']);
+
+        $this->actingAs($user)->get('/technical-service')->assertOk();
+        $this->actingAs($user)->get('/technical-service/dashboard')->assertOk();
+        $this->actingAs($user)->get('/technical-service/serial-query')->assertOk();
+        $this->actingAs($user)->get('/technical-service/technicians')->assertOk();
+
+        $this->actingAs($user)->get('/technical-service/earnings')->assertForbidden();
+        $this->actingAs($user)->get('/technical-service/admin')->assertForbidden();
+    }
+
     public function test_dashboard_permission_only_allows_dashboard_screen_and_api(): void
     {
         $user = $this->userWithAccess(['technical_service_dashboard']);

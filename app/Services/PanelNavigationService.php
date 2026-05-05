@@ -17,6 +17,10 @@ class PanelNavigationService
         '/sales/main',
         '/sales/online',
         '/sales/bayi',
+        '/technical-service',
+        '/technical-service/dashboard',
+        '/technical-service/serial-query',
+        '/technical-service/technicians',
         '/stock',
         '/orders',
         '/orders/alinan',
@@ -73,13 +77,35 @@ class PanelNavigationService
             ->map(fn (Page $page) => $this->normalizePath($page->route))
             ->flip();
 
-        foreach ($this->routePriority as $route) {
+        foreach ($this->routePriorityFor($user) as $route) {
             if ($visibleRoutes->has($this->normalizePath($route))) {
                 return $route;
             }
         }
 
         return $visibleRoutes->keys()->first();
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function routePriorityFor(User $user): array
+    {
+        if ($user->role_code !== 'technical') {
+            return $this->routePriority;
+        }
+
+        $technicalRoutes = [
+            '/technical-service',
+            '/technical-service/dashboard',
+            '/technical-service/serial-query',
+            '/technical-service/technicians',
+        ];
+
+        return array_values(array_unique([
+            ...$technicalRoutes,
+            ...$this->routePriority,
+        ]));
     }
 
     public function resolveVisiblePage(?User $user, string $path): ?Page
