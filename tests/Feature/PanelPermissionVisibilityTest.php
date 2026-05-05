@@ -337,6 +337,12 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->assertStringContainsString('Veri kaynakları', $component);
         $this->assertStringContainsString('Kapsamlar/Scope', $component);
         $this->assertStringContainsString('setModuleAccess', $component);
+        $this->assertStringContainsString('salesScopeResourceCodes', $component);
+        $this->assertStringContainsString("'sales_main_all'", $component);
+        $this->assertStringContainsString("'sales_online'", $component);
+        $this->assertStringContainsString("'sales_bayi'", $component);
+        $this->assertStringContainsString("'sales_rep_salih_cakir'", $component);
+        $this->assertStringContainsString("groupName !== 'Satış Yönetimi'", $component);
     }
 
     /**

@@ -50,13 +50,26 @@ const typeLabels = {
 
 const typeOrder = ['page', 'action', 'data_source', 'scope', 'other'];
 
+const salesScopeResourceCodes = new Set([
+    'sales_main_all',
+    'sales_online',
+    'sales_bayi',
+    'sales_rep_salih_cakir',
+    'sales_rep_umit_yildiz',
+    'sales_rep_bulent_saglam',
+]);
+
 function resourceTypeLabel(type) {
     return typeLabels[type] ?? 'Diğer izinler';
 }
 
 function groupResourcesByType(resources) {
     return resources.reduce((groups, resource) => {
-        const key = typeLabels[resource.type] ? resource.type : 'other';
+        const key = salesScopeResourceCodes.has(resource.code)
+            ? 'scope'
+            : typeLabels[resource.type]
+                ? resource.type
+                : 'other';
         return {
             ...groups,
             [key]: [...(groups[key] ?? []), resource],
@@ -195,8 +208,10 @@ export default function AdminUsers() {
         return enabledCount === resources.length ? 'all' : 'partial';
     };
 
-    const setModuleAccess = (resources, enabled) => {
-        const codes = resources.map((resource) => resource.code);
+    const setModuleAccess = (groupName, resources, enabled) => {
+        const codes = resources
+            .filter((resource) => enabled === false || groupName !== 'Satış Yönetimi' || !salesScopeResourceCodes.has(resource.code))
+            .map((resource) => resource.code);
 
         setForm((current) => ({
             ...current,
@@ -513,7 +528,7 @@ export default function AdminUsers() {
                                                 <input
                                                     type="checkbox"
                                                     checked={access !== 'none'}
-                                                    onChange={(event) => setModuleAccess(resources, event.target.checked)}
+                                                    onChange={(event) => setModuleAccess(groupName, resources, event.target.checked)}
                                                 />
                                             </label>
                                         </div>
