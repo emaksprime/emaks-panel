@@ -49,6 +49,53 @@ function resolvePeriodRange(grain) {
     };
 }
 
+const RESPONSE_SIGNATURE_KEYS = [
+    'detail_type',
+    'scope_key',
+    'date_from',
+    'date_to',
+    'brand_filter',
+    'category_filter',
+    'product_filter',
+    'customer_filter',
+];
+
+function normalizeSignatureValue(value, fallback = '') {
+    return String(value ?? fallback);
+}
+
+function requestSignature(filters) {
+    return {
+        detail_type: normalizeSignatureValue(filters.detail_type, 'cari'),
+        scope_key: normalizeSignatureValue(filters.scope_key, 'all'),
+        date_from: normalizeSignatureValue(filters.date_from),
+        date_to: normalizeSignatureValue(filters.date_to),
+        brand_filter: normalizeSignatureValue(filters.brand_filter, 'all'),
+        category_filter: normalizeSignatureValue(filters.category_filter, 'all'),
+        product_filter: normalizeSignatureValue(filters.product_filter),
+        customer_filter: normalizeSignatureValue(filters.customer_filter),
+    };
+}
+
+function responseSignature(payload) {
+    const responseFilters = payload?.filters ?? {};
+
+    return {
+        detail_type: normalizeSignatureValue(responseFilters.detailType, 'cari'),
+        scope_key: normalizeSignatureValue(responseFilters.scopeKey, 'all'),
+        date_from: normalizeSignatureValue(responseFilters.dateFrom),
+        date_to: normalizeSignatureValue(responseFilters.dateTo),
+        brand_filter: normalizeSignatureValue(responseFilters.brandFilter, 'all'),
+        category_filter: normalizeSignatureValue(responseFilters.categoryFilter, 'all'),
+        product_filter: normalizeSignatureValue(responseFilters.productFilter),
+        customer_filter: normalizeSignatureValue(responseFilters.customerFilter),
+    };
+}
+
+function signaturesMatch(expected, actual) {
+    return RESPONSE_SIGNATURE_KEYS.every((key) => expected[key] === actual[key]);
+}
+
 export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const config = salesMainConfig;
     const initialGrain = queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week';
@@ -79,6 +126,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     useEffect(() => {
         let active = true;
+        const expectedSignature = requestSignature(filters);
 
         async function load() {
             try {
@@ -89,7 +137,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                     body: JSON.stringify(filters),
                 });
 
-                if (active) {
+                if (active && signaturesMatch(expectedSignature, responseSignature(nextData))) {
                     setData(nextData);
                 }
             } catch (caught) {
@@ -111,6 +159,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     }, [filters]);
 
     const updateFilters = (patch) => {
+        setData(null);
         setFilters((current) => ({ ...current, ...patch }));
     };
 

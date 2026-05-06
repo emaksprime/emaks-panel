@@ -517,6 +517,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         }
 
         $query = (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template');
+        $gateway = file_get_contents(app_path('Services/N8nPanelDataGateway.php')) ?: '';
 
         $this->assertStringContainsString('DECLARE @brand_filter', $query);
         $this->assertStringContainsString('DECLARE @category_filter', $query);
@@ -535,6 +536,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('c.urun_adi_raw', $query);
         $this->assertStringContainsString('c.model_adi_raw', $query);
         $this->assertStringContainsString('sto.sto_isim', $query);
+        $this->assertStringContainsString("foreach (['brand_filter', 'category_filter', 'product_filter'] as \$optionalFilter)", $gateway);
+        $this->assertStringContainsString("->except(['bypass_cache'])", $gateway);
 
         foreach (['sales_online_perakende_detail', 'sales_bayi_proje_detail'] as $sourceCode) {
             $generatedQuery = (string) DataSource::query()->where('code', $sourceCode)->value('query_template');
@@ -566,13 +569,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'date_from' => '2026-04-01',
             'date_to' => '2026-04-28',
             'brand_filter' => 'philips',
-            'category_filter' => 'A1',
+            'category_filter' => 'AS1',
             'product_filter' => 'kilit',
             'bypass_cache' => true,
         ]);
 
-        $this->assertStringContainsString('PHILIPS', $productPayload['chart']['title']);
-        $this->assertStringContainsString('Ürün Satış Dağılımı', $productPayload['chart']['title']);
+        $this->assertSame('PHILIPS Ürün Satış Dağılımı', $productPayload['chart']['title']);
 
         Http::assertSent(function ($request): bool {
             $payload = json_decode($request->body(), true) ?: [];
@@ -580,10 +582,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
             return ($payload['source_code'] ?? null) === 'sales_online_perakende_detail'
                 && ($payload['detail_type'] ?? null) === 'urun'
                 && ($payload['brand_filter'] ?? null) === 'philips'
-                && ($payload['category_filter'] ?? null) === 'A1'
+                && ($payload['category_filter'] ?? null) === 'AS1'
                 && ($payload['product_filter'] ?? null) === 'kilit'
                 && ($payload['params']['brand_filter'] ?? null) === 'philips'
-                && ($payload['params']['category_filter'] ?? null) === 'A1'
+                && ($payload['params']['category_filter'] ?? null) === 'AS1'
                 && ($payload['params']['product_filter'] ?? null) === 'kilit';
         });
 
@@ -673,7 +675,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertStringContainsString('Marka', $brandComparison['chart']['title']);
+        $this->assertSame('Marka Satış Karşılaştırması', $brandComparison['chart']['title']);
         $this->assertNotSame([], $brandComparison['chart']['items']);
 
         $chartMethod = new \ReflectionMethod(app(SalesMainPageService::class), 'chartItems');
@@ -1201,6 +1203,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("queryParam('brand_filter')", $dashboard);
         $this->assertStringContainsString("queryParam('category_filter')", $dashboard);
         $this->assertStringContainsString("queryParam('product_filter')", $dashboard);
+        $this->assertStringContainsString('function requestSignature', $dashboard);
+        $this->assertStringContainsString('function responseSignature', $dashboard);
+        $this->assertStringContainsString('signaturesMatch(expectedSignature, responseSignature(nextData))', $dashboard);
+        $this->assertStringContainsString('setData(null)', $dashboard);
         $this->assertStringContainsString('const handleScopeChange', $dashboard);
         $this->assertStringContainsString('setSelectedCustomers([])', $dashboard);
         $this->assertStringContainsString("customer_filter: ''", $dashboard);
@@ -1231,8 +1237,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('Ürün, model veya stok kodu ara', $productFilter);
         $this->assertStringContainsString('PHILIPS', $productFilter);
         $this->assertStringContainsString('EMAKS PRIME', $productFilter);
-        $this->assertStringContainsString('A1 - AKILLI KİLİT', $productFilter);
-        $this->assertStringContainsString('YM1 - YÜZEY MONTAJLI KİLİT CAM VS.', $productFilter);
+        $this->assertStringContainsString("{ value: 'A1', label: 'AKILLI KİLİT' }", $productFilter);
+        $this->assertStringContainsString("{ value: 'YM1', label: 'YÜZEY MONTAJLI KİLİT CAM VS.' }", $productFilter);
+        $this->assertStringNotContainsString('A1 - AKILLI KİLİT', $productFilter);
+        $this->assertStringNotContainsString('YM1 - YÜZEY MONTAJLI KİLİT CAM VS.', $productFilter);
         $this->assertStringContainsString('brand_filter: event.target.value', $productFilter);
         $this->assertStringContainsString('category_filter: event.target.value', $productFilter);
         $this->assertStringContainsString('product_filter: event.target.value', $productFilter);

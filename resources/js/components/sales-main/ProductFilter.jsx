@@ -8,16 +8,16 @@ const BRAND_OPTIONS = [
 
 const CATEGORY_OPTIONS = [
     { value: 'all', label: 'Tüm Kategoriler' },
-    { value: 'A1', label: 'A1 - AKILLI KİLİT' },
-    { value: 'AS1', label: 'AS1 - AKILLI SİLİNDİR' },
-    { value: 'D1', label: 'D1 - AKILLI DÜRBÜN' },
-    { value: 'G1', label: 'G1 - GÜVENLİK KASASI' },
-    { value: 'K1', label: 'K1 - KABİN KİLİDİ' },
-    { value: 'KA1', label: 'KA1 - KOLLU AKILLI KİLİT' },
-    { value: 'M1', label: 'M1 - MEKANİK KAPI KOLU' },
-    { value: 'O1', label: 'O1 - OTEL TİPİ' },
-    { value: 'OT1', label: 'OT1 - OTEL TİPİ AKSESUARLARI' },
-    { value: 'YM1', label: 'YM1 - YÜZEY MONTAJLI KİLİT CAM VS.' },
+    { value: 'A1', label: 'AKILLI KİLİT' },
+    { value: 'AS1', label: 'AKILLI SİLİNDİR' },
+    { value: 'D1', label: 'AKILLI DÜRBÜN' },
+    { value: 'G1', label: 'GÜVENLİK KASASI' },
+    { value: 'K1', label: 'KABİN KİLİDİ' },
+    { value: 'KA1', label: 'KOLLU AKILLI KİLİT' },
+    { value: 'M1', label: 'MEKANİK KAPI KOLU' },
+    { value: 'O1', label: 'OTEL TİPİ' },
+    { value: 'OT1', label: 'OTEL TİPİ AKSESUARLARI' },
+    { value: 'YM1', label: 'YÜZEY MONTAJLI KİLİT CAM VS.' },
 ];
 
 export function ProductFilter({
