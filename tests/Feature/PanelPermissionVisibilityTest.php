@@ -125,9 +125,11 @@ class PanelPermissionVisibilityTest extends TestCase
             'orders_verilen',
         ]);
 
-        foreach (['/dashboard', '/sales/online', '/stock', '/orders', '/orders/alinan', '/orders/verilen'] as $path) {
+        foreach (['/dashboard', '/sales/online', '/stock', '/orders/alinan', '/orders/verilen'] as $path) {
             $this->actingAs($user)->get($path)->assertOk();
         }
+
+        $this->actingAs($user)->get('/orders')->assertRedirect('/orders/alinan');
 
         foreach (['/sales/main', '/sales/bayi', '/cari', '/proforma', '/admin'] as $path) {
             $this->actingAs($user)
@@ -137,6 +139,15 @@ class PanelPermissionVisibilityTest extends TestCase
         }
     }
 
+    public function test_orders_landing_redirects_to_first_authorized_order_page(): void
+    {
+        $receivedUser = $this->createExactUser(['orders', 'orders_alinan', 'orders_verilen']);
+        $givenOnlyUser = $this->createExactUser(['orders', 'orders_verilen']);
+
+        $this->actingAs($receivedUser)->get('/orders')->assertRedirect('/orders/alinan');
+        $this->actingAs($givenOnlyUser)->get('/orders')->assertRedirect('/orders/verilen');
+    }
+
     public function test_module_layout_uses_first_visible_route_for_module_buttons(): void
     {
         $moduleLayout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
@@ -144,7 +155,7 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->assertStringContainsString('selectModuleHref', $moduleLayout);
         $this->assertStringContainsString("candidates: ['/sales/main', '/sales/online', '/sales/bayi']", $moduleLayout);
         $this->assertStringContainsString("candidates: ['/stock', '/stock/critical']", $moduleLayout);
-        $this->assertStringContainsString("candidates: ['/orders', '/orders/alinan', '/orders/verilen']", $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/orders/alinan', '/orders/verilen', '/orders']", $moduleLayout);
         $this->assertStringContainsString("candidates: ['/cari', '/cari/balance']", $moduleLayout);
         $this->assertStringContainsString('visibleHrefs', $moduleLayout);
         $this->assertStringNotContainsString('visibleHref: item.match.find', $moduleLayout);
@@ -168,13 +179,15 @@ class PanelPermissionVisibilityTest extends TestCase
             '/technical-service/technicians',
             '/stock',
             '/stock/critical',
-            '/orders',
             '/orders/alinan',
             '/orders/verilen',
         ] as $path) {
             $this->assertContains($path, $hrefs);
             $this->actingAs($user)->get($path)->assertOk();
         }
+
+        $this->assertContains('/orders', $hrefs);
+        $this->actingAs($user)->get('/orders')->assertRedirect('/orders/alinan');
 
         foreach ([
             '/sales/main',

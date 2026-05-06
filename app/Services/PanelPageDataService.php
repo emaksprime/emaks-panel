@@ -368,6 +368,7 @@ class PanelPageDataService
             'price_list' => $input['price_list'] ?? null,
             'discount_code' => (string) ($input['discount_code'] ?? ''),
             'search' => (string) ($input['search'] ?? ''),
+            'status' => (string) ($input['status'] ?? ''),
             'page' => (string) max(1, (int) ($input['page'] ?? 1)),
             'limit' => max(1, min(500, (int) ($input['limit'] ?? 100))),
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),

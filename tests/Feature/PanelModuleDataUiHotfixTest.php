@@ -146,19 +146,92 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertMatchesRegularExpression('/HAVING\s+SUM\(miktar\)\s*>\s*0/i', $stock);
 
         $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*0/i', $alinan);
+        $this->assertMatchesRegularExpression('/sip\.sip_iptal\s*=\s*0/i', $alinan);
+        $this->assertMatchesRegularExpression('/sip\.sip_kapat_fl\s*=\s*0/i', $alinan);
         $this->assertStringContainsString('CARI_HESAPLAR', $alinan);
         $this->assertStringContainsString('CARI_HESAP_GRUPLARI', $alinan);
-        $this->assertStringContainsString('NOT LIKE', $alinan);
-        $this->assertStringContainsString('İHRACAT', $alinan);
+        $this->assertStringContainsString('STOK_MODEL_TANIMLARI', $alinan);
+        $this->assertStringContainsString('kalan_miktar', $alinan);
+        $this->assertStringContainsString("sip_evrakno_seri = N'B'", $alinan);
+        $this->assertStringContainsString('Onay Bekleyen Siparişler', $alinan);
+        $this->assertStringContainsString('Onaylı Siparişler', $alinan);
+        $this->assertStringContainsString('DONUSUM APARAT', $alinan);
+        $this->assertStringContainsString('YEDEK PARCA', $alinan);
+        $this->assertStringContainsString('GARANTI DISI KONTROL', $alinan);
+        $this->assertStringContainsString('sorumluluk_kodu', $alinan);
         $this->assertStringContainsString('kalan_tutar', $alinan);
 
         $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*1/i', $verilen);
+        $this->assertMatchesRegularExpression('/sip\.sip_iptal\s*=\s*0/i', $verilen);
+        $this->assertMatchesRegularExpression('/sip\.sip_kapat_fl\s*=\s*0/i', $verilen);
+        $this->assertStringContainsString('kalan_miktar', $verilen);
         $this->assertStringContainsString('STOK_KATEGORILERI', $verilen);
+        $this->assertStringContainsString('STOK_MODEL_TANIMLARI', $verilen);
+        $this->assertStringContainsString('sip_teslim_tarih', $verilen);
         $this->assertStringContainsString('teslim_tarihi', $verilen);
-        $this->assertStringContainsString('teslim_tarihi_hafta', $verilen);
+        $this->assertStringContainsString('tahmini_teslim_haftasi', $verilen);
+        $this->assertStringContainsString('TESLİM TARİHİ BELİRSİZ', $verilen);
+        $this->assertStringContainsString('teslim_sira', $verilen);
         $this->assertStringContainsString('stok_kategori_adi', $verilen);
         $this->assertStringContainsString('siparis_tutari', $verilen);
         $this->assertNotSame($alinan, $verilen);
+
+        $this->assertSame(
+            ['search', 'date_from', 'date_to', 'status', 'page', 'limit', 'bypass_cache'],
+            DataSource::query()->where('code', 'orders_alinan')->firstOrFail()->allowed_params,
+        );
+        $this->assertSame(
+            ['search', 'date_from', 'date_to', 'page', 'limit', 'bypass_cache'],
+            DataSource::query()->where('code', 'orders_verilen')->firstOrFail()->allowed_params,
+        );
+    }
+
+    public function test_orders_dashboard_frontend_contract_and_delivery_week_helpers(): void
+    {
+        $page = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
+        $dashboard = file_get_contents(resource_path('js/pages/panel/orders/OrdersDashboard.jsx')) ?: '';
+        $layout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
+        $routes = file_get_contents(base_path('routes/web.php')) ?: '';
+
+        $this->assertStringContainsString("matchesPage('orders_alinan', '/orders/alinan')", $page);
+        $this->assertStringContainsString("matchesPage('orders_verilen', '/orders/verilen')", $page);
+        $this->assertStringContainsString('OrdersDashboard', $page);
+        $this->assertStringContainsString('Alınan Siparişler', $dashboard);
+        $this->assertStringContainsString('Verilen Siparişler', $dashboard);
+        $this->assertStringContainsString('Onaylı Siparişler', $dashboard);
+        $this->assertStringContainsString('Onay Bekleyen Siparişler', $dashboard);
+        $this->assertStringContainsString('Tahmini Teslim Haftası', $dashboard);
+        $this->assertStringContainsString('table-fixed', $dashboard);
+        $this->assertStringContainsString('md:hidden', $dashboard);
+        $this->assertStringContainsString('break-words', $dashboard);
+        $this->assertStringContainsString("candidates: ['/orders/alinan', '/orders/verilen', '/orders']", $layout);
+        $this->assertStringContainsString("Route::get('orders', [PanelPageController::class, 'orders'])", $routes);
+
+        [$exitCode, $output, $error] = $this->runNodeModule(<<<'JS'
+            import { estimatedWeekLabel, groupGivenOrders } from './resources/js/pages/panel/orders/ordersUtils.js';
+
+            const groups = groupGivenOrders([
+                { teslim_tarihi: '2026-05-15', stok_adi: 'B Model', siparis_miktari: 1 },
+                { teslim_tarihi: '2026-05-01', stok_adi: 'A Model', siparis_miktari: 2 },
+                { teslim_tarihi: null, stok_adi: 'Z Model', siparis_miktari: 3 },
+            ]);
+
+            console.log(JSON.stringify({
+                label: estimatedWeekLabel('2026-05-15'),
+                groups: groups.map((group) => group.label),
+            }));
+        JS);
+
+        $this->assertSame(0, $exitCode, $error);
+
+        $results = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame("MAYIS'IN 3. HAFTASI", $results['label']);
+        $this->assertSame([
+            "MAYIS'IN 1. HAFTASI",
+            "MAYIS'IN 3. HAFTASI",
+            'TESLİM TARİHİ BELİRSİZ',
+        ], $results['groups']);
     }
 
     public function test_sales_online_and_bayi_use_processed_dashboard_config(): void

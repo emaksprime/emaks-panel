@@ -23,7 +23,7 @@ const moduleItems = [
     },
     {
         label: 'Sipariş Yönetimi',
-        candidates: ['/orders', '/orders/alinan', '/orders/verilen'],
+        candidates: ['/orders/alinan', '/orders/verilen', '/orders'],
         match: ['/orders', '/orders/alinan', '/orders/verilen'],
     },
     {

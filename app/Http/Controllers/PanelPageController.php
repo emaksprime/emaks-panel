@@ -9,6 +9,7 @@ use App\Services\PanelDataSourceManager;
 use App\Services\PanelNavigationService;
 use App\Services\PrimeCrmIntegrationService;
 use App\Services\SalesMainPageService;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -29,6 +30,17 @@ class PanelPageController extends Controller
     public function dashboard(Request $request): Response
     {
         return $this->renderForPath($request, '/dashboard');
+    }
+
+    public function orders(Request $request): RedirectResponse
+    {
+        foreach (['/orders/alinan', '/orders/verilen'] as $path) {
+            if ($this->navigation->resolveVisiblePage($request->user(), $path) !== null) {
+                return redirect($path);
+            }
+        }
+
+        abort(403);
     }
 
     public function __invoke(Request $request, string $panelPath): Response
