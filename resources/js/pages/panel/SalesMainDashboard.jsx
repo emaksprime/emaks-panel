@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
 import { DateRangeFilter } from '@/components/sales-main/DateRangeFilter.jsx';
@@ -87,10 +87,13 @@ function normalizeSignatureValue(key, value, fallback = '') {
 function responseFilterValue(payload, responseFilters, key, camelKey, fallback = '') {
     const gatewayRequest = payload?.queryMeta?.gatewayRequest ?? {};
     const gatewayParams = gatewayRequest?.params ?? {};
+    const alternateKey = key === 'customer_filter' ? 'cari_filter' : null;
 
     return responseFilters?.[camelKey]
         ?? gatewayParams?.[key]
         ?? gatewayRequest?.[key]
+        ?? (alternateKey ? gatewayParams?.[alternateKey] : undefined)
+        ?? (alternateKey ? gatewayRequest?.[alternateKey] : undefined)
         ?? fallback;
 }
 
@@ -103,7 +106,7 @@ function requestSignature(filters) {
         brand_filter: normalizeSignatureValue('brand_filter', filters.brand_filter, 'all'),
         category_filter: normalizeSignatureValue('category_filter', filters.category_filter, 'all'),
         product_filter: normalizeSignatureValue('product_filter', filters.product_filter),
-        customer_filter: normalizeSignatureValue('customer_filter', filters.customer_filter),
+        customer_filter: normalizeSignatureValue('customer_filter', filters.customer_filter ?? filters.cari_filter),
     };
 }
 
@@ -147,6 +150,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const [selectedCustomers, setSelectedCustomers] = useState([]);
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
+    const requestIdRef = useRef(0);
     const pageTitle = 'Satış Yönetimi';
     const pageDescription = 'Satış performansı ve müşteri/ürün özeti';
 
@@ -155,7 +159,8 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     }, [salesMainData]);
 
     useEffect(() => {
-        let active = true;
+        const requestId = requestIdRef.current + 1;
+        requestIdRef.current = requestId;
         const expectedSignature = requestSignature(filters);
 
         async function load() {
@@ -167,29 +172,37 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                     body: JSON.stringify(filters),
                 });
 
-                if (active && signaturesMatch(expectedSignature, responseSignature(nextData))) {
-                    setData(nextData);
+                if (requestId !== requestIdRef.current) {
+                    return;
                 }
+
+                const actualSignature = responseSignature(nextData);
+
+                if (signaturesMatch(expectedSignature, actualSignature)) {
+                    setData(nextData);
+
+                    return;
+                }
+
+                console.warn('Ignored stale sales-main response signature.', {
+                    expectedSignature,
+                    actualSignature,
+                });
             } catch (caught) {
-                if (active) {
+                if (requestId === requestIdRef.current) {
                     setError(caught instanceof Error ? caught.message : 'Veri alınamadı.');
                 }
             } finally {
-                if (active) {
+                if (requestId === requestIdRef.current) {
                     setLoading(false);
                 }
             }
         }
 
         load();
-
-        return () => {
-            active = false;
-        };
     }, [filters]);
 
     const updateFilters = (patch) => {
-        setData(null);
         setFilters((current) => ({ ...current, ...patch }));
     };
 
