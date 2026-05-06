@@ -888,7 +888,7 @@ class SalesMainPageService
 
                 return [
                     ...$row,
-                    'parent_key' => $fallbackGroup !== 'Diğer' && in_array($fallbackGroup, $knownGroups, true) ? $fallbackGroup : 'Diğer',
+                    'parent_key' => in_array($fallbackGroup, $knownGroups, true) ? $fallbackGroup : 'Diğer Gelirler',
                 ];
             }
 
@@ -896,14 +896,23 @@ class SalesMainPageService
         });
     }
 
+    private function fallbackSalesGroupLabel(string $value): string
+    {
+        $label = trim($value);
+
+        if ($label === '' || $label === '-') {
+            return 'Diğer Gelirler';
+        }
+
+        return $label;
+    }
+
     /**
      * @param  array<string, mixed>  $row
      */
     private function groupName(array $row): string
     {
-        $name = trim((string) ($row['cari_grup_adi'] ?? ''));
-
-        return $name !== '' ? $name : 'Diğer';
+        return $this->fallbackSalesGroupLabel(trim((string) ($row['cari_grup_adi'] ?? '')));
     }
 
     /**
@@ -919,13 +928,13 @@ class SalesMainPageService
      */
     private function rowLabel(array $row): string
     {
-        $label = trim((string) ($row['satir_adi'] ?? $row['cari_grup_adi'] ?? ''));
+        $label = $this->fallbackSalesGroupLabel(trim((string) ($row['satir_adi'] ?? $row['cari_grup_adi'] ?? '')));
 
         if (($row['satir_tipi'] ?? null) === 'KONSINYE' && $label !== '' && ! str_contains(mb_strtoupper($label, 'UTF-8'), 'KONS')) {
             return 'KONSİNYE - '.$label;
         }
 
-        return $label !== '' ? $label : 'Diğer';
+        return $label;
     }
 
     /**

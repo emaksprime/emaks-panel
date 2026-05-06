@@ -17,14 +17,45 @@ function queryParam(name) {
     return new URLSearchParams(window.location.search).get(name);
 }
 
+function formatDate(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+}
+
+function resolvePeriodRange(grain) {
+    const today = new Date();
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+    if (grain === 'week') {
+        const day = start.getDay();
+        const diff = day === 0 ? 6 : day - 1;
+        start.setDate(start.getDate() - diff);
+    } else if (grain === 'month') {
+        start.setDate(1);
+    } else if (grain === 'year') {
+        start.setMonth(0, 1);
+    } else if (grain === 'day') {
+        // keep today for both start and end
+    }
+
+    return {
+        dateFrom: formatDate(start),
+        dateTo: formatDate(end),
+    };
+}
+
 export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const config = salesMainConfig;
-    const today = new Date().toISOString().slice(0, 10);
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+    const initialGrain = queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week';
+    const initialPeriod = resolvePeriodRange(initialGrain);
     const [data, setData] = useState(salesMainData);
     const [filters, setFilters] = useState(() => ({
-        date_from: queryParam('date_from') ?? salesMainData?.filters?.dateFrom ?? monthStart,
-        date_to: queryParam('date_to') ?? salesMainData?.filters?.dateTo ?? today,
+        date_from: queryParam('date_from') ?? salesMainData?.filters?.dateFrom ?? initialPeriod.dateFrom,
+        date_to: queryParam('date_to') ?? salesMainData?.filters?.dateTo ?? initialPeriod.dateTo,
         grain: queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
         detail_type: queryParam('detail_type') ?? salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
         scope_key: queryParam('scope_key') ?? salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
