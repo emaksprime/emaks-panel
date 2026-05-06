@@ -13,7 +13,8 @@ class StockCriticalSettingController extends Controller
     public function index(Request $request, PanelAccessService $access): JsonResponse
     {
         abort_unless(
-            $access->userCanAccess($request->user(), 'stock') || $access->userCanAccess($request->user(), 'stock_critical'),
+            ($access->userCanAccess($request->user(), 'stock') || $access->userCanAccess($request->user(), 'stock_critical'))
+                && $access->stockScopeFor($request->user()) !== null,
             403,
             'Yetki bulunmamaktadır.',
         );
