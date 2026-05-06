@@ -8,6 +8,7 @@ use App\Models\PageConfig;
 use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\SalesMainPageService;
+use Carbon\CarbonImmutable;
 use Database\Seeders\PanelDataSourcesSeeder;
 use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
@@ -552,6 +553,84 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame('Seçili filtrelerde satış kaydı bulunamadı.', $payload['queryMeta']['notice']);
         $this->assertSame([], $payload['table']['rows']);
         $this->assertEquals(0, $payload['chart']['totalNet']);
+    }
+
+    public function test_sales_filters_default_to_current_year_range_when_year_grain_without_dates(): void
+    {
+        CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 4, 30, 12, 0, 0));
+
+        try {
+            Http::fake([
+                'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                    'ok' => true,
+                    'rows' => [],
+                ]),
+            ]);
+
+            $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+                'scope_key' => 'all',
+                'detail_type' => 'cari',
+                'grain' => 'year',
+                'bypass_cache' => true,
+            ]);
+
+            $this->assertSame('2026-01-01', $payload['filters']['dateFrom']);
+            $this->assertSame('2026-04-30', $payload['filters']['dateTo']);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+    }
+
+    public function test_sales_filters_default_to_current_month_range_when_month_grain_without_dates(): void
+    {
+        CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 4, 30, 12, 0, 0));
+
+        try {
+            Http::fake([
+                'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                    'ok' => true,
+                    'rows' => [],
+                ]),
+            ]);
+
+            $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+                'scope_key' => 'all',
+                'detail_type' => 'cari',
+                'grain' => 'month',
+                'bypass_cache' => true,
+            ]);
+
+            $this->assertSame('2026-04-01', $payload['filters']['dateFrom']);
+            $this->assertSame('2026-04-30', $payload['filters']['dateTo']);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+    }
+
+    public function test_sales_filters_default_to_today_when_day_grain_without_dates(): void
+    {
+        CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 4, 30, 12, 0, 0));
+
+        try {
+            Http::fake([
+                'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                    'ok' => true,
+                    'rows' => [],
+                ]),
+            ]);
+
+            $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+                'scope_key' => 'all',
+                'detail_type' => 'cari',
+                'grain' => 'day',
+                'bypass_cache' => true,
+            ]);
+
+            $this->assertSame('2026-04-30', $payload['filters']['dateFrom']);
+            $this->assertSame('2026-04-30', $payload['filters']['dateTo']);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
     }
 
     public function test_sales_online_and_bayi_scope_allow_without_representative_code_sends_null_rep_code(): void
@@ -1292,13 +1371,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertSame('Grup A', $rootLabels[0]);
         $this->assertContains('Grup B', $rootLabels);
-        $this->assertContains('Diğer', $rootLabels);
+        $this->assertContains('Diğer Gelirler', $rootLabels);
         $this->assertNotContains('Müşteri A', $rootLabels);
         $this->assertNotContains('Orphan Müşteri', $rootLabels);
 
         $groupA = collect($payload['breakdown']['groups'])->firstWhere('label', 'Grup A');
         $groupB = collect($payload['breakdown']['groups'])->firstWhere('label', 'Grup B');
-        $other = collect($payload['breakdown']['groups'])->firstWhere('label', 'Diğer');
+        $other = collect($payload['breakdown']['groups'])->firstWhere('label', 'Diğer Gelirler');
 
         $this->assertSame('Müşteri A', $groupA['children'][0]['label']);
         $this->assertSame('Ürün A', $groupA['children'][0]['children'][0]['label']);

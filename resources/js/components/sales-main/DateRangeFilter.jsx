@@ -1,21 +1,46 @@
 export function DateRangeFilter({ config, filters, onChange, loading }) {
     const grains = config?.grains ?? [];
-    const applyGrain = (grain) => {
+
+    const formatDate = (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+
+        return `${year}-${month}-${day}`;
+    };
+
+    const resolvePeriodRange = (grain) => {
         const today = new Date();
-        const end = today.toISOString().slice(0, 10);
-        let start = new Date(today);
+        const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
         if (grain === 'week') {
             const day = start.getDay();
             const diff = day === 0 ? 6 : day - 1;
             start.setDate(start.getDate() - diff);
         } else if (grain === 'month') {
-            start = new Date(today.getFullYear(), today.getMonth(), 1);
+            start.setDate(1);
         } else if (grain === 'year') {
-            start = new Date(today.getFullYear(), 0, 1);
+            start.setMonth(0, 1);
+        } else if (grain === 'day') {
+            // keep today for both from and to
+        } else {
+            return {
+                dateFrom: formatDate(start),
+                dateTo: formatDate(end),
+            };
         }
 
-        onChange({ grain, date_from: start.toISOString().slice(0, 10), date_to: end });
+        return {
+            dateFrom: formatDate(start),
+            dateTo: formatDate(end),
+        };
+    };
+
+    const applyGrain = (grain) => {
+        const { dateFrom, dateTo } = resolvePeriodRange(grain);
+
+        onChange({ grain, date_from: dateFrom, date_to: dateTo });
     };
 
     return (
