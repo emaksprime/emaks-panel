@@ -336,15 +336,36 @@ SQL_STOCK_CRITICAL,
             'orders_alinan',
             'Alınan Siparişler',
             <<<'SQL_ORDERS_ALINAN'
-DECLARE @BasTar DATE = '[[date_from]]';
+DECLARE @BasTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_from]]', N'')), CONVERT(date, '2025-01-01'));
+DECLARE @BitTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_to]]', N'')), CONVERT(date, GETDATE()));
+DECLARE @Search NVARCHAR(255) = LTRIM(RTRIM(N'[[search]]'));
+DECLARE @Status NVARCHAR(30) = LOWER(LTRIM(RTRIM(N'[[status]]')));
+DECLARE @Limit INT = TRY_CONVERT(int, NULLIF(N'[[limit]]', N''));
 
-WITH AcikSiparisler AS
+IF @Status = N''
+    SET @Status = N'all';
+
+IF @Limit IS NULL OR @Limit <= 0
+    SET @Limit = 500;
+
+WITH HamVeri AS
 (
     SELECT
         sip.sip_tarih,
+        sip.sip_evrakno_seri,
+        sip.sip_evrakno_sira,
+        sip.sip_aciklama2,
         cari.cari_unvan1 AS cari_adi,
         sto.sto_isim AS stok_adi,
         mdl.mdl_ismi AS model_adi,
+        crg.crg_isim AS cari_grup_adi,
+        LTRIM(RTRIM(
+            CASE
+                WHEN ISNULL(sip.sip_cari_sormerk, N'') <> N'' THEN sip.sip_cari_sormerk
+                WHEN ISNULL(sip.sip_stok_sormerk, N'') <> N'' THEN sip.sip_stok_sormerk
+                ELSE N''
+            END
+        )) AS sorumluluk_kodu,
         ISNULL(sip.sip_miktar, 0) AS siparis_miktar,
         ISNULL(sip.sip_teslim_miktar, 0) AS teslim_miktar,
         ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) AS kalan_miktar,
@@ -363,50 +384,122 @@ WITH AcikSiparisler AS
         ON mdl.mdl_kodu = sto.sto_model_kodu
     WHERE
         sip.sip_iptal = 0
-        AND CAST(sip.sip_tarih AS date) >= @BasTar
         AND sip.sip_tip = 0
         AND sip.sip_kapat_fl = 0
+        AND CAST(sip.sip_tarih AS date) >= @BasTar
+        AND CAST(sip.sip_tarih AS date) <= @BitTar
         AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
         AND UPPER(LTRIM(RTRIM(ISNULL(crg.crg_isim, N'')))) NOT LIKE N'%İHRACAT%'
-)
-SELECT
-    CONVERT(varchar(10), sip_tarih, 23) AS [siparis_tarihi],
-    cari_adi,
-    ISNULL(NULLIF(model_adi, N''), stok_adi) AS [urun_adi],
-    kalan_miktar,
-    ROUND(
+),
+Hesaplanmis AS
+(
+    SELECT
+        sip_tarih,
+        sip_evrakno_seri,
+        sip_evrakno_sira,
+        sip_aciklama2,
+        cari_adi,
+        stok_adi,
+        model_adi,
+        sorumluluk_kodu,
         CASE
-            WHEN ISNULL(siparis_miktar, 0) = 0 THEN 0
-            ELSE (
-                (
-                    ISNULL(sip_tutar, 0)
-                    - ISNULL(iskonto_1, 0)
-                    - ISNULL(iskonto_2, 0)
-                    - ISNULL(iskonto_3, 0)
-                ) / siparis_miktar
+            WHEN UPPER(ISNULL(stok_adi, N'')) LIKE N'%STAND%'
+              OR UPPER(ISNULL(model_adi, N'')) LIKE N'%STAND%'
+              OR UPPER(ISNULL(ISNULL(NULLIF(model_adi, N''), stok_adi), N'')) LIKE N'%STAND%'
+            THEN stok_adi
+            ELSE ISNULL(NULLIF(model_adi, N''), stok_adi)
+        END AS urun_adi,
+        kalan_miktar,
+        ROUND(
+            CASE
+                WHEN ISNULL(siparis_miktar, 0) = 0 THEN 0
+                ELSE ((ISNULL(sip_tutar, 0) - ISNULL(iskonto_1, 0) - ISNULL(iskonto_2, 0) - ISNULL(iskonto_3, 0)) / siparis_miktar)
+            END, 2
+        ) AS birim_fiyat,
+        ROUND(
+            CASE
+                WHEN ISNULL(siparis_miktar, 0) = 0 THEN 0
+                ELSE ((ISNULL(sip_tutar, 0) - ISNULL(iskonto_1, 0) - ISNULL(iskonto_2, 0) - ISNULL(iskonto_3, 0)) / siparis_miktar) * kalan_miktar
+            END, 2
+        ) AS kalan_tutar
+    FROM HamVeri
+),
+NormalizeEdilmis AS
+(
+    SELECT
+        *,
+        UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(urun_adi, N''), N'İ', N'I'), N'I', N'I'), N'ı', N'I'), N'Ö', N'O'), N'ö', N'O'), N'Ü', N'U'), N'ü', N'U'), N'Ç', N'C'), N'ç', N'C'), N'Ş', N'S')) AS urun_adi_norm,
+        UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(sorumluluk_kodu, N''), N'İ', N'I'), N'I', N'I'), N'ı', N'I'), N'Ö', N'O'), N'ö', N'O'), N'Ü', N'U'), N'ü', N'U'), N'Ç', N'C'), N'ç', N'C'), N'Ş', N'S')) AS sorumluluk_norm
+    FROM Hesaplanmis
+),
+Filtreli AS
+(
+    SELECT
+        sip_tarih,
+        sip_evrakno_seri,
+        sip_evrakno_sira,
+        sip_aciklama2,
+        cari_adi,
+        urun_adi,
+        sorumluluk_kodu,
+        kalan_miktar,
+        birim_fiyat,
+        kalan_tutar,
+        CASE
+            WHEN sip_evrakno_seri = N'B' THEN N'Onay Bekleyen Siparişler'
+            ELSE N'Onaylı Siparişler'
+        END AS siparis_grubu
+    FROM NormalizeEdilmis
+    WHERE
+        urun_adi_norm NOT LIKE N'%KILIT DONUSUM APARAT%'
+        AND urun_adi_norm NOT LIKE N'%KILIT DONUSUM APATAR%'
+        AND urun_adi_norm NOT LIKE N'%DONUSUM APARAT%'
+        AND urun_adi_norm NOT LIKE N'%DONUSUM APATAR%'
+        AND NOT (urun_adi_norm LIKE N'%YEDEK PARCA%' AND kalan_tutar <= 10)
+        AND (
+            NOT (
+                sorumluluk_norm LIKE N'%DEGISIM%'
+                OR sorumluluk_norm LIKE N'%GARANTI DISI KONTROL%'
+                OR sorumluluk_norm LIKE N'%GARANTI KAPSAMI KONTROL%'
+                OR LTRIM(RTRIM(sorumluluk_norm)) = N'GR'
             )
-        END, 2
-    ) AS birim_fiyat,
-    ROUND(
-        CASE
-            WHEN ISNULL(siparis_miktar, 0) = 0 THEN 0
-            ELSE (
-                (
-                    ISNULL(sip_tutar, 0)
-                    - ISNULL(iskonto_1, 0)
-                    - ISNULL(iskonto_2, 0)
-                    - ISNULL(iskonto_3, 0)
-                ) / siparis_miktar
-            ) * kalan_miktar
-        END, 2
-    ) AS kalan_tutar
-FROM AcikSiparisler
+            OR kalan_tutar > 10
+        )
+)
+SELECT TOP (@Limit)
+    CONVERT(varchar(10), sip_tarih, 23) AS siparis_tarihi,
+    sip_evrakno_seri,
+    sip_evrakno_sira,
+    sip_aciklama2,
+    cari_adi,
+    urun_adi,
+    sorumluluk_kodu,
+    siparis_grubu,
+    kalan_miktar,
+    N'Adet' AS birim,
+    birim_fiyat,
+    kalan_tutar
+FROM Filtreli
+WHERE
+    (
+        @Status IN (N'all', N'tumu', N'tüm', N'tümü')
+        OR (@Status IN (N'approved', N'onayli') AND siparis_grubu = N'Onaylı Siparişler')
+        OR (@Status IN (N'pending', N'bekleyen') AND siparis_grubu = N'Onay Bekleyen Siparişler')
+    )
+    AND (
+        @Search = N''
+        OR cari_adi LIKE N'%' + @Search + N'%'
+        OR urun_adi LIKE N'%' + @Search + N'%'
+        OR sip_aciklama2 LIKE N'%' + @Search + N'%'
+        OR sorumluluk_kodu LIKE N'%' + @Search + N'%'
+    )
 ORDER BY
+    CASE WHEN sip_evrakno_seri = N'B' THEN 1 ELSE 0 END,
     sip_tarih DESC,
     cari_adi,
     urun_adi;
 SQL_ORDERS_ALINAN,
-            ['date_from', 'date_to', 'search', 'page', 'bypass_cache'],
+            ['search', 'date_from', 'date_to', 'status', 'page', 'limit', 'bypass_cache'],
             'EMAKS PRIME - Siparisler Workflow (TAM FIX) Code - Build SQL Alinan node sorgusu.',
             'EMAKS PRIME - Siparisler Workflow (TAM FIX).json'
         );
@@ -415,7 +508,13 @@ SQL_ORDERS_ALINAN,
             'orders_verilen',
             'Verilen Siparişler',
             <<<'SQL_ORDERS_VERILEN'
-DECLARE @BasTar DATE = '[[date_from]]';
+DECLARE @BasTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_from]]', N'')), CONVERT(date, '2025-01-01'));
+DECLARE @BitTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_to]]', N'')), CONVERT(date, GETDATE()));
+DECLARE @Search NVARCHAR(255) = LTRIM(RTRIM(N'[[search]]'));
+DECLARE @Limit INT = TRY_CONVERT(int, NULLIF(N'[[limit]]', N''));
+
+IF @Limit IS NULL OR @Limit <= 0
+    SET @Limit = 500;
 
 WITH VerilenSiparisler AS
 (
@@ -453,31 +552,39 @@ WITH VerilenSiparisler AS
         AND sip.sip_tip = 1
         AND sip.sip_kapat_fl = 0
         AND CAST(sip.sip_tarih AS date) >= @BasTar
+        AND CAST(sip.sip_tarih AS date) <= @BitTar
         AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
 )
 SELECT
-    CONVERT(varchar(10), sip_teslim_tarih, 104) AS [teslim_tarihi],
-    CASE DATEPART(MONTH, sip_teslim_tarih)
-        WHEN 1 THEN N'Ocak'
-        WHEN 2 THEN N'Şubat'
-        WHEN 3 THEN N'Mart'
-        WHEN 4 THEN N'Nisan'
-        WHEN 5 THEN N'Mayıs'
-        WHEN 6 THEN N'Haziran'
-        WHEN 7 THEN N'Temmuz'
-        WHEN 8 THEN N'Ağustos'
-        WHEN 9 THEN N'Eylül'
-        WHEN 10 THEN N'Ekim'
-        WHEN 11 THEN N'Kasım'
-        WHEN 12 THEN N'Aralık'
-        ELSE N''
-    END + N' ' +
+    TOP (@Limit)
+    CONVERT(varchar(10), sip_teslim_tarih, 23) AS teslim_tarihi,
+    CONVERT(varchar(10), sip_teslim_tarih, 104) AS teslim_tarihi_gosterim,
     CASE
-        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 1 AND 7 THEN N'1. Haftası'
-        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 8 AND 14 THEN N'2. Haftası'
-        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 15 AND 21 THEN N'3. Haftası'
-        ELSE N'4. Haftası'
-    END AS [teslim_tarihi_hafta],
+        WHEN sip_teslim_tarih IS NULL THEN N'TESLİM TARİHİ BELİRSİZ'
+        ELSE
+            CASE DATEPART(MONTH, sip_teslim_tarih)
+                WHEN 1 THEN N'OCAK'
+                WHEN 2 THEN N'ŞUBAT'
+                WHEN 3 THEN N'MART'
+                WHEN 4 THEN N'NİSAN'
+                WHEN 5 THEN N'MAYIS'
+                WHEN 6 THEN N'HAZİRAN'
+                WHEN 7 THEN N'TEMMUZ'
+                WHEN 8 THEN N'AĞUSTOS'
+                WHEN 9 THEN N'EYLÜL'
+                WHEN 10 THEN N'EKİM'
+                WHEN 11 THEN N'KASIM'
+                WHEN 12 THEN N'ARALIK'
+                ELSE N''
+            END + N'''IN ' +
+            CASE
+                WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 1 AND 7 THEN N'1. HAFTASI'
+                WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 8 AND 14 THEN N'2. HAFTASI'
+                WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 15 AND 21 THEN N'3. HAFTASI'
+                ELSE N'4. HAFTASI'
+            END
+    END AS tahmini_teslim_haftasi,
+    CASE WHEN sip_teslim_tarih IS NULL THEN 99991231 ELSE CONVERT(int, CONVERT(char(8), sip_teslim_tarih, 112)) END AS teslim_sira,
     sip_stok_kod AS [stok_kodu],
     ISNULL(NULLIF(model_adi, N''), stok_adi) AS [stok_adi],
     stok_kategori_adi,
@@ -509,11 +616,17 @@ SELECT
         END, 2
     ) AS siparis_tutari
 FROM VerilenSiparisler
+WHERE
+    @Search = N''
+    OR sip_stok_kod LIKE N'%' + @Search + N'%'
+    OR ISNULL(NULLIF(model_adi, N''), stok_adi) LIKE N'%' + @Search + N'%'
+    OR stok_kategori_adi LIKE N'%' + @Search + N'%'
 ORDER BY
-    sip_teslim_tarih,
+    CASE WHEN sip_teslim_tarih IS NULL THEN 1 ELSE 0 END,
+    sip_teslim_tarih ASC,
     ISNULL(NULLIF(model_adi, N''), stok_adi);
 SQL_ORDERS_VERILEN,
-            ['date_from', 'date_to', 'search', 'page', 'bypass_cache'],
+            ['search', 'date_from', 'date_to', 'page', 'limit', 'bypass_cache'],
             'EMAKS PRIME - Siparisler Workflow (TAM FIX) Code - Build SQL Verilen node sorgusu.',
             'EMAKS PRIME - Siparisler Workflow (TAM FIX).json'
         );

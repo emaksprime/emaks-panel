@@ -34,6 +34,7 @@ import type {
 import CustomerDocumentDetailPage from './customer-crm/CustomerDocumentDetail.jsx';
 import CustomerInfoPage, { CustomerBalancePage } from './customer-crm/CustomerInfo.jsx';
 import CustomerStatementPage from './customer-crm/CustomerStatement.jsx';
+import OrdersDashboard from './orders/OrdersDashboard.jsx';
 import StockDashboard from './stock/StockDashboard.jsx';
 
 type PanelPageProps = {
@@ -435,6 +436,14 @@ export default function PanelPage({
 
     if (matchesPage('stock_critical', '/stock/critical')) {
         return <StockDashboard page={page} mode="critical" />;
+    }
+
+    if (matchesPage('orders_alinan', '/orders/alinan')) {
+        return <OrdersDashboard page={page} mode="alinan" />;
+    }
+
+    if (matchesPage('orders_verilen', '/orders/verilen')) {
+        return <OrdersDashboard page={page} mode="verilen" />;
     }
 
     return (

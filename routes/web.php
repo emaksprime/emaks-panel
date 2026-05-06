@@ -127,6 +127,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
     });
 
     Route::get('dashboard', [PanelPageController::class, 'dashboard'])->name('dashboard');
+    Route::get('orders', [PanelPageController::class, 'orders'])->name('orders.redirect');
 
     Route::get('technical-service/serial-query', fn () => Inertia::render('panel/technical-service-serial-query', [
         'page' => [

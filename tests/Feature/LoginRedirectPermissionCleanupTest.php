@@ -40,7 +40,7 @@ class LoginRedirectPermissionCleanupTest extends TestCase
                 'can_view' => false,
             ]);
         }
-        foreach (['stock', 'stock_critical', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+        foreach (['stock', 'stock_critical', 'orders_verilen'] as $resourceCode) {
             UserAccess::query()->create([
                 'user_id' => $ordersOnly->id,
                 'resource_code' => $resourceCode,
@@ -76,7 +76,7 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $this->assertSame('/sales/main', $navigation->firstAccessibleRouteFor($sales));
         $this->assertSame('/technical-service', $navigation->firstAccessibleRouteFor($technical));
         $this->assertSame('/stock', $navigation->firstAccessibleRouteFor($stock));
-        $this->assertSame('/orders', $navigation->firstAccessibleRouteFor($ordersOnly));
+        $this->assertSame('/orders/alinan', $navigation->firstAccessibleRouteFor($ordersOnly));
         $this->assertSame('/cari', $navigation->firstAccessibleRouteFor($customerOnly));
         $this->assertSame('/proforma', $navigation->firstAccessibleRouteFor($proformaOnly));
         $this->assertSame('/dashboard', $navigation->firstAccessibleRouteFor($dashboardOnly));

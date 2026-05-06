@@ -67,6 +67,7 @@ class PageDataController extends Controller
             'price_list' => ['nullable', 'integer'],
             'discount_code' => ['nullable', 'string', 'max:80'],
             'search' => ['nullable', 'string', 'max:255'],
+            'status' => ['nullable', 'string', 'max:40'],
             'page' => ['nullable', 'integer', 'min:1'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'bypass_cache' => ['nullable', 'boolean'],
