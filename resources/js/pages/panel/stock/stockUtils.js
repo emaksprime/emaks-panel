@@ -2,6 +2,7 @@ import { numericValue } from '../../../components/primecrm/format.js';
 
 export const DEFAULT_STOCK_CATEGORY = 'AKILLI KİLİT';
 export const ALL_CATEGORIES = 'Tüm Kategoriler';
+export const LOCK_STOCK_CATEGORY_CODES = ['A1', 'AS1', 'D1', 'G1', 'K1', 'KA1', 'M1', 'O1', 'OT1', 'YM1'];
 
 const aliases = {
     stockCode: ['stok_kodu', 'sto_kod', 'stock_code', 'Stok Kodu'],
@@ -50,6 +51,22 @@ export function stockCategoryKey(row) {
 
 export function stockCategoryLabel(row) {
     return stockCategory(row) || stockCategoryCode(row);
+}
+
+export function isLockStockCategory(row) {
+    return LOCK_STOCK_CATEGORY_CODES.includes(stockCategoryCode(row).toLocaleUpperCase('tr-TR'));
+}
+
+export function applyStockScope(rows, scope = 'locks') {
+    if (scope === 'all') {
+        return rows;
+    }
+
+    if (scope === 'locks') {
+        return rows.filter((row) => isLockStockCategory(row));
+    }
+
+    return [];
 }
 
 export function stockModel(row) {

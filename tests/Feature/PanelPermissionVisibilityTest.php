@@ -196,8 +196,12 @@ class PanelPermissionVisibilityTest extends TestCase
         foreach (['sales', 'stock', 'orders', 'technical', 'customer', 'proforma', 'viewer'] as $roleCode) {
             $user = User::factory()->create(['role_code' => $roleCode]);
 
-            foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            foreach (['stock', 'stock_critical', 'stock_locks', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
                 $this->assertTrue($access->userCanAccess($user, $resourceCode), "{$roleCode} should access {$resourceCode}");
+            }
+
+            if ($roleCode !== 'manager') {
+                $this->assertFalse($access->userCanAccess($user, 'stock_all'), "{$roleCode} should not access stock_all by default");
             }
         }
 
@@ -222,7 +226,7 @@ class PanelPermissionVisibilityTest extends TestCase
             ]),
         ]);
 
-        $user = $this->createExactUser(['dashboard', 'stock']);
+        $user = $this->createExactUser(['dashboard', 'stock', 'stock_locks']);
 
         $this->actingAs($user)
             ->postJson('/api/data/stock', ['search' => 'STK', 'bypass_cache' => true])
@@ -262,7 +266,7 @@ class PanelPermissionVisibilityTest extends TestCase
             'temsilci_kodu' => null,
             'aktif' => true,
             'force_password_change' => false,
-            'access' => ['sales_online', 'stock', 'orders', 'orders_alinan', 'orders_verilen'],
+            'access' => ['sales_online', 'stock', 'stock_locks', 'orders', 'orders_alinan', 'orders_verilen'],
             'denied_access' => [],
             'strict_access' => true,
         ]);
@@ -271,7 +275,7 @@ class PanelPermissionVisibilityTest extends TestCase
 
         $createdUser = User::query()->where('username', 'strict.user')->firstOrFail();
 
-        foreach (['dashboard', 'sales_online', 'stock', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+        foreach (['dashboard', 'sales_online', 'stock', 'stock_locks', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
             $this->assertDatabaseHas('panel.user_access', [
                 'user_id' => $createdUser->id,
                 'resource_code' => $resourceCode,
@@ -353,6 +357,7 @@ class PanelPermissionVisibilityTest extends TestCase
         $user = User::factory()->create(['role_code' => 'manager']);
         $allowed = collect($allowedResourceCodes)
             ->push('dashboard')
+            ->when(in_array('stock', $allowedResourceCodes, true), fn ($resources) => $resources->push('stock_locks'))
             ->filter()
             ->unique()
             ->values();

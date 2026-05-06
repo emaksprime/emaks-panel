@@ -183,6 +183,7 @@ class PanelNavigationService
             ->orderBy('page_order')
             ->get()
             ->filter(fn (Page $page) => $this->access->userCanAccess($user, $page->resource_code ?? $page->code))
+            ->filter(fn (Page $page) => ! in_array($page->code, ['stock', 'stock_critical'], true) || $this->access->stockScopeFor($user) !== null)
             ->values();
     }
 

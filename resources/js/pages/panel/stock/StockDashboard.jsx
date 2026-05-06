@@ -7,6 +7,7 @@ import { apiRequest } from '@/lib/api';
 import {
     ALL_CATEGORIES,
     DEFAULT_STOCK_CATEGORY,
+    applyStockScope,
     categoryOptions,
     decorateStockRows,
     filterStockRows,
@@ -256,15 +257,20 @@ export default function StockDashboard({ page, mode = 'list' }) {
 
     const rawRowsCount = Array.isArray(stockData.rows) ? stockData.rows.length : 0;
     const decoratedRows = decorateStockRows(stockData.rows, settingsData.rows);
-    const options = categoryOptions(decoratedRows);
-    const activeCategory = resolveCategoryFilter(filters.category, options);
-    const filteredRows = sortStockRows(filterStockRows(decoratedRows, {
+    const stockScope = stockData.queryMeta?.stockScope === 'all' ? 'all' : 'locks';
+    const scopedRows = applyStockScope(decoratedRows, stockScope);
+    const options = categoryOptions(scopedRows);
+    const requestedCategory = stockScope === 'locks' && filters.category === DEFAULT_STOCK_CATEGORY
+        ? ALL_CATEGORIES
+        : filters.category;
+    const activeCategory = resolveCategoryFilter(requestedCategory, options);
+    const filteredRows = sortStockRows(filterStockRows(scopedRows, {
         ...filters,
         category: activeCategory,
         mode,
     }));
-    const criticalCount = decoratedRows.filter((row) => row.isCritical).length;
-    const totalQuantity = decoratedRows.reduce((sum, row) => sum + stockQuantity(row), 0);
+    const criticalCount = scopedRows.filter((row) => row.isCritical).length;
+    const totalQuantity = scopedRows.reduce((sum, row) => sum + stockQuantity(row), 0);
     const canManageCritical = settingsData.can_manage;
 
     const toggleStockCode = (event, code) => {
@@ -383,7 +389,7 @@ export default function StockDashboard({ page, mode = 'list' }) {
                     {[
                         ['Kayıt', filteredRows.length],
                         ['Toplam Stok', formatQuantity(totalQuantity)],
-                        ['Kritik Stok', criticalCount],
+                        ['Kritik Stoktaki Model Adedi', criticalCount],
                     ].map(([label, value]) => (
                         <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                             <p className="text-xs font-semibold tracking-[0.14em] text-slate-500 uppercase">{label}</p>

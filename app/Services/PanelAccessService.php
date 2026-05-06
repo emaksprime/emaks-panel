@@ -119,4 +119,17 @@ class PanelAccessService
     {
         return (bool) ($user?->role?->is_super_admin);
     }
+
+    public function stockScopeFor(?User $user): ?string
+    {
+        if ($this->userCanAccess($user, 'stock_all')) {
+            return 'all';
+        }
+
+        if ($this->userCanAccess($user, 'stock_locks')) {
+            return 'locks';
+        }
+
+        return null;
+    }
 }

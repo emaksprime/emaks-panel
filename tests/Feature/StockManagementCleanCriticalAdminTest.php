@@ -3,11 +3,13 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Services\PanelAccessService;
 use Database\Seeders\PanelDataSourcesSeeder;
 use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class StockManagementCleanCriticalAdminTest extends TestCase
@@ -38,6 +40,7 @@ class StockManagementCleanCriticalAdminTest extends TestCase
         $this->assertStringContainsString('resolveCategoryFilter', $dashboard);
         $this->assertStringContainsString('Stok Yönetimi', $dashboard);
         $this->assertStringContainsString('Kritik stok belirle', $dashboard);
+        $this->assertStringContainsString('Kritik Stoktaki Model Adedi', $dashboard);
         $this->assertStringContainsString('canManageCritical', $dashboard);
         $this->assertStringContainsString('/api/stock/critical-settings', $dashboard);
         $this->assertStringContainsString('md:hidden', $dashboard);
@@ -54,6 +57,8 @@ class StockManagementCleanCriticalAdminTest extends TestCase
             import {
                 ALL_CATEGORIES,
                 DEFAULT_STOCK_CATEGORY,
+                LOCK_STOCK_CATEGORY_CODES,
+                applyStockScope,
                 categoryOptions,
                 decorateStockRows,
                 filterStockRows,
@@ -62,31 +67,45 @@ class StockManagementCleanCriticalAdminTest extends TestCase
             } from './resources/js/pages/panel/stock/stockUtils.js';
 
             const rows = [
-                { stok_kodu: 'LOW-NO-SETTING', stok_adi: 'Düşük ama ayarsız', kategori: 'AKILLI KİLİT', toplam_miktar: 1 },
-                { stok_kodu: 'CRIT-1', stok_adi: 'Kritik ürün', kategori: 'AKILLI KİLİT', toplam_miktar: 2 },
-                { stok_kodu: 'SAFE-1', stok_adi: 'Güvenli ürün', kategori: 'AKILLI KİLİT', toplam_miktar: 20 },
+                { stok_kodu: 'LOW-NO-SETTING', stok_adi: 'Düşük ama ayarsız', kategori: 'AKILLI KİLİT', kategori_kodu: 'A1', toplam_miktar: 1 },
+                { stok_kodu: 'CRIT-1', stok_adi: 'Kritik ürün', kategori: 'AKILLI KİLİT', kategori_kodu: 'A1', toplam_miktar: 2 },
+                { stok_kodu: 'SAFE-1', stok_adi: 'Güvenli ürün', kategori: 'AKILLI KİLİT', kategori_kodu: 'A1', toplam_miktar: 20 },
                 { stok_kodu: 'MECH-1', stok_adi: 'Mekanik ürün', kategori: 'MEKANİK', kategori_kodu: 'M1', toplam_miktar: 7 },
+                { stok_kodu: 'WIDE-CRIT', stok_adi: 'Whitelist dışı kritik', kategori: 'DİĞER', kategori_kodu: 'X1', toplam_miktar: 1 },
+                { stok_kodu: 'NAME-ONLY', stok_adi: 'Kod yok ama isim kilit', kategori: 'AKILLI KİLİT', toplam_miktar: 6 },
                 { stok_kodu: 'ZERO-1', stok_adi: 'Sıfır stok', kategori: 'AKILLI KİLİT', toplam_miktar: 0 },
             ];
             const settings = [
                 { stock_code: 'CRIT-1', threshold_quantity: 5, active: true },
                 { stock_code: 'SAFE-1', threshold_quantity: 5, active: true },
+                { stock_code: 'WIDE-CRIT', threshold_quantity: 5, active: true },
             ];
             const decorated = decorateStockRows(rows, settings);
             const sorted = sortStockRows(decorated);
             const options = categoryOptions(decorated);
+            const lockScoped = applyStockScope(decorated, 'locks');
+            const lockOptions = categoryOptions(lockScoped);
+            const allScoped = applyStockScope(decorated, 'all');
             const fallbackOptions = categoryOptions(decorateStockRows([
                 { stok_kodu: 'ONLY-MECH', stok_adi: 'Sadece mekanik', kategori: 'MEKANİK', kategori_kodu: 'M1', toplam_miktar: 8 },
             ], []));
 
             console.log(JSON.stringify({
                 defaultCategory: DEFAULT_STOCK_CATEGORY,
+                lockWhitelist: LOCK_STOCK_CATEGORY_CODES,
                 criticalCodes: filterStockRows(decorated, { mode: 'critical', category: 'AKILLI KİLİT' }).map((row) => row.stock_code),
                 allCodes: filterStockRows(decorated, { mode: 'list', category: 'AKILLI KİLİT' }).map((row) => row.stock_code),
                 allCategoryCodes: filterStockRows(decorated, { mode: 'list', category: ALL_CATEGORIES }).map((row) => row.stock_code),
                 mechanicalCodes: filterStockRows(decorated, { mode: 'list', category: 'M1' }).map((row) => row.stock_code),
                 optionValues: options.map((option) => option.value),
                 optionLabels: options.map((option) => option.label),
+                lockCodes: lockScoped.map((row) => row.stock_code),
+                allScopeCodes: allScoped.map((row) => row.stock_code),
+                lockAllCategoryCodes: filterStockRows(lockScoped, { mode: 'list', category: ALL_CATEGORIES }).map((row) => row.stock_code),
+                lockOptionValues: lockOptions.map((option) => option.value),
+                lockOptionLabels: lockOptions.map((option) => option.label),
+                lockCriticalCount: lockScoped.filter((row) => row.isCritical).length,
+                allCriticalCount: allScoped.filter((row) => row.isCritical).length,
                 defaultResolved: resolveCategoryFilter(DEFAULT_STOCK_CATEGORY, options),
                 missingDefaultResolved: resolveCategoryFilter(DEFAULT_STOCK_CATEGORY, fallbackOptions),
                 firstCode: sorted[0].stock_code,
@@ -100,17 +119,152 @@ class StockManagementCleanCriticalAdminTest extends TestCase
         $results = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame('AKILLI KİLİT', $results['defaultCategory']);
+        $this->assertSame(['A1', 'AS1', 'D1', 'G1', 'K1', 'KA1', 'M1', 'O1', 'OT1', 'YM1'], $results['lockWhitelist']);
         $this->assertSame(['CRIT-1'], $results['criticalCodes']);
-        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1'], $results['allCodes']);
-        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1', 'MECH-1'], $results['allCategoryCodes']);
+        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1', 'NAME-ONLY'], $results['allCodes']);
+        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1', 'MECH-1', 'WIDE-CRIT', 'NAME-ONLY'], $results['allCategoryCodes']);
         $this->assertSame(['MECH-1'], $results['mechanicalCodes']);
+        $this->assertContains('A1', $results['optionValues']);
         $this->assertContains('M1', $results['optionValues']);
+        $this->assertContains('AKILLI KİLİT', $results['optionLabels']);
         $this->assertContains('MEKANİK', $results['optionLabels']);
-        $this->assertSame('AKILLI KİLİT', $results['defaultResolved']);
+        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1', 'MECH-1'], $results['lockCodes']);
+        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1', 'MECH-1', 'WIDE-CRIT', 'NAME-ONLY'], $results['allScopeCodes']);
+        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1', 'MECH-1'], $results['lockAllCategoryCodes']);
+        $this->assertSame(['Tüm Kategoriler', 'A1', 'M1'], $results['lockOptionValues']);
+        $this->assertSame(['Tüm Kategoriler', 'AKILLI KİLİT', 'MEKANİK'], $results['lockOptionLabels']);
+        $this->assertSame(1, $results['lockCriticalCount']);
+        $this->assertSame(2, $results['allCriticalCount']);
+        $this->assertSame('A1', $results['defaultResolved']);
         $this->assertSame('Tüm Kategoriler', $results['missingDefaultResolved']);
         $this->assertSame('CRIT-1', $results['firstCode']);
         $this->assertFalse($results['lowWithoutSettingCritical']);
         $this->assertFalse($results['safeWithSettingCritical']);
+    }
+
+    public function test_stock_scope_resources_and_role_defaults_are_seeded(): void
+    {
+        $this->assertDatabaseHas('panel.resources', [
+            'code' => 'stock_all',
+            'name' => 'Tüm Stok Görünümü',
+            'type' => 'scope',
+        ]);
+        $this->assertDatabaseHas('panel.resources', [
+            'code' => 'stock_locks',
+            'name' => 'Kilit Stok Görünümü',
+            'type' => 'scope',
+        ]);
+
+        foreach (['stock', 'technical', 'sales', 'customer', 'proforma', 'viewer'] as $roleCode) {
+            $this->assertDatabaseHas('panel.role_resource_permissions', [
+                'role_code' => $roleCode,
+                'resource_code' => 'stock_locks',
+                'can_view' => true,
+            ]);
+            $this->assertDatabaseHas('panel.role_resource_permissions', [
+                'role_code' => $roleCode,
+                'resource_code' => 'stock_all',
+                'can_view' => false,
+            ]);
+        }
+
+        $this->assertDatabaseHas('panel.role_resource_permissions', [
+            'role_code' => 'manager',
+            'resource_code' => 'stock_all',
+            'can_view' => true,
+        ]);
+    }
+
+    public function test_stock_scope_access_prefers_all_then_locks_and_blocks_missing_scope(): void
+    {
+        $access = app(PanelAccessService::class);
+        $stockUser = User::factory()->create(['role_code' => 'stock', 'aktif' => true]);
+        $manager = User::factory()->create(['role_code' => 'manager', 'aktif' => true]);
+        $combined = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
+        $blocked = User::factory()->create(['role_code' => 'stock', 'aktif' => true]);
+
+        DB::table('panel.user_access')->insert([
+            [
+                'user_id' => $combined->id,
+                'resource_code' => 'stock_all',
+                'can_view' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'user_id' => $blocked->id,
+                'resource_code' => 'stock_locks',
+                'can_view' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'user_id' => $blocked->id,
+                'resource_code' => 'stock_all',
+                'can_view' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->assertSame('locks', $access->stockScopeFor($stockUser));
+        $this->assertSame('all', $access->stockScopeFor($manager));
+        $this->assertSame('all', $access->stockScopeFor($combined));
+        $this->assertNull($access->stockScopeFor($blocked));
+
+        $this->actingAs($blocked)->get('/stock')->assertForbidden();
+    }
+
+    public function test_stock_data_api_exposes_stock_scope_and_requires_explicit_scope(): void
+    {
+        Http::fake([
+            '*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['stok_kodu' => 'LOCK-1', 'stok_adi' => 'Kilit', 'kategori' => 'AKILLI KİLİT', 'kategori_kodu' => 'A1', 'toplam_miktar' => 5],
+                    ['stok_kodu' => 'OTHER-1', 'stok_adi' => 'Diğer', 'kategori' => 'DİĞER', 'kategori_kodu' => 'X1', 'toplam_miktar' => 8],
+                ],
+                'request' => [],
+                'meta' => [],
+            ]),
+        ]);
+
+        $locksUser = User::factory()->create(['role_code' => 'stock', 'aktif' => true]);
+        $allUser = User::factory()->create(['role_code' => 'manager', 'aktif' => true]);
+        $blocked = User::factory()->create(['role_code' => 'stock', 'aktif' => true]);
+
+        DB::table('panel.user_access')->insert([
+            [
+                'user_id' => $blocked->id,
+                'resource_code' => 'stock_locks',
+                'can_view' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'user_id' => $blocked->id,
+                'resource_code' => 'stock_all',
+                'can_view' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->actingAs($locksUser)
+            ->postJson('/api/data/stock', ['bypass_cache' => true])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.stockScope', 'locks')
+            ->assertJsonCount(2, 'rows');
+
+        $this->actingAs($allUser)
+            ->postJson('/api/data/stock', ['bypass_cache' => true])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.stockScope', 'all')
+            ->assertJsonCount(2, 'rows');
+
+        $this->actingAs($blocked)
+            ->postJson('/api/data/stock', ['bypass_cache' => true])
+            ->assertForbidden();
     }
 
     public function test_super_admin_can_manage_stock_critical_settings(): void
