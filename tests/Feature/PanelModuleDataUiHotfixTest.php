@@ -230,18 +230,18 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $sources = [
             'sales_main_dashboard' => [
                 'join' => 'LEFT JOIN STOKLAR sto WITH (NOLOCK)',
-                'filter' => "LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN",
-                'fallback' => "AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN",
+                'filter' => "UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) IN",
+                'fallback' => "OR UPPER(LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N'')))) IN",
             ],
             'sales_online_perakende_detail' => [
                 'join' => 'LEFT JOIN STOKLAR sto WITH (NOLOCK)',
-                'filter' => "LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN",
-                'fallback' => "AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN",
+                'filter' => "UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) IN",
+                'fallback' => "OR UPPER(LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N'')))) IN",
             ],
             'sales_bayi_proje_detail' => [
                 'join' => 'LEFT JOIN STOKLAR sto WITH (NOLOCK)',
-                'filter' => "LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN",
-                'fallback' => "AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN",
+                'filter' => "UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) IN",
+                'fallback' => "OR UPPER(LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N'')))) IN",
             ],
             'sales_customer_search' => [
                 'join' => 'INNER JOIN dbo.STOKLAR sto WITH (NOLOCK)',
@@ -530,8 +530,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('marka_adi', $query);
         $this->assertStringContainsString("@brand_filter = N'philips'", $query);
         $this->assertStringContainsString("@brand_filter = N'emaks_prime'", $query);
+        $this->assertStringContainsString("UPPER(LTRIM(RTRIM(ISNULL(c.stok_kodu_raw, N'')))) LIKE N'%PHILIPS%'", $query);
+        $this->assertStringContainsString("UPPER(LTRIM(RTRIM(ISNULL(c.urun_adi_raw, N'')))) LIKE N'%PHILIPS%'", $query);
+        $this->assertStringContainsString("UPPER(LTRIM(RTRIM(ISNULL(c.model_adi_raw, N'')))) LIKE N'%EMAKS%'", $query);
+        $this->assertStringContainsString("UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%EMAKS%'", $query);
         $this->assertStringContainsString('sto.sto_kategori_kodu', $query);
         $this->assertStringContainsString('c.kategori_kodu_raw', $query);
+        $this->assertStringContainsString("OR UPPER(LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N'')))) = @category_filter", $query);
         $this->assertStringContainsString('c.stok_kodu_raw', $query);
         $this->assertStringContainsString('c.urun_adi_raw', $query);
         $this->assertStringContainsString('c.model_adi_raw', $query);

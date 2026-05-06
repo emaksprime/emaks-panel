@@ -179,11 +179,8 @@ WHERE
         AND ABS(c.net_tutar) < 10
     )
     AND (
-        LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
-        OR (
-            NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))), N'') IS NULL
-            AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
-        )
+        UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
+        OR UPPER(LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N'')))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
     )
     AND (
         @detail_type <> N'urun'
@@ -193,6 +190,10 @@ WHERE
             AND (
                 UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) LIKE N'%PHILIPS%'
                 OR UPPER(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N'')))) LIKE N'%PHILIPS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(c.stok_kodu_raw, N'')))) LIKE N'%PHILIPS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(c.urun_adi_raw, N'')))) LIKE N'%PHILIPS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(c.model_adi_raw, N'')))) LIKE N'%PHILIPS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%PHILIPS%'
             )
         )
         OR (
@@ -200,17 +201,18 @@ WHERE
             AND (
                 UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) LIKE N'%EMAKS%'
                 OR UPPER(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N'')))) LIKE N'%EMAKS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(c.stok_kodu_raw, N'')))) LIKE N'%EMAKS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(c.urun_adi_raw, N'')))) LIKE N'%EMAKS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(c.model_adi_raw, N'')))) LIKE N'%EMAKS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%EMAKS%'
             )
         )
     )
     AND (
         @detail_type <> N'urun'
         OR @category_filter IN (N'all', N'ALL', N'tumu', N'TUMU', N'tüm', N'TÜM', N'tümü', N'TÜMÜ')
-        OR LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) = @category_filter
-        OR (
-            NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))), N'') IS NULL
-            AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) = @category_filter
-        )
+        OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) = @category_filter
+        OR UPPER(LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N'')))) = @category_filter
     )
     AND (
         @detail_type <> N'urun'
