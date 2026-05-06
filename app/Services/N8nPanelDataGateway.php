@@ -65,6 +65,12 @@ class N8nPanelDataGateway
             ] : null,
         ];
 
+        foreach (['brand_filter', 'category_filter', 'product_filter'] as $optionalFilter) {
+            if (array_key_exists($optionalFilter, $filters)) {
+                $payload[$optionalFilter] = $filters[$optionalFilter];
+            }
+        }
+
         $headers = ['Content-Type' => 'application/json'];
 
         if (trim($token) !== '') {

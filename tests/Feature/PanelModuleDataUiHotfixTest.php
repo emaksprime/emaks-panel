@@ -175,7 +175,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertTrue($onlineSource->active);
         $this->assertNotSame('', trim((string) $onlineSource->query_template));
         $this->assertSame(
-            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
             $onlineSource->allowed_params,
         );
         foreach (['120.01', '120.02', '120.03', '120.04', '120.05', '120.06', '120.07', '120.08', '120.09', '120.16'] as $groupCode) {
@@ -503,6 +503,233 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['cari_filter'] ?? null) === 'A-1'
                 && ($payload['customer_filter'] ?? null) === 'A-1'
                 && ($payload['scope_key'] ?? null) === 'all';
+        });
+    }
+
+    public function test_sales_product_detail_filters_are_allowed_and_sent_only_for_product_mode(): void
+    {
+        foreach (['sales_main_dashboard', 'sales_online_perakende_detail', 'sales_bayi_proje_detail'] as $sourceCode) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+
+            $this->assertContains('brand_filter', $source->allowed_params);
+            $this->assertContains('category_filter', $source->allowed_params);
+            $this->assertContains('product_filter', $source->allowed_params);
+        }
+
+        $query = (string) DataSource::query()->where('code', 'sales_main_dashboard')->value('query_template');
+
+        $this->assertStringContainsString('DECLARE @brand_filter', $query);
+        $this->assertStringContainsString('DECLARE @category_filter', $query);
+        $this->assertStringContainsString('DECLARE @product_filter', $query);
+        $this->assertStringContainsString('LEFT JOIN STOK_MARKALARI mrk WITH (NOLOCK)', $query);
+        $this->assertStringContainsString('sto.sto_marka_kodu', $query);
+        $this->assertStringContainsString('mrk.mrk_ismi', $query);
+        $this->assertStringContainsString('brand_code', $query);
+        $this->assertStringContainsString('brand_name', $query);
+        $this->assertStringContainsString('marka_adi', $query);
+        $this->assertStringContainsString("@brand_filter = N'philips'", $query);
+        $this->assertStringContainsString("@brand_filter = N'emaks_prime'", $query);
+        $this->assertStringContainsString('sto.sto_kategori_kodu', $query);
+        $this->assertStringContainsString('c.kategori_kodu_raw', $query);
+        $this->assertStringContainsString('c.stok_kodu_raw', $query);
+        $this->assertStringContainsString('c.urun_adi_raw', $query);
+        $this->assertStringContainsString('c.model_adi_raw', $query);
+        $this->assertStringContainsString('sto.sto_isim', $query);
+
+        foreach (['sales_online_perakende_detail', 'sales_bayi_proje_detail'] as $sourceCode) {
+            $generatedQuery = (string) DataSource::query()->where('code', $sourceCode)->value('query_template');
+
+            $this->assertStringContainsString('DECLARE @brand_filter', $generatedQuery);
+            $this->assertStringContainsString('DECLARE @category_filter', $generatedQuery);
+            $this->assertStringContainsString('DECLARE @product_filter', $generatedQuery);
+        }
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Model A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $productPayload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'online_perakende',
+            'detail_type' => 'urun',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'brand_filter' => 'philips',
+            'category_filter' => 'A1',
+            'product_filter' => 'kilit',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertStringContainsString('PHILIPS', $productPayload['chart']['title']);
+        $this->assertStringContainsString('Ürün Satış Dağılımı', $productPayload['chart']['title']);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_online_perakende_detail'
+                && ($payload['detail_type'] ?? null) === 'urun'
+                && ($payload['brand_filter'] ?? null) === 'philips'
+                && ($payload['category_filter'] ?? null) === 'A1'
+                && ($payload['product_filter'] ?? null) === 'kilit'
+                && ($payload['params']['brand_filter'] ?? null) === 'philips'
+                && ($payload['params']['category_filter'] ?? null) === 'A1'
+                && ($payload['params']['product_filter'] ?? null) === 'kilit';
+        });
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Model P',
+                        'satir_adi' => 'Model P',
+                        'adet' => 1,
+                        'ciro' => 100,
+                        'brand_code' => 'PHILIPS',
+                        'brand_name' => 'PHILIPS',
+                        'marka_adi' => 'PHILIPS',
+                    ],
+                    [
+                        'satir_tipi' => 'DETAY',
+                        'cari_grup_adi' => 'Model P',
+                        'parent_key' => 'Model P',
+                        'satir_adi' => 'Cari A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                        'brand_code' => 'PHILIPS',
+                        'brand_name' => 'PHILIPS',
+                        'marka_adi' => 'PHILIPS',
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 2,
+                        'cari_grup_adi' => 'Model E',
+                        'satir_adi' => 'Model E',
+                        'adet' => 2,
+                        'ciro' => 200,
+                        'brand_code' => 'EMAKS',
+                        'brand_name' => 'EMAKS PRIME',
+                        'marka_adi' => 'EMAKS PRIME',
+                    ],
+                    [
+                        'satir_tipi' => 'DETAY',
+                        'cari_grup_adi' => 'Model E',
+                        'parent_key' => 'Model E',
+                        'satir_adi' => 'Cari B',
+                        'adet' => 2,
+                        'ciro' => 200,
+                        'brand_code' => 'EMAKS',
+                        'brand_name' => 'EMAKS PRIME',
+                        'marka_adi' => 'EMAKS PRIME',
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 3,
+                        'cari_grup_adi' => 'Model X',
+                        'satir_adi' => 'Model X',
+                        'adet' => 1,
+                        'ciro' => 50,
+                        'brand_code' => 'X',
+                        'brand_name' => 'X MARKA',
+                        'marka_adi' => 'X MARKA',
+                    ],
+                    [
+                        'satir_tipi' => 'DETAY',
+                        'cari_grup_adi' => 'Model X',
+                        'parent_key' => 'Model X',
+                        'satir_adi' => 'Cari C',
+                        'adet' => 1,
+                        'ciro' => 50,
+                        'brand_code' => 'X',
+                        'brand_name' => 'X MARKA',
+                        'marka_adi' => 'X MARKA',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $brandComparison = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'urun',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'brand_filter' => 'all',
+            'category_filter' => 'A1',
+            'product_filter' => 'model',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertStringContainsString('Marka', $brandComparison['chart']['title']);
+        $this->assertNotSame([], $brandComparison['chart']['items']);
+
+        $chartMethod = new \ReflectionMethod(app(SalesMainPageService::class), 'chartItems');
+        $chartMethod->setAccessible(true);
+        $brandItems = $chartMethod->invoke(
+            app(SalesMainPageService::class),
+            collect([]),
+            collect([
+                ['satir_tipi' => 'DETAY', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS', 'marka_adi' => 'PHILIPS'],
+                ['satir_tipi' => 'DETAY', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'EMAKS', 'brand_name' => 'EMAKS PRIME', 'marka_adi' => 'EMAKS PRIME'],
+                ['satir_tipi' => 'DETAY', 'adet' => 1, 'ciro' => 50, 'brand_code' => 'X', 'brand_name' => 'X MARKA', 'marka_adi' => 'X MARKA'],
+            ]),
+            ['cari_filter' => '', 'detail_type' => 'urun', 'brand_filter' => 'all'],
+            350.0,
+        );
+
+        $this->assertSame(['EMAKS PRIME', 'PHILIPS', 'Diğer Marka'], array_column($brandItems, 'label'));
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'Grup A',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'cari',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'brand_filter' => 'emaks_prime',
+            'category_filter' => 'A1',
+            'product_filter' => 'kilit',
+            'bypass_cache' => true,
+        ]);
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['detail_type'] ?? null) === 'cari'
+                && ! array_key_exists('brand_filter', $payload)
+                && ! array_key_exists('category_filter', $payload)
+                && ! array_key_exists('product_filter', $payload)
+                && ! array_key_exists('brand_filter', $payload['params'] ?? [])
+                && ! array_key_exists('category_filter', $payload['params'] ?? [])
+                && ! array_key_exists('product_filter', $payload['params'] ?? []);
         });
     }
 
@@ -944,6 +1171,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
     {
         $dashboard = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
         $picker = file_get_contents(resource_path('js/components/sales-main/CustomerFilterPicker.jsx')) ?: '';
+        $productFilter = file_get_contents(resource_path('js/components/sales-main/ProductFilter.jsx')) ?: '';
         $managementScopeFilter = file_get_contents(resource_path('js/components/sales-main/ManagementScopeFilter.jsx')) ?: '';
         $pieChart = file_get_contents(resource_path('js/components/sales-main/SalesPieChart.jsx')) ?: '';
         $highlightedLabel = file_get_contents(resource_path('js/components/sales-main/HighlightedAccountLabel.jsx')) ?: '';
@@ -956,11 +1184,23 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('dateTo={filters.date_to}', $dashboard);
         $this->assertStringContainsString('grain={filters.grain}', $dashboard);
         $this->assertStringContainsString('detailType={filters.detail_type}', $dashboard);
+        $this->assertStringContainsString('ProductFilter', $dashboard);
+        $this->assertStringContainsString("filters.detail_type === 'urun'", $dashboard);
+        $this->assertStringContainsString('brandFilter={filters.brand_filter}', $dashboard);
+        $this->assertStringContainsString('categoryFilter={filters.category_filter}', $dashboard);
+        $this->assertStringContainsString('productFilter={filters.product_filter}', $dashboard);
+        $this->assertStringContainsString('const handleDetailTypeChange', $dashboard);
+        $this->assertStringContainsString("brand_filter: 'all'", $dashboard);
+        $this->assertStringContainsString("category_filter: 'all'", $dashboard);
+        $this->assertStringContainsString("product_filter: ''", $dashboard);
         $this->assertStringContainsString("queryParam('grain')", $dashboard);
         $this->assertStringContainsString("queryParam('date_from')", $dashboard);
         $this->assertStringContainsString("queryParam('date_to')", $dashboard);
         $this->assertStringContainsString("queryParam('detail_type')", $dashboard);
         $this->assertStringContainsString("queryParam('scope_key')", $dashboard);
+        $this->assertStringContainsString("queryParam('brand_filter')", $dashboard);
+        $this->assertStringContainsString("queryParam('category_filter')", $dashboard);
+        $this->assertStringContainsString("queryParam('product_filter')", $dashboard);
         $this->assertStringContainsString('const handleScopeChange', $dashboard);
         $this->assertStringContainsString('setSelectedCustomers([])', $dashboard);
         $this->assertStringContainsString("customer_filter: ''", $dashboard);
@@ -987,6 +1227,16 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('candidate.code === item.code', $picker);
         $this->assertStringContainsString('selectedCodes.has(customer.code)', $picker);
         $this->assertStringContainsString('Müşteri bulunamadı', $picker);
+        $this->assertStringContainsString('Ürün Filtresi', $productFilter);
+        $this->assertStringContainsString('Ürün, model veya stok kodu ara', $productFilter);
+        $this->assertStringContainsString('PHILIPS', $productFilter);
+        $this->assertStringContainsString('EMAKS PRIME', $productFilter);
+        $this->assertStringContainsString('A1 - AKILLI KİLİT', $productFilter);
+        $this->assertStringContainsString('YM1 - YÜZEY MONTAJLI KİLİT CAM VS.', $productFilter);
+        $this->assertStringContainsString('brand_filter: event.target.value', $productFilter);
+        $this->assertStringContainsString('category_filter: event.target.value', $productFilter);
+        $this->assertStringContainsString('product_filter: event.target.value', $productFilter);
+        $this->assertStringContainsString('bypass_cache: true', $productFilter);
         $this->assertStringContainsString('HighlightedAccountLabel', $picker);
         $this->assertStringContainsString('HighlightedAccountLabel', $pieChart);
         $this->assertStringContainsString('customerCode', $pieChart);
@@ -1697,7 +1947,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
                 'ok' => true,
                 'rows' => [
-                    ['cari_kodu' => 'M-1', 'cari_adi' => 'Test MÃ¼ÅŸteri'],
+                    ['cari_kodu' => 'M-1', 'cari_adi' => 'Test Müşteri'],
                 ],
             ]),
         ]);
