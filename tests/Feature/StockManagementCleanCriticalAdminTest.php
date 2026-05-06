@@ -35,6 +35,7 @@ class StockManagementCleanCriticalAdminTest extends TestCase
         $this->assertStringContainsString("matchesPage('stock', '/stock')", $panelPage);
         $this->assertStringContainsString("matchesPage('stock_critical', '/stock/critical')", $panelPage);
         $this->assertStringContainsString('AKILLI KİLİT', $utils);
+        $this->assertStringContainsString('resolveCategoryFilter', $dashboard);
         $this->assertStringContainsString('Stok Yönetimi', $dashboard);
         $this->assertStringContainsString('Kritik stok belirle', $dashboard);
         $this->assertStringContainsString('canManageCritical', $dashboard);
@@ -43,6 +44,7 @@ class StockManagementCleanCriticalAdminTest extends TestCase
         $this->assertStringContainsString('Eye', $dashboard);
         $this->assertStringContainsString('EyeOff', $dashboard);
         $this->assertStringNotContainsString('Proforma Sepeti', $dashboard);
+        $this->assertStringNotContainsString('>Ekle<', $dashboard);
         $this->assertStringNotContainsString('addToCart', $dashboard);
     }
 
@@ -50,9 +52,12 @@ class StockManagementCleanCriticalAdminTest extends TestCase
     {
         [$exitCode, $output, $error] = $this->runNodeModule(<<<'JS'
             import {
+                ALL_CATEGORIES,
                 DEFAULT_STOCK_CATEGORY,
+                categoryOptions,
                 decorateStockRows,
                 filterStockRows,
+                resolveCategoryFilter,
                 sortStockRows,
             } from './resources/js/pages/panel/stock/stockUtils.js';
 
@@ -60,6 +65,7 @@ class StockManagementCleanCriticalAdminTest extends TestCase
                 { stok_kodu: 'LOW-NO-SETTING', stok_adi: 'Düşük ama ayarsız', kategori: 'AKILLI KİLİT', toplam_miktar: 1 },
                 { stok_kodu: 'CRIT-1', stok_adi: 'Kritik ürün', kategori: 'AKILLI KİLİT', toplam_miktar: 2 },
                 { stok_kodu: 'SAFE-1', stok_adi: 'Güvenli ürün', kategori: 'AKILLI KİLİT', toplam_miktar: 20 },
+                { stok_kodu: 'MECH-1', stok_adi: 'Mekanik ürün', kategori: 'MEKANİK', kategori_kodu: 'M1', toplam_miktar: 7 },
                 { stok_kodu: 'ZERO-1', stok_adi: 'Sıfır stok', kategori: 'AKILLI KİLİT', toplam_miktar: 0 },
             ];
             const settings = [
@@ -68,11 +74,21 @@ class StockManagementCleanCriticalAdminTest extends TestCase
             ];
             const decorated = decorateStockRows(rows, settings);
             const sorted = sortStockRows(decorated);
+            const options = categoryOptions(decorated);
+            const fallbackOptions = categoryOptions(decorateStockRows([
+                { stok_kodu: 'ONLY-MECH', stok_adi: 'Sadece mekanik', kategori: 'MEKANİK', kategori_kodu: 'M1', toplam_miktar: 8 },
+            ], []));
 
             console.log(JSON.stringify({
                 defaultCategory: DEFAULT_STOCK_CATEGORY,
                 criticalCodes: filterStockRows(decorated, { mode: 'critical', category: 'AKILLI KİLİT' }).map((row) => row.stock_code),
                 allCodes: filterStockRows(decorated, { mode: 'list', category: 'AKILLI KİLİT' }).map((row) => row.stock_code),
+                allCategoryCodes: filterStockRows(decorated, { mode: 'list', category: ALL_CATEGORIES }).map((row) => row.stock_code),
+                mechanicalCodes: filterStockRows(decorated, { mode: 'list', category: 'M1' }).map((row) => row.stock_code),
+                optionValues: options.map((option) => option.value),
+                optionLabels: options.map((option) => option.label),
+                defaultResolved: resolveCategoryFilter(DEFAULT_STOCK_CATEGORY, options),
+                missingDefaultResolved: resolveCategoryFilter(DEFAULT_STOCK_CATEGORY, fallbackOptions),
                 firstCode: sorted[0].stock_code,
                 lowWithoutSettingCritical: decorated.find((row) => row.stock_code === 'LOW-NO-SETTING').isCritical,
                 safeWithSettingCritical: decorated.find((row) => row.stock_code === 'SAFE-1').isCritical,
@@ -86,6 +102,12 @@ class StockManagementCleanCriticalAdminTest extends TestCase
         $this->assertSame('AKILLI KİLİT', $results['defaultCategory']);
         $this->assertSame(['CRIT-1'], $results['criticalCodes']);
         $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1'], $results['allCodes']);
+        $this->assertSame(['LOW-NO-SETTING', 'CRIT-1', 'SAFE-1', 'MECH-1'], $results['allCategoryCodes']);
+        $this->assertSame(['MECH-1'], $results['mechanicalCodes']);
+        $this->assertContains('M1', $results['optionValues']);
+        $this->assertContains('MEKANİK', $results['optionLabels']);
+        $this->assertSame('AKILLI KİLİT', $results['defaultResolved']);
+        $this->assertSame('Tüm Kategoriler', $results['missingDefaultResolved']);
         $this->assertSame('CRIT-1', $results['firstCode']);
         $this->assertFalse($results['lowWithoutSettingCritical']);
         $this->assertFalse($results['safeWithSettingCritical']);
