@@ -125,17 +125,13 @@ SELECT
     END AS kategori_adi,
     LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))) AS brand_code,
     CASE
-        WHEN NULLIF(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N''))), N'') IS NOT NULL
-            THEN LTRIM(RTRIM(mrk.mrk_ismi))
-        WHEN NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))), N'') IS NOT NULL
-            THEN LTRIM(RTRIM(sto.sto_marka_kodu))
+        WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS' THEN N'PHILIPS'
+        WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'EMAKS PRIME'
         ELSE N'Diğer Marka'
     END AS brand_name,
     CASE
-        WHEN NULLIF(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N''))), N'') IS NOT NULL
-            THEN LTRIM(RTRIM(mrk.mrk_ismi))
-        WHEN NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))), N'') IS NOT NULL
-            THEN LTRIM(RTRIM(sto.sto_marka_kodu))
+        WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS' THEN N'PHILIPS'
+        WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'EMAKS PRIME'
         ELSE N'Diğer Marka'
     END AS marka_adi,
     CASE
@@ -187,32 +183,17 @@ WHERE
         OR @brand_filter IN (N'all', N'tumu', N'tüm', N'tümü')
         OR (
             @brand_filter = N'philips'
-            AND (
-                UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) LIKE N'%PHILIPS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N'')))) LIKE N'%PHILIPS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(c.stok_kodu_raw, N'')))) LIKE N'%PHILIPS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(c.urun_adi_raw, N'')))) LIKE N'%PHILIPS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(c.model_adi_raw, N'')))) LIKE N'%PHILIPS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%PHILIPS%'
-            )
+            AND UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS'
         )
         OR (
             @brand_filter = N'emaks_prime'
-            AND (
-                UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) LIKE N'%EMAKS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N'')))) LIKE N'%EMAKS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(c.stok_kodu_raw, N'')))) LIKE N'%EMAKS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(c.urun_adi_raw, N'')))) LIKE N'%EMAKS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(c.model_adi_raw, N'')))) LIKE N'%EMAKS%'
-                OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%EMAKS%'
-            )
+            AND UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS')
         )
     )
     AND (
         @detail_type <> N'urun'
         OR @category_filter IN (N'all', N'ALL', N'tumu', N'TUMU', N'tüm', N'TÜM', N'tümü', N'TÜMÜ')
-        OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) = @category_filter
-        OR UPPER(LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N'')))) = @category_filter
+        OR UPPER(LTRIM(RTRIM(COALESCE(NULLIF(sto.sto_kategori_kodu, N''), NULLIF(c.kategori_kodu_raw, N''), N'')))) = @category_filter
     )
     AND (
         @detail_type <> N'urun'
