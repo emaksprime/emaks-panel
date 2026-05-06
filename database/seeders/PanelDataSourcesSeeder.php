@@ -29,6 +29,15 @@ DECLARE @date_to   DATE = '[[date_to]]';
 DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
 DECLARE @rep_code NVARCHAR(20) = N'[[rep_code]]';
 DECLARE @cari_filter NVARCHAR(MAX) = N'[[cari_filter]]';
+DECLARE @brand_filter NVARCHAR(50) = LOWER(REPLACE(LTRIM(RTRIM(N'[[brand_filter]]')), N'-', N'_'));
+DECLARE @category_filter NVARCHAR(50) = UPPER(LTRIM(RTRIM(N'[[category_filter]]')));
+DECLARE @product_filter NVARCHAR(255) = LTRIM(RTRIM(N'[[product_filter]]'));
+
+IF @brand_filter = N''
+    SET @brand_filter = N'all';
+
+IF @category_filter = N''
+    SET @category_filter = N'ALL';
 
 IF OBJECT_ID('tempdb..#cube') IS NOT NULL
     DROP TABLE #cube;
@@ -114,6 +123,21 @@ SELECT
         WHEN NULLIF(LTRIM(RTRIM(ISNULL(c.kategori_adi_raw, N''))), N'') IS NULL THEN N'DİĞER GELİRLER'
         ELSE LTRIM(RTRIM(c.kategori_adi_raw))
     END AS kategori_adi,
+    LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))) AS brand_code,
+    CASE
+        WHEN NULLIF(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N''))), N'') IS NOT NULL
+            THEN LTRIM(RTRIM(mrk.mrk_ismi))
+        WHEN NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))), N'') IS NOT NULL
+            THEN LTRIM(RTRIM(sto.sto_marka_kodu))
+        ELSE N'Diğer Marka'
+    END AS brand_name,
+    CASE
+        WHEN NULLIF(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N''))), N'') IS NOT NULL
+            THEN LTRIM(RTRIM(mrk.mrk_ismi))
+        WHEN NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))), N'') IS NOT NULL
+            THEN LTRIM(RTRIM(sto.sto_marka_kodu))
+        ELSE N'Diğer Marka'
+    END AS marka_adi,
     CASE
         WHEN c.belge_tipi LIKE N'%İADE%'
           OR c.belge_tipi LIKE N'%IADE%'
@@ -146,6 +170,8 @@ INNER JOIN CARI_HESAPLAR ch
     ON ch.cari_kod = c.cari_kodu
 LEFT JOIN STOKLAR sto WITH (NOLOCK)
     ON sto.sto_kod = c.stok_kodu_raw
+LEFT JOIN STOK_MARKALARI mrk WITH (NOLOCK)
+    ON mrk.mrk_kod = sto.sto_marka_kodu
 WHERE
     ABS(c.net_tutar) > 1
     AND NOT (
@@ -158,6 +184,41 @@ WHERE
             NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))), N'') IS NULL
             AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
         )
+    )
+    AND (
+        @detail_type <> N'urun'
+        OR @brand_filter IN (N'all', N'tumu', N'tüm', N'tümü')
+        OR (
+            @brand_filter = N'philips'
+            AND (
+                UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) LIKE N'%PHILIPS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N'')))) LIKE N'%PHILIPS%'
+            )
+        )
+        OR (
+            @brand_filter = N'emaks_prime'
+            AND (
+                UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) LIKE N'%EMAKS%'
+                OR UPPER(LTRIM(RTRIM(ISNULL(mrk.mrk_ismi, N'')))) LIKE N'%EMAKS%'
+            )
+        )
+    )
+    AND (
+        @detail_type <> N'urun'
+        OR @category_filter IN (N'all', N'ALL', N'tumu', N'TUMU', N'tüm', N'TÜM', N'tümü', N'TÜMÜ')
+        OR LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) = @category_filter
+        OR (
+            NULLIF(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))), N'') IS NULL
+            AND LTRIM(RTRIM(ISNULL(c.kategori_kodu_raw, N''))) = @category_filter
+        )
+    )
+    AND (
+        @detail_type <> N'urun'
+        OR @product_filter = N''
+        OR UPPER(LTRIM(RTRIM(ISNULL(c.stok_kodu_raw, N'')))) LIKE N'%' + UPPER(@product_filter) + N'%'
+        OR UPPER(LTRIM(RTRIM(ISNULL(c.urun_adi_raw, N'')))) LIKE N'%' + UPPER(@product_filter) + N'%'
+        OR UPPER(LTRIM(RTRIM(ISNULL(c.model_adi_raw, N'')))) LIKE N'%' + UPPER(@product_filter) + N'%'
+        OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%' + UPPER(@product_filter) + N'%'
     )
     AND (@rep_code = N'' OR LTRIM(RTRIM(ISNULL(ch.cari_temsilci_kodu, N''))) = @rep_code)
     AND (
@@ -216,18 +277,22 @@ BEGIN
     ),
     model_totals AS
     (
-        SELECT model_adi, CAST(SUM(adet) AS decimal(18,2)) AS adet, CAST(SUM(net_tutar) AS decimal(18,2)) AS ciro,
+        SELECT model_adi,
+               CASE WHEN COUNT(DISTINCT brand_name) = 1 THEN MAX(brand_code) ELSE CAST(N'' AS nvarchar(50)) END AS brand_code,
+               CASE WHEN COUNT(DISTINCT brand_name) = 1 THEN MAX(brand_name) ELSE CAST(N'Diğer Marka' AS nvarchar(255)) END AS brand_name,
+               CASE WHEN COUNT(DISTINCT marka_adi) = 1 THEN MAX(marka_adi) ELSE CAST(N'Diğer Marka' AS nvarchar(255)) END AS marka_adi,
+               CAST(SUM(adet) AS decimal(18,2)) AS adet, CAST(SUM(net_tutar) AS decimal(18,2)) AS ciro,
                ROW_NUMBER() OVER (ORDER BY SUM(net_tutar) DESC, model_adi ASC) AS model_sira
         FROM filtered_main
         GROUP BY model_adi
     ),
     model_cari_detay AS
     (
-        SELECT model_adi, cari_kodu, cari_adi, cari_adi_html, CAST(SUM(adet) AS decimal(18,2)) AS adet,
+        SELECT model_adi, brand_code, brand_name, marka_adi, cari_kodu, cari_adi, cari_adi_html, CAST(SUM(adet) AS decimal(18,2)) AS adet,
                CAST(SUM(net_tutar) AS decimal(18,2)) AS ciro,
                ROW_NUMBER() OVER (PARTITION BY model_adi ORDER BY SUM(net_tutar) DESC, cari_adi ASC) AS cari_sira
         FROM filtered_main
-        GROUP BY model_adi, cari_kodu, cari_adi, cari_adi_html
+        GROUP BY model_adi, brand_code, brand_name, marka_adi, cari_kodu, cari_adi, cari_adi_html
     ),
     kategori_totals AS
     (
@@ -261,7 +326,7 @@ BEGIN
         WHERE is_konsinye = 1
         GROUP BY cari_kodu, cari_adi, cari_adi_html, model_adi
     )
-    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi, excluded_from_total
+    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi, brand_code, brand_name, marka_adi, excluded_from_total
     FROM
     (
         SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
@@ -270,6 +335,7 @@ BEGIN
                0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                 CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                mt.brand_code, mt.brand_name, mt.marka_adi,
                 CAST(0 AS bit) AS excluded_from_total
         FROM model_totals mt
         UNION ALL
@@ -278,6 +344,7 @@ BEGIN
                md.cari_adi_html AS satir_adi_html, md.adet, md.ciro, mt.model_sira AS siralama_1, md.cari_sira AS siralama_2,
                md.model_adi AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                 CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                md.brand_code, md.brand_name, md.marka_adi,
                 CAST(0 AS bit) AS excluded_from_total
         FROM model_cari_detay md
         INNER JOIN model_totals mt ON mt.model_adi = md.model_adi
@@ -287,6 +354,7 @@ BEGIN
                kt.kategori_kodu AS satir_adi, kt.kategori_kodu AS satir_adi_html, kt.adet, CAST(0 AS decimal(18,2)) AS ciro,
                999999 AS siralama_1, kt.kategori_sira AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                 (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari, kt.kategori_kodu, kt.kategori_adi,
+                CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                 CAST(0 AS bit) AS excluded_from_total
         FROM kategori_totals kt
         UNION ALL
@@ -297,6 +365,7 @@ BEGIN
                0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                CAST(1 AS bit) AS excluded_from_total
         FROM konsinye_total
         WHERE EXISTS (SELECT 1 FROM #filtered WHERE is_konsinye = 1)
@@ -306,6 +375,7 @@ BEGIN
                kd.satir_adi, kd.satir_adi_html, kd.adet, kd.ciro, 999998 AS siralama_1, kd.konsinye_sira AS siralama_2,
                N'KONSİNYE' AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                CAST(1 AS bit) AS excluded_from_total
         FROM konsinye_detay kd
     ) q
@@ -366,7 +436,7 @@ BEGIN
         WHERE is_konsinye = 1
         GROUP BY cari_kodu, cari_adi, cari_adi_html
     )
-    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi, excluded_from_total
+    SELECT period_label, satir_tipi, cari_grup_adi, cari_kodu, satir_adi, satir_adi_html, adet, ciro, siralama_1, siralama_2, parent_key, konsinye_tutari, kategori_kodu, kategori_adi, brand_code, brand_name, marka_adi, excluded_from_total
     FROM
     (
         SELECT CONCAT(CONVERT(varchar(10), @date_from, 23), N' / ', CONVERT(varchar(10), @date_to, 23)) AS period_label,
@@ -375,6 +445,7 @@ BEGIN
                0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                 CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                 CAST(0 AS bit) AS excluded_from_total
         FROM group_totals gt
         UNION ALL
@@ -383,6 +454,7 @@ BEGIN
                ct.cari_adi_html AS satir_adi_html, ct.adet, ct.ciro, gt.grup_sira AS siralama_1, ct.cari_sira AS siralama_2,
                ct.cari_kodu AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                 CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                 CAST(0 AS bit) AS excluded_from_total
         FROM cari_totals ct
         INNER JOIN group_totals gt ON gt.cari_grup_adi = ct.cari_grup_adi
@@ -392,6 +464,7 @@ BEGIN
                cud.model_adi AS satir_adi_html, cud.adet, cud.ciro, gt.grup_sira AS siralama_1, cud.urun_sira AS siralama_2,
                cud.cari_kodu AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                 CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+                CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                 CAST(0 AS bit) AS excluded_from_total
         FROM cari_urun_detay cud
         INNER JOIN group_totals gt ON gt.cari_grup_adi = cud.cari_grup_adi
@@ -401,6 +474,7 @@ BEGIN
                kt.kategori_kodu AS satir_adi, kt.kategori_kodu AS satir_adi_html, kt.adet, CAST(0 AS decimal(18,2)) AS ciro,
                999999 AS siralama_1, kt.kategori_sira AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                 (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari, kt.kategori_kodu, kt.kategori_adi,
+                CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                 CAST(0 AS bit) AS excluded_from_total
         FROM kategori_totals kt
         UNION ALL
@@ -411,6 +485,7 @@ BEGIN
                0 AS siralama_2, CAST(NULL AS nvarchar(50)) AS parent_key,
                (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                CAST(1 AS bit) AS excluded_from_total
         FROM konsinye_total
         WHERE EXISTS (SELECT 1 FROM #filtered WHERE is_konsinye = 1)
@@ -420,13 +495,14 @@ BEGIN
                kd.satir_adi, kd.satir_adi_html, kd.adet, kd.ciro, 999998 AS siralama_1, kd.konsinye_sira AS siralama_2,
                N'KONSİNYE' AS parent_key, (SELECT TOP 1 konsinye_tutari FROM konsinye_total) AS konsinye_tutari,
                CAST(NULL AS nvarchar(50)) AS kategori_kodu, CAST(NULL AS nvarchar(255)) AS kategori_adi,
+               CAST(NULL AS nvarchar(50)) AS brand_code, CAST(N'Diğer Marka' AS nvarchar(255)) AS brand_name, CAST(N'Diğer Marka' AS nvarchar(255)) AS marka_adi,
                CAST(1 AS bit) AS excluded_from_total
         FROM konsinye_cari_detay kd
     ) q
     ORDER BY siralama_1 ASC, CASE satir_tipi WHEN N'GRUP' THEN 0 WHEN N'CARI' THEN 1 WHEN N'URUN' THEN 2 ELSE 3 END ASC, siralama_2 ASC;
 END
 SQL_SALES_MAIN_DASHBOARD,
-                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'connection_meta' => $connectionMeta,
                 'preview_payload' => [],
                 'active' => true,

@@ -18,7 +18,7 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
                 'sales_online_perakende_detail',
                 'Online / Perakende Detay',
                 $this->salesTemplateWithCustomerGroupScope($salesTemplate, true),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
+                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'SALES_ONLINE_PERAKENDE_DETAY_V1 kapsamı: online/perakende cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
                 'SALES_ONLINE_PERAKENDE_DETAY_V1.json'
             );
@@ -27,7 +27,7 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
                 'sales_bayi_proje_detail',
                 'Bayi / Proje Detay',
                 $this->salesTemplateWithCustomerGroupScope($salesTemplate, false),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'search', 'page', 'bypass_cache'],
+                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'SALES_BAYI_PROJE_DETAY_V1 kapsamı: online/perakende dışı cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
                 'SALES_BAYI_PROJE_DETAY_V1.json'
             );

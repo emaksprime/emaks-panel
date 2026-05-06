@@ -212,7 +212,7 @@ class PanelAuthDatasourceHardeningTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertSame('Ürün Ciro Dağılımı', $urunPayload['chart']['title']);
+        $this->assertSame('Marka Satış Karşılaştırması', $urunPayload['chart']['title']);
         $this->assertSame('Ürün / Müşteri Özeti', $urunPayload['breakdown']['title']);
     }
 

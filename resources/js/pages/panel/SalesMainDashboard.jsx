@@ -8,6 +8,7 @@ import { KpiCards } from '@/components/sales-main/KpiCards.jsx';
 import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 import { CustomerFilterPicker } from '@/components/sales-main/CustomerFilterPicker.jsx';
+import { ProductFilter } from '@/components/sales-main/ProductFilter.jsx';
 
 function queryParam(name) {
     if (typeof window === 'undefined') {
@@ -60,6 +61,10 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
         detail_type: queryParam('detail_type') ?? salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
         scope_key: queryParam('scope_key') ?? salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
         customer_filter: salesMainData?.filters?.customerFilter ?? '',
+        cari_filter: salesMainData?.filters?.customerFilter ?? '',
+        brand_filter: queryParam('brand_filter') ?? salesMainData?.filters?.brandFilter ?? 'all',
+        category_filter: queryParam('category_filter') ?? salesMainData?.filters?.categoryFilter ?? 'all',
+        product_filter: queryParam('product_filter') ?? salesMainData?.filters?.productFilter ?? '',
         bypass_cache: false,
     }));
     const [selectedCustomers, setSelectedCustomers] = useState([]);
@@ -130,6 +135,28 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
         });
     };
 
+    const handleDetailTypeChange = (detailType) => {
+        if (detailType === 'urun') {
+            setSelectedCustomers([]);
+            updateFilters({
+                detail_type: detailType,
+                customer_filter: '',
+                cari_filter: '',
+                bypass_cache: true,
+            });
+
+            return;
+        }
+
+        updateFilters({
+            detail_type: detailType,
+            brand_filter: 'all',
+            category_filter: 'all',
+            product_filter: '',
+            bypass_cache: true,
+        });
+    };
+
     return (
         <>
             <Head title="Satış Yönetimi" />
@@ -184,7 +211,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                                     <button
                                         key={mode.key}
                                         type="button"
-                                        onClick={() => updateFilters({ detail_type: mode.key })}
+                                        onClick={() => handleDetailTypeChange(mode.key)}
                                         className={[
                                             'rounded-lg px-3 py-2 text-sm font-semibold transition',
                                             filters.detail_type === mode.key
@@ -208,16 +235,26 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         onChange={updateFilters}
                         loading={loading}
                     />
-                    <CustomerFilterPicker
-                        selected={selectedCustomers}
-                        onChange={updateCustomers}
-                        loading={loading}
-                        scopeKey={filters.scope_key}
-                        dateFrom={filters.date_from}
-                        dateTo={filters.date_to}
-                        grain={filters.grain}
-                        detailType={filters.detail_type}
-                    />
+                    {filters.detail_type === 'urun' ? (
+                        <ProductFilter
+                            brandFilter={filters.brand_filter}
+                            categoryFilter={filters.category_filter}
+                            productFilter={filters.product_filter}
+                            onChange={updateFilters}
+                            loading={loading}
+                        />
+                    ) : (
+                        <CustomerFilterPicker
+                            selected={selectedCustomers}
+                            onChange={updateCustomers}
+                            loading={loading}
+                            scopeKey={filters.scope_key}
+                            dateFrom={filters.date_from}
+                            dateTo={filters.date_to}
+                            grain={filters.grain}
+                            detailType={filters.detail_type}
+                        />
+                    )}
                 </section>
 
                 {error && (
