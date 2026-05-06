@@ -641,6 +641,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
                             'cari_grup_adi' => 'Model A',
                             'adet' => 1,
                             'ciro' => 100,
+                            'brand_code' => 'PHILIPS',
+                            'brand_name' => 'PHILIPS',
+                            'marka_adi' => 'PHILIPS',
                         ],
                     ],
                 ])
@@ -759,6 +762,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertSame('PHILIPS Ürün Satış Dağılımı', $productPayload['chart']['title']);
         $this->assertSame(['Model A'], array_column($productPayload['chart']['items'], 'label'));
+        $this->assertSame(['Model A'], array_column($productPayload['breakdown']['groups'], 'label'));
 
         Http::assertSent(function ($request): bool {
             $payload = json_decode($request->body(), true) ?: [];
@@ -822,6 +826,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertSame('EMAKS PRIME Ürün Satış Dağılımı', $emaksPayload['chart']['title']);
         $this->assertSame(['Model E'], array_column($emaksPayload['chart']['items'], 'label'));
+        $this->assertSame(['Model E'], array_column($emaksPayload['breakdown']['groups'], 'label'));
 
         app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
             'scope_key' => 'all',
@@ -1323,8 +1328,11 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("['all', 'tumu', 'tüm', 'tümü'].includes(normalized)", $dashboard);
         $this->assertStringContainsString('gatewayParams?.[key]', $dashboard);
         $this->assertStringContainsString('gatewayRequest?.[key]', $dashboard);
-        $this->assertStringContainsString('signaturesMatch(expectedSignature, responseSignature(nextData))', $dashboard);
-        $this->assertStringContainsString('setData(null)', $dashboard);
+        $this->assertStringContainsString("key === 'customer_filter' ? 'cari_filter' : null", $dashboard);
+        $this->assertStringContainsString('requestIdRef', $dashboard);
+        $this->assertStringContainsString('requestId !== requestIdRef.current', $dashboard);
+        $this->assertStringContainsString('console.warn', $dashboard);
+        $this->assertStringNotContainsString('setData(null)', $dashboard);
         $this->assertStringContainsString('const handleScopeChange', $dashboard);
         $this->assertStringContainsString('setSelectedCustomers([])', $dashboard);
         $this->assertStringContainsString("customer_filter: ''", $dashboard);
@@ -1361,7 +1369,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringNotContainsString('YM1 - YÜZEY MONTAJLI KİLİT CAM VS.', $productFilter);
         $this->assertStringContainsString('brand_filter: event.target.value', $productFilter);
         $this->assertStringContainsString('category_filter: event.target.value', $productFilter);
-        $this->assertStringContainsString('product_filter: event.target.value', $productFilter);
+        $this->assertStringContainsString('localProductFilter', $productFilter);
+        $this->assertStringContainsString('setLocalProductFilter(event.target.value)', $productFilter);
+        $this->assertStringContainsString('window.setTimeout', $productFilter);
+        $this->assertStringContainsString('350', $productFilter);
+        $this->assertStringContainsString('onChange({ product_filter: localProductFilter, bypass_cache: true })', $productFilter);
+        $this->assertStringNotContainsString('disabled={loading}', $productFilter);
         $this->assertStringContainsString('bypass_cache: true', $productFilter);
         $this->assertStringContainsString('HighlightedAccountLabel', $picker);
         $this->assertStringContainsString('HighlightedAccountLabel', $pieChart);
