@@ -186,6 +186,7 @@ class SalesMainPageService
                 'items' => $this->chartItems($groupRows, $detailRows, $filters, $positiveTotal),
             ],
             'brandComparison' => $this->brandComparison($groupRows, $filters),
+            'productOptions' => $this->productOptions($groupRows, $filters),
             'breakdown' => [
                 'mode' => $filters['detail_type'],
                 'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Özeti' : 'Satış Detayı',
@@ -274,6 +275,7 @@ class SalesMainPageService
                 'items' => [],
             ],
             'brandComparison' => $this->brandComparison(collect(), $filters),
+            'productOptions' => [],
             'breakdown' => [
                 'mode' => $filters['detail_type'],
                 'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Özeti' : 'Satış Detayı',
@@ -354,10 +356,16 @@ class SalesMainPageService
         if ($filters['detail_type'] === 'urun') {
             $parameters['brand_filter'] = $filters['brand_filter'];
             $parameters['category_filter'] = $filters['category_filter'];
-            $parameters['product_filter'] = $filters['product_filter'];
+            $parameters['product_filter'] = $this->gatewayProductFilter((string) $filters['product_filter']);
         }
 
         return collect($parameters)->only(collect($source->allowed_params ?? []))->all();
+    }
+
+    private function gatewayProductFilter(string $value): string
+    {
+        // Existing SQL supports a single LIKE term; multi-select OR filtering stays in this service.
+        return count($this->productSearchNeedles($value)) > 1 ? '' : $value;
     }
 
     private function fallbackSourceForEmptyRows(DataSource $source, string $scopeKey): ?DataSource
@@ -662,7 +670,7 @@ class SalesMainPageService
     private function productRowMatchesFilters(array $row, array $filters): bool
     {
         $brandFilter = $filters['brand_filter'] ?? 'all';
-        $productFilter = trim((string) ($filters['product_filter'] ?? ''));
+        $productNeedles = $this->productSearchNeedles((string) ($filters['product_filter'] ?? ''));
 
         if ($brandFilter === 'philips' && $this->brandBucket($row)['label'] !== 'PHILIPS') {
             return false;
@@ -672,7 +680,15 @@ class SalesMainPageService
             return false;
         }
 
-        if ($productFilter !== '' && ! str_contains($this->productSearchText($row), $this->productSearchNeedle($productFilter))) {
+        if ($productNeedles !== []) {
+            $searchText = $this->productSearchText($row);
+
+            foreach ($productNeedles as $needle) {
+                if (str_contains($searchText, $needle)) {
+                    return true;
+                }
+            }
+
             return false;
         }
 
@@ -694,9 +710,17 @@ class SalesMainPageService
         ]));
     }
 
-    private function productSearchNeedle(string $value): string
+    /**
+     * @return array<int, string>
+     */
+    private function productSearchNeedles(string $value): array
     {
-        return $this->normalizedProductSearchText($value);
+        return collect(explode(',', $value))
+            ->map(fn (string $item): string => $this->normalizedProductSearchText($item))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function normalizedProductSearchText(string $value): string
@@ -949,6 +973,41 @@ class SalesMainPageService
             'title' => 'Marka Karşılaştırması',
             'items' => $items,
         ];
+    }
+
+    /**
+     * @param  Collection<int, array<string, mixed>>  $groupRows
+     * @param  array<string, string>  $filters
+     * @return array<int, array<string, mixed>>
+     */
+    private function productOptions(Collection $groupRows, array $filters): array
+    {
+        if (($filters['detail_type'] ?? 'cari') !== 'urun') {
+            return [];
+        }
+
+        return $groupRows
+            ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
+            ->values()
+            ->map(function (array $row): array {
+                $label = $this->groupName($row);
+                $brand = $this->brandBucket($row);
+                $amount = (float) ($row['ciro'] ?? 0);
+                $quantity = (float) ($row['adet'] ?? 0);
+
+                return [
+                    'value' => $label,
+                    'label' => $label,
+                    'brand' => $brand['label'],
+                    'brandCode' => $brand['code'],
+                    'brandName' => $brand['name'],
+                    'amount' => $amount,
+                    'amountLabel' => $this->money($amount),
+                    'quantity' => $quantity,
+                    'quantityLabel' => $this->quantity($quantity),
+                ];
+            })
+            ->all();
     }
 
     /**

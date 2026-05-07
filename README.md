@@ -59,6 +59,16 @@ Ardindan:
 php artisan serve
 ```
 
+## Coolify post deploy
+
+Deploy sonrasi datasource metadata ve cache temizligi icin post deploy command:
+
+```bash
+php artisan panel:post-deploy-refresh
+```
+
+Bu komut yalnizca `PanelDataSourcesSeeder`, `PanelKnownWorkflowDataSourcesSeeder`, Laravel cache clear adimlari ve `panel.data_source_cache` temizligini calistirir. `PanelMetadataSeeder`, kullanici/rol/yetki seedleri ve `DatabaseSeeder` calistirilmaz.
+
 ## Required environment
 
 `.env` dosyasi repo disinda kalmali. `.gitignore` buna zaten zorlama getirir.
@@ -103,7 +113,7 @@ PRIMECRM_BASE_URL=
 PRIMECRM_LAUNCH_MODE=external
 ```
 
-`PANEL_BOOTSTRAP_ADMIN_PASSWORD` sadece Coolify environment variable olarak girilmeli, `.env` disinda hicbir yere yazilmamalidir. Seeder bu degerler varsa ilk admin kullanicisini olusturur ve tum `resource_code` erisimlerini atar.
+`PANEL_BOOTSTRAP_ADMIN_PASSWORD` sadece Coolify environment variable olarak girilmeli, `.env` disinda hicbir yere yazilmamalidir. Seeder bu degerler varsa yalnizca eksik ilk admin kullanicisini olusturur ve tum `resource_code` erisimlerini ilk olusturmada atar; mevcut admin kullanicisinin temsilci kodu, sifresi, adi, rol durumu ve aktifligi korunur.
 
 ## PrimeCRM entegrasyonu
 
