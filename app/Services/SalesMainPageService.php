@@ -105,6 +105,12 @@ class SalesMainPageService
             return $this->emptySalesDataset($user, $page, $source, $scope, $filters, $normalizedScopeKey, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult);
         }
 
+        $rows = $this->filterProductRows($rows, $filters);
+
+        if ($rows->isEmpty()) {
+            return $this->emptySalesDataset($user, $page, $source, $scope, $filters, $normalizedScopeKey, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult);
+        }
+
         $groupRows = $rows
             ->where('satir_tipi', 'GRUP')
             ->sortBy('siralama_1')
@@ -176,6 +182,7 @@ class SalesMainPageService
                 'konsinyeAmount' => $konsinye,
                 'items' => $this->chartItems($groupRows, $detailRows, $filters, $positiveTotal),
             ],
+            'brandComparison' => $this->brandComparison($groupRows, $filters),
             'breakdown' => [
                 'mode' => $filters['detail_type'],
                 'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Özeti' : 'Satış Detayı',
@@ -263,6 +270,7 @@ class SalesMainPageService
                 'konsinyeAmount' => 0,
                 'items' => [],
             ],
+            'brandComparison' => $this->brandComparison(collect(), $filters),
             'breakdown' => [
                 'mode' => $filters['detail_type'],
                 'title' => $filters['detail_type'] === 'urun' ? 'Ürün / Müşteri Özeti' : 'Satış Detayı',
@@ -603,6 +611,108 @@ class SalesMainPageService
         return number_format($value, $decimals, ',', '.');
     }
 
+    /**
+     * @param  Collection<int, array<string, mixed>>  $rows
+     * @param  array<string, string>  $filters
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function filterProductRows(Collection $rows, array $filters): Collection
+    {
+        if (($filters['detail_type'] ?? 'cari') !== 'urun') {
+            return $rows;
+        }
+
+        if (($filters['brand_filter'] ?? 'all') === 'all'
+            && ($filters['category_filter'] ?? 'all') === 'all'
+            && trim((string) ($filters['product_filter'] ?? '')) === '') {
+            return $rows;
+        }
+
+        $groupRows = $rows
+            ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) === 'GRUP')
+            ->values();
+
+        $matchingGroupRows = $groupRows
+            ->filter(fn (array $row): bool => $this->productRowMatchesFilters($row, $filters))
+            ->values();
+
+        $matchingGroupNames = $matchingGroupRows
+            ->map(fn (array $row): string => $this->groupName($row))
+            ->filter()
+            ->values()
+            ->all();
+
+        $detailRows = $rows
+            ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) !== 'GRUP')
+            ->filter(fn (array $row): bool => $this->productRowMatchesFilters($row, $filters)
+                || in_array($this->parentKey($row), $matchingGroupNames, true))
+            ->values();
+
+        return $matchingGroupRows
+            ->concat($detailRows)
+            ->values();
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  array<string, string>  $filters
+     */
+    private function productRowMatchesFilters(array $row, array $filters): bool
+    {
+        $brandFilter = $filters['brand_filter'] ?? 'all';
+        $categoryFilter = $filters['category_filter'] ?? 'all';
+        $productFilter = trim((string) ($filters['product_filter'] ?? ''));
+
+        if ($brandFilter === 'philips' && $this->brandBucket($row)['label'] !== 'PHILIPS') {
+            return false;
+        }
+
+        if ($brandFilter === 'emaks_prime' && $this->brandBucket($row)['label'] !== 'EMAKS PRIME') {
+            return false;
+        }
+
+        if ($categoryFilter !== 'all' && $this->productCategoryCode($row) !== $categoryFilter) {
+            return false;
+        }
+
+        if ($productFilter !== '' && ! str_contains($this->productSearchText($row), $this->asciiAccountText($productFilter))) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function productCategoryCode(array $row): string
+    {
+        foreach (['sto_kategori_kodu', 'category_code', 'kategori_kodu', 'kategori_kodu_raw'] as $key) {
+            $value = strtoupper(trim((string) ($row[$key] ?? '')));
+
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function productSearchText(array $row): string
+    {
+        return $this->asciiAccountText(implode(' ', [
+            (string) ($row['stok_kodu_raw'] ?? ''),
+            (string) ($row['urun_adi_raw'] ?? ''),
+            (string) ($row['model_adi_raw'] ?? ''),
+            (string) ($row['sto_isim'] ?? ''),
+            (string) ($row['satir_adi'] ?? ''),
+            (string) ($row['cari_grup_adi'] ?? ''),
+        ]));
+    }
+
     private function palette(int $index): string
     {
         return [
@@ -633,7 +743,7 @@ class SalesMainPageService
         return match ($filters['brand_filter'] ?? 'all') {
             'philips' => 'PHILIPS Ürün Satış Dağılımı',
             'emaks_prime' => 'EMAKS PRIME Ürün Satış Dağılımı',
-            default => 'Marka Satış Karşılaştırması',
+            default => 'Ürün Satış Dağılımı',
         };
     }
 
@@ -646,10 +756,6 @@ class SalesMainPageService
     private function chartItems(Collection $groupRows, Collection $detailRows, array $filters, float $positiveTotal): array
     {
         if (($filters['cari_filter'] ?? '') === '') {
-            if (($filters['detail_type'] ?? 'cari') === 'urun' && ($filters['brand_filter'] ?? 'all') === 'all') {
-                return $this->brandChartItems($groupRows, $detailRows);
-            }
-
             return $groupRows
                 ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
                 ->values()
@@ -759,25 +865,18 @@ class SalesMainPageService
 
     /**
      * @param  Collection<int, array<string, mixed>>  $groupRows
-     * @param  Collection<int, array<string, mixed>>  $detailRows
-     * @return array<int, array<string, mixed>>
+     * @param  array<string, string>  $filters
+     * @return array{title: string, items: array<int, array<string, mixed>>}|null
      */
-    private function brandChartItems(Collection $groupRows, Collection $detailRows): array
+    private function brandComparison(Collection $groupRows, array $filters): ?array
     {
-        $rows = $detailRows
-            ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) === 'DETAY')
-            ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
-            ->values();
-
-        if ($rows->isEmpty()) {
-            $rows = $groupRows
-                ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
-                ->values();
+        if (($filters['detail_type'] ?? 'cari') !== 'urun') {
+            return null;
         }
 
         $brands = [];
 
-        foreach ($rows as $row) {
+        foreach ($groupRows->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row)) as $row) {
             $brand = $this->brandBucket($row);
             $key = $brand['label'];
 
@@ -789,9 +888,6 @@ class SalesMainPageService
                     'marka_adi' => $brand['name'],
                     'amount' => 0.0,
                     'quantity' => 0.0,
-                    'excludedFromTotal' => false,
-                    'isConsignment' => false,
-                    'isTeshir' => false,
                 ];
             }
 
@@ -803,8 +899,9 @@ class SalesMainPageService
             ->where('amount', '>', 0)
             ->sum('amount');
 
-        return collect($brands)
-            ->sortByDesc(fn (array $item): float => abs((float) $item['amount']))
+        $preferredOrder = ['PHILIPS' => 0, 'EMAKS PRIME' => 1, 'Diğer Marka' => 2];
+        $items = collect($brands)
+            ->sortBy(fn (array $item): int => $preferredOrder[$item['label']] ?? 99)
             ->values()
             ->map(function (array $item, int $index) use ($includedPositiveTotal) {
                 $amount = (float) $item['amount'];
@@ -818,11 +915,15 @@ class SalesMainPageService
                     'percentage' => $includedPositiveTotal > 0 && $amount > 0
                         ? round(($amount / $includedPositiveTotal) * 100, 1)
                         : 0,
-                    'color' => $this->palette($index),
-                    'isNegative' => $amount < 0,
+                    'color' => $this->brandColor((string) $item['label'], $index),
                 ];
             })
             ->all();
+
+        return [
+            'title' => 'Marka Karşılaştırması',
+            'items' => $items,
+        ];
     }
 
     /**
@@ -833,17 +934,31 @@ class SalesMainPageService
     {
         $rawCode = trim((string) ($row['brand_code'] ?? ''));
         $rawName = trim((string) ($row['brand_name'] ?? $row['marka_adi'] ?? ''));
-        $text = $this->asciiAccountText($rawCode.' '.$rawName.' '.(json_encode($row, JSON_UNESCAPED_UNICODE) ?: ''));
+        $brandValues = collect([$rawCode, $rawName])
+            ->map(fn (string $value): string => $this->asciiAccountText($value))
+            ->filter()
+            ->values()
+            ->all();
 
-        if (str_contains($text, 'PHILIPS')) {
+        if (in_array('PHILIPS', $brandValues, true)) {
             return ['label' => 'PHILIPS', 'code' => $rawCode, 'name' => 'PHILIPS'];
         }
 
-        if (str_contains($text, 'EMAKS')) {
+        if (in_array('EMAKS PRIME', $brandValues, true) || in_array('EMAKS', $brandValues, true)) {
             return ['label' => 'EMAKS PRIME', 'code' => $rawCode, 'name' => 'EMAKS PRIME'];
         }
 
         return ['label' => 'Diğer Marka', 'code' => $rawCode, 'name' => $rawName !== '' ? $rawName : 'Diğer Marka'];
+    }
+
+    private function brandColor(string $label, int $index): string
+    {
+        return match ($label) {
+            'PHILIPS' => '#2563eb',
+            'EMAKS PRIME' => '#0f172a',
+            'Diğer Marka' => '#64748b',
+            default => $this->palette($index),
+        };
     }
 
     private function isConsignmentAccount(string $label, string $customerCode): bool
