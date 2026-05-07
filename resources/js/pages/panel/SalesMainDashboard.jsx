@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { apiRequest } from '@/lib/api';
 import { DateRangeFilter } from '@/components/sales-main/DateRangeFilter.jsx';
@@ -61,7 +61,21 @@ const RESPONSE_SIGNATURE_KEYS = [
 ];
 
 function normalizeSignatureValue(value, fallback = '') {
-    return String(value ?? fallback);
+    return String(value ?? fallback).trim();
+}
+
+function normalizeChoiceSignatureValue(value) {
+    const normalized = normalizeSignatureValue(value, 'all').toLowerCase();
+
+    return normalized === '' ? 'all' : normalized;
+}
+
+function responseFilterValue(payload, filterKey, paramKey, fallback = '') {
+    const responseFilters = payload?.filters ?? {};
+    const gatewayRequest = payload?.queryMeta?.gatewayRequest ?? {};
+    const gatewayParams = gatewayRequest?.params ?? {};
+
+    return responseFilters[filterKey] ?? gatewayParams[paramKey] ?? gatewayRequest[paramKey] ?? fallback;
 }
 
 function requestSignature(filters) {
@@ -70,25 +84,26 @@ function requestSignature(filters) {
         scope_key: normalizeSignatureValue(filters.scope_key, 'all'),
         date_from: normalizeSignatureValue(filters.date_from),
         date_to: normalizeSignatureValue(filters.date_to),
-        brand_filter: normalizeSignatureValue(filters.brand_filter, 'all'),
-        category_filter: normalizeSignatureValue(filters.category_filter, 'all'),
+        brand_filter: normalizeChoiceSignatureValue(filters.brand_filter),
+        category_filter: normalizeChoiceSignatureValue(filters.category_filter),
         product_filter: normalizeSignatureValue(filters.product_filter),
-        customer_filter: normalizeSignatureValue(filters.customer_filter),
+        customer_filter: normalizeSignatureValue(filters.customer_filter || filters.cari_filter),
     };
 }
 
 function responseSignature(payload) {
-    const responseFilters = payload?.filters ?? {};
-
     return {
-        detail_type: normalizeSignatureValue(responseFilters.detailType, 'cari'),
-        scope_key: normalizeSignatureValue(responseFilters.scopeKey, 'all'),
-        date_from: normalizeSignatureValue(responseFilters.dateFrom),
-        date_to: normalizeSignatureValue(responseFilters.dateTo),
-        brand_filter: normalizeSignatureValue(responseFilters.brandFilter, 'all'),
-        category_filter: normalizeSignatureValue(responseFilters.categoryFilter, 'all'),
-        product_filter: normalizeSignatureValue(responseFilters.productFilter),
-        customer_filter: normalizeSignatureValue(responseFilters.customerFilter),
+        detail_type: normalizeSignatureValue(responseFilterValue(payload, 'detailType', 'detail_type', 'cari')),
+        scope_key: normalizeSignatureValue(responseFilterValue(payload, 'scopeKey', 'scope_key', 'all')),
+        date_from: normalizeSignatureValue(responseFilterValue(payload, 'dateFrom', 'date_from')),
+        date_to: normalizeSignatureValue(responseFilterValue(payload, 'dateTo', 'date_to')),
+        brand_filter: normalizeChoiceSignatureValue(responseFilterValue(payload, 'brandFilter', 'brand_filter', 'all')),
+        category_filter: normalizeChoiceSignatureValue(responseFilterValue(payload, 'categoryFilter', 'category_filter', 'all')),
+        product_filter: normalizeSignatureValue(responseFilterValue(payload, 'productFilter', 'product_filter')),
+        customer_filter: normalizeSignatureValue(
+            responseFilterValue(payload, 'customerFilter', 'customer_filter')
+                || responseFilterValue(payload, 'customerFilter', 'cari_filter'),
+        ),
     };
 }
 
@@ -117,6 +132,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const [selectedCustomers, setSelectedCustomers] = useState([]);
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
+    const requestIdRef = useRef(0);
     const pageTitle = 'Satış Yönetimi';
     const pageDescription = 'Satış performansı ve müşteri/ürün özeti';
 
@@ -126,6 +142,8 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     useEffect(() => {
         let active = true;
+        const requestId = requestIdRef.current + 1;
+        requestIdRef.current = requestId;
         const expectedSignature = requestSignature(filters);
 
         async function load() {
@@ -137,15 +155,15 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                     body: JSON.stringify(filters),
                 });
 
-                if (active && signaturesMatch(expectedSignature, responseSignature(nextData))) {
+                if (active && requestId === requestIdRef.current && signaturesMatch(expectedSignature, responseSignature(nextData))) {
                     setData(nextData);
                 }
             } catch (caught) {
-                if (active) {
+                if (active && requestId === requestIdRef.current) {
                     setError(caught instanceof Error ? caught.message : 'Veri alınamadı.');
                 }
             } finally {
-                if (active) {
+                if (active && requestId === requestIdRef.current) {
                     setLoading(false);
                 }
             }
@@ -159,7 +177,6 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     }, [filters]);
 
     const updateFilters = (patch) => {
-        setData(null);
         setFilters((current) => ({ ...current, ...patch }));
     };
 
@@ -248,7 +265,6 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                                 activeKey={filters.scope_key}
                                 onChange={handleScopeChange}
                                 loading={loading}
-                                filters={filters}
                             />
                         </div>
                         <div className="grid gap-2">
