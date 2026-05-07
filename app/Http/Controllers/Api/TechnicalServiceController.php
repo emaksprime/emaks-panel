@@ -269,6 +269,10 @@ class TechnicalServiceController extends Controller
             'metadata' => [
                 'technical_service_technician_id' => $technician?->id,
                 'technician_name' => $technicianName,
+                'mount_payment_missing' => (bool) ($payload['mount_payment_missing'] ?? false),
+                'appointment_time_slot' => $payload['appointment_time_slot'] ?? null,
+                'override_without_payment' => (bool) ($payload['override_without_payment'] ?? false),
+                'override_reason' => $payload['override_reason'] ?? null,
                 'travel' => $travelSummary,
             ],
         ]);

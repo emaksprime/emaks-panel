@@ -75,6 +75,7 @@ type ApiTechnicalServiceRequest = {
   travel_round_trip_km?: number | string | null
   travel_billable_km?: number | string | null
   travel_fee_amount?: number | string | null
+  technician_payment_amount?: number | string | null
   travel_calculation_source?: string | null
   travel_calculated_at?: string | null
 }
@@ -141,6 +142,21 @@ const REOPEN_REASONS = [
   'Operasyon düzeltmesi',
   'Diğer',
 ] as const
+
+const APPOINTMENT_TIME_SLOTS = [
+  { value: '10:00 - 12:00', start: '10:00' },
+  { value: '12:00 - 14:00', start: '12:00' },
+  { value: '14:00 - 16:00', start: '14:00' },
+  { value: '16:00 - 18:00', start: '16:00' },
+] as const
+
+function isMountPaymentMissing(result: MikroMountCheckResult | null | undefined): boolean {
+  return result?.montaj_durumu === 'Montaj Hariç'
+}
+
+function isMountPaymentAccepted(result: MikroMountCheckResult | null | undefined): boolean {
+  return result?.montaj_durumu === 'Montaj Dahil' || result?.montaj_durumu === 'Montaj Sonradan Dahil'
+}
 
 function normalizeSearchText(value: string | null | undefined): string {
   return normalizeTechnicalServiceText(value)
@@ -244,6 +260,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     travelRoundTripKm: parseNullableNumber(request.travel_round_trip_km),
     travelBillableKm: parseNullableNumber(request.travel_billable_km),
     travelFeeAmount: parseNullableNumber(request.travel_fee_amount),
+    technicianPaymentAmount: parseNullableNumber(request.technician_payment_amount),
     travelCalculationSource: request.travel_calculation_source ?? null,
     travelCalculatedAt: request.travel_calculated_at ?? null,
   }
@@ -274,9 +291,10 @@ export default function TechnicalService() {
   const [assignError, setAssignError] = useState<string | null>(null)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
-  const [scheduleHour, setScheduleHour] = useState('')
-  const [scheduleMinute, setScheduleMinute] = useState('')
+  const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
   const [travelRoundTripKm, setTravelRoundTripKm] = useState('')
+  const [assignOverrideWithoutPayment, setAssignOverrideWithoutPayment] = useState(false)
+  const [assignOverrideReason, setAssignOverrideReason] = useState('')
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
   const [completionReason, setCompletionReason] = useState('')
   const [completionOtherNote, setCompletionOtherNote] = useState('')
@@ -522,7 +540,6 @@ export default function TechnicalService() {
           request.serialNumber,
           request.serviceType,
           request.status,
-          request.priority,
           request.technician,
           request.appointment,
           request.scheduledAt,
@@ -569,6 +586,7 @@ export default function TechnicalService() {
     modalRequest?.travelRoundTripKm,
     modalRequest?.travelFeeAmount,
     modalRequest?.travelBillableKm,
+    modalRequest?.technicianPaymentAmount,
   )
   const assignTravelRoundTripKm = travelRoundTripKm.trim() === '' ? null : Number(travelRoundTripKm)
   const assignTravelPreview = calculateTravelPreview(
@@ -580,6 +598,21 @@ export default function TechnicalService() {
     modalRequest?.serviceType,
     assignTravelPreview.roundTripKm,
     assignTravelPreview.travelFeeAmount,
+  )
+  const mountPaymentMissing = modalRequest?.serviceType === 'Montaj' && mikroMountCheck?.montaj_durumu === 'Montaj HariÃ§'
+  const effectiveMountPaymentMissing = modalRequest?.serviceType === 'Montaj' && isMountPaymentMissing(mikroMountCheck)
+  const mountPaymentAccepted = modalRequest?.serviceType === 'Montaj' && isMountPaymentAccepted(mikroMountCheck)
+  const effectiveAssignOverrideReady = !effectiveMountPaymentMissing || (assignOverrideWithoutPayment && assignOverrideReason.trim().length >= 5)
+  const canSubmitAssign = Boolean(
+    !assignLoading &&
+    assignTechnicianOption &&
+    (assignTechnicianOption !== 'other' || assignOtherTechnician.trim()) &&
+    scheduleDate &&
+    scheduleTimeSlot &&
+    travelRoundTripKm.trim() !== '' &&
+    Number.isFinite(Number(travelRoundTripKm)) &&
+    Number(travelRoundTripKm) >= 0 &&
+    effectiveAssignOverrideReady
   )
   const technicianMatches = technicians
     .map((technician) => technicianMatchInfo(technician, modalRequest))
@@ -723,9 +756,10 @@ export default function TechnicalService() {
     setAssignOtherTechnician('')
     setAssignNote('')
     setScheduleDate('')
-    setScheduleHour('')
-    setScheduleMinute('')
+    setScheduleTimeSlot('')
     setTravelRoundTripKm('')
+    setAssignOverrideWithoutPayment(false)
+    setAssignOverrideReason('')
     setShowNearbyTechnicians(false)
     setAssignError(null)
   }
@@ -809,8 +843,20 @@ export default function TechnicalService() {
       return
     }
 
-    if (!scheduleDate || !scheduleHour || !scheduleMinute) {
+    if (!scheduleDate || !scheduleTimeSlot) {
       setAssignError('Lütfen randevu tarihi ve saatini seçin.')
+
+      return
+    }
+
+    if (effectiveMountPaymentMissing && !assignOverrideWithoutPayment) {
+      setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
+
+      return
+    }
+
+    if (effectiveMountPaymentMissing && assignOverrideReason.trim().length < 5) {
+      setAssignError('Atama nedeni en az 5 karakter olmalıdır.')
 
       return
     }
@@ -827,7 +873,8 @@ export default function TechnicalService() {
     setAssignError(null)
 
     try {
-      const scheduledAt = `${scheduleDate}T${scheduleHour}:${scheduleMinute}:00`
+      const selectedTimeSlot = APPOINTMENT_TIME_SLOTS.find((slot) => slot.value === scheduleTimeSlot)
+      const scheduledAt = `${scheduleDate}T${selectedTimeSlot?.start ?? '10:00'}:00`
 
       await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
         method: 'POST',
@@ -836,6 +883,10 @@ export default function TechnicalService() {
             ? { technician_name: selectedTechnician }
             : { technical_service_technician_id: assignTechnicianOption }),
           travel_round_trip_km: parsedTravelRoundTripKm,
+          mount_payment_missing: effectiveMountPaymentMissing,
+          appointment_time_slot: scheduleTimeSlot,
+          override_without_payment: effectiveMountPaymentMissing ? assignOverrideWithoutPayment : false,
+          override_reason: effectiveMountPaymentMissing ? assignOverrideReason.trim() || null : null,
           note: isManualTechnician ? assignNote || null : null,
         }),
       })
@@ -1163,28 +1214,76 @@ export default function TechnicalService() {
                 </div>
               ) : null}
 
-              {mikroMountCheck?.montaj_durumu === 'Montaj Hariç' ? (
-                <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
-                  <p className="font-semibold">Mikro kontrolü: Montaj Hariç</p>
-                  <p className="mt-1">{mikroMountCheck.montaj_ek_aciklama || 'Bu seri no için son geçerli satışta montaj ödemesi bulunamadı.'}</p>
-                </div>
-              ) : null}
-
-              {mikroMountCheck?.montaj_durumu === 'Montaj Sonradan Dahil' ? (
-                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
-                  <p className="font-semibold">Mikro kontrolü: Montaj Sonradan Dahil</p>
-                  <p className="mt-1">{mikroMountCheck.montaj_ek_aciklama}</p>
-                </div>
-              ) : null}
-
-              {mikroMountCheck?.farkli_cari_uyarisi ? (
-                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                  <p className="font-semibold">Dikkat: Farklı cari ile sonradan montaj</p>
-                  <p className="mt-1">Sonradan montaj carisi asıl satış carisinden farklı. Atama yapmadan önce cari bilgisini kontrol edin.</p>
-                </div>
-              ) : null}
-
               <div className="grid gap-4 pt-2">
+                <div className={[
+                  'grid gap-3 rounded-2xl border p-4 text-sm',
+                  effectiveMountPaymentMissing
+                    ? 'border-rose-200 bg-rose-50 text-rose-900'
+                    : mountPaymentAccepted
+                      ? 'border-green-200 bg-green-50 text-green-900'
+                      : 'border-slate-200 bg-slate-50 text-slate-900',
+                ].join(' ')}>
+                  <div>
+                    <p className={[
+                      'text-xs font-semibold uppercase tracking-[0.12em]',
+                      effectiveMountPaymentMissing ? 'text-rose-700' : mountPaymentAccepted ? 'text-green-700' : 'text-slate-700',
+                    ].join(' ')}>Montaj Kararı</p>
+                    <p className="mt-1">Sonuç: {mikroMountCheck?.montaj_durumu ?? 'Kontrol Edilemedi'}</p>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <span className={[
+                        'text-xs font-semibold uppercase tracking-[0.12em]',
+                        effectiveMountPaymentMissing ? 'text-rose-700' : mountPaymentAccepted ? 'text-green-700' : 'text-slate-700',
+                      ].join(' ')}>Dayanak</span>
+                      <p className="mt-1">{mikroMountCheck?.montaj_durumu === 'Montaj Sonradan Dahil' ? 'Mikro + sonradan montaj kaydı' : 'Mikro son geçerli satış kaydı'}</p>
+                    </div>
+                    <div>
+                      <span className={[
+                        'text-xs font-semibold uppercase tracking-[0.12em]',
+                        effectiveMountPaymentMissing ? 'text-rose-700' : mountPaymentAccepted ? 'text-green-700' : 'text-slate-700',
+                      ].join(' ')}>Montaj ödemesi</span>
+                      <p className="mt-1">{effectiveMountPaymentMissing ? 'Alınmadı' : mountPaymentAccepted ? 'Alındı / engel yok' : 'Kontrol edilemedi'}</p>
+                    </div>
+                  </div>
+                  {effectiveMountPaymentMissing ? (
+                    <p>Montaj ödemesi alınmamış görünüyor. Atama yapmak için operasyon onayı gerekir.</p>
+                  ) : null}
+                  {mikroMountCheck?.montaj_ek_aciklama ? <p>{mikroMountCheck.montaj_ek_aciklama}</p> : null}
+                  {mikroMountCheck?.farkli_cari_uyarisi ? <p>Sonradan montaj carisi, son geçerli satış carisinden farklı.</p> : null}
+                </div>
+
+                {effectiveMountPaymentMissing ? (
+                  <div className="grid gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                    <div>
+                      <p className="font-semibold">Montaj ödemesi alınmamış görünüyor. Atama yapmak için operasyon onayı gerekir.</p>
+                      <p className="mt-1">Operasyon zorunlu durumda devam edecekse kontrollü override kullanın.</p>
+                    </div>
+
+                    <label className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-white px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={assignOverrideWithoutPayment}
+                        onChange={(event) => setAssignOverrideWithoutPayment(event.target.checked)}
+                        className="mt-1 h-4 w-4 accent-primary"
+                      />
+                      <span className="font-medium text-slate-900">Montaj hariç işe atama yapılmasına onay veriyorum.</span>
+                    </label>
+
+                    {assignOverrideWithoutPayment ? (
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Atama nedeni
+                        <textarea
+                          value={assignOverrideReason}
+                          onChange={(event) => setAssignOverrideReason(event.target.value)}
+                          className="min-h-[96px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                          placeholder="Örn. Müşteri montaj sonrası ödeme yapacak / elden ödeme alınacak / yönetici onayı var"
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <fieldset className="grid gap-3">
                   <legend className="text-sm font-medium text-slate-700">Usta / Çilingir adı</legend>
                   <div className="grid gap-2">
@@ -1217,7 +1316,10 @@ export default function TechnicalService() {
                             name="assignTechnician"
                             value={match.technician.id}
                             checked={assignTechnicianOption === match.technician.id}
-                            onChange={() => setAssignTechnicianOption(match.technician.id)}
+                            onChange={() => {
+                              setAssignTechnicianOption(match.technician.id)
+                              setShowNearbyTechnicians(false)
+                            }}
                             className="mt-1 h-4 w-4 accent-primary"
                           />
                           <span className="min-w-0 flex-1">
@@ -1253,7 +1355,10 @@ export default function TechnicalService() {
                         name="assignTechnician"
                         value="other"
                         checked={assignTechnicianOption === 'other'}
-                        onChange={() => setAssignTechnicianOption('other')}
+                        onChange={() => {
+                          setAssignTechnicianOption('other')
+                          setShowNearbyTechnicians(false)
+                        }}
                         className="mr-3 h-4 w-4 accent-primary"
                       />
                       Diğer
@@ -1293,42 +1398,21 @@ export default function TechnicalService() {
                   />
                 </div>
 
-                <div className="grid gap-2 text-sm font-medium text-slate-700 sm:grid-cols-[1fr_1fr]">
-                  <label className="grid gap-2">
-                    Saat
-                    <select
-                      value={scheduleHour}
-                      onChange={(event) => setScheduleHour(event.target.value)}
-                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                    >
-                      <option value="">Saat</option>
-                      {Array.from({ length: 24 }, (_, index) => {
-                        const value = String(index).padStart(2, '0')
-
-                        return (
-                          <option key={value} value={value}>
-                            {value}
-                          </option>
-                        )
-                      })}
-                    </select>
-                  </label>
-                  <label className="grid gap-2">
-                    Dakika
-                    <select
-                      value={scheduleMinute}
-                      onChange={(event) => setScheduleMinute(event.target.value)}
-                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                    >
-                      <option value="">Dakika</option>
-                      {['00', '15', '30', '45'].map((minute) => (
-                        <option key={minute} value={minute}>
-                          {minute}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Randevu saat aralığı
+                  <select
+                    value={scheduleTimeSlot}
+                    onChange={(event) => setScheduleTimeSlot(event.target.value)}
+                    className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                  >
+                    <option value="">Saat aralığı seçin</option>
+                    {APPOINTMENT_TIME_SLOTS.map((slot) => (
+                      <option key={slot.value} value={slot.value}>
+                        {slot.value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
                 <label className="grid gap-2 text-sm font-medium text-slate-700">
                   Gidiş-geliş km
@@ -1371,17 +1455,7 @@ export default function TechnicalService() {
                 <Button
                   type="button"
                   onClick={handleAssignSubmit}
-                  disabled={
-                    assignLoading ||
-                    !assignTechnicianOption ||
-                    (assignTechnicianOption === 'other' && !assignOtherTechnician.trim()) ||
-                    !scheduleDate ||
-                    !scheduleHour ||
-                    !scheduleMinute ||
-                    travelRoundTripKm.trim() === '' ||
-                    !Number.isFinite(Number(travelRoundTripKm)) ||
-                    Number(travelRoundTripKm) < 0
-                  }
+                  disabled={!canSubmitAssign}
                 >
                   {assignLoading ? 'Kaydediliyor...' : 'Usta Ata ve Randevu Ver'}
                 </Button>
@@ -1633,15 +1707,14 @@ export default function TechnicalService() {
                     </button>
                   </DialogClose>
                 </div>
-                <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  <span className="text-sm font-semibold text-slate-900">{modalDisplayMrn ?? modalRequest?.mrn ?? 'Seçili talep yok'}</span>
-                  <span className="text-sm text-slate-600 truncate">Müşteri: {modalRequest?.customer ?? '-'}</span>
-                  <span className="text-sm text-slate-600 truncate">Durum: {modalRequest?.status ?? '-'}</span>
-                  <span className="text-sm text-slate-600 truncate">Öncelik: {modalRequest?.priority ?? '-'}</span>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-900">{modalDisplayMrn ?? modalRequest?.mrn ?? 'Seçili talep yok'}</span>
+                  <span className="min-w-0 truncate text-sm text-slate-600">Müşteri: {modalRequest?.customer ?? '-'}</span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-600">Durum: {modalRequest?.status ?? '-'}</span>
                 </div>
               </DialogHeader>
 
-              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 pb-28 md:px-6 md:py-5 md:pb-32">
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 md:px-6 md:py-5">
                 {detailLoading ? (
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
                     Detay yükleniyor...

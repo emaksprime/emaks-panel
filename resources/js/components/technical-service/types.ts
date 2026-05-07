@@ -30,6 +30,7 @@ export type ServiceRequest = {
   travelRoundTripKm?: number | null
   travelBillableKm?: number | null
   travelFeeAmount?: number | null
+  technicianPaymentAmount?: number | null
   travelCalculationSource?: string | null
   travelCalculatedAt?: string | null
 }
@@ -65,6 +66,8 @@ export type ServiceRequestEvent = {
   from_status?: string | null
   to_status?: string | null
   author_user_id?: number | null
+  metadata?: Record<string, unknown> | null
+  updated_at?: string
   created_at: string
 }
 

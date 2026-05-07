@@ -1,4 +1,6 @@
 import { Link } from '@inertiajs/react'
+import { ChevronDown, Info } from 'lucide-react'
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -21,19 +23,6 @@ const statusVariant = (status: ServiceRequest['status']) => {
       return 'destructive'
     default:
       return 'default'
-  }
-}
-
-const priorityVariant = (priority: ServiceRequest['priority']) => {
-  switch (priority) {
-    case 'Kritik':
-      return 'destructive'
-    case 'Yüksek':
-      return 'warning'
-    case 'Orta':
-      return 'default'
-    default:
-      return 'secondary'
   }
 }
 
@@ -63,6 +52,14 @@ const formatOptionalDate = (value: string | null | undefined): string => {
 }
 
 const formatDocument = (...parts: Array<string | null | undefined>): string => parts.filter(Boolean).join(' / ')
+
+const formatDisplayValue = (value: string | null | undefined): string => {
+  const normalized = String(value ?? '').trim()
+
+  return normalized !== '' ? normalized : '-'
+}
+
+const formatCurrencyLabel = (amount: number): string => `${amount.toLocaleString('tr-TR')} TL`
 
 const paymentBadgeLabel = (result: MikroMountCheckResult | null | undefined): string => {
   switch (result?.montaj_durumu) {
@@ -108,6 +105,176 @@ const warrantyStatusClasses = (status: WarrantySerialResponse['status'] | null |
   }
 }
 
+const mountPaymentState = (result: MikroMountCheckResult | null | undefined): string => {
+  switch (result?.montaj_durumu) {
+    case 'Montaj Dahil':
+    case 'Montaj Sonradan Dahil':
+      return 'Alındı'
+    case 'Montaj Hariç':
+      return 'Alınmadı'
+    default:
+      return 'Kontrol Edilemedi'
+  }
+}
+
+const warrantyStartedState = (warranty: WarrantySerialResponse | null | undefined): string => {
+  if (!warranty) {
+    return 'Kontrol Edilemedi'
+  }
+
+  return warranty.status === 'Garanti Başlamadı' ? 'Başlamadı' : 'Başladı'
+}
+
+const decisionSourceLabel = (
+  result: MikroMountCheckResult | null | undefined,
+  warranty: WarrantySerialResponse | null | undefined,
+): string => {
+  const sources: string[] = []
+
+  if (result?.found) {
+    sources.push('Son geçerli Mikro satışı')
+  }
+
+  if (result?.montaj_durumu === 'Montaj Sonradan Dahil') {
+    sources.push('Sonradan montaj kaydı')
+  }
+
+  if (warranty?.card || (warranty?.source ?? '').toLocaleLowerCase('tr-TR').includes('panel')) {
+    sources.push('Panel garanti kartı')
+  }
+
+  return sources.length > 0 ? sources.join(' + ') : 'Kontrol Edilemedi'
+}
+
+type TechnicianApprovalState = {
+  tone: string
+  title: string
+  detail?: string | null
+}
+
+type OverrideDecisionInfo = {
+  label: string
+  value: string
+}
+
+const technicianApprovalState = (request: ServiceRequest, events: ServiceRequestEvent[]): TechnicianApprovalState => {
+  const hasTechnician = Boolean(request.technicianId || (request.technician && request.technician !== 'Atanmadı'))
+
+  if (!hasTechnician) {
+    return {
+      tone: 'border-slate-200 bg-slate-50 text-slate-900',
+      title: 'Usta atanmadı',
+      detail: null,
+    }
+  }
+
+  const matchingEvent = [...events].reverse().find((event) => {
+    const haystack = JSON.stringify([
+      event.event_type,
+      event.title,
+      event.note,
+      event.metadata,
+    ]).toLocaleLowerCase('tr-TR')
+
+    return ['kabul', 'accepted', 'onay', 'redd', 'reject', 'declin', 'revize', 'schedule change', 'değiştir'].some((keyword) => haystack.includes(keyword))
+  })
+
+  if (!matchingEvent) {
+    return {
+      tone: 'border-amber-200 bg-amber-50 text-amber-950',
+      title: 'Usta onayı bekleniyor',
+      detail: null,
+    }
+  }
+
+  const haystack = JSON.stringify([
+    matchingEvent.event_type,
+    matchingEvent.title,
+    matchingEvent.note,
+    matchingEvent.metadata,
+  ]).toLocaleLowerCase('tr-TR')
+  const metadata = matchingEvent.metadata ?? {}
+  const rejectionReason = formatDisplayValue(String(
+    metadata.rejection_reason
+    ?? metadata.reason
+    ?? metadata.technician_rejection_reason
+    ?? matchingEvent.note
+    ?? '',
+  ))
+  const revisionDetail = formatDisplayValue(String(
+    metadata.requested_schedule_at
+    ?? metadata.technician_schedule_change_requested_at
+    ?? metadata.reschedule_note
+    ?? metadata.technician_reschedule_note
+    ?? matchingEvent.note
+    ?? '',
+  ))
+
+  if (haystack.includes('revize') || haystack.includes('schedule change') || haystack.includes('değiş')) {
+    return {
+      tone: 'border-indigo-200 bg-indigo-50 text-indigo-950',
+      title: 'Randevu revize talebi var',
+      detail: revisionDetail !== '-' ? revisionDetail : null,
+    }
+  }
+
+  if (haystack.includes('redd') || haystack.includes('reject') || haystack.includes('declin')) {
+    return {
+      tone: 'border-rose-200 bg-rose-50 text-rose-950',
+      title: 'Usta işi reddetti',
+      detail: rejectionReason !== '-' ? `Ret nedeni: ${rejectionReason}` : null,
+    }
+  }
+
+  if (haystack.includes('kabul') || haystack.includes('accepted') || haystack.includes('onay')) {
+    return {
+      tone: 'border-green-200 bg-green-50 text-green-950',
+      title: 'Usta işi kabul etti',
+      detail: null,
+    }
+  }
+
+  return {
+    tone: 'border-amber-200 bg-amber-50 text-amber-950',
+    title: 'Usta onayı bekleniyor',
+    detail: null,
+  }
+}
+
+const parseEventTimestamp = (event: ServiceRequestEvent): number => {
+  const raw = event.created_at ?? event.updated_at ?? ''
+  const parsed = raw ? new Date(raw).getTime() : Number.NaN
+
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
+}
+
+const latestOverrideDecisionInfo = (
+  events: ServiceRequestEvent[],
+  result: MikroMountCheckResult | null | undefined,
+  warranty: WarrantySerialResponse | null | undefined,
+): OverrideDecisionInfo => {
+  const latestAssignment = [...events]
+    .sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
+    .find((event) => event.event_type === 'assignment')
+
+  const metadata = latestAssignment?.metadata ?? {}
+  const overrideWithoutPayment = Boolean(metadata.override_without_payment)
+  const overrideReason = String(metadata.override_reason ?? '').trim()
+  const mountPaymentMissing = Boolean(metadata.mount_payment_missing)
+
+  if (overrideWithoutPayment && mountPaymentMissing) {
+    return {
+      label: 'Atama Onay Açıklaması',
+      value: overrideReason !== '' ? overrideReason : 'Operasyon onayı var, açıklama bulunamadı',
+    }
+  }
+
+  return {
+    label: 'Karar kaynağı',
+    value: decisionSourceLabel(result, warranty),
+  }
+}
+
 export function ServiceRequestDetails({
   request,
   displayMrn,
@@ -124,34 +291,91 @@ export function ServiceRequestDetails({
   onComplete,
   onReopen,
 }: ServiceRequestDetailsProps) {
+  const [isMountReferenceOpen, setIsMountReferenceOpen] = useState(false)
+  const [isWarrantyReferenceOpen, setIsWarrantyReferenceOpen] = useState(false)
   const paymentInfo = getServicePaymentInfo(
     request.serviceType,
     request.travelRoundTripKm,
     request.travelFeeAmount,
     request.travelBillableKm,
+    request.technicianPaymentAmount,
   )
   const isActionDisabled = request.status === 'Tamamlandı' || request.status === 'İptal'
   const disabledTitle = 'Tamamlanan veya iptal edilen taleplerde işlem yapılamaz'
   const isReopenVisible = isActionDisabled
   const hasSerialNumber = request.serialNumber.trim() !== ''
+  const saleCustomerLabel = formatDisplayValue(
+    [mikroMountCheck?.asil_cari_kodu, mikroMountCheck?.asil_cari_unvani].filter(Boolean).join(' - '),
+  )
+  const mountCustomerLabel = formatDisplayValue(
+    [mikroMountCheck?.sonradan_montaj_cari_kodu, mikroMountCheck?.sonradan_montaj_cari_unvani].filter(Boolean).join(' - '),
+  )
+  const mountPaymentLabel = paymentInfo.customerAmountLabel && paymentInfo.customerAmountLabel !== 'Belirlenmedi'
+    ? paymentInfo.customerAmountLabel
+    : '-'
   const serialQueryHref = hasSerialNumber
     ? `/technical-service/serial-query?serial_no=${encodeURIComponent(request.serialNumber.trim())}`
     : '/technical-service/serial-query'
+  const summaryNote = warranty?.status === 'Garanti Başlamadı'
+    ? warranty.warnings[0] ?? mikroMountCheck?.montaj_ek_aciklama ?? null
+    : null
+  const approvalState = technicianApprovalState(request, events)
+  const overrideDecisionInfo = latestOverrideDecisionInfo(events, mikroMountCheck, warranty)
+  const sortedEvents = [...events].sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
+  const isMountPositive = mikroMountCheck?.montaj_durumu === 'Montaj Dahil' || mikroMountCheck?.montaj_durumu === 'Montaj Sonradan Dahil'
+  const costDelta = paymentInfo.customerAmount !== null && paymentInfo.totalTechnicianCostAmount !== null
+    ? paymentInfo.customerAmount - paymentInfo.totalTechnicianCostAmount
+    : null
+  const costDeltaTone = costDelta === null
+    ? 'border-slate-200 bg-slate-100 text-slate-900'
+    : costDelta > 0
+      ? 'border-green-200 bg-green-50 text-green-950'
+      : costDelta < 0
+        ? 'border-rose-200 bg-rose-50 text-rose-950'
+        : 'border-slate-200 bg-slate-100 text-slate-900'
+  const costDeltaLabel = costDelta === null
+    ? '-'
+    : costDelta > 0
+      ? `+${formatCurrencyLabel(costDelta)} kâr`
+      : costDelta < 0
+        ? `-${formatCurrencyLabel(Math.abs(costDelta))} zarar`
+        : '0 TL fark yok'
+  const summaryTone = isMountPositive
+    ? {
+        wrapper: 'border-green-200 bg-green-50',
+        icon: 'text-green-700',
+        title: 'text-green-950',
+        subtitle: 'text-green-900/80',
+        card: 'border-green-200 bg-white/80',
+        cardLabel: 'text-green-700',
+        body: 'text-green-950',
+        link: 'text-green-700 hover:text-green-900',
+      }
+    : {
+        wrapper: 'border-rose-200 bg-rose-50',
+        icon: 'text-rose-700',
+        title: 'text-rose-950',
+        subtitle: 'text-rose-900/80',
+        card: 'border-rose-200 bg-white/80',
+        cardLabel: 'text-rose-700',
+        body: 'text-rose-950',
+        link: 'text-rose-700 hover:text-rose-900',
+      }
 
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm break-words min-w-0">
       <CardHeader className="space-y-3 px-6 py-4 sm:py-6 min-w-0">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Seçili MRN</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Talep</p>
             <CardTitle className="mt-2 text-lg sm:text-xl text-slate-950">{displayMrn ?? request.mrn}</CardTitle>
+            <p className="mt-2 text-sm text-slate-600">{request.customer}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={statusVariant(request.status)}>{request.status}</Badge>
-            <Badge variant={priorityVariant(request.priority)}>{request.priority}</Badge>
           </div>
         </div>
-        <p className="text-sm text-slate-600">{request.customer} için servis, randevu ve maliyet detaylarını takip edin.</p>
+        <p className="text-sm text-slate-600">Servis, randevu ve karar akışını tek ekranda takip edin.</p>
       </CardHeader>
 
       <CardContent className="space-y-6 px-6 pb-6">
@@ -193,16 +417,64 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
 
-          <div className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4">
+          <div className={`rounded-2xl border p-5 lg:col-span-2 ${summaryTone.wrapper}`}>
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Montaj Ödemesi / Montaj Durumu</p>
-                <p className="mt-2 text-sm text-slate-600">Mikro seri no geçmişindeki son geçerli satış ve montaj sinyali.</p>
+              <div className="flex items-start gap-3">
+                <span className={`mt-0.5 inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-white shadow-sm ${summaryTone.icon}`}>
+                  <Info className="h-5 w-5" />
+                </span>
+                <div>
+                  <p className={`text-sm font-semibold ${summaryTone.title}`}>Montaj ve Garanti Özeti</p>
+                  <p className={`mt-1 text-sm ${summaryTone.subtitle}`}>Operasyon kararını etkileyen montaj ve garanti bilgileri tek blokta özetlenir.</p>
+                </div>
               </div>
-              <Link className="text-sm font-semibold text-blue-700 hover:text-blue-900" href={serialQueryHref}>
+              <Link className={`text-sm font-semibold ${summaryTone.link}`} href={serialQueryHref}>
                 Seri No Sorgu ekranında aç
               </Link>
             </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                ['Montaj durumu', mikroMountCheck?.montaj_durumu ?? 'Kontrol Edilemedi'],
+                ['Montaj ödemesi', mountPaymentState(mikroMountCheck)],
+                ['Garanti durumu', warrantyStartedState(warranty)],
+                [overrideDecisionInfo.label, overrideDecisionInfo.value],
+              ].map(([label, value]) => (
+                <div key={label} className={`rounded-2xl border p-3 ${summaryTone.card}`}>
+                  <p className={`text-xs font-semibold uppercase tracking-[0.12em] ${summaryTone.cardLabel}`}>{label}</p>
+                  <p className={`mt-2 text-sm font-semibold ${summaryTone.body}`}>{value || '-'}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className={`mt-4 grid gap-2 text-sm ${summaryTone.body}`}>
+              {mikroMountCheck?.farkli_cari_uyarisi ? (
+                <p>Sonradan montaj carisi, son geçerli satış carisinden farklı.</p>
+              ) : null}
+              {summaryNote ? (
+                <p>Garanti otomatik başlamadıysa neden: {summaryNote}</p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300">
+            <button
+              type="button"
+              onClick={() => setIsMountReferenceOpen((current) => !current)}
+              className="flex w-full flex-wrap items-start justify-between gap-3 text-left"
+              aria-expanded={isMountReferenceOpen}
+            >
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Montaj referansı</p>
+                <p className="mt-2 text-sm text-slate-600">Mikro seri geçmişindeki son geçerli satış ve sonradan montaj izi.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className={mikroStatusClasses(mikroMountCheck)}>
+                  {mikroMountCheck?.found ? paymentBadgeLabel(mikroMountCheck) : 'Kontrol Edilemedi'}
+                </Badge>
+                <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${isMountReferenceOpen ? 'rotate-180' : ''}`} />
+              </div>
+            </button>
 
             {mikroMountLoading ? (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">Montaj bilgisi sorgulanıyor...</div>
@@ -212,55 +484,42 @@ export function ServiceRequestDetails({
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{mikroMountError}</div>
             ) : null}
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className={mikroStatusClasses(mikroMountCheck)}>
-                {mikroMountCheck?.found ? paymentBadgeLabel(mikroMountCheck) : 'Kontrol Edilemedi'}
-              </Badge>
-              {mikroMountCheck?.farkli_cari_uyarisi ? (
-                <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">
-                  Farklı Cari ile Sonradan Montaj
-                </Badge>
-              ) : null}
-            </div>
-
-            {mikroMountCheck ? (
-              <div className="grid gap-3 text-sm sm:grid-cols-2">
+            {mikroMountCheck && isMountReferenceOpen ? (
+              <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
                 {[
-                  ['Montaj Durumu', mikroMountCheck.found ? mikroMountCheck.montaj_durumu : 'Mikro’da seri no bulunamadı'],
-                  ['Montaj Ek Açıklama', mikroMountCheck.found ? mikroMountCheck.montaj_ek_aciklama : 'Mikro’da seri no bulunamadı'],
-                  ['Sonradan Montaj Kaynağı', mikroMountCheck.sonradan_montaj_kaynagi],
-                  ['Sonradan Montaj Tarihi', formatOptionalDate(mikroMountCheck.sonradan_montaj_tarihi)],
-                  ['Sonradan Montaj Cari Kodu', mikroMountCheck.sonradan_montaj_cari_kodu],
-                  ['Sonradan Montaj Cari Ünvanı', mikroMountCheck.sonradan_montaj_cari_unvani],
-                  ['Son Geçerli Satış Cari', [mikroMountCheck.asil_cari_kodu, mikroMountCheck.asil_cari_unvani].filter(Boolean).join(' - ')],
-                  ['Son Geçerli Satış Evrakı', formatDocument(mikroMountCheck.irsaliye_seri, mikroMountCheck.irsaliye_sira)],
-                  ['Son Geçerli Satış Tarihi', formatOptionalDate(mikroMountCheck.irsaliye_tarihi)],
+                  ['Montaj ödemesi Kayıt tarihi', formatOptionalDate(mikroMountCheck.sonradan_montaj_tarihi)],
+                  ['Sonradan montaj carisi', mountCustomerLabel],
+                  ['Satış Tarihi', formatOptionalDate(mikroMountCheck.irsaliye_tarihi)],
+                  ['Satış Cari', saleCustomerLabel],
+                  ['Montaj Ödemesi', mountPaymentLabel],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
-                    <p className="mt-2 whitespace-pre-wrap break-words text-slate-900">{value || '-'}</p>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-slate-900">{formatDisplayValue(value)}</p>
                   </div>
                 ))}
               </div>
             ) : null}
-
-            {mikroMountCheck?.farkli_cari_uyarisi ? (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                Farklı cari ile sonradan montaj uyarısı var. Sonradan montaj carisi son geçerli satış carisinden farklı görünüyor.
-              </div>
-            ) : null}
           </div>
 
-          <div className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300">
+            <button
+              type="button"
+              onClick={() => setIsWarrantyReferenceOpen((current) => !current)}
+              className="flex w-full flex-wrap items-start justify-between gap-3 text-left"
+              aria-expanded={isWarrantyReferenceOpen}
+            >
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Garanti Durumu</p>
-                <p className="mt-2 text-sm text-slate-600">Panel garanti kartı ve son geçerli Mikro satış bilgisi.</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Garanti referansı</p>
+                <p className="mt-2 text-sm text-slate-600">Panel garanti kartı ve son geçerli satıştan türetilen garanti kararı.</p>
               </div>
-              <Link className="text-sm font-semibold text-blue-700 hover:text-blue-900" href={serialQueryHref}>
-                Seri No Sorgu ekranında aç
-              </Link>
-            </div>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className={warrantyStatusClasses(warranty?.status)}>
+                  {warranty?.status ?? 'Kontrol Edilemedi'}
+                </Badge>
+                <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${isWarrantyReferenceOpen ? 'rotate-180' : ''}`} />
+              </div>
+            </button>
 
             {warrantyLoading ? (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">Garanti bilgisi sorgulanıyor...</div>
@@ -270,36 +529,19 @@ export function ServiceRequestDetails({
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{warrantyError}</div>
             ) : null}
 
-            <Badge variant="outline" className={warrantyStatusClasses(warranty?.status)}>
-              {warranty?.status ?? 'Kontrol Edilemedi'}
-            </Badge>
-
-            {warranty ? (
-              <div className="grid gap-3 text-sm sm:grid-cols-2">
+            {warranty && isWarrantyReferenceOpen ? (
+              <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
                 {[
-                  ['Garanti Durumu', warranty.status],
-                  ['Garanti Başlangıcı', formatOptionalDate(warranty.warranty_started_at)],
-                  ['Garanti Bitişi', formatOptionalDate(warranty.warranty_ends_at)],
-                  ['Kalan Gün', warranty.remaining_days === null || warranty.remaining_days === undefined ? '-' : String(warranty.remaining_days)],
-                  ['Garanti Süresi', `${warranty.warranty_period_months} ay`],
-                  ['Fiili Montaj Tarihi', formatOptionalDate(warranty.installation.completed_at)],
-                  ['Son Satış Cari', [warranty.last_sale?.customer_code, warranty.last_sale?.customer_name].filter(Boolean).join(' - ')],
-                  ['Son Satış Evrak', warranty.last_sale?.document_no],
-                  ['Kaynak', warranty.source ?? warranty.installation.source],
+                  ['Garanti başlangıcı', formatOptionalDate(warranty.warranty_started_at)],
+                  ['Garanti bitişi', formatOptionalDate(warranty.warranty_ends_at)],
+                  ['Kalan gün', warranty.remaining_days === null || warranty.remaining_days === undefined ? '-' : String(warranty.remaining_days)],
+                  ['Garanti süresi', `${warranty.warranty_period_months} ay`],
+                  ['Fiili montaj tarihi', formatOptionalDate(warranty.installation.completed_at)],
+                  ['Montajı Yapan Usta', request.technician],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
-                    <p className="mt-2 whitespace-pre-wrap break-words text-slate-900">{value || '-'}</p>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-
-            {warranty?.warnings.length ? (
-              <div className="grid gap-2">
-                {warranty.warnings.map((warning) => (
-                  <div key={warning} className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                    {warning}
+                    <p className="mt-2 whitespace-pre-wrap break-words text-slate-900">{formatDisplayValue(value)}</p>
                   </div>
                 ))}
               </div>
@@ -319,6 +561,13 @@ export function ServiceRequestDetails({
             </div>
           </div>
           <div className="grid gap-3">
+            <div className={`rounded-2xl border p-3 ${approvalState.tone}`}>
+              <p className="text-xs uppercase tracking-[0.14em] opacity-75">Usta Onay Durumu</p>
+              <p className="mt-2 text-sm font-semibold">{approvalState.title}</p>
+              {approvalState.detail ? (
+                <p className="mt-1 text-sm opacity-90">{approvalState.detail}</p>
+              ) : null}
+            </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-3">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Randevu</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{request.appointment}</p>
@@ -361,6 +610,13 @@ export function ServiceRequestDetails({
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Toplam usta maliyeti</p>
               <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.totalTechnicianCostLabel}</p>
             </div>
+            <div className={`rounded-2xl border p-4 sm:col-span-2 ${costDeltaTone}`}>
+              <p className="text-xs uppercase tracking-[0.14em] opacity-75">Müşteri / Usta Maliyet Farkı</p>
+              <p className="mt-2 text-lg font-semibold">{costDeltaLabel}</p>
+              {costDelta !== null && costDelta < 0 ? (
+                <p className="mt-2 text-sm opacity-90">Usta maliyeti müşteriden alınan tutardan yüksek.</p>
+              ) : null}
+            </div>
           </div>
         </section>
 
@@ -380,12 +636,12 @@ export function ServiceRequestDetails({
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
                 {error}
               </div>
-            ) : events.length === 0 ? (
+            ) : sortedEvents.length === 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
                 Henüz işlem geçmişi yok.
               </div>
             ) : (
-              events.map((event) => (
+              sortedEvents.map((event) => (
                 <div key={String(event.id)} className="flex gap-3 text-sm">
                   <div className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
                   <div>
@@ -404,7 +660,7 @@ export function ServiceRequestDetails({
       </CardContent>
 
       <div
-        className="sticky bottom-0 z-10 bg-white/95 border-t border-slate-200 pt-2 px-3 shadow-[0_-8px_20px_rgba(15,23,42,0.06)] backdrop-blur-sm sm:px-6 sm:pt-3"
+        className="mt-2 border-t border-slate-200 px-3 pt-4 sm:px-6"
         style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
         <div className="grid grid-cols-2 gap-2">
