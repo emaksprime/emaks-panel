@@ -764,14 +764,13 @@ class SalesMainPageService
      */
     private function brandChartItems(Collection $groupRows, Collection $detailRows): array
     {
-        $rows = $groupRows
-            ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) === 'GRUP')
+        $rows = $detailRows
+            ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) === 'DETAY')
             ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
             ->values();
 
         if ($rows->isEmpty()) {
-            $rows = $detailRows
-                ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) === 'DETAY')
+            $rows = $groupRows
                 ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
                 ->values();
         }
@@ -834,14 +833,13 @@ class SalesMainPageService
     {
         $rawCode = trim((string) ($row['brand_code'] ?? ''));
         $rawName = trim((string) ($row['brand_name'] ?? $row['marka_adi'] ?? ''));
-        $codeText = $this->asciiAccountText($rawCode);
-        $nameText = $this->asciiAccountText($rawName);
+        $text = $this->asciiAccountText($rawCode.' '.$rawName.' '.(json_encode($row, JSON_UNESCAPED_UNICODE) ?: ''));
 
-        if ($codeText === 'PHILIPS' || $nameText === 'PHILIPS') {
+        if (str_contains($text, 'PHILIPS')) {
             return ['label' => 'PHILIPS', 'code' => $rawCode, 'name' => 'PHILIPS'];
         }
 
-        if (in_array($codeText, ['EMAKS PRIME', 'EMAKS'], true) || in_array($nameText, ['EMAKS PRIME', 'EMAKS'], true)) {
+        if (str_contains($text, 'EMAKS')) {
             return ['label' => 'EMAKS PRIME', 'code' => $rawCode, 'name' => 'EMAKS PRIME'];
         }
 

@@ -60,50 +60,20 @@ const RESPONSE_SIGNATURE_KEYS = [
     'customer_filter',
 ];
 
-function normalizeSignatureValue(key, value, fallback = '') {
-    const raw = String(value ?? fallback).trim();
-
-    if (['brand_filter', 'category_filter'].includes(key)) {
-        const normalized = raw.replace(/-/g, '_').toLocaleLowerCase('tr');
-
-        if (normalized === '' || ['all', 'tumu', 'tüm', 'tümü'].includes(normalized)) {
-            return 'all';
-        }
-
-        return key === 'category_filter' ? raw.toLocaleUpperCase('tr') : normalized;
-    }
-
-    if (key === 'product_filter' || key === 'customer_filter') {
-        return raw;
-    }
-
-    if (key === 'detail_type') {
-        return (raw || fallback).toLocaleLowerCase('tr');
-    }
-
-    return raw;
-}
-
-function responseFilterValue(payload, responseFilters, key, camelKey, fallback = '') {
-    const gatewayRequest = payload?.queryMeta?.gatewayRequest ?? {};
-    const gatewayParams = gatewayRequest?.params ?? {};
-
-    return responseFilters?.[camelKey]
-        ?? gatewayParams?.[key]
-        ?? gatewayRequest?.[key]
-        ?? fallback;
+function normalizeSignatureValue(value, fallback = '') {
+    return String(value ?? fallback);
 }
 
 function requestSignature(filters) {
     return {
-        detail_type: normalizeSignatureValue('detail_type', filters.detail_type, 'cari'),
-        scope_key: normalizeSignatureValue('scope_key', filters.scope_key, 'all'),
-        date_from: normalizeSignatureValue('date_from', filters.date_from),
-        date_to: normalizeSignatureValue('date_to', filters.date_to),
-        brand_filter: normalizeSignatureValue('brand_filter', filters.brand_filter, 'all'),
-        category_filter: normalizeSignatureValue('category_filter', filters.category_filter, 'all'),
-        product_filter: normalizeSignatureValue('product_filter', filters.product_filter),
-        customer_filter: normalizeSignatureValue('customer_filter', filters.customer_filter),
+        detail_type: normalizeSignatureValue(filters.detail_type, 'cari'),
+        scope_key: normalizeSignatureValue(filters.scope_key, 'all'),
+        date_from: normalizeSignatureValue(filters.date_from),
+        date_to: normalizeSignatureValue(filters.date_to),
+        brand_filter: normalizeSignatureValue(filters.brand_filter, 'all'),
+        category_filter: normalizeSignatureValue(filters.category_filter, 'all'),
+        product_filter: normalizeSignatureValue(filters.product_filter),
+        customer_filter: normalizeSignatureValue(filters.customer_filter),
     };
 }
 
@@ -111,14 +81,14 @@ function responseSignature(payload) {
     const responseFilters = payload?.filters ?? {};
 
     return {
-        detail_type: normalizeSignatureValue('detail_type', responseFilterValue(payload, responseFilters, 'detail_type', 'detailType', 'cari'), 'cari'),
-        scope_key: normalizeSignatureValue('scope_key', responseFilterValue(payload, responseFilters, 'scope_key', 'scopeKey', 'all'), 'all'),
-        date_from: normalizeSignatureValue('date_from', responseFilterValue(payload, responseFilters, 'date_from', 'dateFrom')),
-        date_to: normalizeSignatureValue('date_to', responseFilterValue(payload, responseFilters, 'date_to', 'dateTo')),
-        brand_filter: normalizeSignatureValue('brand_filter', responseFilterValue(payload, responseFilters, 'brand_filter', 'brandFilter', 'all'), 'all'),
-        category_filter: normalizeSignatureValue('category_filter', responseFilterValue(payload, responseFilters, 'category_filter', 'categoryFilter', 'all'), 'all'),
-        product_filter: normalizeSignatureValue('product_filter', responseFilterValue(payload, responseFilters, 'product_filter', 'productFilter')),
-        customer_filter: normalizeSignatureValue('customer_filter', responseFilterValue(payload, responseFilters, 'customer_filter', 'customerFilter')),
+        detail_type: normalizeSignatureValue(responseFilters.detailType, 'cari'),
+        scope_key: normalizeSignatureValue(responseFilters.scopeKey, 'all'),
+        date_from: normalizeSignatureValue(responseFilters.dateFrom),
+        date_to: normalizeSignatureValue(responseFilters.dateTo),
+        brand_filter: normalizeSignatureValue(responseFilters.brandFilter, 'all'),
+        category_filter: normalizeSignatureValue(responseFilters.categoryFilter, 'all'),
+        product_filter: normalizeSignatureValue(responseFilters.productFilter),
+        customer_filter: normalizeSignatureValue(responseFilters.customerFilter),
     };
 }
 
@@ -278,6 +248,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                                 activeKey={filters.scope_key}
                                 onChange={handleScopeChange}
                                 loading={loading}
+                                filters={filters}
                             />
                         </div>
                         <div className="grid gap-2">
