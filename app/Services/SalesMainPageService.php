@@ -113,11 +113,13 @@ class SalesMainPageService
 
         $groupRows = $rows
             ->where('satir_tipi', 'GRUP')
+            ->filter(fn (array $row): bool => $filters['detail_type'] !== 'urun' || $this->isProductBreakdownGroupRow($row))
             ->sortBy('siralama_1')
             ->values();
 
         $detailRows = $rows
             ->filter(fn (array $row) => ($row['satir_tipi'] ?? null) !== 'GRUP')
+            ->filter(fn (array $row): bool => $filters['detail_type'] !== 'urun' || $this->isProductBreakdownDetailRow($row))
             ->values();
 
         $totalGroupRows = $groupRows
@@ -126,7 +128,8 @@ class SalesMainPageService
 
         $positiveTotal = $totalGroupRows->where('ciro', '>', 0)->sum('ciro');
         $netTotal = $totalGroupRows->sum('ciro');
-        $konsinye = (float) ($rows->first()['konsinye_tutari'] ?? 0);
+        $konsinyeRow = $rows->first(fn (array $row): bool => array_key_exists('konsinye_tutari', $row));
+        $konsinye = (float) ($konsinyeRow['konsinye_tutari'] ?? 0);
         $periodLabel = $this->periodLabel($filters['date_from'], $filters['date_to']);
         $isLive = $this->usesN8nGateway($source);
 
@@ -669,7 +672,7 @@ class SalesMainPageService
             return false;
         }
 
-        if ($productFilter !== '' && ! str_contains($this->productSearchText($row), $this->asciiAccountText($productFilter))) {
+        if ($productFilter !== '' && ! str_contains($this->productSearchText($row), $this->productSearchNeedle($productFilter))) {
             return false;
         }
 
@@ -681,7 +684,7 @@ class SalesMainPageService
      */
     private function productSearchText(array $row): string
     {
-        return $this->asciiAccountText(implode(' ', [
+        return $this->normalizedProductSearchText(implode(' ', [
             (string) ($row['stok_kodu_raw'] ?? ''),
             (string) ($row['urun_adi_raw'] ?? ''),
             (string) ($row['model_adi_raw'] ?? ''),
@@ -689,6 +692,50 @@ class SalesMainPageService
             (string) ($row['satir_adi'] ?? ''),
             (string) ($row['cari_grup_adi'] ?? ''),
         ]));
+    }
+
+    private function productSearchNeedle(string $value): string
+    {
+        return $this->normalizedProductSearchText($value);
+    }
+
+    private function normalizedProductSearchText(string $value): string
+    {
+        return trim((string) preg_replace('/[^A-Z0-9]+/u', ' ', $this->asciiAccountText($value)));
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function isProductBreakdownGroupRow(array $row): bool
+    {
+        if ($this->rowExcludedFromTotal($row)) {
+            return false;
+        }
+
+        $label = trim($this->groupName($row).' '.$this->rowLabel($row));
+
+        return ! $this->isConsignmentAccount($label, trim((string) ($row['cari_kodu'] ?? '')));
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function isProductBreakdownDetailRow(array $row): bool
+    {
+        if ($this->rowExcludedFromTotal($row)) {
+            return false;
+        }
+
+        $type = strtoupper(trim((string) ($row['satir_tipi'] ?? '')));
+
+        if (in_array($type, ['KATEGORI', 'KONSINYE'], true)) {
+            return false;
+        }
+
+        $label = trim($this->rowLabel($row).' '.$this->groupName($row).' '.$this->parentKey($row));
+
+        return ! $this->isConsignmentAccount($label, trim((string) ($row['cari_kodu'] ?? '')));
     }
 
     private function palette(int $index): string
