@@ -41,6 +41,19 @@ class TechnicalServiceAuthorizationTest extends TestCase
         $this->actingAs($user)->postJson('/api/technical-service/requests', [])->assertForbidden();
     }
 
+    public function test_technical_role_has_operational_technical_service_access_without_earnings_or_admin(): void
+    {
+        $user = User::factory()->create(['role_code' => 'technical']);
+
+        $this->actingAs($user)->get('/technical-service')->assertOk();
+        $this->actingAs($user)->get('/technical-service/dashboard')->assertOk();
+        $this->actingAs($user)->get('/technical-service/serial-query')->assertOk();
+        $this->actingAs($user)->get('/technical-service/technicians')->assertOk();
+
+        $this->actingAs($user)->get('/technical-service/earnings')->assertForbidden();
+        $this->actingAs($user)->get('/technical-service/admin')->assertForbidden();
+    }
+
     public function test_dashboard_permission_only_allows_dashboard_screen_and_api(): void
     {
         $user = $this->userWithAccess(['technical_service_dashboard']);
@@ -176,6 +189,9 @@ class TechnicalServiceAuthorizationTest extends TestCase
 
         $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_admin')['group'] ?? null);
         $this->assertTrue($resources->pluck('code')->contains('technical_service_earnings_pay'));
+        $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_serial_check')['group'] ?? null);
+        $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_serial_history')['group'] ?? null);
+        $this->assertSame('Teknik Servis', $resources->firstWhere('code', 'technical_service_warranty_serial')['group'] ?? null);
     }
 
     public function test_strict_access_writes_allowlist_and_denylist_for_technical_service_resources(): void

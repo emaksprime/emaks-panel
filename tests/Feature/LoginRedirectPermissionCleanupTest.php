@@ -28,10 +28,44 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $admin = User::factory()->create(['role_code' => 'admin']);
         $sales = User::factory()->create(['role_code' => 'sales']);
         $stock = User::factory()->create(['role_code' => 'stock']);
-        $orders = User::factory()->create(['role_code' => 'orders']);
-        $customer = User::factory()->create(['role_code' => 'customer']);
+        $technical = User::factory()->create(['role_code' => 'technical']);
         $dashboardOnly = User::factory()->create(['role_code' => 'viewer']);
+        $ordersOnly = User::factory()->create(['role_code' => 'viewer']);
+        $customerOnly = User::factory()->create(['role_code' => 'viewer']);
         $proformaOnly = User::factory()->create(['role_code' => 'viewer']);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $dashboardOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+        foreach (['stock', 'stock_critical', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $ordersOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $customerOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+        UserAccess::query()->create([
+            'user_id' => $customerOnly->id,
+            'resource_code' => 'customers',
+            'can_view' => true,
+        ]);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $proformaOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
         UserAccess::query()->create([
             'user_id' => $proformaOnly->id,
             'resource_code' => 'proforma',
@@ -40,9 +74,10 @@ class LoginRedirectPermissionCleanupTest extends TestCase
 
         $this->assertSame('/sales/main', $navigation->firstAccessibleRouteFor($admin));
         $this->assertSame('/sales/main', $navigation->firstAccessibleRouteFor($sales));
+        $this->assertSame('/technical-service', $navigation->firstAccessibleRouteFor($technical));
         $this->assertSame('/stock', $navigation->firstAccessibleRouteFor($stock));
-        $this->assertSame('/orders', $navigation->firstAccessibleRouteFor($orders));
-        $this->assertSame('/cari', $navigation->firstAccessibleRouteFor($customer));
+        $this->assertSame('/orders/alinan', $navigation->firstAccessibleRouteFor($ordersOnly));
+        $this->assertSame('/cari', $navigation->firstAccessibleRouteFor($customerOnly));
         $this->assertSame('/proforma', $navigation->firstAccessibleRouteFor($proformaOnly));
         $this->assertSame('/dashboard', $navigation->firstAccessibleRouteFor($dashboardOnly));
     }
@@ -56,6 +91,13 @@ class LoginRedirectPermissionCleanupTest extends TestCase
             'resource_code' => 'dashboard',
             'can_view' => false,
         ]);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
 
         $this->assertNull($navigation->firstAccessibleRouteFor($user));
         $this->assertSame('/dashboard', $navigation->homePathFor($user));
@@ -72,6 +114,60 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         ])->assertRedirect('/stock');
 
         $this->assertAuthenticatedAs($stock);
+    }
+
+    public function test_role_specific_login_redirects_to_first_allowed_route(): void
+    {
+        $technical = User::factory()->create(['role_code' => 'technical']);
+        $onlineOnly = User::factory()->create(['role_code' => 'viewer']);
+        $bayiOnly = User::factory()->create(['role_code' => 'viewer']);
+        $customersOnly = User::factory()->create(['role_code' => 'viewer']);
+
+        UserAccess::query()->create([
+            'user_id' => $onlineOnly->id,
+            'resource_code' => 'sales_online',
+            'can_view' => true,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $bayiOnly->id,
+            'resource_code' => 'sales_bayi',
+            'can_view' => true,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $customersOnly->id,
+            'resource_code' => 'customers',
+            'can_view' => true,
+        ]);
+        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $customersOnly->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+
+        $this->post(route('login.store'), [
+            'email' => $technical->username,
+            'password' => 'password',
+        ])->assertRedirect('/technical-service');
+        auth()->logout();
+
+        $this->post(route('login.store'), [
+            'email' => $onlineOnly->username,
+            'password' => 'password',
+        ])->assertRedirect('/sales/online');
+        auth()->logout();
+
+        $this->post(route('login.store'), [
+            'email' => $bayiOnly->username,
+            'password' => 'password',
+        ])->assertRedirect('/sales/bayi');
+        auth()->logout();
+
+        $this->post(route('login.store'), [
+            'email' => $customersOnly->username,
+            'password' => 'password',
+        ])->assertRedirect('/cari');
     }
 
     public function test_admin_user_resource_list_is_unique_and_grouped(): void

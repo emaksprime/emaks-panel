@@ -8,7 +8,6 @@ use App\Models\PageConfig;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
-use RuntimeException;
 
 class SalesMainPageService
 {
@@ -79,20 +78,7 @@ class SalesMainPageService
         $source = $this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source();
 
         $effectiveRepresentativeCode = $this->effectiveRepresentativeCode($user, $scope);
-        $allowed = collect($source->allowed_params ?? []);
-        $whitelistedParameters = collect([
-            'date_from' => $filters['date_from'],
-            'date_to' => $filters['date_to'],
-            'grain' => $filters['grain'],
-            'detail_type' => $filters['detail_type'],
-            'scope_key' => $normalizedScopeKey,
-            'rep_code' => $effectiveRepresentativeCode,
-            'cari_filter' => $filters['cari_filter'],
-            'customer_filter' => $filters['cari_filter'],
-            'search' => $input['search'] ?? null,
-            'page' => $input['page'] ?? 1,
-            'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
-        ])->only($allowed)->all();
+        $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input);
 
         $this->compileTemplate($source, $whitelistedParameters);
 
@@ -102,11 +88,21 @@ class SalesMainPageService
             : collect($source->preview_payload[$filters['detail_type']] ?? []);
 
         if ($rows->isEmpty()) {
-            if ($filters['cari_filter'] !== '') {
-                return $this->emptySalesDataset($user, $page, $source, $scope, $filters, $normalizedScopeKey, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult);
-            }
+            $fallbackSource = $this->fallbackSourceForEmptyRows($source, $normalizedScopeKey);
 
-            throw new RuntimeException('Seçili filtrelerde satış kaydı bulunamadı.');
+            if ($fallbackSource !== null) {
+                $source = $fallbackSource;
+                $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input);
+                $this->compileTemplate($source, $whitelistedParameters);
+
+                $rows = $this->usesN8nGateway($source)
+                    ? collect($this->fetchN8nRows($source, $filters, $scope, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult))
+                    : collect($source->preview_payload[$filters['detail_type']] ?? []);
+            }
+        }
+
+        if ($rows->isEmpty()) {
+            return $this->emptySalesDataset($user, $page, $source, $scope, $filters, $normalizedScopeKey, $effectiveRepresentativeCode, $whitelistedParameters, $gatewayResult);
         }
 
         $groupRows = $rows
@@ -137,6 +133,9 @@ class SalesMainPageService
                 'scopeKey' => $normalizedScopeKey,
                 'periodLabel' => $periodLabel,
                 'customerFilter' => $filters['cari_filter'],
+                'brandFilter' => $filters['brand_filter'],
+                'categoryFilter' => $filters['category_filter'],
+                'productFilter' => $filters['product_filter'],
             ],
             'scope' => [
                 'key' => $normalizedScopeKey,
@@ -168,9 +167,7 @@ class SalesMainPageService
                 ],
             ],
             'chart' => [
-                'title' => $filters['cari_filter'] !== ''
-                    ? 'Seçili Müşteri Karşılaştırması'
-                    : ($filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı'),
+                'title' => $this->chartTitle($filters),
                 'subtitle' => $filters['detail_type'] === 'urun'
                     ? 'Ürün ve model bazlı payların dağılımı.'
                     : 'Satış gruplarının toplam ciro içindeki payları.',
@@ -226,6 +223,9 @@ class SalesMainPageService
     ): array {
         $periodLabel = $this->periodLabel($filters['date_from'], $filters['date_to']);
         $isLive = $this->usesN8nGateway($source);
+        $notice = $filters['cari_filter'] !== ''
+            ? 'Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.'
+            : 'Seçili filtrelerde satış kaydı bulunamadı.';
 
         return [
             'filters' => [
@@ -236,6 +236,9 @@ class SalesMainPageService
                 'scopeKey' => $normalizedScopeKey,
                 'periodLabel' => $periodLabel,
                 'customerFilter' => $filters['cari_filter'],
+                'brandFilter' => $filters['brand_filter'],
+                'categoryFilter' => $filters['category_filter'],
+                'productFilter' => $filters['product_filter'],
             ],
             'scope' => [
                 'key' => $normalizedScopeKey,
@@ -251,9 +254,7 @@ class SalesMainPageService
                 ['label' => 'Aktif Kapsam', 'value' => $scope['label'], 'raw' => $normalizedScopeKey],
             ],
             'chart' => [
-                'title' => $filters['cari_filter'] !== ''
-                    ? 'Seçili Müşteri Karşılaştırması'
-                    : ($filters['detail_type'] === 'urun' ? 'Ürün Ciro Dağılımı' : 'Satış Dağılımı'),
+                'title' => $this->chartTitle($filters),
                 'subtitle' => $filters['detail_type'] === 'urun'
                     ? 'Ürün ve model bazlı payların dağılımı.'
                     : 'Satış gruplarının toplam ciro içindeki payları.',
@@ -280,7 +281,7 @@ class SalesMainPageService
                 'driver' => $source->db_type,
                 'status' => $source->active ? 'active' : 'inactive',
                 'mode' => $isLive ? 'live' : 'preview',
-                'notice' => 'Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.',
+                'notice' => $notice,
                 'whitelistedParameters' => $whitelistedParameters,
                 'gatewayMeta' => $gatewayResult['meta'] ?? null,
                 'gatewayRequest' => $gatewayResult['request'] ?? null,
@@ -319,6 +320,52 @@ class SalesMainPageService
     }
 
     /**
+     * @param  array<string, string>  $filters
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function whitelistedParameters(DataSource $source, array $filters, ?string $effectiveRepresentativeCode, array $input): array
+    {
+        $parameters = [
+            'date_from' => $filters['date_from'],
+            'date_to' => $filters['date_to'],
+            'grain' => $filters['grain'],
+            'detail_type' => $filters['detail_type'],
+            'scope_key' => $filters['scope_key'],
+            'rep_code' => $effectiveRepresentativeCode,
+            'cari_filter' => $filters['cari_filter'],
+            'customer_filter' => $filters['cari_filter'],
+            'search' => $input['search'] ?? null,
+            'page' => $input['page'] ?? 1,
+            'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
+        ];
+
+        if ($filters['detail_type'] === 'urun') {
+            $parameters['brand_filter'] = $filters['brand_filter'];
+            $parameters['category_filter'] = $filters['category_filter'];
+            $parameters['product_filter'] = $filters['product_filter'];
+        }
+
+        return collect($parameters)->only(collect($source->allowed_params ?? []))->all();
+    }
+
+    private function fallbackSourceForEmptyRows(DataSource $source, string $scopeKey): ?DataSource
+    {
+        if ($source->code === 'sales_main_dashboard') {
+            return null;
+        }
+
+        if (! in_array($this->normalizeScopeKey($scopeKey), ['online_perakende', 'bayi_proje'], true)) {
+            return null;
+        }
+
+        return DataSource::query()
+            ->where('code', 'sales_main_dashboard')
+            ->where('active', true)
+            ->first();
+    }
+
+    /**
      * @param  Collection<int, array<string, mixed>>  $scopes
      * @return Collection<int, array<string, mixed>>
      */
@@ -334,13 +381,20 @@ class SalesMainPageService
         $userRepCode = trim((string) ($user?->temsilci_kodu ?? ''));
 
         return $scopes
-            ->filter(function (array $scope) use ($canSeeAll, $userRepCode, $canSeeOnline, $canSeeBayi) {
+            ->filter(function (array $scope) use ($user, $canSeeAll, $userRepCode, $canSeeOnline, $canSeeBayi) {
+                $normalizedKey = $this->normalizeScopeKey((string) ($scope['key'] ?? ''));
+                $scopeResourceCode = $this->scopeResourceCode($scope);
+
+                if ($scopeResourceCode !== null && $this->access->userHasDenyOverride($user, $scopeResourceCode)) {
+                    return false;
+                }
+
                 if ($canSeeAll) {
                     return true;
                 }
 
                 if (($scope['navigateTo'] ?? null) !== null) {
-                    return match ($this->normalizeScopeKey((string) ($scope['key'] ?? ''))) {
+                    return match ($normalizedKey) {
                         'online_perakende' => $canSeeOnline,
                         'bayi_proje' => $canSeeBayi,
                         default => false,
@@ -351,9 +405,50 @@ class SalesMainPageService
                     return false;
                 }
 
-                return $userRepCode !== '' && $userRepCode === $scope['repCode'];
+                if ($scopeResourceCode !== null && $this->access->userCanAccess($user, $scopeResourceCode)) {
+                    return true;
+                }
+
+                return $this->isOwnRepresentativeScope($userRepCode, $scope);
             })
             ->values();
+    }
+
+    private function scopeResourceCode(array $scope): ?string
+    {
+        $configuredResourceCode = trim((string) ($scope['resourceCode'] ?? ''));
+
+        if ($configuredResourceCode !== '') {
+            return $configuredResourceCode;
+        }
+
+        return match ($this->normalizeScopeKey((string) ($scope['key'] ?? ''))) {
+            'all' => 'sales_main_all',
+            'online_perakende' => 'sales_online',
+            'bayi_proje' => 'sales_bayi',
+            'umit' => 'sales_rep_umit_yildiz',
+            'salih' => 'sales_rep_salih_cakir',
+            'bulent_saglam' => 'sales_rep_bulent_saglam',
+            default => null,
+        };
+    }
+
+    private function isOwnRepresentativeScope(string $userRepCode, array $scope): bool
+    {
+        if ($userRepCode === '') {
+            return false;
+        }
+
+        return $this->ownRepresentativeScopeResourceCode($userRepCode) === $this->scopeResourceCode($scope);
+    }
+
+    private function ownRepresentativeScopeResourceCode(string $repCode): ?string
+    {
+        return match ($repCode) {
+            '0003' => 'sales_rep_umit_yildiz',
+            '0024' => 'sales_rep_salih_cakir',
+            default => null,
+        };
     }
 
     private function configuredManagementScopes(array $filters): Collection
@@ -372,6 +467,7 @@ class SalesMainPageService
             'salesView' => 'temsilci',
             'note' => 'Bülent Sağlam temsilci kapsamı',
             'navigateTo' => null,
+            'resourceCode' => 'sales_rep_bulent_saglam',
         ]);
     }
 
@@ -380,6 +476,11 @@ class SalesMainPageService
         $canSeeAll = $this->access->userCanAccess($user, 'sales_main_all');
         $userRepCode = trim((string) ($user?->temsilci_kodu ?? ''));
         $scopeRepCode = trim((string) ($scope['repCode'] ?? ''));
+        $scopeResourceCode = $this->scopeResourceCode($scope);
+
+        if (in_array($scopeResourceCode, ['sales_online', 'sales_bayi'], true)) {
+            return null;
+        }
 
         if ($canSeeAll) {
             if (($scope['allowAll'] ?? false) === true && ($scope['salesView'] ?? 'tumu') === 'tumu') {
@@ -389,7 +490,7 @@ class SalesMainPageService
             return $scopeRepCode !== '' ? $scopeRepCode : null;
         }
 
-        return $userRepCode !== '' ? $userRepCode : ($scopeRepCode !== '' ? $scopeRepCode : null);
+        return $scopeRepCode !== '' ? $scopeRepCode : ($userRepCode !== '' ? $userRepCode : null);
     }
 
     /**
@@ -411,6 +512,16 @@ class SalesMainPageService
         $dateFrom = $this->normalizeDate($input['date_from'] ?? null, $grain, true, $today);
         $dateTo = $this->normalizeDate($input['date_to'] ?? null, $grain, false, $today);
 
+        $brandFilter = $detailType === 'urun'
+            ? $this->normalizeBrandFilter($input['brand_filter'] ?? 'all')
+            : 'all';
+        $categoryFilter = $detailType === 'urun'
+            ? $this->normalizeCategoryFilter($input['category_filter'] ?? 'all')
+            : 'all';
+        $productFilter = $detailType === 'urun'
+            ? $this->normalizeProductFilter($input['product_filter'] ?? '')
+            : '';
+
         return [
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
@@ -418,7 +529,30 @@ class SalesMainPageService
             'detail_type' => $detailType,
             'scope_key' => $this->normalizeScopeKey((string) ($input['scope_key'] ?? $defaults['scopeKey'] ?? 'all')),
             'cari_filter' => $this->normalizeCustomerFilter($input['customer_filter'] ?? $input['cari_filter'] ?? ''),
+            'brand_filter' => $brandFilter,
+            'category_filter' => $categoryFilter,
+            'product_filter' => $productFilter,
         ];
+    }
+
+    private function normalizeBrandFilter(mixed $value): string
+    {
+        $value = strtolower(str_replace('-', '_', trim((string) $value)));
+
+        return in_array($value, ['philips', 'emaks_prime'], true) ? $value : 'all';
+    }
+
+    private function normalizeCategoryFilter(mixed $value): string
+    {
+        $value = strtoupper(trim((string) $value));
+        $allowedCategories = ['A1', 'AS1', 'D1', 'G1', 'K1', 'KA1', 'M1', 'O1', 'OT1', 'YM1'];
+
+        return in_array($value, $allowedCategories, true) ? $value : 'all';
+    }
+
+    private function normalizeProductFilter(mixed $value): string
+    {
+        return mb_substr(trim((string) $value), 0, 255);
     }
 
     private function normalizeCustomerFilter(mixed $value): string
@@ -484,6 +618,26 @@ class SalesMainPageService
     }
 
     /**
+     * @param  array<string, string>  $filters
+     */
+    private function chartTitle(array $filters): string
+    {
+        if (($filters['cari_filter'] ?? '') !== '') {
+            return 'Seçili Müşteri Karşılaştırması';
+        }
+
+        if (($filters['detail_type'] ?? 'cari') !== 'urun') {
+            return 'Satış Dağılımı';
+        }
+
+        return match ($filters['brand_filter'] ?? 'all') {
+            'philips' => 'PHILIPS Ürün Satış Dağılımı',
+            'emaks_prime' => 'EMAKS PRIME Ürün Satış Dağılımı',
+            default => 'Marka Satış Karşılaştırması',
+        };
+    }
+
+    /**
      * @param  Collection<int, array<string, mixed>>  $groupRows
      * @param  Collection<int, array<string, mixed>>  $detailRows
      * @param  array<string, string>  $filters
@@ -492,6 +646,10 @@ class SalesMainPageService
     private function chartItems(Collection $groupRows, Collection $detailRows, array $filters, float $positiveTotal): array
     {
         if (($filters['cari_filter'] ?? '') === '') {
+            if (($filters['detail_type'] ?? 'cari') === 'urun' && ($filters['brand_filter'] ?? 'all') === 'all') {
+                return $this->brandChartItems($groupRows, $detailRows);
+            }
+
             return $groupRows
                 ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
                 ->values()
@@ -597,6 +755,97 @@ class SalesMainPageService
                 ];
             })
             ->all();
+    }
+
+    /**
+     * @param  Collection<int, array<string, mixed>>  $groupRows
+     * @param  Collection<int, array<string, mixed>>  $detailRows
+     * @return array<int, array<string, mixed>>
+     */
+    private function brandChartItems(Collection $groupRows, Collection $detailRows): array
+    {
+        $rows = $groupRows
+            ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) === 'GRUP')
+            ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
+            ->values();
+
+        if ($rows->isEmpty()) {
+            $rows = $detailRows
+                ->filter(fn (array $row): bool => ($row['satir_tipi'] ?? null) === 'DETAY')
+                ->reject(fn (array $row): bool => $this->rowExcludedFromTotal($row))
+                ->values();
+        }
+
+        $brands = [];
+
+        foreach ($rows as $row) {
+            $brand = $this->brandBucket($row);
+            $key = $brand['label'];
+
+            if (! isset($brands[$key])) {
+                $brands[$key] = [
+                    'label' => $brand['label'],
+                    'brandCode' => $brand['code'],
+                    'brandName' => $brand['name'],
+                    'marka_adi' => $brand['name'],
+                    'amount' => 0.0,
+                    'quantity' => 0.0,
+                    'excludedFromTotal' => false,
+                    'isConsignment' => false,
+                    'isTeshir' => false,
+                ];
+            }
+
+            $brands[$key]['amount'] += (float) ($row['ciro'] ?? 0);
+            $brands[$key]['quantity'] += (float) ($row['adet'] ?? 0);
+        }
+
+        $includedPositiveTotal = collect($brands)
+            ->where('amount', '>', 0)
+            ->sum('amount');
+
+        return collect($brands)
+            ->sortByDesc(fn (array $item): float => abs((float) $item['amount']))
+            ->values()
+            ->map(function (array $item, int $index) use ($includedPositiveTotal) {
+                $amount = (float) $item['amount'];
+
+                return [
+                    ...$item,
+                    'amount' => $amount,
+                    'amountLabel' => $this->money($amount),
+                    'quantity' => (float) $item['quantity'],
+                    'quantityLabel' => $this->quantity((float) $item['quantity']),
+                    'percentage' => $includedPositiveTotal > 0 && $amount > 0
+                        ? round(($amount / $includedPositiveTotal) * 100, 1)
+                        : 0,
+                    'color' => $this->palette($index),
+                    'isNegative' => $amount < 0,
+                ];
+            })
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @return array{label: string, code: string, name: string}
+     */
+    private function brandBucket(array $row): array
+    {
+        $rawCode = trim((string) ($row['brand_code'] ?? ''));
+        $rawName = trim((string) ($row['brand_name'] ?? $row['marka_adi'] ?? ''));
+        $codeText = $this->asciiAccountText($rawCode);
+        $nameText = $this->asciiAccountText($rawName);
+
+        if ($codeText === 'PHILIPS' || $nameText === 'PHILIPS') {
+            return ['label' => 'PHILIPS', 'code' => $rawCode, 'name' => 'PHILIPS'];
+        }
+
+        if (in_array($codeText, ['EMAKS PRIME', 'EMAKS'], true) || in_array($nameText, ['EMAKS PRIME', 'EMAKS'], true)) {
+            return ['label' => 'EMAKS PRIME', 'code' => $rawCode, 'name' => 'EMAKS PRIME'];
+        }
+
+        return ['label' => 'Diğer Marka', 'code' => $rawCode, 'name' => $rawName !== '' ? $rawName : 'Diğer Marka'];
     }
 
     private function isConsignmentAccount(string $label, string $customerCode): bool
@@ -797,7 +1046,7 @@ class SalesMainPageService
 
                 return [
                     ...$row,
-                    'parent_key' => $fallbackGroup !== 'Diğer' && in_array($fallbackGroup, $knownGroups, true) ? $fallbackGroup : 'Diğer',
+                    'parent_key' => in_array($fallbackGroup, $knownGroups, true) ? $fallbackGroup : 'Diğer Gelirler',
                 ];
             }
 
@@ -805,14 +1054,23 @@ class SalesMainPageService
         });
     }
 
+    private function fallbackSalesGroupLabel(string $value): string
+    {
+        $label = trim($value);
+
+        if ($label === '' || $label === '-') {
+            return 'Diğer Gelirler';
+        }
+
+        return $label;
+    }
+
     /**
      * @param  array<string, mixed>  $row
      */
     private function groupName(array $row): string
     {
-        $name = trim((string) ($row['cari_grup_adi'] ?? ''));
-
-        return $name !== '' ? $name : 'Diğer';
+        return $this->fallbackSalesGroupLabel(trim((string) ($row['cari_grup_adi'] ?? '')));
     }
 
     /**
@@ -828,13 +1086,13 @@ class SalesMainPageService
      */
     private function rowLabel(array $row): string
     {
-        $label = trim((string) ($row['satir_adi'] ?? $row['cari_grup_adi'] ?? ''));
+        $label = $this->fallbackSalesGroupLabel(trim((string) ($row['satir_adi'] ?? $row['cari_grup_adi'] ?? '')));
 
         if (($row['satir_tipi'] ?? null) === 'KONSINYE' && $label !== '' && ! str_contains(mb_strtoupper($label, 'UTF-8'), 'KONS')) {
             return 'KONSİNYE - '.$label;
         }
 
-        return $label !== '' ? $label : 'Diğer';
+        return $label;
     }
 
     /**

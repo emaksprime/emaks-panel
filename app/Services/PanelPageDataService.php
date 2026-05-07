@@ -43,6 +43,7 @@ class PanelPageDataService
             return $this->emptyDataset($page, $filters, $this->missingQueryMessage($page));
         }
 
+        $stockScope = $this->stockScopeFor($source, $page, $user);
         $payload = $this->payloadFor($source, $filters, $user);
         $result = $this->dataSources->execute($source, $payload);
         $rows = $this->rowsFrom($result);
@@ -65,6 +66,7 @@ class PanelPageDataService
                     : 'Canlı veri alındı.',
                 'gatewayMeta' => $result['meta'] ?? null,
                 'gatewayRequest' => $result['request'] ?? null,
+                'stockScope' => $stockScope,
             ],
         ];
     }
@@ -101,6 +103,7 @@ class PanelPageDataService
             return $this->emptyDataset($page, $filters, $this->missingQueryMessage($page));
         }
 
+        $stockScope = $this->stockScopeFor($source, $page, $user);
         $payload = $this->payloadFor($source, $filters, $user);
         $result = $this->dataSources->execute($source, $payload);
         $rows = $this->rowsFrom($result);
@@ -123,8 +126,22 @@ class PanelPageDataService
                     : 'Canlı veri alındı.',
                 'gatewayMeta' => $result['meta'] ?? null,
                 'gatewayRequest' => $result['request'] ?? null,
+                'stockScope' => $stockScope,
             ],
         ];
+    }
+
+    private function stockScopeFor(DataSource $source, Page $page, User $user): ?string
+    {
+        if ($source->code !== 'stock_dashboard' && ! in_array($page->code, ['stock', 'stock_critical'], true)) {
+            return null;
+        }
+
+        $scope = $this->access->stockScopeFor($user);
+
+        abort_unless($scope !== null, 403);
+
+        return $scope;
     }
 
     private function userCanAccessSource(User $user, string $sourceCode, string $resourceCode): bool
@@ -351,6 +368,7 @@ class PanelPageDataService
             'price_list' => $input['price_list'] ?? null,
             'discount_code' => (string) ($input['discount_code'] ?? ''),
             'search' => (string) ($input['search'] ?? ''),
+            'status' => (string) ($input['status'] ?? ''),
             'page' => (string) max(1, (int) ($input['page'] ?? 1)),
             'limit' => max(1, min(500, (int) ($input['limit'] ?? 100))),
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),

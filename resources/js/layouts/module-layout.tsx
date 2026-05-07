@@ -11,13 +11,55 @@ import { UserMenuContent } from '@/components/user-menu-content';
 import type { SharedPageProps } from '@/types';
 
 const moduleItems = [
-    { label: 'Satış Yönetimi', href: '/sales/main', match: ['/sales/main', '/sales/online', '/sales/bayi'] },
-    { label: 'Stok Yönetimi', href: '/stock', match: ['/stock', '/stock/critical'] },
-    { label: 'Sipariş Yönetimi', href: '/orders', match: ['/orders', '/orders/alinan', '/orders/verilen'] },
-    { label: 'Teknik Servis', href: '/technical-service', match: ['/technical-service', '/technical-service/dashboard', '/technical-service/serial-query', '/technical-service/technicians', '/technical-service/earnings', '/technical-service/admin'] },
-    { label: 'Müşteri Yönetimi', href: '/cari', match: ['/cari', '/cari/balance', '/cari/detail'] },
-    { label: 'Proforma', href: '/proforma', match: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'] },
+    {
+        label: 'Satış Yönetimi',
+        candidates: ['/sales/main', '/sales/online', '/sales/bayi'],
+        match: ['/sales/main', '/sales/online', '/sales/bayi'],
+    },
+    {
+        label: 'Stok Yönetimi',
+        candidates: ['/stock', '/stock/critical'],
+        match: ['/stock', '/stock/critical'],
+    },
+    {
+        label: 'Sipariş Yönetimi',
+        candidates: ['/orders/alinan', '/orders/verilen', '/orders'],
+        match: ['/orders', '/orders/alinan', '/orders/verilen'],
+    },
+    {
+        label: 'Teknik Servis',
+        candidates: [
+            '/technical-service',
+            '/technical-service/dashboard',
+            '/technical-service/serial-query',
+            '/technical-service/technicians',
+            '/technical-service/earnings',
+            '/technical-service/admin',
+        ],
+        match: [
+            '/technical-service',
+            '/technical-service/dashboard',
+            '/technical-service/serial-query',
+            '/technical-service/technicians',
+            '/technical-service/earnings',
+            '/technical-service/admin',
+        ],
+    },
+    {
+        label: 'Müşteri Yönetimi',
+        candidates: ['/cari', '/cari/balance'],
+        match: ['/cari', '/cari/balance', '/cari/detail', '/cari/document-detail'],
+    },
+    {
+        label: 'Proforma',
+        candidates: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
+        match: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
+    },
 ];
+
+function selectModuleHref(candidates: string[], visibleHrefs: Set<string>) {
+    return candidates.find((href) => visibleHrefs.has(href)) ?? null;
+}
 
 export default function ModuleLayout({ children }: { children: React.ReactNode }) {
     const { auth, panelNavigation, page } = usePage<SharedPageProps & { page?: { routePath?: string } }>().props;
@@ -40,7 +82,7 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                         {moduleItems
                             .map((item) => ({
                                 ...item,
-                                visibleHref: item.match.find((href) => visibleHrefs.has(href)) ?? (visibleHrefs.has(item.href) ? item.href : null),
+                                visibleHref: selectModuleHref(item.candidates, visibleHrefs),
                             }))
                             .filter((item) => item.visibleHref !== null)
                             .map((item) => {
@@ -48,8 +90,8 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
 
                                 return (
                                     <Link
-                                        key={item.href}
-                                        href={item.visibleHref ?? item.href}
+                                        key={item.label}
+                                        href={item.visibleHref ?? '#'}
                                         className={[
                                             'shrink-0 rounded-full border px-3 py-2 text-sm font-semibold transition xl:px-4',
                                             active

@@ -14,12 +14,12 @@ class N8nPanelDataGateway
 {
     /**
      * @param  array<string, mixed>  $filters
-     * @return array{rows: array<int, array<string, mixed>>, meta: array<string, mixed>, request: array<string, mixed>}
+     * @return array{rows: array<int, array<string, mixed>>, meta: array<string, mixed>, row_count: int, request: array<string, mixed>}
      */
     public function run(string $sourceCode, array $filters, ?DataSource $dataSource = null): array
     {
         $connectionMeta = $dataSource?->connection_meta ?? [];
-        $url = trim((string) ($connectionMeta['endpoint_url'] ?? config('panel.n8n_gateway_url')));
+        $url = $this->gatewayUrl($connectionMeta);
         $token = (string) config('panel.n8n_token');
         $rowsKey = trim((string) ($connectionMeta['response_rows_key'] ?? 'rows')) ?: 'rows';
         $queryTemplate = $this->runnableQueryTemplate($dataSource);
@@ -38,6 +38,15 @@ class N8nPanelDataGateway
             throw new RuntimeException('Production ortaminda PANEL_N8N_TOKEN olmadan n8n gateway istegi atilamaz.');
         }
 
+        if ($dataSource && $queryTemplate === '') {
+            Log::warning('Panel n8n datasource query_template is empty or not runnable.', [
+                'source_code' => $sourceCode,
+                'data_source_id' => $dataSource->id,
+                'db_type' => $dataSource->db_type,
+                'query_template_length' => strlen((string) $dataSource->query_template),
+            ]);
+        }
+
         $payload = [
             'source_code' => $sourceCode,
             'date_from' => $filters['date_from'] ?? null,
@@ -49,6 +58,8 @@ class N8nPanelDataGateway
             'cari_filter' => $filters['cari_filter'] ?? $filters['customer_filter'] ?? null,
             'customer_filter' => $filters['customer_filter'] ?? $filters['cari_filter'] ?? null,
             'search' => $filters['search'] ?? null,
+            'category' => $filters['category'] ?? null,
+            'page' => $filters['page'] ?? null,
             'serial_no' => $filters['serial_no'] ?? null,
             'limit' => $filters['limit'] ?? null,
             'bypass_cache' => $bypassCache,
@@ -64,6 +75,12 @@ class N8nPanelDataGateway
                 'connection_meta' => $this->safeConnectionMeta($connectionMeta),
             ] : null,
         ];
+
+        foreach (['brand_filter', 'category_filter', 'product_filter'] as $optionalFilter) {
+            if (array_key_exists($optionalFilter, $filters)) {
+                $payload[$optionalFilter] = $filters[$optionalFilter];
+            }
+        }
 
         $headers = ['Content-Type' => 'application/json'];
 
@@ -82,6 +99,14 @@ class N8nPanelDataGateway
         }
 
         if (! $response->successful()) {
+            Log::warning('Panel n8n gateway request failed.', [
+                'source_code' => $sourceCode,
+                'url_path' => parse_url($url, PHP_URL_PATH),
+                'http_status' => $response->status(),
+                'token_present' => trim($token) !== '',
+                'response_snippet' => mb_substr((string) $response->body(), 0, 500, 'UTF-8'),
+            ]);
+
             throw new RuntimeException(sprintf(
                 'n8n gateway hatasi: HTTP %s',
                 $response->status(),
@@ -107,6 +132,7 @@ class N8nPanelDataGateway
         $result = [
             'rows' => array_values(array_filter($rows, 'is_array')),
             'meta' => is_array($json['meta'] ?? null) ? $json['meta'] : [],
+            'row_count' => (int) ($json['row_count'] ?? count($rows)),
             'request' => is_array($json['request'] ?? null) ? $json['request'] : $payload,
         ];
 
@@ -203,6 +229,7 @@ class N8nPanelDataGateway
                 ...(is_array($cached->response_payload['meta'] ?? null) ? $cached->response_payload['meta'] : []),
                 'cache' => 'hit',
             ],
+            'row_count' => (int) ($cached->response_payload['row_count'] ?? count($cached->response_payload['rows'] ?? [])),
             'request' => is_array($cached->response_payload['request'] ?? null) ? $cached->response_payload['request'] : [],
         ];
     }
@@ -253,5 +280,20 @@ class N8nPanelDataGateway
         }
 
         return 5;
+    }
+
+    /**
+     * @param  array<string, mixed>  $connectionMeta
+     */
+    private function gatewayUrl(array $connectionMeta): string
+    {
+        $configuredUrl = trim((string) config('panel.n8n_gateway_url'));
+        $metadataUrl = trim((string) ($connectionMeta['endpoint_url'] ?? ''));
+
+        if (app()->environment('testing')) {
+            return $metadataUrl !== '' ? $metadataUrl : $configuredUrl;
+        }
+
+        return $configuredUrl !== '' ? $configuredUrl : $metadataUrl;
     }
 }

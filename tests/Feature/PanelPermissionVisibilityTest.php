@@ -125,13 +125,107 @@ class PanelPermissionVisibilityTest extends TestCase
             'orders_verilen',
         ]);
 
-        foreach (['/dashboard', '/sales/online', '/stock', '/orders', '/orders/alinan', '/orders/verilen'] as $path) {
+        foreach (['/dashboard', '/sales/online', '/stock', '/orders/alinan', '/orders/verilen'] as $path) {
             $this->actingAs($user)->get($path)->assertOk();
         }
 
+        $this->actingAs($user)->get('/orders')->assertRedirect('/orders/alinan');
+
         foreach (['/sales/main', '/sales/bayi', '/cari', '/proforma', '/admin'] as $path) {
+            $this->actingAs($user)
+                ->get($path)
+                ->assertForbidden()
+                ->assertSee('Yetki bulunmamaktadır.', false);
+        }
+    }
+
+    public function test_orders_landing_redirects_to_first_authorized_order_page(): void
+    {
+        $receivedUser = $this->createExactUser(['orders', 'orders_alinan', 'orders_verilen']);
+        $givenOnlyUser = $this->createExactUser(['orders', 'orders_verilen']);
+
+        $this->actingAs($receivedUser)->get('/orders')->assertRedirect('/orders/alinan');
+        $this->actingAs($givenOnlyUser)->get('/orders')->assertRedirect('/orders/verilen');
+    }
+
+    public function test_module_layout_uses_first_visible_route_for_module_buttons(): void
+    {
+        $moduleLayout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
+
+        $this->assertStringContainsString('selectModuleHref', $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/sales/main', '/sales/online', '/sales/bayi']", $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/stock', '/stock/critical']", $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/orders/alinan', '/orders/verilen', '/orders']", $moduleLayout);
+        $this->assertStringContainsString("candidates: ['/cari', '/cari/balance']", $moduleLayout);
+        $this->assertStringContainsString('visibleHrefs', $moduleLayout);
+        $this->assertStringNotContainsString('visibleHref: item.match.find', $moduleLayout);
+    }
+
+    public function test_technical_role_only_sees_technical_stock_and_order_pages(): void
+    {
+        $user = User::factory()->create(['role_code' => 'technical']);
+
+        $payload = $this->actingAs($user)->getJson('/api/navigation')->assertOk()->json();
+        $hrefs = collect($payload['groups'])
+            ->flatMap(fn (array $group) => $group['items'] ?? [])
+            ->pluck('href')
+            ->values()
+            ->all();
+
+        foreach ([
+            '/technical-service',
+            '/technical-service/dashboard',
+            '/technical-service/serial-query',
+            '/technical-service/technicians',
+            '/stock',
+            '/stock/critical',
+            '/orders/alinan',
+            '/orders/verilen',
+        ] as $path) {
+            $this->assertContains($path, $hrefs);
+            $this->actingAs($user)->get($path)->assertOk();
+        }
+
+        $this->assertContains('/orders', $hrefs);
+        $this->actingAs($user)->get('/orders')->assertRedirect('/orders/alinan');
+
+        foreach ([
+            '/sales/main',
+            '/sales/online',
+            '/sales/bayi',
+            '/cari',
+            '/proforma',
+            '/admin',
+        ] as $path) {
+            $this->assertNotContains($path, $hrefs);
             $this->actingAs($user)->get($path)->assertForbidden();
         }
+    }
+
+    public function test_default_roles_can_see_stock_and_order_pages_unless_user_deny_blocks_them(): void
+    {
+        $access = app(PanelAccessService::class);
+
+        foreach (['sales', 'stock', 'orders', 'technical', 'customer', 'proforma', 'viewer'] as $roleCode) {
+            $user = User::factory()->create(['role_code' => $roleCode]);
+
+            foreach (['stock', 'stock_critical', 'stock_locks', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+                $this->assertTrue($access->userCanAccess($user, $resourceCode), "{$roleCode} should access {$resourceCode}");
+            }
+
+            if ($roleCode !== 'manager') {
+                $this->assertFalse($access->userCanAccess($user, 'stock_all'), "{$roleCode} should not access stock_all by default");
+            }
+        }
+
+        $viewer = User::factory()->create(['role_code' => 'viewer']);
+        UserAccess::query()->create([
+            'user_id' => $viewer->id,
+            'resource_code' => 'stock',
+            'can_view' => false,
+        ]);
+
+        $this->assertFalse($access->userCanAccess($viewer->refresh(), 'stock'));
     }
 
     public function test_exact_user_data_api_access_is_enforced_before_gateway_call(): void
@@ -145,7 +239,7 @@ class PanelPermissionVisibilityTest extends TestCase
             ]),
         ]);
 
-        $user = $this->createExactUser(['dashboard', 'stock']);
+        $user = $this->createExactUser(['dashboard', 'stock', 'stock_locks']);
 
         $this->actingAs($user)
             ->postJson('/api/data/stock', ['search' => 'STK', 'bypass_cache' => true])
@@ -156,7 +250,8 @@ class PanelPermissionVisibilityTest extends TestCase
 
         $this->actingAs($user)
             ->postJson('/api/data/cari', ['bypass_cache' => true])
-            ->assertForbidden();
+            ->assertForbidden()
+            ->assertJsonPath('message', 'Yetki bulunmamaktadır.');
     }
 
     public function test_user_deny_override_blocks_role_permission(): void
@@ -184,7 +279,7 @@ class PanelPermissionVisibilityTest extends TestCase
             'temsilci_kodu' => null,
             'aktif' => true,
             'force_password_change' => false,
-            'access' => ['sales_online', 'stock', 'orders', 'orders_alinan', 'orders_verilen'],
+            'access' => ['sales_online', 'stock', 'stock_locks', 'orders', 'orders_alinan', 'orders_verilen'],
             'denied_access' => [],
             'strict_access' => true,
         ]);
@@ -193,7 +288,7 @@ class PanelPermissionVisibilityTest extends TestCase
 
         $createdUser = User::query()->where('username', 'strict.user')->firstOrFail();
 
-        foreach (['dashboard', 'sales_online', 'stock', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+        foreach (['dashboard', 'sales_online', 'stock', 'stock_locks', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
             $this->assertDatabaseHas('panel.user_access', [
                 'user_id' => $createdUser->id,
                 'resource_code' => $resourceCode,
@@ -253,6 +348,18 @@ class PanelPermissionVisibilityTest extends TestCase
 
         $this->assertStringContainsString('Sadece seçilenlere izin ver', $component);
         $this->assertStringContainsString('strict_access', $component);
+        $this->assertStringContainsString('Bu modüle erişim', $component);
+        $this->assertStringContainsString('Ekranlar', $component);
+        $this->assertStringContainsString('Butonlar/Aksiyonlar', $component);
+        $this->assertStringContainsString('Veri kaynakları', $component);
+        $this->assertStringContainsString('Kapsamlar/Scope', $component);
+        $this->assertStringContainsString('setModuleAccess', $component);
+        $this->assertStringContainsString('salesScopeResourceCodes', $component);
+        $this->assertStringContainsString("'sales_main_all'", $component);
+        $this->assertStringContainsString("'sales_online'", $component);
+        $this->assertStringContainsString("'sales_bayi'", $component);
+        $this->assertStringContainsString("'sales_rep_salih_cakir'", $component);
+        $this->assertStringContainsString("groupName !== 'Satış Yönetimi'", $component);
     }
 
     /**
@@ -263,6 +370,7 @@ class PanelPermissionVisibilityTest extends TestCase
         $user = User::factory()->create(['role_code' => 'manager']);
         $allowed = collect($allowedResourceCodes)
             ->push('dashboard')
+            ->when(in_array('stock', $allowedResourceCodes, true), fn ($resources) => $resources->push('stock_locks'))
             ->filter()
             ->unique()
             ->values();

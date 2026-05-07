@@ -8,6 +8,7 @@ import { KpiCards } from '@/components/sales-main/KpiCards.jsx';
 import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 import { CustomerFilterPicker } from '@/components/sales-main/CustomerFilterPicker.jsx';
+import { ProductFilter } from '@/components/sales-main/ProductFilter.jsx';
 
 function queryParam(name) {
     if (typeof window === 'undefined') {
@@ -17,18 +18,130 @@ function queryParam(name) {
     return new URLSearchParams(window.location.search).get(name);
 }
 
+function formatDate(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+}
+
+function resolvePeriodRange(grain) {
+    const today = new Date();
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+    if (grain === 'week') {
+        const day = start.getDay();
+        const diff = day === 0 ? 6 : day - 1;
+        start.setDate(start.getDate() - diff);
+    } else if (grain === 'month') {
+        start.setDate(1);
+    } else if (grain === 'year') {
+        start.setMonth(0, 1);
+    } else if (grain === 'day') {
+        // keep today for both start and end
+    }
+
+    return {
+        dateFrom: formatDate(start),
+        dateTo: formatDate(end),
+    };
+}
+
+const RESPONSE_SIGNATURE_KEYS = [
+    'detail_type',
+    'scope_key',
+    'date_from',
+    'date_to',
+    'brand_filter',
+    'category_filter',
+    'product_filter',
+    'customer_filter',
+];
+
+function normalizeSignatureValue(key, value, fallback = '') {
+    const raw = String(value ?? fallback).trim();
+
+    if (['brand_filter', 'category_filter'].includes(key)) {
+        const normalized = raw.replace(/-/g, '_').toLocaleLowerCase('tr');
+
+        if (normalized === '' || ['all', 'tumu', 'tüm', 'tümü'].includes(normalized)) {
+            return 'all';
+        }
+
+        return key === 'category_filter' ? raw.toLocaleUpperCase('tr') : normalized;
+    }
+
+    if (key === 'product_filter' || key === 'customer_filter') {
+        return raw;
+    }
+
+    if (key === 'detail_type') {
+        return (raw || fallback).toLocaleLowerCase('tr');
+    }
+
+    return raw;
+}
+
+function responseFilterValue(payload, responseFilters, key, camelKey, fallback = '') {
+    const gatewayRequest = payload?.queryMeta?.gatewayRequest ?? {};
+    const gatewayParams = gatewayRequest?.params ?? {};
+
+    return responseFilters?.[camelKey]
+        ?? gatewayParams?.[key]
+        ?? gatewayRequest?.[key]
+        ?? fallback;
+}
+
+function requestSignature(filters) {
+    return {
+        detail_type: normalizeSignatureValue('detail_type', filters.detail_type, 'cari'),
+        scope_key: normalizeSignatureValue('scope_key', filters.scope_key, 'all'),
+        date_from: normalizeSignatureValue('date_from', filters.date_from),
+        date_to: normalizeSignatureValue('date_to', filters.date_to),
+        brand_filter: normalizeSignatureValue('brand_filter', filters.brand_filter, 'all'),
+        category_filter: normalizeSignatureValue('category_filter', filters.category_filter, 'all'),
+        product_filter: normalizeSignatureValue('product_filter', filters.product_filter),
+        customer_filter: normalizeSignatureValue('customer_filter', filters.customer_filter),
+    };
+}
+
+function responseSignature(payload) {
+    const responseFilters = payload?.filters ?? {};
+
+    return {
+        detail_type: normalizeSignatureValue('detail_type', responseFilterValue(payload, responseFilters, 'detail_type', 'detailType', 'cari'), 'cari'),
+        scope_key: normalizeSignatureValue('scope_key', responseFilterValue(payload, responseFilters, 'scope_key', 'scopeKey', 'all'), 'all'),
+        date_from: normalizeSignatureValue('date_from', responseFilterValue(payload, responseFilters, 'date_from', 'dateFrom')),
+        date_to: normalizeSignatureValue('date_to', responseFilterValue(payload, responseFilters, 'date_to', 'dateTo')),
+        brand_filter: normalizeSignatureValue('brand_filter', responseFilterValue(payload, responseFilters, 'brand_filter', 'brandFilter', 'all'), 'all'),
+        category_filter: normalizeSignatureValue('category_filter', responseFilterValue(payload, responseFilters, 'category_filter', 'categoryFilter', 'all'), 'all'),
+        product_filter: normalizeSignatureValue('product_filter', responseFilterValue(payload, responseFilters, 'product_filter', 'productFilter')),
+        customer_filter: normalizeSignatureValue('customer_filter', responseFilterValue(payload, responseFilters, 'customer_filter', 'customerFilter')),
+    };
+}
+
+function signaturesMatch(expected, actual) {
+    return RESPONSE_SIGNATURE_KEYS.every((key) => expected[key] === actual[key]);
+}
+
 export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const config = salesMainConfig;
-    const today = new Date().toISOString().slice(0, 10);
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+    const initialGrain = queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week';
+    const initialPeriod = resolvePeriodRange(initialGrain);
     const [data, setData] = useState(salesMainData);
     const [filters, setFilters] = useState(() => ({
-        date_from: queryParam('date_from') ?? salesMainData?.filters?.dateFrom ?? monthStart,
-        date_to: queryParam('date_to') ?? salesMainData?.filters?.dateTo ?? today,
+        date_from: queryParam('date_from') ?? salesMainData?.filters?.dateFrom ?? initialPeriod.dateFrom,
+        date_to: queryParam('date_to') ?? salesMainData?.filters?.dateTo ?? initialPeriod.dateTo,
         grain: queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
         detail_type: queryParam('detail_type') ?? salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
         scope_key: queryParam('scope_key') ?? salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
         customer_filter: salesMainData?.filters?.customerFilter ?? '',
+        cari_filter: salesMainData?.filters?.customerFilter ?? '',
+        brand_filter: queryParam('brand_filter') ?? salesMainData?.filters?.brandFilter ?? 'all',
+        category_filter: queryParam('category_filter') ?? salesMainData?.filters?.categoryFilter ?? 'all',
+        product_filter: queryParam('product_filter') ?? salesMainData?.filters?.productFilter ?? '',
         bypass_cache: false,
     }));
     const [selectedCustomers, setSelectedCustomers] = useState([]);
@@ -43,6 +156,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
     useEffect(() => {
         let active = true;
+        const expectedSignature = requestSignature(filters);
 
         async function load() {
             try {
@@ -53,7 +167,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                     body: JSON.stringify(filters),
                 });
 
-                if (active) {
+                if (active && signaturesMatch(expectedSignature, responseSignature(nextData))) {
                     setData(nextData);
                 }
             } catch (caught) {
@@ -75,6 +189,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     }, [filters]);
 
     const updateFilters = (patch) => {
+        setData(null);
         setFilters((current) => ({ ...current, ...patch }));
     };
 
@@ -95,6 +210,28 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
         updateFilters({
             customer_filter: csv,
             cari_filter: csv,
+            bypass_cache: true,
+        });
+    };
+
+    const handleDetailTypeChange = (detailType) => {
+        if (detailType === 'urun') {
+            setSelectedCustomers([]);
+            updateFilters({
+                detail_type: detailType,
+                customer_filter: '',
+                cari_filter: '',
+                bypass_cache: true,
+            });
+
+            return;
+        }
+
+        updateFilters({
+            detail_type: detailType,
+            brand_filter: 'all',
+            category_filter: 'all',
+            product_filter: '',
             bypass_cache: true,
         });
     };
@@ -153,7 +290,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                                     <button
                                         key={mode.key}
                                         type="button"
-                                        onClick={() => updateFilters({ detail_type: mode.key })}
+                                        onClick={() => handleDetailTypeChange(mode.key)}
                                         className={[
                                             'rounded-lg px-3 py-2 text-sm font-semibold transition',
                                             filters.detail_type === mode.key
@@ -177,16 +314,26 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                         onChange={updateFilters}
                         loading={loading}
                     />
-                    <CustomerFilterPicker
-                        selected={selectedCustomers}
-                        onChange={updateCustomers}
-                        loading={loading}
-                        scopeKey={filters.scope_key}
-                        dateFrom={filters.date_from}
-                        dateTo={filters.date_to}
-                        grain={filters.grain}
-                        detailType={filters.detail_type}
-                    />
+                    {filters.detail_type === 'urun' ? (
+                        <ProductFilter
+                            brandFilter={filters.brand_filter}
+                            categoryFilter={filters.category_filter}
+                            productFilter={filters.product_filter}
+                            onChange={updateFilters}
+                            loading={loading}
+                        />
+                    ) : (
+                        <CustomerFilterPicker
+                            selected={selectedCustomers}
+                            onChange={updateCustomers}
+                            loading={loading}
+                            scopeKey={filters.scope_key}
+                            dateFrom={filters.date_from}
+                            dateTo={filters.date_to}
+                            grain={filters.grain}
+                            detailType={filters.detail_type}
+                        />
+                    )}
                 </section>
 
                 {error && (
