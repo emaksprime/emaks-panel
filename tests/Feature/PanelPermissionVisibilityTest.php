@@ -151,6 +151,7 @@ class PanelPermissionVisibilityTest extends TestCase
     public function test_module_layout_uses_first_visible_route_for_module_buttons(): void
     {
         $moduleLayout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
+        $appSidebar = file_get_contents(resource_path('js/components/app-sidebar.tsx')) ?: '';
 
         $this->assertStringContainsString('selectModuleHref', $moduleLayout);
         $this->assertStringContainsString("candidates: ['/sales/main', '/sales/online', '/sales/bayi']", $moduleLayout);
@@ -158,7 +159,38 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->assertStringContainsString("candidates: ['/orders/alinan', '/orders/verilen', '/orders']", $moduleLayout);
         $this->assertStringContainsString("candidates: ['/cari', '/cari/balance']", $moduleLayout);
         $this->assertStringContainsString('visibleHrefs', $moduleLayout);
+        $this->assertStringContainsString('href="/dashboard"', $moduleLayout);
+        $this->assertStringContainsString('href="/dashboard"', $appSidebar);
+        $this->assertStringContainsString('[&::-webkit-scrollbar]:hidden', $moduleLayout);
+        $this->assertStringContainsString('lg:overflow-visible', $moduleLayout);
         $this->assertStringNotContainsString('visibleHref: item.match.find', $moduleLayout);
+    }
+
+    public function test_user_menu_exposes_admin_panel_only_when_admin_route_is_visible(): void
+    {
+        $userMenu = file_get_contents(resource_path('js/components/user-menu-content.tsx')) ?: '';
+        $exactUser = $this->createExactUser(['dashboard', 'stock']);
+        $admin = User::factory()->create(['role_code' => 'admin']);
+
+        $this->assertStringContainsString('canAccessAdmin', $userMenu);
+        $this->assertStringContainsString("item.href === '/admin'", $userMenu);
+        $this->assertStringContainsString('Yönetim Paneli', $userMenu);
+        $this->assertStringContainsString('Profil / Ayarlar', $userMenu);
+        $this->assertStringContainsString('Çıkış Yap', $userMenu);
+
+        $exactHrefList = collect($this->actingAs($exactUser)->getJson('/api/navigation')->assertOk()->json('groups'))
+            ->flatMap(fn (array $group) => $group['items'] ?? [])
+            ->pluck('href')
+            ->all();
+        $adminHrefList = collect($this->actingAs($admin)->getJson('/api/navigation')->assertOk()->json('groups'))
+            ->flatMap(fn (array $group) => $group['items'] ?? [])
+            ->pluck('href')
+            ->all();
+
+        $this->assertNotContains('/admin', $exactHrefList);
+        $this->assertContains('/admin', $adminHrefList);
+        $this->actingAs($exactUser)->get('/admin')->assertForbidden();
+        $this->actingAs($admin)->get('/admin')->assertOk();
     }
 
     public function test_technical_role_only_sees_technical_stock_and_order_pages(): void

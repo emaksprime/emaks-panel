@@ -1,5 +1,5 @@
-import { Link, router } from '@inertiajs/react';
-import { LogOut, Settings } from 'lucide-react';
+import { Link, router, usePage } from '@inertiajs/react';
+import { LogOut, Settings, Shield } from 'lucide-react';
 import {
     DropdownMenuGroup,
     DropdownMenuItem,
@@ -10,14 +10,18 @@ import { UserInfo } from '@/components/user-info';
 import { useMobileNavigation } from '@/hooks/use-mobile-navigation';
 import { logout } from '@/routes';
 import { edit } from '@/routes/profile';
-import type { User } from '@/types';
+import type { SharedPageProps, User } from '@/types';
 
 type Props = {
     user: User;
 };
 
 export function UserMenuContent({ user }: Props) {
+    const { panelNavigation } = usePage<SharedPageProps>().props;
     const cleanup = useMobileNavigation();
+    const canAccessAdmin = panelNavigation.groups.some((group) => (
+        group.items.some((item) => item.href === '/admin')
+    ));
 
     const handleLogout = () => {
         cleanup();
@@ -33,6 +37,19 @@ export function UserMenuContent({ user }: Props) {
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
+                {canAccessAdmin && (
+                    <DropdownMenuItem asChild>
+                        <Link
+                            className="block w-full cursor-pointer"
+                            href="/admin"
+                            prefetch
+                            onClick={cleanup}
+                        >
+                            <Shield className="mr-2" />
+                            Yönetim Paneli
+                        </Link>
+                    </DropdownMenuItem>
+                )}
                 <DropdownMenuItem asChild>
                     <Link
                         className="block w-full cursor-pointer"
@@ -41,7 +58,7 @@ export function UserMenuContent({ user }: Props) {
                         onClick={cleanup}
                     >
                         <Settings className="mr-2" />
-                        Settings
+                        Profil / Ayarlar
                     </Link>
                 </DropdownMenuItem>
             </DropdownMenuGroup>
@@ -55,7 +72,7 @@ export function UserMenuContent({ user }: Props) {
                     data-test="logout-button"
                 >
                     <LogOut className="mr-2" />
-                    Log out
+                    Çıkış Yap
                 </Link>
             </DropdownMenuItem>
         </>

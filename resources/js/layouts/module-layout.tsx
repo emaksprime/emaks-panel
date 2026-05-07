@@ -78,7 +78,7 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                         </Link>
                     </div>
 
-                    <nav className="flex min-w-0 gap-2 overflow-x-auto pb-1 lg:justify-center lg:pb-0">
+                    <nav className="flex min-w-0 gap-2 overflow-x-auto pb-1 [scrollbar-width:none] lg:flex-wrap lg:justify-center lg:overflow-visible lg:pb-0 [&::-webkit-scrollbar]:hidden">
                         {moduleItems
                             .map((item) => ({
                                 ...item,
