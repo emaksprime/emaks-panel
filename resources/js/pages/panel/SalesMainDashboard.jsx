@@ -9,6 +9,7 @@ import { SalesPieChart } from '@/components/sales-main/SalesPieChart.jsx';
 import { SalesBreakdown } from '@/components/sales-main/SalesBreakdown.jsx';
 import { CustomerFilterPicker } from '@/components/sales-main/CustomerFilterPicker.jsx';
 import { ProductFilter } from '@/components/sales-main/ProductFilter.jsx';
+import { BrandComparisonStrip } from '@/components/sales-main/BrandComparisonStrip.jsx';
 
 function queryParam(name) {
     if (typeof window === 'undefined') {
@@ -331,6 +332,9 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                 <KpiCards items={data?.kpis ?? []} />
 
                 <div className="grid gap-5">
+                    {filters.detail_type === 'urun' && (
+                        <BrandComparisonStrip comparison={data?.brandComparison} />
+                    )}
                     <SalesPieChart chart={data?.chart} />
                     <SalesBreakdown breakdown={data?.breakdown} table={data?.table} />
                 </div>
