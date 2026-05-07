@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Search } from 'lucide-react';
 
 const BRAND_OPTIONS = [
@@ -25,9 +26,19 @@ export function ProductFilter({
     categoryFilter = 'all',
     productFilter = '',
     onChange,
-    loading,
 }) {
+    const [localProductFilter, setLocalProductFilter] = useState(productFilter);
     const update = (patch) => onChange({ ...patch, bypass_cache: true });
+
+    useEffect(() => {
+        const timeoutId = window.setTimeout(() => {
+            if (localProductFilter !== productFilter) {
+                onChange({ product_filter: localProductFilter, bypass_cache: true });
+            }
+        }, 350);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [localProductFilter, onChange, productFilter]);
 
     return (
         <div className="grid gap-3">
@@ -39,16 +50,14 @@ export function ProductFilter({
                     <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
                     <input
                         type="search"
-                        value={productFilter}
-                        disabled={loading}
-                        onChange={(event) => update({ product_filter: event.target.value })}
+                        value={localProductFilter}
+                        onChange={(event) => setLocalProductFilter(event.target.value)}
                         placeholder="Ürün, model veya stok kodu ara"
                         className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
                     />
                 </div>
                 <select
                     value={brandFilter || 'all'}
-                    disabled={loading}
                     onChange={(event) => update({ brand_filter: event.target.value })}
                     className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
                     aria-label="Marka filtresi"
@@ -61,7 +70,6 @@ export function ProductFilter({
                 </select>
                 <select
                     value={categoryFilter || 'all'}
-                    disabled={loading}
                     onChange={(event) => update({ category_filter: event.target.value })}
                     className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
                     aria-label="Kategori filtresi"
