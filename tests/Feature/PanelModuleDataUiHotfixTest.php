@@ -631,9 +631,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
                 'ok' => true,
                 'rows' => [
-                    ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'Model P', 'satir_adi' => 'Model P', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'Model P', 'satir_adi' => 'Model P', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS', 'konsinye_tutari' => 222],
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 2, 'cari_grup_adi' => 'Model E', 'satir_adi' => 'Model E', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'EMAKS', 'brand_name' => 'EMAKS PRIME'],
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 3, 'cari_grup_adi' => 'Model X', 'satir_adi' => 'Model X', 'adet' => 1, 'ciro' => 50, 'brand_code' => 'X', 'brand_name' => 'X MARKA'],
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 4, 'cari_grup_adi' => 'DDL720 FVP', 'satir_adi' => 'DDL720 FVP', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'X', 'brand_name' => 'X MARKA'],
                     ['satir_tipi' => 'KATEGORI', 'cari_grup_adi' => 'AKILLI KİLİT', 'parent_key' => 'Model P', 'satir_adi' => 'AKILLI KİLİT', 'kategori_kodu' => 'A1', 'adet' => 4, 'ciro' => 350],
                 ],
             ]),
@@ -680,6 +681,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
                         'brand_code' => 'PHILIPS',
                         'brand_name' => 'PHILIPS',
                         'marka_adi' => 'PHILIPS',
+                        'konsinye_tutari' => 222,
                     ],
                     [
                         'satir_tipi' => 'DETAY',
@@ -737,6 +739,42 @@ class PanelModuleDataUiHotfixTest extends TestCase
                         'marka_adi' => 'X MARKA',
                     ],
                     [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 4,
+                        'cari_grup_adi' => 'KONSINYE',
+                        'satir_adi' => 'KONSINYE',
+                        'adet' => 9,
+                        'ciro' => 900,
+                        'brand_code' => 'PHILIPS',
+                        'brand_name' => 'PHILIPS',
+                        'marka_adi' => 'PHILIPS',
+                    ],
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 5,
+                        'cari_grup_adi' => 'Excluded Model',
+                        'satir_adi' => 'Excluded Model',
+                        'adet' => 4,
+                        'ciro' => 400,
+                        'brand_code' => 'PHILIPS',
+                        'brand_name' => 'PHILIPS',
+                        'marka_adi' => 'PHILIPS',
+                        'excluded_from_total' => true,
+                    ],
+                    [
+                        'satir_tipi' => 'KONSINYE',
+                        'cari_grup_adi' => 'Model P',
+                        'parent_key' => 'Model P',
+                        'satir_adi' => 'KONSINYE - Cari A',
+                        'adet' => 2,
+                        'ciro' => 222,
+                        'brand_code' => 'PHILIPS',
+                        'brand_name' => 'PHILIPS',
+                        'marka_adi' => 'PHILIPS',
+                        'excluded_from_total' => true,
+                        'konsinye_tutari' => 222,
+                    ],
+                    [
                         'satir_tipi' => 'KATEGORI',
                         'cari_grup_adi' => 'AKILLI KİLİT',
                         'parent_key' => 'Model P',
@@ -771,6 +809,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame(['Model P', 'Model E', 'Model X'], array_column($brandComparison['chart']['items'], 'label'));
         $this->assertSame(['PHILIPS', 'EMAKS PRIME', 'Diğer Marka'], array_column($brandComparison['brandComparison']['items'], 'label'));
         $this->assertSame(['Model P', 'Model E', 'Model X'], array_column($brandComparison['breakdown']['groups'], 'label'));
+        $this->assertSame(222.0, $brandComparison['chart']['konsinyeAmount']);
+        $this->assertNotContains('KONSINYE', array_column($brandComparison['chart']['items'], 'label'));
+        $this->assertNotContains('KONSINYE', array_column($brandComparison['brandComparison']['items'], 'label'));
+        $this->assertNotContains('KONSINYE', array_column($brandComparison['breakdown']['groups'], 'label'));
+        $this->assertNotContains('Excluded Model', array_column($brandComparison['chart']['items'], 'label'));
+        $this->assertNotContains('Excluded Model', array_column($brandComparison['breakdown']['groups'], 'label'));
+        $this->assertNotContains('AKILLI KİLİT', array_column($brandComparison['breakdown']['groups'], 'label'));
 
         DB::table('panel.data_source_cache')->delete();
 
@@ -791,6 +836,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertContains('Model P', array_column($categoryPayload['chart']['items'], 'label'));
         $this->assertContains('PHILIPS', array_column($categoryPayload['brandComparison']['items'], 'label'));
         $this->assertContains('Model P', array_column($categoryPayload['breakdown']['groups'], 'label'));
+        $this->assertNotContains('KONSINYE', array_column($categoryPayload['chart']['items'], 'label'));
+        $this->assertNotContains('KONSINYE', array_column($categoryPayload['breakdown']['groups'], 'label'));
 
         Http::assertSent(function ($request): bool {
             $payload = json_decode($request->body(), true) ?: [];
@@ -858,6 +905,35 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame(['Model E'], array_column($emaksPayload['chart']['items'], 'label'));
         $this->assertSame(['EMAKS PRIME'], array_column($emaksPayload['brandComparison']['items'], 'label'));
         $this->assertSame(['Model E'], array_column($emaksPayload['breakdown']['groups'], 'label'));
+
+        DB::table('panel.data_source_cache')->delete();
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'DDL720 FVP', 'satir_adi' => 'DDL720 FVP', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'DETAY', 'cari_grup_adi' => 'DDL720 FVP', 'parent_key' => 'DDL720 FVP', 'satir_adi' => 'Cari A', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 2, 'cari_grup_adi' => 'DDL720 MVP', 'satir_adi' => 'DDL720 MVP', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'DETAY', 'cari_grup_adi' => 'DDL720 MVP', 'parent_key' => 'DDL720 MVP', 'satir_adi' => 'Cari B', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                ],
+            ]),
+        ]);
+
+        $productSearchPayload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'urun',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'brand_filter' => 'all',
+            'category_filter' => 'all',
+            'product_filter' => '720 fvp',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame(['DDL720 FVP'], array_column($productSearchPayload['chart']['items'], 'label'));
+        $this->assertSame(['DDL720 FVP'], array_column($productSearchPayload['breakdown']['groups'], 'label'));
 
         Http::fake([
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
@@ -1376,6 +1452,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('responseFilterValue', $dashboard);
         $this->assertStringContainsString('const requestIdRef = useRef(0)', $dashboard);
         $this->assertStringContainsString('requestId === requestIdRef.current', $dashboard);
+        $this->assertStringContainsString('const actualSignature = responseSignature(nextData)', $dashboard);
+        $this->assertStringContainsString("console.warn('Sales response signature mismatch'", $dashboard);
+        $this->assertStringNotContainsString('&& signaturesMatch(expectedSignature, responseSignature(nextData))', $dashboard);
         $this->assertLessThan(strpos($dashboard, '<SalesPieChart'), strpos($dashboard, '<BrandComparisonStrip'));
         $this->assertStringNotContainsString('setData(null)', $dashboard);
         $this->assertStringContainsString('const handleScopeChange', $dashboard);
@@ -1408,7 +1487,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('Ürün, model veya stok kodu ara', $productFilter);
         $this->assertStringContainsString('PHILIPS', $productFilter);
         $this->assertStringContainsString('EMAKS PRIME', $productFilter);
-        $this->assertStringContainsString('useState(productFilter)', $productFilter);
+        $this->assertStringContainsString('useState(normalizedProductFilter)', $productFilter);
+        $this->assertStringContainsString('setLocalProductFilter(normalizedProductFilter)', $productFilter);
         $this->assertStringContainsString('window.setTimeout', $productFilter);
         $this->assertStringContainsString('350', $productFilter);
         $this->assertStringContainsString("{ value: 'A1', label: 'AKILLI KİLİT' }", $productFilter);

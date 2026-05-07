@@ -27,18 +27,23 @@ export function ProductFilter({
     productFilter = '',
     onChange,
 }) {
-    const [localProductFilter, setLocalProductFilter] = useState(productFilter);
+    const normalizedProductFilter = productFilter ?? '';
+    const [localProductFilter, setLocalProductFilter] = useState(normalizedProductFilter);
     const update = (patch) => onChange({ ...patch, bypass_cache: true });
 
     useEffect(() => {
+        setLocalProductFilter(normalizedProductFilter);
+    }, [normalizedProductFilter]);
+
+    useEffect(() => {
         const timeoutId = window.setTimeout(() => {
-            if (localProductFilter !== productFilter) {
+            if (localProductFilter !== normalizedProductFilter) {
                 onChange({ product_filter: localProductFilter, bypass_cache: true });
             }
         }, 350);
 
         return () => window.clearTimeout(timeoutId);
-    }, [localProductFilter, onChange, productFilter]);
+    }, [localProductFilter, normalizedProductFilter, onChange]);
 
     return (
         <div className="grid gap-3">

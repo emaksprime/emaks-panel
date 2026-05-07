@@ -156,7 +156,13 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                     body: JSON.stringify(filters),
                 });
 
-                if (active && requestId === requestIdRef.current && signaturesMatch(expectedSignature, responseSignature(nextData))) {
+                if (active && requestId === requestIdRef.current) {
+                    const actualSignature = responseSignature(nextData);
+
+                    if (!signaturesMatch(expectedSignature, actualSignature)) {
+                        console.warn('Sales response signature mismatch', { expectedSignature, actualSignature });
+                    }
+
                     setData(nextData);
                 }
             } catch (caught) {
