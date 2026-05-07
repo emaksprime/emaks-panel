@@ -634,6 +634,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'Model P', 'satir_adi' => 'Model P', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 2, 'cari_grup_adi' => 'Model E', 'satir_adi' => 'Model E', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'EMAKS', 'brand_name' => 'EMAKS PRIME'],
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 3, 'cari_grup_adi' => 'Model X', 'satir_adi' => 'Model X', 'adet' => 1, 'ciro' => 50, 'brand_code' => 'X', 'brand_name' => 'X MARKA'],
+                    ['satir_tipi' => 'KATEGORI', 'cari_grup_adi' => 'AKILLI KİLİT', 'parent_key' => 'Model P', 'satir_adi' => 'AKILLI KİLİT', 'kategori_kodu' => 'A1', 'adet' => 4, 'ciro' => 350],
                 ],
             ]),
         ]);
@@ -735,6 +736,18 @@ class PanelModuleDataUiHotfixTest extends TestCase
                         'brand_name' => 'X MARKA',
                         'marka_adi' => 'X MARKA',
                     ],
+                    [
+                        'satir_tipi' => 'KATEGORI',
+                        'cari_grup_adi' => 'AKILLI KİLİT',
+                        'parent_key' => 'Model P',
+                        'satir_adi' => 'AKILLI KİLİT',
+                        'kategori_kodu' => 'A1',
+                        'adet' => 4,
+                        'ciro' => 350,
+                        'brand_code' => 'PHILIPS',
+                        'brand_name' => 'PHILIPS',
+                        'marka_adi' => 'PHILIPS',
+                    ],
                 ],
             ]),
         ]);
@@ -758,6 +771,35 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame(['Model P', 'Model E', 'Model X'], array_column($brandComparison['chart']['items'], 'label'));
         $this->assertSame(['PHILIPS', 'EMAKS PRIME', 'Diğer Marka'], array_column($brandComparison['brandComparison']['items'], 'label'));
         $this->assertSame(['Model P', 'Model E', 'Model X'], array_column($brandComparison['breakdown']['groups'], 'label'));
+
+        DB::table('panel.data_source_cache')->delete();
+
+        $categoryPayload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'urun',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'brand_filter' => 'all',
+            'category_filter' => 'A1',
+            'product_filter' => '',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame('Ürün Satış Dağılımı', $categoryPayload['chart']['title']);
+        $this->assertNotSame([], $categoryPayload['chart']['items']);
+        $this->assertContains('Model P', array_column($categoryPayload['chart']['items'], 'label'));
+        $this->assertContains('PHILIPS', array_column($categoryPayload['brandComparison']['items'], 'label'));
+        $this->assertContains('Model P', array_column($categoryPayload['breakdown']['groups'], 'label'));
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['detail_type'] ?? null) === 'urun'
+                && ($payload['category_filter'] ?? null) === 'A1'
+                && ($payload['params']['category_filter'] ?? null) === 'A1';
+        });
 
         DB::table('panel.data_source_cache')->delete();
 

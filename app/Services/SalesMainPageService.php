@@ -623,7 +623,6 @@ class SalesMainPageService
         }
 
         if (($filters['brand_filter'] ?? 'all') === 'all'
-            && ($filters['category_filter'] ?? 'all') === 'all'
             && trim((string) ($filters['product_filter'] ?? '')) === '') {
             return $rows;
         }
@@ -660,7 +659,6 @@ class SalesMainPageService
     private function productRowMatchesFilters(array $row, array $filters): bool
     {
         $brandFilter = $filters['brand_filter'] ?? 'all';
-        $categoryFilter = $filters['category_filter'] ?? 'all';
         $productFilter = trim((string) ($filters['product_filter'] ?? ''));
 
         if ($brandFilter === 'philips' && $this->brandBucket($row)['label'] !== 'PHILIPS') {
@@ -671,31 +669,11 @@ class SalesMainPageService
             return false;
         }
 
-        if ($categoryFilter !== 'all' && $this->productCategoryCode($row) !== $categoryFilter) {
-            return false;
-        }
-
         if ($productFilter !== '' && ! str_contains($this->productSearchText($row), $this->asciiAccountText($productFilter))) {
             return false;
         }
 
         return true;
-    }
-
-    /**
-     * @param  array<string, mixed>  $row
-     */
-    private function productCategoryCode(array $row): string
-    {
-        foreach (['sto_kategori_kodu', 'category_code', 'kategori_kodu', 'kategori_kodu_raw'] as $key) {
-            $value = strtoupper(trim((string) ($row[$key] ?? '')));
-
-            if ($value !== '') {
-                return $value;
-            }
-        }
-
-        return '';
     }
 
     /**
