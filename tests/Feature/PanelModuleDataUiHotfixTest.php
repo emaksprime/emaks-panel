@@ -241,6 +241,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $online = $service->config(null, 'sales_online');
         $bayi = $service->config(null, 'sales_bayi');
         $onlineSource = DataSource::query()->where('code', 'sales_online_perakende_detail')->firstOrFail();
+        $bayiSource = DataSource::query()->where('code', 'sales_bayi_proje_detail')->firstOrFail();
 
         $this->assertSame('sales_online_perakende_detail', $online['dataSource']['slug']);
         $this->assertSame('online_perakende', $online['defaults']['scopeKey']);
@@ -258,6 +259,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame('sales_bayi_proje_detail', $bayi['dataSource']['slug']);
         $this->assertSame('bayi_proje', $bayi['defaults']['scopeKey']);
         $this->assertSame('panel/sales-main', $bayi['page']['component']);
+        $this->assertTrue($bayiSource->active);
+        $this->assertNotSame('', trim((string) $bayiSource->query_template));
+        $this->assertSame(
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+            $bayiSource->allowed_params,
+        );
     }
 
     public function test_sales_customer_search_datasource_uses_primecrm_customer_lookup(): void
@@ -286,7 +293,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("@ScopeKey = N'online_perakende'", $query);
         $this->assertStringContainsString("@ScopeKey = N'bayi_proje'", $query);
         $this->assertStringContainsString("ISNULL(cari.cari_grup_kodu, N'') IN", $query);
-        $this->assertStringContainsString("cari.cari_grup_kodu NOT IN", $query);
+        $this->assertStringContainsString('cari.cari_grup_kodu NOT IN', $query);
         $this->assertStringContainsString('cari.cari_kod LIKE', $query);
         $this->assertStringContainsString('cari.cari_unvan1 LIKE', $query);
         $this->assertStringContainsString('grp.crg_isim', $query);
@@ -1330,7 +1337,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("customer_filter: ''", $dashboard);
         $this->assertStringContainsString("cari_filter: ''", $dashboard);
         $this->assertStringContainsString('onChange={handleScopeChange}', $dashboard);
-        $this->assertStringContainsString('filters={filters}', $dashboard);
+        $this->assertStringNotContainsString('filters={filters}', $dashboard);
         $this->assertStringNotContainsString('detail_type: config?.defaults?.detailType ?? current.detail_type', $dashboard);
         $this->assertStringNotContainsString('scope_key: config?.defaults?.scopeKey ?? current.scope_key', $dashboard);
         $this->assertStringContainsString('customer_filter', $dashboard);
@@ -1371,15 +1378,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('KONSİNYE HESABI', $highlightedLabel);
         $this->assertStringContainsString('<strong', $highlightedLabel);
         $this->assertStringNotContainsString('dangerouslySetInnerHTML', $highlightedLabel);
-        $this->assertStringContainsString('filters = {}', $managementScopeFilter);
-        $this->assertStringContainsString('router.visit(scope.navigateTo', $managementScopeFilter);
-        $this->assertStringContainsString('grain: filters.grain', $managementScopeFilter);
-        $this->assertStringContainsString('date_from: filters.date_from', $managementScopeFilter);
-        $this->assertStringContainsString('date_to: filters.date_to', $managementScopeFilter);
-        $this->assertStringContainsString('detail_type: filters.detail_type', $managementScopeFilter);
-        $this->assertStringContainsString('scope_key: scope.key', $managementScopeFilter);
-        $this->assertStringContainsString('preserveScroll: true', $managementScopeFilter);
-        $this->assertStringContainsString('preserveState: false', $managementScopeFilter);
+        $this->assertStringContainsString('onClick={() => onChange({ scope_key: scope.key })}', $managementScopeFilter);
+        $this->assertStringNotContainsString('router.visit', $managementScopeFilter);
+        $this->assertStringNotContainsString('@inertiajs/react', $managementScopeFilter);
+        $this->assertStringNotContainsString('scope.navigateTo', $managementScopeFilter);
+        $this->assertStringNotContainsString('preserveScroll', $managementScopeFilter);
+        $this->assertStringNotContainsString('preserveState', $managementScopeFilter);
         $this->assertStringContainsString('md:hidden', $table);
         $this->assertStringContainsString('MobileRow', $table);
         $this->assertStringContainsString('min-w-[1100px]', $table);
@@ -2223,7 +2227,7 @@ JS);
     public function test_proforma_create_contract_uses_customer_search_aliases_discounts_and_local_draft(): void
     {
         $component = file_get_contents(resource_path('js/components/primecrm/ProformaCreatePanel.jsx')) ?: '';
-        $controller = file_get_contents(app_path('Http/Controllers/Api/PageDataController.php')) ?: '';
+        $pageDataService = file_get_contents(app_path('Services/PanelPageDataService.php')) ?: '';
 
         $this->assertStringContainsString('/api/data/proforma_customer_search', $component);
         $this->assertStringContainsString('/api/data/proforma_price_list', $component);
@@ -2235,7 +2239,7 @@ JS);
         $this->assertStringContainsString('emaks_proforma_draft', $component);
         $this->assertStringContainsString('discounts', $component);
         $this->assertStringContainsString('Ek İskonto Ekle', $component);
-        $this->assertStringContainsString("str_starts_with(\$sourceCode, 'proforma_')", $controller);
+        $this->assertStringContainsString("str_starts_with(\$sourceCode, 'proforma_')", $pageDataService);
     }
 
     public function test_sales_and_module_frontend_do_not_expose_raw_technical_columns(): void
