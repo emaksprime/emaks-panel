@@ -112,6 +112,18 @@ function signaturesMatch(expected, actual) {
     return RESPONSE_SIGNATURE_KEYS.every((key) => expected[key] === actual[key]);
 }
 
+function productOptionsCacheKey(filters) {
+    return [
+        normalizeSignatureValue(filters.detail_type, 'cari'),
+        normalizeSignatureValue(filters.scope_key, 'all'),
+        normalizeSignatureValue(filters.date_from),
+        normalizeSignatureValue(filters.date_to),
+        normalizeSignatureValue(filters.grain, 'week'),
+        normalizeChoiceSignatureValue(filters.brand_filter),
+        normalizeChoiceSignatureValue(filters.category_filter),
+    ].join('|');
+}
+
 export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const config = salesMainConfig;
     const initialGrain = queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week';
@@ -134,8 +146,27 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const requestIdRef = useRef(0);
+    const productOptionsCacheRef = useRef({
+        key: productOptionsCacheKey(filters),
+        options: filters.detail_type === 'urun' && filters.product_filter === ''
+            ? salesMainData?.productOptions ?? []
+            : [],
+    });
+    const currentProductOptionsCacheKey = productOptionsCacheKey(filters);
     const pageTitle = 'Satış Yönetimi';
     const pageDescription = 'Satış performansı ve müşteri/ürün özeti';
+
+    if (productOptionsCacheRef.current.key !== currentProductOptionsCacheKey) {
+        productOptionsCacheRef.current = {
+            key: currentProductOptionsCacheKey,
+            options: [],
+        };
+    }
+
+    const dataProductOptions = data?.productOptions ?? [];
+    const productOptionsForPicker = productOptionsCacheRef.current.options.length > 0
+        ? productOptionsCacheRef.current.options
+        : dataProductOptions;
 
     useEffect(() => {
         setData(salesMainData);
@@ -161,6 +192,15 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
 
                     if (!signaturesMatch(expectedSignature, actualSignature)) {
                         console.warn('Sales response signature mismatch', { expectedSignature, actualSignature });
+                    }
+
+                    if (filters.detail_type === 'urun'
+                        && normalizeSignatureValue(filters.product_filter) === ''
+                        && (nextData?.productOptions ?? []).length > 0) {
+                        productOptionsCacheRef.current = {
+                            key: productOptionsCacheKey(filters),
+                            options: nextData.productOptions,
+                        };
                     }
 
                     setData(nextData);
@@ -312,7 +352,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                             brandFilter={filters.brand_filter}
                             categoryFilter={filters.category_filter}
                             productFilter={filters.product_filter}
-                            productOptions={data?.productOptions ?? []}
+                            productOptions={productOptionsForPicker}
                             onChange={updateFilters}
                             loading={loading}
                         />

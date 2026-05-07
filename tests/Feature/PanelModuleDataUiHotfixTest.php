@@ -1520,7 +1520,17 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('brandFilter={filters.brand_filter}', $dashboard);
         $this->assertStringContainsString('categoryFilter={filters.category_filter}', $dashboard);
         $this->assertStringContainsString('productFilter={filters.product_filter}', $dashboard);
-        $this->assertStringContainsString('productOptions={data?.productOptions ?? []}', $dashboard);
+        $this->assertStringContainsString('productOptionsCacheKey', $dashboard);
+        $this->assertStringContainsString('productOptionsCacheRef', $dashboard);
+        $this->assertStringContainsString('currentProductOptionsCacheKey', $dashboard);
+        $this->assertStringContainsString('productOptionsForPicker', $dashboard);
+        $this->assertStringContainsString('productOptions={productOptionsForPicker}', $dashboard);
+        $this->assertStringContainsString("filters.product_filter === ''", $dashboard);
+        $this->assertStringContainsString('options: nextData.productOptions', $dashboard);
+        $this->assertStringContainsString('filters.brand_filter', $dashboard);
+        $this->assertStringContainsString('filters.category_filter', $dashboard);
+        $this->assertStringContainsString('filters.scope_key', $dashboard);
+        $this->assertStringNotContainsString('productOptions={data?.productOptions ?? []}', $dashboard);
         $this->assertStringContainsString('const handleDetailTypeChange', $dashboard);
         $this->assertStringContainsString("brand_filter: 'all'", $dashboard);
         $this->assertStringContainsString("category_filter: 'all'", $dashboard);
@@ -1633,6 +1643,33 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('row.id ?? row.label', $expandableRows);
         $this->assertStringNotContainsString('key={row.label}', $table);
         $this->assertStringNotContainsString('key={row.label}', $expandableRows);
+    }
+
+    public function test_sales_product_picker_keeps_cached_options_while_product_filter_is_active(): void
+    {
+        $dashboard = file_get_contents(resource_path('js/pages/panel/SalesMainDashboard.jsx')) ?: '';
+        $productFilter = file_get_contents(resource_path('js/components/sales-main/ProductFilter.jsx')) ?: '';
+
+        $this->assertStringContainsString('productOptionsCacheRef', $dashboard);
+        $this->assertStringContainsString('productOptionsCacheKey(filters)', $dashboard);
+        $this->assertStringContainsString('currentProductOptionsCacheKey', $dashboard);
+        $this->assertStringContainsString('productOptionsForPicker', $dashboard);
+        $this->assertStringContainsString('productOptionsCacheRef.current.key !== currentProductOptionsCacheKey', $dashboard);
+        $this->assertStringContainsString('productOptionsCacheRef.current.options.length > 0', $dashboard);
+        $this->assertStringContainsString('filters.product_filter === \'\'', $dashboard);
+        $this->assertStringContainsString('options: nextData.productOptions', $dashboard);
+        $this->assertStringContainsString('productOptions={productOptionsForPicker}', $dashboard);
+        $this->assertStringNotContainsString('productOptions={data?.productOptions ?? []}', $dashboard);
+        $this->assertStringContainsString('normalizeSignatureValue(filters.detail_type', $dashboard);
+        $this->assertStringContainsString('normalizeSignatureValue(filters.scope_key', $dashboard);
+        $this->assertStringContainsString('normalizeChoiceSignatureValue(filters.brand_filter)', $dashboard);
+        $this->assertStringContainsString('normalizeChoiceSignatureValue(filters.category_filter)', $dashboard);
+        $this->assertStringNotContainsString('setData(null)', $dashboard);
+        $this->assertStringNotContainsString('router.visit', $dashboard);
+
+        $this->assertStringContainsString('selectedProducts', $productFilter);
+        $this->assertStringContainsString('productOptions.find((option) => option.value === value) ?? { value, label: value }', $productFilter);
+        $this->assertStringContainsString("product_filter: values.join(', ')", $productFilter);
     }
 
     public function test_sales_bulent_scope_uses_sales_main_with_representative_code(): void
