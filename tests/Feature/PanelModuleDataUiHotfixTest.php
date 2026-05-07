@@ -667,6 +667,57 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 && ($payload['params']['product_filter'] ?? null) === 'kilit';
         });
 
+        DB::table('panel.data_source_cache')->delete();
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'siralama_1' => 1,
+                        'cari_grup_adi' => 'DDL720 FVP',
+                        'satir_adi' => 'DDL720 FVP',
+                        'adet' => 3,
+                        'ciro' => 300,
+                        'brand_code' => 'PHILIPS',
+                        'brand_name' => 'PHILIPS',
+                        'marka_adi' => 'PHILIPS',
+                    ],
+                ],
+                'request' => [],
+                'meta' => [],
+            ]),
+        ]);
+
+        $routeResponse = $this
+            ->actingAs(User::factory()->create(['role_code' => 'admin']))
+            ->postJson('/api/data/sales-main', [
+                'detail_type' => 'urun',
+                'brand_filter' => 'philips',
+                'category_filter' => 'A1',
+                'product_filter' => '720 fvp',
+                'bypass_cache' => true,
+            ]);
+
+        $routeResponse->assertOk();
+        $routeResponse->assertJsonPath('filters.brandFilter', 'philips');
+        $routeResponse->assertJsonPath('filters.categoryFilter', 'A1');
+        $routeResponse->assertJsonPath('filters.productFilter', '720 fvp');
+
+        Http::assertSent(function ($request): bool {
+            $payload = json_decode($request->body(), true) ?: [];
+
+            return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
+                && ($payload['detail_type'] ?? null) === 'urun'
+                && ($payload['brand_filter'] ?? null) === 'philips'
+                && ($payload['category_filter'] ?? null) === 'A1'
+                && ($payload['product_filter'] ?? null) === '720 fvp'
+                && ($payload['params']['brand_filter'] ?? null) === 'philips'
+                && ($payload['params']['category_filter'] ?? null) === 'A1'
+                && ($payload['params']['product_filter'] ?? null) === '720 fvp';
+        });
+
         Http::fake([
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
                 'ok' => true,
