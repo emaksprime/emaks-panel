@@ -278,7 +278,6 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                                 activeKey={filters.scope_key}
                                 onChange={handleScopeChange}
                                 loading={loading}
-                                filters={filters}
                             />
                         </div>
                         <div className="grid gap-2">
