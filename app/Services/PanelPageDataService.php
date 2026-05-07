@@ -6,7 +6,6 @@ use App\Models\DataSource;
 use App\Models\Page;
 use App\Models\User;
 use Carbon\CarbonImmutable;
-use Carbon\WeekDay;
 use RuntimeException;
 
 class PanelPageDataService
@@ -14,7 +13,8 @@ class PanelPageDataService
     public function __construct(
         private readonly PanelDataSourceManager $dataSources,
         private readonly PanelAccessService $access,
-    ) {}
+    ) {
+    }
 
     /**
      * @param  array<string, mixed>  $input
@@ -144,83 +144,12 @@ class PanelPageDataService
         return $scope;
     }
 
-    public function resourceForDataSource(string $sourceCode): string
+    private function userCanAccessSource(User $user, string $sourceCode, string $resourceCode): bool
     {
-        $sourceCode = str_replace('-', '_', $sourceCode);
-
-        return match (true) {
-            $sourceCode === 'stock_dashboard' => 'stock',
-            $sourceCode === 'stock_critical' => 'stock_critical',
-            $sourceCode === 'stock_warehouse' => 'stock',
-            $sourceCode === 'orders_dashboard' => 'orders',
-            $sourceCode === 'orders_alinan' => 'orders_alinan',
-            $sourceCode === 'orders_verilen' => 'orders_verilen',
-            in_array($sourceCode, [
-                'customers_list',
-                'customers_balance',
-                'customer_detail',
-                'customer_statement',
-                'customer_documents',
-                'cari_list',
-                'cari_statement',
-            ], true) => 'customers',
-            $sourceCode === 'sales_main_dashboard' => 'sales_main',
-            $sourceCode === 'sales_customer_search' => 'sales_main',
-            $sourceCode === 'sales_online_perakende_detail' => 'sales_online',
-            $sourceCode === 'sales_bayi_proje_detail' => 'sales_bayi',
-            str_starts_with($sourceCode, 'proforma_') => 'proforma',
-            in_array($sourceCode, [
-                'technical_service_serial_check',
-                'technical_service_serial_history',
-                'technical_service_warranty_serial',
-            ], true) => 'technical_service_serial_query',
-            str_starts_with($sourceCode, 'technical_service_technicians') => 'technical_service_technicians',
-            str_starts_with($sourceCode, 'technical_service_earnings') => 'technical_service_earnings',
-            str_starts_with($sourceCode, 'technical_service_') => 'technical_service',
-            default => $sourceCode,
-        };
-    }
-
-    public function userCanAccessSource(User $user, string $sourceCode, ?string $resourceCode = null): bool
-    {
-        $sourceCode = str_replace('-', '_', $sourceCode);
-        $resourceCode ??= $this->resourceForDataSource($sourceCode);
-
         if ($sourceCode === 'sales_customer_search') {
             return $this->access->userCanAccess($user, 'sales_main')
                 || $this->access->userCanAccess($user, 'sales_online')
                 || $this->access->userCanAccess($user, 'sales_bayi');
-        }
-
-        if ($sourceCode === 'stock_dashboard') {
-            return $this->access->userCanAccess($user, 'stock')
-                && $this->access->stockScopeFor($user) !== null;
-        }
-
-        if ($sourceCode === 'orders_alinan') {
-            return $this->access->userCanAccess($user, 'orders_alinan')
-                || $this->access->userCanAccess($user, 'orders');
-        }
-
-        if ($sourceCode === 'orders_verilen') {
-            return $this->access->userCanAccess($user, 'orders_verilen')
-                || $this->access->userCanAccess($user, 'orders');
-        }
-
-        if (str_starts_with($sourceCode, 'customer') || str_starts_with($sourceCode, 'customers_') || str_starts_with($sourceCode, 'cari_')) {
-            return $this->access->userCanAccess($user, 'customers');
-        }
-
-        if ($sourceCode === 'sales_online_perakende_detail') {
-            return $this->access->userCanAccess($user, 'sales_online');
-        }
-
-        if ($sourceCode === 'sales_bayi_proje_detail') {
-            return $this->access->userCanAccess($user, 'sales_bayi');
-        }
-
-        if ($sourceCode === 'sales_main_dashboard') {
-            return $this->access->userCanAccess($user, 'sales_main');
         }
 
         return $this->access->userCanAccess($user, $resourceCode);
@@ -473,7 +402,7 @@ class PanelPageDataService
             'day' => $today->format('Y-m-d'),
             'month' => ($isStart ? $today->startOfMonth() : $today)->format('Y-m-d'),
             'year' => ($isStart ? $today->startOfYear() : $today)->format('Y-m-d'),
-            default => ($isStart ? $today->startOfWeek(WeekDay::Monday) : $today)->format('Y-m-d'),
+            default => ($isStart ? $today->startOfWeek(\Carbon\WeekDay::Monday) : $today)->format('Y-m-d'),
         };
     }
 
