@@ -1,8 +1,11 @@
 <?php
 
+use App\Http\Controllers\Api\ActivationCodeImportController;
+use App\Http\Controllers\Api\ActivationCodeSearchController;
+use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\PageConfigController;
-use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
@@ -24,6 +27,12 @@ Route::get('/', HomeController::class)->name('home');
 Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::prefix('api')->group(function () {
         Route::get('navigation', NavigationController::class)->name('api.navigation');
+        Route::get('activation-code-search', ActivationCodeSearchController::class)
+            ->middleware('panel.access:activation_code_search')
+            ->name('api.activation-code-search');
+        Route::post('activation-code-search/import', ActivationCodeImportController::class)
+            ->middleware('panel.access:activation_code_search')
+            ->name('api.activation-code-search.import');
         Route::get('pages/sales-main/config', SalesMainConfigController::class)->name('api.pages.sales-main.config');
         Route::get('pages/{code}/config', PageConfigController::class)->name('api.pages.config');
         Route::post('data/sales-main', SalesMainDataController::class)->name('api.data.sales-main');
@@ -112,17 +121,17 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         });
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {
-            Route::get('overview', [\App\Http\Controllers\Api\AdminController::class, 'overview']);
-            Route::get('users', [\App\Http\Controllers\Api\AdminController::class, 'users'])->middleware('panel.access:user_admin');
-            Route::post('users', [\App\Http\Controllers\Api\AdminController::class, 'saveUser'])->middleware('panel.access:user_admin');
-            Route::get('pages', [\App\Http\Controllers\Api\AdminController::class, 'pages'])->middleware('panel.access:admin_pages');
-            Route::post('pages', [\App\Http\Controllers\Api\AdminController::class, 'savePage'])->middleware('panel.access:admin_pages');
-            Route::post('buttons', [\App\Http\Controllers\Api\AdminController::class, 'saveButton'])->middleware('panel.access:admin_pages');
-            Route::delete('pages/{page}', [\App\Http\Controllers\Api\AdminController::class, 'deletePage'])->middleware('panel.access:admin_pages');
-            Route::get('datasources', [\App\Http\Controllers\Api\AdminController::class, 'dataSources'])->middleware('panel.access:data_sources');
-            Route::post('datasources', [\App\Http\Controllers\Api\AdminController::class, 'saveDataSource'])->middleware('panel.access:data_sources');
-            Route::post('datasources/test', [\App\Http\Controllers\Api\AdminController::class, 'testDataSource'])->middleware('panel.access:data_sources');
-            Route::get('logs', [\App\Http\Controllers\Api\AdminController::class, 'logs'])->middleware('panel.access:admin_logs');
+            Route::get('overview', [AdminController::class, 'overview']);
+            Route::get('users', [AdminController::class, 'users'])->middleware('panel.access:user_admin');
+            Route::post('users', [AdminController::class, 'saveUser'])->middleware('panel.access:user_admin');
+            Route::get('pages', [AdminController::class, 'pages'])->middleware('panel.access:admin_pages');
+            Route::post('pages', [AdminController::class, 'savePage'])->middleware('panel.access:admin_pages');
+            Route::post('buttons', [AdminController::class, 'saveButton'])->middleware('panel.access:admin_pages');
+            Route::delete('pages/{page}', [AdminController::class, 'deletePage'])->middleware('panel.access:admin_pages');
+            Route::get('datasources', [AdminController::class, 'dataSources'])->middleware('panel.access:data_sources');
+            Route::post('datasources', [AdminController::class, 'saveDataSource'])->middleware('panel.access:data_sources');
+            Route::post('datasources/test', [AdminController::class, 'testDataSource'])->middleware('panel.access:data_sources');
+            Route::get('logs', [AdminController::class, 'logs'])->middleware('panel.access:admin_logs');
         });
     });
 

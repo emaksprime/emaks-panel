@@ -6,6 +6,7 @@ const links = [
   { href: '/technical-service', label: 'Talepler' },
   { href: '/technical-service/dashboard', label: 'Operasyon Dashboard' },
   { href: '/technical-service/serial-query', label: 'Seri No Sorgu' },
+  { href: '/activation-code-search', label: 'Aktivasyon Kodu Bul' },
   { href: '/technical-service/technicians', label: 'Teknisyen Yönetimi' },
   { href: '/technical-service/earnings', label: 'Hakedişler' },
   { href: '/technical-service/admin', label: 'Teknik Servis Admin' },

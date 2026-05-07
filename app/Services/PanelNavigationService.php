@@ -20,6 +20,7 @@ class PanelNavigationService
         '/technical-service',
         '/technical-service/dashboard',
         '/technical-service/serial-query',
+        '/activation-code-search',
         '/technical-service/technicians',
         '/stock',
         '/orders/alinan',
@@ -100,6 +101,7 @@ class PanelNavigationService
             '/technical-service',
             '/technical-service/dashboard',
             '/technical-service/serial-query',
+            '/activation-code-search',
             '/technical-service/technicians',
         ];
 
