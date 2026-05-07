@@ -13,6 +13,7 @@ use Database\Seeders\PanelDataSourcesSeeder;
 use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -635,6 +636,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 2, 'cari_grup_adi' => 'Model E', 'satir_adi' => 'Model E', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'EMAKS', 'brand_name' => 'EMAKS PRIME'],
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 3, 'cari_grup_adi' => 'Model X', 'satir_adi' => 'Model X', 'adet' => 1, 'ciro' => 50, 'brand_code' => 'X', 'brand_name' => 'X MARKA'],
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 4, 'cari_grup_adi' => 'DDL720 FVP', 'satir_adi' => 'DDL720 FVP', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'X', 'brand_name' => 'X MARKA'],
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 5, 'cari_grup_adi' => 'DDL720 MVP', 'satir_adi' => 'DDL720 MVP', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'X', 'brand_name' => 'X MARKA'],
                     ['satir_tipi' => 'KATEGORI', 'cari_grup_adi' => 'AKILLI KİLİT', 'parent_key' => 'Model P', 'satir_adi' => 'AKILLI KİLİT', 'kategori_kodu' => 'A1', 'adet' => 4, 'ciro' => 350],
                 ],
             ]),
@@ -860,6 +862,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertSame(['Model P', 'Model E', 'Model X'], array_column($brandComparison['chart']['items'], 'label'));
         $this->assertSame(['PHILIPS', 'EMAKS PRIME', 'Diğer Marka'], array_column($brandComparison['brandComparison']['items'], 'label'));
         $this->assertSame(['Model P', 'Model E', 'Model X'], array_column($brandComparison['breakdown']['groups'], 'label'));
+        $this->assertSame(['Model P', 'Model E', 'Model X'], array_column($brandComparison['productOptions'], 'label'));
+        $this->assertSame(['PHILIPS', 'EMAKS PRIME', 'Diğer Marka'], array_column($brandComparison['productOptions'], 'brand'));
         $this->assertSame(222.0, $brandComparison['chart']['konsinyeAmount']);
         $this->assertNotContains('KONSINYE', array_column($brandComparison['chart']['items'], 'label'));
         $this->assertNotContains('KONSINYE', array_column($brandComparison['brandComparison']['items'], 'label'));
@@ -960,7 +964,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         DB::table('panel.data_source_cache')->delete();
 
         Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+            '*' => Http::response([
                 'ok' => true,
                 'rows' => [
                     ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'DDL720 FVP', 'satir_adi' => 'DDL720 FVP', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
@@ -985,6 +989,37 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertSame(['DDL720 FVP'], array_column($productSearchPayload['chart']['items'], 'label'));
         $this->assertSame(['DDL720 FVP'], array_column($productSearchPayload['breakdown']['groups'], 'label'));
+
+        DB::table('panel.data_source_cache')->delete();
+
+        Http::fake([
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 1, 'cari_grup_adi' => 'DDL720 FVP', 'satir_adi' => 'DDL720 FVP', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'DETAY', 'cari_grup_adi' => 'DDL720 FVP', 'parent_key' => 'DDL720 FVP', 'satir_adi' => 'Cari A', 'adet' => 3, 'ciro' => 300, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 2, 'cari_grup_adi' => 'DDL720 MVP', 'satir_adi' => 'DDL720 MVP', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'DETAY', 'cari_grup_adi' => 'DDL720 MVP', 'parent_key' => 'DDL720 MVP', 'satir_adi' => 'Cari B', 'adet' => 2, 'ciro' => 200, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                    ['satir_tipi' => 'GRUP', 'siralama_1' => 3, 'cari_grup_adi' => 'DDL303', 'satir_adi' => 'DDL303', 'adet' => 1, 'ciro' => 100, 'brand_code' => 'PHILIPS', 'brand_name' => 'PHILIPS'],
+                ],
+            ]),
+        ]);
+
+        $multiProductPayload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
+            'scope_key' => 'all',
+            'detail_type' => 'urun',
+            'grain' => 'week',
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-28',
+            'brand_filter' => 'all',
+            'category_filter' => 'all',
+            'product_filter' => 'DDL720 FVP, DDL720 MVP',
+            'bypass_cache' => true,
+        ]);
+
+        $this->assertSame(['DDL720 FVP', 'DDL720 MVP'], array_column($multiProductPayload['chart']['items'], 'label'));
+        $this->assertSame(['DDL720 FVP', 'DDL720 MVP'], array_column($multiProductPayload['breakdown']['groups'], 'label'));
+        $this->assertSame(['DDL720 FVP', 'DDL720 MVP'], array_column($multiProductPayload['productOptions'], 'label'));
 
         Http::fake([
             'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
@@ -1485,6 +1520,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('brandFilter={filters.brand_filter}', $dashboard);
         $this->assertStringContainsString('categoryFilter={filters.category_filter}', $dashboard);
         $this->assertStringContainsString('productFilter={filters.product_filter}', $dashboard);
+        $this->assertStringContainsString('productOptions={data?.productOptions ?? []}', $dashboard);
         $this->assertStringContainsString('const handleDetailTypeChange', $dashboard);
         $this->assertStringContainsString("brand_filter: 'all'", $dashboard);
         $this->assertStringContainsString("category_filter: 'all'", $dashboard);
@@ -1539,9 +1575,15 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('PHILIPS', $productFilter);
         $this->assertStringContainsString('EMAKS PRIME', $productFilter);
         $this->assertStringContainsString('useState(normalizedProductFilter)', $productFilter);
-        $this->assertStringContainsString('setLocalProductFilter(normalizedProductFilter)', $productFilter);
+        $this->assertStringContainsString("setLocalProductFilter(hasSelectedOptions ? '' : normalizedProductFilter)", $productFilter);
         $this->assertStringContainsString('window.setTimeout', $productFilter);
         $this->assertStringContainsString('350', $productFilter);
+        $this->assertStringContainsString('productOptions = []', $productFilter);
+        $this->assertStringContainsString('splitProductFilter', $productFilter);
+        $this->assertStringContainsString('selectedProducts', $productFilter);
+        $this->assertStringContainsString('type="checkbox"', $productFilter);
+        $this->assertStringContainsString('Ürün bulunamadı.', $productFilter);
+        $this->assertStringContainsString('Tümünü temizle', $productFilter);
         $this->assertStringContainsString("{ value: 'A1', label: 'AKILLI KİLİT' }", $productFilter);
         $this->assertStringContainsString("{ value: 'YM1', label: 'YÜZEY MONTAJLI KİLİT CAM VS.' }", $productFilter);
         $this->assertStringNotContainsString('A1 - AKILLI KİLİT', $productFilter);
@@ -1549,6 +1591,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('brand_filter: event.target.value', $productFilter);
         $this->assertStringContainsString('category_filter: event.target.value', $productFilter);
         $this->assertStringContainsString('product_filter: localProductFilter', $productFilter);
+        $this->assertStringContainsString("product_filter: values.join(', ')", $productFilter);
         $this->assertStringContainsString('setLocalProductFilter(event.target.value)', $productFilter);
         $this->assertStringNotContainsString('disabled={loading}', $productFilter);
         $this->assertStringContainsString('bypass_cache: true', $productFilter);
@@ -2450,6 +2493,125 @@ JS);
         $this->assertStringContainsString('Teslim Haftası', $moduleData);
         $this->assertStringNotContainsString('/stock/warehouse', $moduleLayout);
         $this->assertStringContainsString('Operasyon Paneli', file_get_contents(resource_path('js/components/app-logo.tsx')) ?: '');
+    }
+
+    public function test_post_deploy_refresh_command_refreshes_datasources_without_user_or_permission_seed(): void
+    {
+        $commandSource = file_get_contents(app_path('Console/Commands/PanelPostDeployRefresh.php')) ?: '';
+
+        $this->assertArrayHasKey('panel:post-deploy-refresh', Artisan::all());
+        $this->assertStringContainsString('PanelDataSourcesSeeder', $commandSource);
+        $this->assertStringContainsString('PanelKnownWorkflowDataSourcesSeeder', $commandSource);
+        $this->assertStringContainsString('panel.data_source_cache', $commandSource);
+        $this->assertStringNotContainsString('PanelMetadataSeeder', $commandSource);
+        $this->assertStringNotContainsString('DatabaseSeeder', $commandSource);
+
+        $user = User::factory()->create([
+            'username' => 'post-deploy-user@example.test',
+            'full_name' => 'Post Deploy User',
+            'role_code' => 'viewer',
+            'temsilci_kodu' => '9999',
+            'aktif' => true,
+        ]);
+        DB::table('panel.user_access')->insert([
+            'user_id' => $user->id,
+            'resource_code' => 'stock',
+            'can_view' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('panel.data_source_cache')->insert([
+            'cache_key' => 'post-deploy-refresh-test',
+            'source_code' => 'sales_main_dashboard',
+            'request_payload' => json_encode(['test' => true], JSON_THROW_ON_ERROR),
+            'response_payload' => json_encode(['ok' => true], JSON_THROW_ON_ERROR),
+            'expires_at' => now()->addHour(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $userCount = DB::table('panel.users')->count();
+        $userAccessRows = DB::table('panel.user_access')->get()->map(fn ($row) => (array) $row)->all();
+        $rolePermissionCount = DB::table('panel.role_resource_permissions')->count();
+
+        $this->artisan('panel:post-deploy-refresh')
+            ->assertExitCode(0);
+
+        $this->assertSame(0, DB::table('panel.data_source_cache')->count());
+        $this->assertSame($userCount, DB::table('panel.users')->count());
+        $this->assertSame($rolePermissionCount, DB::table('panel.role_resource_permissions')->count());
+        $this->assertSame($userAccessRows, DB::table('panel.user_access')->get()->map(fn ($row) => (array) $row)->all());
+
+        $user->refresh();
+        $this->assertSame('9999', $user->temsilci_kodu);
+        $this->assertSame('viewer', $user->role_code);
+    }
+
+    public function test_panel_metadata_seeder_preserves_existing_bootstrap_admin_fields(): void
+    {
+        $envKeys = [
+            'PANEL_BOOTSTRAP_ADMIN_USERNAME',
+            'PANEL_BOOTSTRAP_ADMIN_PASSWORD',
+            'PANEL_BOOTSTRAP_ADMIN_NAME',
+            'PANEL_BOOTSTRAP_ADMIN_REP_CODE',
+        ];
+        $previous = [];
+
+        foreach ($envKeys as $key) {
+            $previous[$key] = getenv($key) === false ? null : getenv($key);
+        }
+
+        try {
+            foreach ([
+                'PANEL_BOOTSTRAP_ADMIN_USERNAME' => 'existing-admin@example.test',
+                'PANEL_BOOTSTRAP_ADMIN_PASSWORD' => 'new-secret-password',
+                'PANEL_BOOTSTRAP_ADMIN_NAME' => 'New Bootstrap Name',
+                'PANEL_BOOTSTRAP_ADMIN_REP_CODE' => '0003',
+            ] as $key => $value) {
+                putenv("{$key}={$value}");
+                $_ENV[$key] = $value;
+                $_SERVER[$key] = $value;
+            }
+
+            $admin = User::factory()->create([
+                'username' => 'existing-admin@example.test',
+                'full_name' => 'Existing Admin Name',
+                'role_code' => 'viewer',
+                'temsilci_kodu' => null,
+                'aktif' => false,
+            ]);
+            DB::table('panel.user_access')->insert([
+                'user_id' => $admin->id,
+                'resource_code' => 'sales_main',
+                'can_view' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $before = $admin->fresh()->only(['full_name', 'password_hash', 'role_code', 'temsilci_kodu', 'aktif']);
+            $beforeAccessRows = DB::table('panel.user_access')->where('user_id', $admin->id)->get()->map(fn ($row) => (array) $row)->all();
+
+            $this->seed(PanelMetadataSeeder::class);
+
+            $admin->refresh();
+            $this->assertSame($before['full_name'], $admin->full_name);
+            $this->assertSame($before['password_hash'], $admin->password_hash);
+            $this->assertSame($before['role_code'], $admin->role_code);
+            $this->assertSame($before['temsilci_kodu'], $admin->temsilci_kodu);
+            $this->assertSame($before['aktif'], $admin->aktif);
+            $this->assertSame($beforeAccessRows, DB::table('panel.user_access')->where('user_id', $admin->id)->get()->map(fn ($row) => (array) $row)->all());
+        } finally {
+            foreach ($envKeys as $key) {
+                if ($previous[$key] === null) {
+                    putenv($key);
+                    unset($_ENV[$key], $_SERVER[$key]);
+                } else {
+                    putenv("{$key}={$previous[$key]}");
+                    $_ENV[$key] = $previous[$key];
+                    $_SERVER[$key] = $previous[$key];
+                }
+            }
+        }
     }
 
     /**

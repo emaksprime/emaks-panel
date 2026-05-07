@@ -312,6 +312,7 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
                             brandFilter={filters.brand_filter}
                             categoryFilter={filters.category_filter}
                             productFilter={filters.product_filter}
+                            productOptions={data?.productOptions ?? []}
                             onChange={updateFilters}
                             loading={loading}
                         />

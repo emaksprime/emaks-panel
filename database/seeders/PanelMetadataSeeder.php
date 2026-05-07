@@ -647,23 +647,29 @@ SQL,
         $adminName = env('PANEL_BOOTSTRAP_ADMIN_NAME', 'Panel Administrator');
 
         if ($adminUsername && $adminPassword) {
-            $adminUser = User::query()->updateOrCreate(
-                ['username' => $adminUsername],
-                [
+            $adminUser = User::query()->where('username', $adminUsername)->first();
+            $adminCreated = false;
+
+            if (! $adminUser) {
+                $adminUser = User::query()->create([
+                    'username' => $adminUsername,
                     'full_name' => $adminName,
                     'password_hash' => Hash::make($adminPassword),
                     'role_code' => 'admin',
                     'temsilci_kodu' => env('PANEL_BOOTSTRAP_ADMIN_REP_CODE', '0003'),
                     'aktif' => true,
-                ],
-            );
+                ]);
+                $adminCreated = true;
+            }
 
-            collect($resources->keys())->each(function (string $resourceCode) use ($adminUser): void {
-                UserAccess::query()->updateOrCreate(
-                    ['user_id' => $adminUser->id, 'resource_code' => $resourceCode],
-                    ['can_view' => true],
-                );
-            });
+            if ($adminCreated) {
+                collect($resources->keys())->each(function (string $resourceCode) use ($adminUser): void {
+                    UserAccess::query()->updateOrCreate(
+                        ['user_id' => $adminUser->id, 'resource_code' => $resourceCode],
+                        ['can_view' => true],
+                    );
+                });
+            }
         }
     }
 }
