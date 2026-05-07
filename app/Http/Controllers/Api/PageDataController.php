@@ -19,8 +19,7 @@ class PageDataController extends Controller
         string $code,
         PanelPageDataService $pageData,
         PanelAccessService $access,
-    ): JsonResponse
-    {
+    ): JsonResponse {
         $user = $request->user();
 
         abort_if($user === null, 403);
@@ -39,13 +38,13 @@ class PageDataController extends Controller
                 ->where('code', $normalizedCode)
                 ->where('active', true)
                 ->firstOrFail();
-            $sourceResourceCode = $this->resourceForDataSource($source->code);
+            $sourceResourceCode = $pageData->resourceForDataSource($source->code);
         }
 
         abort_unless(
             $page !== null
                 ? $access->userCanAccess($user, $page->resource_code ?? $page->code)
-                : $this->userCanAccessDataSource($access, $user, (string) $source?->code, (string) $sourceResourceCode),
+                : $pageData->userCanAccessSource($user, (string) $source?->code, (string) $sourceResourceCode),
             403,
         );
 
@@ -110,34 +109,6 @@ class PageDataController extends Controller
             'orders', 'orders_alinan', 'orders_verilen' => 'Sipariş veri kaynağı çalıştırılamadı.',
             default => 'Veri kaynağı çalıştırılamadı.',
         };
-    }
-
-    private function resourceForDataSource(string $sourceCode): string
-    {
-        if (str_starts_with($sourceCode, 'customer') || str_starts_with($sourceCode, 'customers_')) {
-            return 'customers';
-        }
-
-        if (str_starts_with($sourceCode, 'proforma_')) {
-            return 'proforma';
-        }
-
-        if (str_starts_with($sourceCode, 'sales_')) {
-            return 'sales_main';
-        }
-
-        return $sourceCode;
-    }
-
-    private function userCanAccessDataSource(PanelAccessService $access, mixed $user, string $sourceCode, string $resourceCode): bool
-    {
-        if ($sourceCode === 'sales_customer_search') {
-            return $access->userCanAccess($user, 'sales_main')
-                || $access->userCanAccess($user, 'sales_online')
-                || $access->userCanAccess($user, 'sales_bayi');
-        }
-
-        return $access->userCanAccess($user, $resourceCode);
     }
 
     private function normalizeSalesCustomerSearchScope(PanelAccessService $access, mixed $user, string $scopeKey): string

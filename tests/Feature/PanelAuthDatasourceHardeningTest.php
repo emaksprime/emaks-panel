@@ -148,9 +148,9 @@ class PanelAuthDatasourceHardeningTest extends TestCase
         $this->assertNotSame($salesQuery, $bayiQuery, 'Bayi/proje query sales_main ile ayni kalmamali.');
         $this->assertNotSame($onlineQuery, $bayiQuery, 'Online ve bayi queryleri farkli olmalı.');
 
-        $this->assertMatchesRegularExpression("/cari_grup_kodu[^\\n]+IN\\s*\\([^)]*120\\.01[^)]*120\\.16/is", $onlineQuery);
-        $this->assertMatchesRegularExpression("/cari_grup_kodu[^\\n]+NOT\\s+IN\\s*\\([^)]*120\\.01[^)]*120\\.16/is", $bayiQuery);
-        $this->assertMatchesRegularExpression("/NULLIF|IS\\s+NULL/i", $bayiQuery);
+        $this->assertMatchesRegularExpression('/cari_grup_kodu[^\\n]+IN\\s*\\([^)]*120\\.01[^)]*120\\.16/is', $onlineQuery);
+        $this->assertMatchesRegularExpression('/cari_grup_kodu[^\\n]+NOT\\s+IN\\s*\\([^)]*120\\.01[^)]*120\\.16/is', $bayiQuery);
+        $this->assertMatchesRegularExpression('/NULLIF|IS\\s+NULL/i', $bayiQuery);
     }
 
     public function test_sales_main_labels_use_user_facing_turkish(): void
@@ -296,6 +296,178 @@ class PanelAuthDatasourceHardeningTest extends TestCase
 
         Http::assertSent(fn (Request $request) => $request['source_code'] === 'stock_dashboard'
             && $request['params']['search'] === 'STK');
+    }
+
+    public function test_direct_data_source_posts_use_module_resource_mapping_and_call_gateway(): void
+    {
+        Http::fake([
+            '*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'id' => 1,
+                        'stok_kodu' => 'STK-1',
+                        'cari_kodu' => 'C-1',
+                        'siparis_no' => 'SIP-1',
+                        'satir_tipi' => 'GRUP',
+                        'satir_adi' => 'Test',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $cases = [
+            'stock_dashboard' => ['stock', 'stock_locks'],
+            'orders_alinan' => ['orders_alinan'],
+            'orders_verilen' => ['orders_verilen'],
+            'customers_list' => ['customers', 'customers_own_rep'],
+            'customer_statement' => ['customers', 'customers_own_rep'],
+            'sales_online_perakende_detail' => ['sales_online'],
+            'sales_bayi_proje_detail' => ['sales_bayi'],
+        ];
+
+        foreach ($cases as $sourceCode => $resources) {
+            $user = User::factory()->create([
+                'role_code' => 'viewer',
+                'aktif' => true,
+                'temsilci_kodu' => '0003',
+            ]);
+
+            foreach ($resources as $resourceCode) {
+                UserAccess::query()->create([
+                    'user_id' => $user->id,
+                    'resource_code' => $resourceCode,
+                    'can_view' => true,
+                ]);
+            }
+
+            $this->actingAs($user)
+                ->postJson("/api/data/{$sourceCode}", ['bypass_cache' => true])
+                ->assertOk()
+                ->assertJsonPath('queryMeta.dataSource', $sourceCode);
+
+            Http::assertSent(fn (Request $request): bool => ($request['source_code'] ?? null) === $sourceCode);
+        }
+    }
+
+    public function test_direct_data_source_posts_are_forbidden_before_gateway_when_scope_resource_is_missing(): void
+    {
+        Http::fake();
+
+        $onlineOnly = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
+        UserAccess::query()->create([
+            'user_id' => $onlineOnly->id,
+            'resource_code' => 'sales_online',
+            'can_view' => true,
+        ]);
+
+        $this->actingAs($onlineOnly)
+            ->postJson('/api/data/sales_bayi_proje_detail', ['bypass_cache' => true])
+            ->assertForbidden();
+
+        $bayiOnly = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
+        UserAccess::query()->create([
+            'user_id' => $bayiOnly->id,
+            'resource_code' => 'sales_bayi',
+            'can_view' => true,
+        ]);
+
+        $this->actingAs($bayiOnly)
+            ->postJson('/api/data/sales_online_perakende_detail', ['bypass_cache' => true])
+            ->assertForbidden();
+
+        $noStockScope = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
+        UserAccess::query()->create([
+            'user_id' => $noStockScope->id,
+            'resource_code' => 'stock',
+            'can_view' => true,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $noStockScope->id,
+            'resource_code' => 'stock_locks',
+            'can_view' => false,
+        ]);
+
+        $this->actingAs($noStockScope)
+            ->postJson('/api/data/stock_dashboard', ['bypass_cache' => true])
+            ->assertForbidden();
+
+        Http::assertNothingSent();
+    }
+
+    public function test_sales_main_post_uses_online_and_bayi_scope_sources_without_representative_code(): void
+    {
+        Http::fake([
+            '*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'satir_tipi' => 'GRUP',
+                        'satir_adi' => 'Online Grup',
+                        'cari_grup_adi' => 'Online Grup',
+                        'adet' => 1,
+                        'ciro' => 100,
+                    ],
+                ],
+            ]),
+        ]);
+
+        $onlineUser = User::factory()->create([
+            'role_code' => 'viewer',
+            'aktif' => true,
+            'temsilci_kodu' => null,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $onlineUser->id,
+            'resource_code' => 'sales_online',
+            'can_view' => true,
+        ]);
+
+        $this->actingAs($onlineUser)
+            ->postJson('/api/data/sales-main', [
+                'scope_key' => 'online_perakende',
+                'detail_type' => 'cari',
+                'date_from' => '2026-04-01',
+                'date_to' => '2026-04-30',
+                'bypass_cache' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.dataSource', 'sales_online_perakende_detail')
+            ->assertJsonPath('scope.key', 'online_perakende')
+            ->assertJsonPath('queryMeta.gatewayRequest.rep_code', null);
+
+        $bayiUser = User::factory()->create([
+            'role_code' => 'viewer',
+            'aktif' => true,
+            'temsilci_kodu' => null,
+        ]);
+        UserAccess::query()->create([
+            'user_id' => $bayiUser->id,
+            'resource_code' => 'sales_bayi',
+            'can_view' => true,
+        ]);
+
+        $this->actingAs($bayiUser)
+            ->postJson('/api/data/sales-main', [
+                'scope_key' => 'bayi_proje',
+                'detail_type' => 'cari',
+                'date_from' => '2026-04-01',
+                'date_to' => '2026-04-30',
+                'bypass_cache' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.dataSource', 'sales_bayi_proje_detail')
+            ->assertJsonPath('scope.key', 'bayi_proje')
+            ->assertJsonPath('queryMeta.gatewayRequest.rep_code', null);
+
+        Http::assertSent(fn (Request $request): bool => ($request['source_code'] ?? null) === 'sales_online_perakende_detail'
+            && ($request['scope_key'] ?? null) === 'online_perakende'
+            && ($request['rep_code'] ?? null) === null);
+        Http::assertSent(fn (Request $request): bool => ($request['source_code'] ?? null) === 'sales_bayi_proje_detail'
+            && ($request['scope_key'] ?? null) === 'bayi_proje'
+            && ($request['rep_code'] ?? null) === null);
     }
 
     public function test_admin_can_access_user_management(): void
