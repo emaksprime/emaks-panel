@@ -2,9 +2,9 @@ import { Head, Link, usePage } from '@inertiajs/react';
 import {
     ArrowRight,
     Boxes,
-    BriefcaseBusiness,
     ChartColumn,
     ClipboardList,
+    ExternalLink,
     FileText,
     Headset,
     Sparkles,
@@ -86,41 +86,40 @@ export default function DashboardHome() {
             <Head title="Emaks Prime Operasyon Paneli" />
             <main className="min-h-[calc(100vh-9rem)] bg-[#f3f7fb] px-4 py-5 md:px-6 md:py-8">
                 <section className="relative overflow-hidden rounded-3xl border border-blue-100 bg-white shadow-sm">
-                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,rgba(248,250,252,0.95),rgba(239,246,255,0.95))]" />
-                    <div className="relative grid gap-8 p-6 md:p-8 xl:grid-cols-[minmax(0,1.15fr)_360px] xl:items-center">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.24),transparent_34%),radial-gradient(circle_at_bottom_left,rgba(30,64,175,0.16),transparent_30%),linear-gradient(135deg,rgba(255,255,255,0.98),rgba(239,246,255,0.94))]" />
+                    <div className="absolute right-10 top-8 hidden h-28 w-28 rounded-full bg-blue-200/30 blur-2xl lg:block" />
+                    <div className="absolute bottom-0 left-1/2 hidden h-20 w-72 -translate-x-1/2 rounded-full bg-sky-300/20 blur-3xl lg:block" />
+                    <div className="relative grid gap-8 p-6 md:p-8 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-center">
                         <div className="min-w-0">
                             <div className="inline-flex items-center gap-3 rounded-full border border-blue-100 bg-white/80 px-3 py-2 text-xs font-bold uppercase tracking-[0.18em] text-blue-700 shadow-sm">
                                 <Sparkles className="size-4" />
                                 Emaks Prime
                             </div>
                             <h1 className="mt-5 max-w-4xl text-3xl font-semibold tracking-tight text-slate-950 [font-family:var(--font-display)] md:text-5xl">
-                                Emaks Prime Operasyon Paneli
+                                Hoş geldiniz{auth?.user?.name ? `, ${auth.user.name}` : ''}
                             </h1>
                             <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
-                                Hoş geldiniz{auth?.user?.name ? `, ${auth.user.name}` : ''}. Yetkiniz olan operasyon ekranlarına buradan güvenli ve hızlı erişebilirsiniz.
+                                Yetkiniz olan operasyon ekranlarına buradan hızlıca ulaşabilirsiniz.
                             </p>
-                            <div className="mt-6 flex flex-wrap gap-3">
-                                <span className="rounded-full bg-slate-950 px-4 py-2 text-sm font-bold text-white">
-                                    Güvenli yetki görünümü
-                                </span>
-                                <span className="rounded-full border border-blue-100 bg-white px-4 py-2 text-sm font-bold text-blue-700">
-                                    {visibleCards.length} erişilebilir modül
-                                </span>
-                            </div>
+                            <a
+                                href="https://www.emaksprime.com"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-7 inline-flex items-center gap-2 rounded-full bg-slate-950 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-slate-200 transition hover:-translate-y-0.5 hover:bg-blue-700 hover:shadow-blue-200"
+                            >
+                                Web Sitesine Git
+                                <ExternalLink className="size-4" />
+                            </a>
                         </div>
-                        <div className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-blue-100/60">
+                        <div className="relative overflow-hidden rounded-3xl border border-white/80 bg-white/80 p-6 shadow-xl shadow-blue-100/60">
+                            <div className="absolute inset-x-8 top-4 h-16 rounded-full bg-blue-100/70 blur-2xl" />
                             <img
                                 src="/assets/primecrm/emaks-prime.png"
                                 alt="Emaks Prime"
-                                className="mx-auto h-24 w-auto object-contain"
+                                className="relative mx-auto h-28 w-auto object-contain"
                             />
-                            <div className="mt-6 rounded-2xl bg-slate-950 p-5 text-white">
-                                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-200">
-                                    Operasyon Merkezi
-                                </p>
-                                <p className="mt-3 text-sm leading-6 text-slate-200">
-                                    Menü ve kartlar backend yetki payloadundan gelir; yetkisiz modül bu ekranda gösterilmez.
-                                </p>
+                            <div className="relative mt-6 h-2 overflow-hidden rounded-full bg-slate-100">
+                                <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-blue-700 via-sky-500 to-cyan-400" />
                             </div>
                         </div>
                     </div>
@@ -134,13 +133,14 @@ export default function DashboardHome() {
                             <Link
                                 key={card.title}
                                 href={card.href}
-                                className="group rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-lg hover:shadow-blue-100/70"
+                                className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-lg hover:shadow-blue-100/70"
                             >
+                                <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${card.tone}`} />
                                 <div className="flex items-start justify-between gap-4">
                                     <span className={`grid size-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br ${card.tone} text-white shadow-sm`}>
                                         <Icon className="size-6" />
                                     </span>
-                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-500 transition group-hover:border-blue-200 group-hover:text-blue-700">
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-500 transition group-hover:border-blue-200 group-hover:bg-blue-50 group-hover:text-blue-700">
                                         Aç
                                     </span>
                                 </div>

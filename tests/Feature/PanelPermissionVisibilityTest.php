@@ -161,6 +161,11 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->assertStringContainsString('visibleHrefs', $moduleLayout);
         $this->assertStringContainsString('href="/dashboard"', $moduleLayout);
         $this->assertStringContainsString('href="/dashboard"', $appSidebar);
+        $this->assertStringContainsString('showAdminSidebarMeta', $appSidebar);
+        $this->assertStringContainsString('panelNavigation.role?.isSuperAdmin', $appSidebar);
+        $this->assertStringContainsString("state !== 'collapsed'", $appSidebar);
+        $this->assertStringNotContainsString('Yetkiler PostgreSQL panel metadata', $appSidebar);
+        $this->assertStringNotContainsString('menü grubu', $appSidebar);
         $this->assertStringContainsString('[&::-webkit-scrollbar]:hidden', $moduleLayout);
         $this->assertStringContainsString('lg:overflow-visible', $moduleLayout);
         $this->assertStringNotContainsString('visibleHref: item.match.find', $moduleLayout);
