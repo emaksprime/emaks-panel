@@ -44,6 +44,7 @@ class DashboardTest extends TestCase
     {
         $dashboard = file_get_contents(resource_path('js/pages/panel/DashboardHome.jsx')) ?: '';
         $panelPage = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
+        $header = file_get_contents(resource_path('js/components/app-sidebar-header.tsx')) ?: '';
 
         $this->assertStringContainsString('DashboardHome', $panelPage);
         $this->assertStringContainsString("matchesPage('dashboard', '/dashboard')", $panelPage);
@@ -51,6 +52,12 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('visibleHrefs', $dashboard);
         $this->assertStringContainsString('firstVisibleHref(card.candidates, visibleHrefs)', $dashboard);
         $this->assertStringContainsString('.filter((card) => card.href !== null)', $dashboard);
+        $this->assertStringContainsString('Hoş geldiniz', $dashboard);
+        $this->assertStringContainsString('Yetkiniz olan operasyon ekranlarına buradan hızlıca ulaşabilirsiniz.', $dashboard);
+        $this->assertStringContainsString('Web Sitesine Git', $dashboard);
+        $this->assertStringContainsString('https://www.emaksprime.com', $dashboard);
+        $this->assertStringContainsString('target="_blank"', $dashboard);
+        $this->assertStringContainsString('rel="noopener noreferrer"', $dashboard);
         $this->assertStringContainsString('Satış Yönetimi', $dashboard);
         $this->assertStringContainsString('Stok Yönetimi', $dashboard);
         $this->assertStringContainsString('Sipariş Yönetimi', $dashboard);
@@ -58,5 +65,11 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('Müşteri Yönetimi', $dashboard);
         $this->assertStringContainsString('Proforma', $dashboard);
         $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
+        $this->assertStringContainsString('Emaks Prime Operasyon Paneli', $header);
+        $this->assertStringContainsString('Ana giriş ekranı', $header);
+        $this->assertStringNotContainsString('Güvenli yetki görünümü', $dashboard);
+        $this->assertStringNotContainsString('erişilebilir modül', $dashboard);
+        $this->assertStringNotContainsString('Operasyon Merkezi', $dashboard);
+        $this->assertStringNotContainsString('backend yetki payload', $dashboard);
     }
 }

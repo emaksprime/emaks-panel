@@ -13,8 +13,13 @@ export function AppSidebarHeader({
     breadcrumbs?: BreadcrumbItemType[];
 }) {
     const { panelContext, panelNavigation } = usePage<SharedPageProps>().props;
-    const title = panelNavigation.currentPage?.title ?? breadcrumbs[breadcrumbs.length - 1]?.title ?? panelContext.brand;
-    const description = panelNavigation.currentPage?.description ?? 'Authenticated administration workspace';
+    const isDashboard = panelNavigation.currentPage?.routePath === '/dashboard';
+    const title = isDashboard
+        ? 'Emaks Prime Operasyon Paneli'
+        : panelNavigation.currentPage?.title ?? breadcrumbs[breadcrumbs.length - 1]?.title ?? panelContext.brand;
+    const description = isDashboard
+        ? 'Ana giriş ekranı'
+        : panelNavigation.currentPage?.description ?? 'Authenticated administration workspace';
 
     return (
         <header className="flex shrink-0 flex-col gap-4 border-b border-slate-200 bg-white px-6 py-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-auto md:px-5">
