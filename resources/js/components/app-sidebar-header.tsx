@@ -20,6 +20,7 @@ export function AppSidebarHeader({
     const description = isDashboard
         ? 'Ana giriş ekranı'
         : panelNavigation.currentPage?.description ?? 'Authenticated administration workspace';
+    const showContextBadges = !isDashboard;
 
     return (
         <header className="flex shrink-0 flex-col gap-4 border-b border-slate-200 bg-white px-6 py-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-auto md:px-5">
@@ -27,19 +28,21 @@ export function AppSidebarHeader({
                 <div className="flex items-start gap-3">
                     <SidebarTrigger className="-ml-1 mt-1" />
                     <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant="outline" className="rounded-md border-slate-200 bg-slate-50 text-slate-700">
-                                {panelContext.host ?? 'dashboard.emaksprime.com.tr'}
-                            </Badge>
-                            <Badge variant="outline" className="rounded-md border-slate-200 bg-white text-slate-600">
-                                {panelContext.environment}
-                            </Badge>
-                            {panelNavigation.role && (
-                                <Badge variant="outline" className="rounded-md border-slate-200 bg-white text-slate-600">
-                                    {panelNavigation.role.name}
+                        {showContextBadges && (
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline" className="rounded-md border-slate-200 bg-slate-50 text-slate-700">
+                                    {panelContext.host ?? 'dashboard.emaksprime.com.tr'}
                                 </Badge>
-                            )}
-                        </div>
+                                <Badge variant="outline" className="rounded-md border-slate-200 bg-white text-slate-600">
+                                    {panelContext.environment}
+                                </Badge>
+                                {panelNavigation.role && (
+                                    <Badge variant="outline" className="rounded-md border-slate-200 bg-white text-slate-600">
+                                        {panelNavigation.role.name}
+                                    </Badge>
+                                )}
+                            </div>
+                        )}
                         <div>
                             <h1 className="text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">
                                 {title}

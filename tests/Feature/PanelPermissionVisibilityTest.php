@@ -161,13 +161,18 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->assertStringContainsString('visibleHrefs', $moduleLayout);
         $this->assertStringContainsString('href="/dashboard"', $moduleLayout);
         $this->assertStringContainsString('href="/dashboard"', $appSidebar);
+        $this->assertStringContainsString('moduleToneClasses', $moduleLayout);
+        $this->assertStringContainsString('max-w-[1600px]', $moduleLayout);
+        $this->assertStringContainsString('minmax(255px,280px)', $moduleLayout);
+        $this->assertStringContainsString('overflow-x-auto', $moduleLayout);
         $this->assertStringContainsString('showAdminSidebarMeta', $appSidebar);
         $this->assertStringContainsString('panelNavigation.role?.isSuperAdmin', $appSidebar);
         $this->assertStringContainsString("state !== 'collapsed'", $appSidebar);
         $this->assertStringNotContainsString('Yetkiler PostgreSQL panel metadata', $appSidebar);
         $this->assertStringNotContainsString('menü grubu', $appSidebar);
         $this->assertStringContainsString('[&::-webkit-scrollbar]:hidden', $moduleLayout);
-        $this->assertStringContainsString('lg:overflow-visible', $moduleLayout);
+        $this->assertStringNotContainsString('lg:flex-wrap', $moduleLayout);
+        $this->assertStringNotContainsString('lg:overflow-visible', $moduleLayout);
         $this->assertStringNotContainsString('visibleHref: item.match.find', $moduleLayout);
     }
 
