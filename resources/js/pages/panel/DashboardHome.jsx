@@ -99,7 +99,7 @@ export default function DashboardHome() {
                                 Hoş geldiniz{auth?.user?.name ? `, ${auth.user.name}` : ''}
                             </h1>
                             <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
-                                Yetkiniz olan operasyon ekranlarına buradan hızlıca ulaşabilirsiniz.
+                                Operasyon ekranlarına buradan hızlıca ulaşabilirsiniz.
                             </p>
                             <a
                                 href="https://www.emaksprime.com"

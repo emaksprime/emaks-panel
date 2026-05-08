@@ -1,4 +1,5 @@
 import { Link, usePage } from '@inertiajs/react';
+import { LayoutDashboard } from 'lucide-react';
 import AppLogo from '@/components/app-logo';
 import { NavMain } from '@/components/nav-main';
 import { NavUser } from '@/components/nav-user';
@@ -15,9 +16,8 @@ import {
 import type { SharedPageProps } from '@/types';
 
 export function AppSidebar() {
-    const { panelContext, panelNavigation } = usePage<SharedPageProps>().props;
+    const { panelNavigation } = usePage<SharedPageProps>().props;
     const { state } = useSidebar();
-    const showAdminSidebarMeta = Boolean(panelNavigation.role?.isSuperAdmin && state !== 'collapsed');
 
     return (
         <Sidebar collapsible="icon" variant="inset">
@@ -25,8 +25,17 @@ export function AppSidebar() {
                 <SidebarMenu>
                     <SidebarMenuItem>
                         <SidebarMenuButton size="lg" asChild>
-                            <Link href="/dashboard" prefetch>
-                                <AppLogo />
+                            <Link href="/dashboard" prefetch className={state === 'collapsed' ? 'justify-center' : ''}>
+                                {state === 'collapsed' ? (
+                                    <>
+                                        <span className="grid size-8 place-items-center rounded-xl bg-slate-950 text-white shadow-sm">
+                                            <LayoutDashboard className="size-4" />
+                                        </span>
+                                        <span className="sr-only">Ana Giriş</span>
+                                    </>
+                                ) : (
+                                    <AppLogo />
+                                )}
                             </Link>
                         </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -34,29 +43,10 @@ export function AppSidebar() {
             </SidebarHeader>
 
             <SidebarContent>
-                {showAdminSidebarMeta && (
-                    <div className="px-2 pb-2">
-                        <div className="rounded-lg border border-sidebar-border bg-white p-3 text-sm shadow-sm">
-                            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                                {panelContext.host ?? 'dashboard.emaksprime.com.tr'}
-                            </p>
-                        </div>
-                    </div>
-                )}
                 <NavMain groups={panelNavigation.groups} />
             </SidebarContent>
 
             <SidebarFooter>
-                {showAdminSidebarMeta && (
-                    <div className="mx-2 rounded-lg border border-sidebar-border bg-white p-3 text-sm text-slate-600 shadow-sm">
-                        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                            Panel
-                        </p>
-                        <p className="mt-2">
-                            {panelNavigation.meta.environment}
-                        </p>
-                    </div>
-                )}
                 <NavUser />
             </SidebarFooter>
         </Sidebar>

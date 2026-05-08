@@ -15,15 +15,18 @@ export function AppSidebarHeader({
     const { panelContext, panelNavigation } = usePage<SharedPageProps>().props;
     const isDashboard = panelNavigation.currentPage?.routePath === '/dashboard';
     const title = isDashboard
-        ? 'Emaks Prime Operasyon Paneli'
+        ? 'Ana Giriş'
         : panelNavigation.currentPage?.title ?? breadcrumbs[breadcrumbs.length - 1]?.title ?? panelContext.brand;
     const description = isDashboard
-        ? 'Ana giriş ekranı'
+        ? 'Operasyon Paneli'
         : panelNavigation.currentPage?.description ?? 'Authenticated administration workspace';
     const showContextBadges = !isDashboard;
 
     return (
-        <header className="flex shrink-0 flex-col gap-4 border-b border-slate-200 bg-white px-6 py-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-auto md:px-5">
+        <header className={[
+            'flex shrink-0 flex-col border-b border-slate-200 bg-white px-6 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-auto md:px-5',
+            isDashboard ? 'gap-2 py-3' : 'gap-4 py-4',
+        ].join(' ')}>
             <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-3">
                     <SidebarTrigger className="-ml-1 mt-1" />
@@ -44,10 +47,16 @@ export function AppSidebarHeader({
                             </div>
                         )}
                         <div>
-                            <h1 className="text-2xl font-semibold text-slate-950 [font-family:var(--font-display)]">
+                            <h1 className={[
+                                'font-semibold text-slate-950 [font-family:var(--font-display)]',
+                                isDashboard ? 'text-base' : 'text-2xl',
+                            ].join(' ')}>
                                 {title}
                             </h1>
-                            <p className="mt-1 max-w-2xl text-sm text-slate-500">
+                            <p className={[
+                                'mt-1 max-w-2xl text-slate-500',
+                                isDashboard ? 'text-xs' : 'text-sm',
+                            ].join(' ')}>
                                 {description}
                             </p>
                         </div>

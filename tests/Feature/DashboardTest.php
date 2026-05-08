@@ -54,7 +54,8 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('firstVisibleHref(card.candidates, visibleHrefs)', $dashboard);
         $this->assertStringContainsString('.filter((card) => card.href !== null)', $dashboard);
         $this->assertStringContainsString('Hoş geldiniz', $dashboard);
-        $this->assertStringContainsString('Yetkiniz olan operasyon ekranlarına buradan hızlıca ulaşabilirsiniz.', $dashboard);
+        $this->assertStringContainsString('Operasyon ekranlarına buradan hızlıca ulaşabilirsiniz.', $dashboard);
+        $this->assertStringNotContainsString('Yetkiniz olan', $dashboard);
         $this->assertStringContainsString('Web Sitesine Git', $dashboard);
         $this->assertStringContainsString('https://www.emaksprime.com', $dashboard);
         $this->assertStringContainsString('target="_blank"', $dashboard);
@@ -66,13 +67,15 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('Müşteri Yönetimi', $dashboard);
         $this->assertStringContainsString('Proforma', $dashboard);
         $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
-        $this->assertStringContainsString('Emaks Prime Operasyon Paneli', $header);
-        $this->assertStringContainsString('Ana giriş ekranı', $header);
+        $this->assertStringContainsString('Ana Giriş', $header);
+        $this->assertStringContainsString('Operasyon Paneli', $header);
         $this->assertStringContainsString('const showContextBadges = !isDashboard', $header);
         $this->assertStringContainsString('{showContextBadges &&', $header);
         $this->assertStringContainsString('href="/dashboard"', file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '');
         $this->assertStringContainsString('Operasyon Paneli', $appLogo);
+        $this->assertStringContainsString('Emaks Prime logo', $appLogo);
         $this->assertStringContainsString('whitespace-nowrap', $appLogo);
+        $this->assertStringNotContainsString('>Emaks Prime<', $appLogo);
         $this->assertStringNotContainsString('truncate', $appLogo);
         $this->assertStringNotContainsString('Güvenli yetki görünümü', $dashboard);
         $this->assertStringNotContainsString('erişilebilir modül', $dashboard);
