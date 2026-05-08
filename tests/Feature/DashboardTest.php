@@ -66,7 +66,10 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('Teknik Servis', $dashboard);
         $this->assertStringContainsString('Müşteri Yönetimi', $dashboard);
         $this->assertStringContainsString('Proforma', $dashboard);
-        $this->assertStringNotContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
+        $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
+        $this->assertStringContainsString('Emaks Prime logo', $dashboard);
+        $this->assertStringContainsString('h-9 w-auto object-contain', $dashboard);
+        $this->assertStringNotContainsString('Sparkles', $dashboard);
         $this->assertStringNotContainsString('relative mt-6 h-2', $dashboard);
         $this->assertStringNotContainsString('w-2/3 rounded-full', $dashboard);
         $this->assertStringContainsString('Ana Giriş', $header);

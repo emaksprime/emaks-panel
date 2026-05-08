@@ -104,15 +104,15 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
     return (
         <div className="min-h-screen bg-slate-100">
             <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-                <div className="mx-auto grid max-w-[1600px] gap-3 px-4 py-2.5 lg:grid-cols-[minmax(170px,190px)_minmax(0,1fr)_auto] lg:items-center xl:px-6">
+                <div className="mx-auto grid max-w-7xl gap-3 px-4 py-2.5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center xl:px-6">
                     <div className="flex min-w-0 items-center justify-center lg:justify-start">
                         <Link href="/dashboard" className="flex min-w-[160px] shrink-0 items-center justify-center">
                             <AppLogo />
                         </Link>
                     </div>
 
-                    <div className="relative min-w-0">
-                        <nav className="flex min-w-0 gap-2 overflow-x-auto rounded-full border border-slate-200/80 bg-white/80 p-1 pr-10 shadow-inner shadow-slate-100 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden">
+                    <div className="relative min-w-0 max-w-full justify-self-start">
+                        <nav className="flex w-max max-w-full min-w-0 gap-2 overflow-x-auto rounded-full border border-slate-200/80 bg-white/80 p-1 pr-10 shadow-inner shadow-slate-100 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden">
                             {moduleItems
                                 .map((item) => ({
                                     ...item,

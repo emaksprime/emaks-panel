@@ -7,7 +7,6 @@ import {
     ExternalLink,
     FileText,
     Headset,
-    Sparkles,
     UsersRound,
 } from 'lucide-react';
 
@@ -91,9 +90,15 @@ export default function DashboardHome() {
                     <div className="absolute bottom-0 left-1/2 hidden h-20 w-72 -translate-x-1/2 rounded-full bg-sky-300/20 blur-3xl lg:block" />
                     <div className="relative p-6 md:p-8 xl:p-10">
                         <div className="min-w-0">
-                            <div className="inline-flex items-center gap-3 rounded-full border border-blue-100 bg-white/80 px-3 py-2 text-xs font-bold uppercase tracking-[0.18em] text-blue-700 shadow-sm">
-                                <Sparkles className="size-4" />
-                                Emaks Prime
+                            <div className="inline-flex flex-col items-center gap-2 rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 shadow-sm">
+                                <img
+                                    src="/assets/primecrm/emaks-prime.png"
+                                    alt="Emaks Prime logo"
+                                    className="h-9 w-auto object-contain"
+                                />
+                                <span className="whitespace-nowrap text-xs font-bold tracking-[0.18em] text-blue-700">
+                                    Operasyon Paneli
+                                </span>
                             </div>
                             <h1 className="mt-5 max-w-4xl text-3xl font-semibold tracking-tight text-slate-950 [font-family:var(--font-display)] md:text-5xl">
                                 Hoş geldiniz{auth?.user?.name ? `, ${auth.user.name}` : ''}
