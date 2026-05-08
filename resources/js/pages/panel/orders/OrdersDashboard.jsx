@@ -1,8 +1,19 @@
 import { Head, Link } from '@inertiajs/react';
-import { RefreshCw, Search } from 'lucide-react';
-import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { Check, PieChart, RefreshCw, Search, X } from 'lucide-react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '@/lib/api';
-import { groupGivenOrders, numberValue, textValue } from './ordersUtils.js';
+import {
+    brandLabelForKey,
+    csvValues,
+    deliveryWeekOptionsForRows,
+    estimatedWeekLabel,
+    filterRowsForOrderDashboard,
+    groupGivenOrders,
+    numberValue,
+    pieItemsForOrderRows,
+    productOptionsForRows,
+    textValue,
+} from './ordersUtils.js';
 
 const PAGE_COPY = {
     alinan: {
@@ -14,6 +25,14 @@ const PAGE_COPY = {
         description: 'Tedarik/gelecek ürün siparişleri',
     },
 };
+
+const BRAND_OPTIONS = [
+    { value: 'all', label: 'Tümü' },
+    { value: 'philips', label: 'PHILIPS' },
+    { value: 'emaks_prime', label: 'EMAKS PRIME' },
+];
+
+const PIE_COLORS = ['#1d4ed8', '#0891b2', '#059669', '#d97706', '#7c3aed', '#db2777', '#475569', '#0f766e'];
 
 function today() {
     return new Date().toISOString().slice(0, 10);
@@ -33,12 +52,26 @@ function quantity(value) {
     }).format(numberValue(value));
 }
 
+function count(value) {
+    return new Intl.NumberFormat('tr-TR', {
+        maximumFractionDigits: 0,
+    }).format(numberValue(value));
+}
+
+function deliveryWeekLabel(value) {
+    return value === 'TESLÄ°M TARÄ°HÄ° BELÄ°RSÄ°Z' ? 'TESLİM TARİHİ BELİRSİZ' : value;
+}
+
 function defaultFilters() {
     return {
         date_from: '2025-01-01',
         date_to: today(),
         search: '',
         status: 'all',
+        brand_filter: 'all',
+        product_filter: '',
+        delivery_week: 'all',
+        delivery_date: '',
         limit: 500,
         page: 1,
         bypass_cache: false,
@@ -95,30 +128,208 @@ function OrderTabs({ page }) {
     );
 }
 
-function SearchPanel({ filters, setFilters, loading, mode }) {
+function BrandFilter({ value, onChange }) {
+    return (
+        <label className="grid gap-1 text-sm font-semibold text-slate-700">
+            Marka
+            <select
+                value={value}
+                onChange={(event) => onChange(event.target.value)}
+                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+            >
+                {BRAND_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+            </select>
+        </label>
+    );
+}
+
+function ProductPicker({ value, options, onChange }) {
+    const [query, setQuery] = useState('');
+    const selectedValues = useMemo(() => csvValues(value), [value]);
+    const selectedLookup = useMemo(() => new Set(selectedValues), [selectedValues]);
+    const normalizedQuery = query.trim().toLocaleUpperCase('tr');
+
+    const visibleOptions = useMemo(() => options
+        .filter((option) => !selectedLookup.has(option.value))
+        .filter((option) => normalizedQuery === ''
+            || [option.label, option.stockCode, option.brandLabel].join(' ').toLocaleUpperCase('tr').includes(normalizedQuery))
+        .slice(0, 12), [normalizedQuery, options, selectedLookup]);
+
+    const optionByValue = useMemo(() => new Map(options.map((option) => [option.value, option])), [options]);
+
+    const commit = (nextValues) => {
+        onChange(nextValues.join(', '));
+    };
+
+    return (
+        <div className="grid gap-2">
+            <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                Ürün / Model
+                <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                        type="search"
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        placeholder="Ürün, model veya stok kodu ara"
+                        className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+                    />
+                </div>
+            </label>
+
+            {selectedValues.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                    {selectedValues.map((selected) => {
+                        const option = optionByValue.get(selected);
+
+                        return (
+                            <button
+                                key={selected}
+                                type="button"
+                                onClick={() => commit(selectedValues.filter((item) => item !== selected))}
+                                className="inline-flex max-w-full items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-800"
+                            >
+                                <span className="truncate">{option?.label ?? selected}</span>
+                                <X className="size-3.5" />
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+
+            <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2">
+                {visibleOptions.length === 0 ? (
+                    <p className="px-2 py-3 text-sm text-slate-500">Seçilebilir ürün bulunamadı.</p>
+                ) : visibleOptions.map((option) => (
+                    <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                            commit([...selectedValues, option.value]);
+                            setQuery('');
+                        }}
+                        className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition hover:bg-white hover:shadow-sm"
+                    >
+                        <span className="min-w-0">
+                            <span className="block truncate text-sm font-bold text-slate-900">{option.label}</span>
+                            <span className="mt-0.5 block text-xs text-slate-500">
+                                {brandLabelForKey(option.brandKey)} · {quantity(option.quantity)} adet · {money(option.amount)}
+                            </span>
+                        </span>
+                        <span className="grid size-5 shrink-0 place-items-center rounded border border-slate-300 bg-white text-white">
+                            <Check className="size-3.5" />
+                        </span>
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function DeliveryWeekFilter({ filters, setFilters, weekOptions }) {
+    if (weekOptions.length === 0) {
+        return null;
+    }
+
+    return (
+        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Teslim Haftası</p>
+                    <p className="mt-1 text-sm text-slate-500">Tarih seçimi ilgili haftayı filtreler; ana gösterim hafta etiketidir.</p>
+                </div>
+                <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Tarihten hafta seç
+                    <input
+                        type="date"
+                        value={filters.delivery_date}
+                        onChange={(event) => {
+                            const value = event.target.value;
+
+                            setFilters((current) => ({
+                                ...current,
+                                delivery_date: value,
+                                delivery_week: value ? estimatedWeekLabel(value) : 'all',
+                                page: 1,
+                                bypass_cache: true,
+                            }));
+                        }}
+                        className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+                    />
+                </label>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+                <button
+                    type="button"
+                    onClick={() => setFilters((current) => ({ ...current, delivery_week: 'all', delivery_date: '', page: 1, bypass_cache: true }))}
+                    className={[
+                        'shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition',
+                        filters.delivery_week === 'all'
+                            ? 'border-slate-950 bg-slate-950 text-white'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400',
+                    ].join(' ')}
+                >
+                    Tümü
+                </button>
+                {weekOptions.map((option) => (
+                    <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setFilters((current) => ({ ...current, delivery_week: option.value, delivery_date: '', page: 1, bypass_cache: true }))}
+                        className={[
+                            'shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition',
+                            filters.delivery_week === option.value
+                                ? 'border-blue-700 bg-blue-700 text-white'
+                                : 'border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100',
+                        ].join(' ')}
+                    >
+                        {deliveryWeekLabel(option.label)}
+                    </button>
+                ))}
+            </div>
+        </section>
+    );
+}
+
+function SearchPanel({ filters, setFilters, loading, mode, productOptions }) {
     const placeholder = mode === 'verilen'
         ? 'Stok adı, stok kodu veya kategori ara'
         : 'Cari adı, ürün, açıklama2 veya sorumluluk kodu ara';
 
     return (
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                <label className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                    <input
-                        type="search"
-                        value={filters.search}
-                        disabled={loading}
-                        onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value, page: 1 }))}
-                        placeholder={placeholder}
-                        className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
-                    />
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_220px_minmax(280px,0.9fr)_auto] xl:items-start">
+                <label className="relative grid gap-1 text-sm font-semibold text-slate-700">
+                    Genel Arama
+                    <span className="relative">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                            type="search"
+                            value={filters.search}
+                            onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value, page: 1, bypass_cache: true }))}
+                            placeholder={placeholder}
+                            className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+                        />
+                    </span>
                 </label>
+
+                <BrandFilter
+                    value={filters.brand_filter}
+                    onChange={(value) => setFilters((current) => ({ ...current, brand_filter: value, product_filter: '', page: 1, bypass_cache: true }))}
+                />
+
+                <ProductPicker
+                    value={filters.product_filter}
+                    options={productOptions}
+                    onChange={(value) => setFilters((current) => ({ ...current, product_filter: value, page: 1, bypass_cache: true }))}
+                />
+
                 <button
                     type="button"
-                    disabled={loading}
                     onClick={() => setFilters((current) => ({ ...current, bypass_cache: !current.bypass_cache }))}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:opacity-60"
+                    className="inline-flex h-11 items-center justify-center gap-2 self-end rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-semibold text-blue-700 transition hover:bg-blue-100"
                 >
                     <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
                     Yenile
@@ -135,27 +346,79 @@ function approvedGroup(row) {
     return serial === 'B' || group.toLocaleLowerCase('tr').includes('bekleyen') ? 'pending' : 'approved';
 }
 
-function summaryForReceived(rows) {
-    const approved = rows.filter((row) => approvedGroup(row) === 'approved');
-    const pending = rows.filter((row) => approvedGroup(row) === 'pending');
+function summaryForReceived(approvedRows, pendingRows) {
     const sum = (items, key) => items.reduce((total, row) => total + numberValue(row[key]), 0);
 
     return [
-        { label: 'Onaylı Sipariş Miktarı', value: quantity(sum(approved, 'kalan_miktar')) },
-        { label: 'Onaylı Sipariş Tutarı', value: money(sum(approved, 'kalan_tutar')) },
-        { label: 'Onay Bekleyen Sipariş Miktarı', value: quantity(sum(pending, 'kalan_miktar')) },
-        { label: 'Onay Bekleyen Sipariş Tutarı', value: money(sum(pending, 'kalan_tutar')) },
+        { label: 'Onaylı Açık Sipariş Satırı', value: count(approvedRows.length) },
+        { label: 'Onaylı Sipariş Tutarı', value: money(sum(approvedRows, 'kalan_tutar')) },
+        { label: 'Onay Bekleyen Açık Sipariş Satırı', value: count(pendingRows.length) },
+        { label: 'Onay Bekleyen Sipariş Tutarı', value: money(sum(pendingRows, 'kalan_tutar')) },
     ];
 }
 
 function summaryForGiven(rows, groups) {
-    const nearest = groups.find((group) => group.label !== 'TESLİM TARİHİ BELİRSİZ')?.label ?? 'Belirsiz';
+    const nearest = deliveryWeekLabel(groups.find((group) => group.label !== 'TESLÄ°M TARÄ°HÄ° BELÄ°RSÄ°Z')?.label ?? 'Belirsiz');
 
     return [
         { label: 'Toplam Sipariş Miktarı', value: quantity(rows.reduce((total, row) => total + numberValue(row.siparis_miktari), 0)) },
         { label: 'Teslim Haftası Sayısı', value: String(groups.length) },
         { label: 'En Yakın Teslim Haftası', value: nearest },
     ];
+}
+
+function OrdersPieChart({ title, items }) {
+    const total = items.reduce((sum, item) => sum + item.quantity, 0);
+    let cursor = 0;
+    const gradient = items.length === 0
+        ? '#e2e8f0 0 100%'
+        : items.map((item, index) => {
+            const start = cursor;
+            const end = cursor + item.percentage;
+            cursor = end;
+
+            return `${PIE_COLORS[index % PIE_COLORS.length]} ${start}% ${end}%`;
+        }).join(', ');
+
+    return (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center gap-2">
+                <PieChart className="size-5 text-blue-700" />
+                <div>
+                    <h2 className="text-lg font-bold text-slate-950">{title}</h2>
+                    <p className="text-sm text-slate-500">Ürün/model bazlı açık sipariş dağılımı</p>
+                </div>
+            </div>
+
+            {items.length === 0 ? (
+                <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-500">Grafik için uygun sipariş satırı yok.</div>
+            ) : (
+                <div className="mt-5 grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-center">
+                    <div className="mx-auto grid size-48 place-items-center rounded-full" style={{ background: `conic-gradient(${gradient})` }}>
+                        <div className="grid size-28 place-items-center rounded-full bg-white text-center shadow-inner">
+                            <span>
+                                <span className="block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Toplam</span>
+                                <span className="block text-xl font-bold text-slate-950">{quantity(total)}</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div className="grid gap-2">
+                        {items.map((item, index) => (
+                            <div key={item.label} className="grid gap-2 rounded-xl border border-slate-100 bg-slate-50 p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <span className="size-3 shrink-0 rounded-full" style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }} />
+                                    <span className="truncate text-sm font-bold text-slate-900">{item.label}</span>
+                                </div>
+                                <div className="text-sm font-semibold text-slate-700">
+                                    {quantity(item.quantity)} · %{item.percentage.toFixed(1)}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </section>
+    );
 }
 
 function ReceivedTable({ title, rows }) {
@@ -173,6 +436,7 @@ function ReceivedTable({ title, rows }) {
                             <th className="w-28 px-4 py-3">Sipariş Tarihi</th>
                             <th className="px-4 py-3">Cari Adı</th>
                             <th className="px-4 py-3">Ürün</th>
+                            <th className="w-32 px-4 py-3">Marka</th>
                             <th className="px-4 py-3">Açıklama2</th>
                             <th className="w-24 px-4 py-3 text-right">Kalan</th>
                             <th className="w-20 px-4 py-3">Birim</th>
@@ -185,6 +449,7 @@ function ReceivedTable({ title, rows }) {
                                 <td className="px-4 py-3 font-semibold text-slate-700">{textValue(row, ['siparis_tarihi'], '-')}</td>
                                 <td className="break-words px-4 py-3 font-semibold text-slate-950">{textValue(row, ['cari_adi'], '-')}</td>
                                 <td className="break-words px-4 py-3 text-slate-700">{textValue(row, ['urun_adi'], '-')}</td>
+                                <td className="px-4 py-3 text-slate-600">{textValue(row, ['marka', 'brand_code'], '-')}</td>
                                 <td className="break-words px-4 py-3 text-slate-600">{textValue(row, ['sip_aciklama2'], '-')}</td>
                                 <td className="px-4 py-3 text-right font-semibold text-slate-900">{quantity(row.kalan_miktar)}</td>
                                 <td className="px-4 py-3 text-slate-600">{textValue(row, ['birim'], 'Adet')}</td>
@@ -203,6 +468,7 @@ function ReceivedTable({ title, rows }) {
                                 <p className="text-xs font-semibold text-slate-500">{textValue(row, ['siparis_tarihi'], '-')}</p>
                                 <h3 className="mt-1 break-words text-base font-bold text-slate-950">{textValue(row, ['cari_adi'], '-')}</h3>
                                 <p className="mt-2 break-words text-sm text-slate-700">{textValue(row, ['urun_adi'], '-')}</p>
+                                <p className="mt-1 text-xs font-semibold text-blue-700">{textValue(row, ['marka', 'brand_code'], '-')}</p>
                             </div>
                             <div className="text-right">
                                 <p className="text-xs text-slate-500">Kalan</p>
@@ -227,7 +493,7 @@ function GivenGroups({ groups }) {
                 <section key={group.label} className="rounded-2xl border border-slate-200 bg-white shadow-sm">
                     <div className="border-b border-slate-100 p-4">
                         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Tahmini Teslim Haftası</p>
-                        <h2 className="mt-1 text-xl font-bold text-slate-950">{group.label}</h2>
+                        <h2 className="mt-1 text-xl font-bold text-slate-950">{deliveryWeekLabel(group.label)}</h2>
                     </div>
                     <div className="hidden md:block">
                         <table className="w-full table-fixed">
@@ -235,8 +501,9 @@ function GivenGroups({ groups }) {
                                 <tr>
                                     <th className="px-4 py-3">Stok Adı</th>
                                     <th className="w-48 px-4 py-3">Stok Kategori Adı</th>
+                                    <th className="w-32 px-4 py-3">Marka</th>
                                     <th className="w-36 px-4 py-3 text-right">Sipariş Miktarı</th>
-                                    <th className="w-32 px-4 py-3">Teslim Tarihi</th>
+                                    <th className="w-40 px-4 py-3">Tahmini Teslim Haftası</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 text-sm">
@@ -244,8 +511,12 @@ function GivenGroups({ groups }) {
                                     <tr key={`${textValue(row, ['stok_kodu'])}-${index}`} className="align-top">
                                         <td className="break-words px-4 py-3 font-semibold text-slate-950">{textValue(row, ['stok_adi'], '-')}</td>
                                         <td className="break-words px-4 py-3 text-slate-600">{textValue(row, ['stok_kategori_adi'], '-')}</td>
+                                        <td className="px-4 py-3 text-slate-600">{textValue(row, ['marka', 'brand_code'], '-')}</td>
                                         <td className="px-4 py-3 text-right font-bold text-slate-950">{quantity(row.siparis_miktari)}</td>
-                                        <td className="px-4 py-3 text-slate-600">{textValue(row, ['teslim_tarihi_gosterim', 'teslim_tarihi'], '-')}</td>
+                                        <td className="px-4 py-3 text-slate-600">
+                                            <span className="font-semibold text-slate-900">{deliveryWeekLabel(group.label)}</span>
+                                            <span className="mt-1 block text-xs text-slate-400">{textValue(row, ['teslim_tarihi_gosterim', 'teslim_tarihi'], '')}</span>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -256,9 +527,14 @@ function GivenGroups({ groups }) {
                             <article key={`${textValue(row, ['stok_kodu'])}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                                 <h3 className="break-words text-base font-bold text-slate-950">{textValue(row, ['stok_adi'], '-')}</h3>
                                 <p className="mt-2 text-sm text-slate-600">{textValue(row, ['stok_kategori_adi'], '-')}</p>
+                                <p className="mt-1 text-xs font-semibold text-blue-700">{textValue(row, ['marka', 'brand_code'], '-')}</p>
                                 <div className="mt-3 flex items-center justify-between gap-3 text-sm">
                                     <span className="text-slate-500">Sipariş Miktarı</span>
                                     <strong className="text-slate-950">{quantity(row.siparis_miktari)}</strong>
+                                </div>
+                                <div className="mt-2 text-sm">
+                                    <span className="text-slate-500">Tahmini teslim:</span>
+                                    <strong className="ml-2 text-slate-950">{deliveryWeekLabel(group.label)}</strong>
                                 </div>
                             </article>
                         ))}
@@ -274,45 +550,84 @@ export default function OrdersDashboard({ page, mode }) {
     const deferredFilters = useDeferredValue(filters);
     const [data, setData] = useState(null);
     const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [productOptionsCache, setProductOptionsCache] = useState({ key: '', options: [] });
+    const requestIdRef = useRef(0);
     const copy = PAGE_COPY[mode] ?? PAGE_COPY.alinan;
     const slug = mode === 'verilen' ? 'orders_verilen' : 'orders_alinan';
 
-    const signature = `${slug}:${JSON.stringify(deferredFilters)}`;
+    const signature = useMemo(() => `${slug}:${JSON.stringify(deferredFilters)}`, [deferredFilters, slug]);
 
     useEffect(() => {
-        let active = true;
+        const requestId = requestIdRef.current + 1;
+        requestIdRef.current = requestId;
+        setLoading(true);
 
         void apiRequest(`/api/data/${slug}`, {
             method: 'POST',
             body: JSON.stringify({ ...deferredFilters, bypass_cache: true }),
         })
             .then((response) => {
-                if (active) {
+                if (requestId === requestIdRef.current) {
                     setData({ ...response, signature });
+                    setError(null);
                 }
             })
             .catch((caught) => {
-                if (active) {
+                if (requestId === requestIdRef.current) {
                     setError({
                         signature,
                         message: caught instanceof Error ? caught.message : 'Sipariş verisi alınamadı.',
                     });
                 }
+            })
+            .finally(() => {
+                if (requestId === requestIdRef.current) {
+                    setLoading(false);
+                }
             });
-
-        return () => {
-            active = false;
-        };
     }, [deferredFilters, signature, slug]);
 
-    const activeData = data?.signature === signature ? data : null;
-    const activeError = error?.signature === signature ? error.message : null;
-    const rows = activeData?.rows ?? [];
-    const loading = !activeData && !activeError;
-    const givenGroups = useMemo(() => groupGivenOrders(rows), [rows]);
-    const cards = mode === 'verilen' ? summaryForGiven(rows, givenGroups) : summaryForReceived(rows);
-    const approvedRows = rows.filter((row) => approvedGroup(row) === 'approved');
-    const pendingRows = rows.filter((row) => approvedGroup(row) === 'pending');
+    const rows = data?.rows ?? [];
+    const activeError = error?.message ?? null;
+    const optionCacheKey = [
+        slug,
+        filters.brand_filter,
+        filters.delivery_week,
+        filters.delivery_date,
+        filters.date_from,
+        filters.date_to,
+        filters.search,
+    ].join('|');
+    const liveProductOptions = useMemo(() => productOptionsForRows(rows, filters.brand_filter), [filters.brand_filter, rows]);
+
+    useEffect(() => {
+        if (productOptionsCache.key !== optionCacheKey) {
+            setProductOptionsCache({ key: optionCacheKey, options: [] });
+
+            return;
+        }
+
+        if (filters.product_filter === '' && liveProductOptions.length > 0) {
+            setProductOptionsCache({ key: optionCacheKey, options: liveProductOptions });
+        }
+    }, [filters.product_filter, liveProductOptions, optionCacheKey, productOptionsCache.key]);
+
+    const productOptions = productOptionsCache.key === optionCacheKey && productOptionsCache.options.length > 0
+        ? productOptionsCache.options
+        : liveProductOptions;
+    const visibleRows = useMemo(() => filterRowsForOrderDashboard(rows, filters, mode), [filters, mode, rows]);
+    const deliveryWeekOptions = useMemo(() => deliveryWeekOptionsForRows(filterRowsForOrderDashboard(rows, { ...filters, delivery_week: 'all' }, 'verilen')), [filters, rows]);
+    const givenGroups = useMemo(() => groupGivenOrders(visibleRows), [visibleRows]);
+    const approvedRows = visibleRows.filter((row) => approvedGroup(row) === 'approved');
+    const pendingRows = visibleRows.filter((row) => approvedGroup(row) === 'pending');
+    const cards = mode === 'verilen' ? summaryForGiven(visibleRows, givenGroups) : summaryForReceived(approvedRows, pendingRows);
+    const chartItems = useMemo(
+        () => (mode === 'verilen'
+            ? pieItemsForOrderRows(visibleRows, 'siparis_miktari')
+            : pieItemsForOrderRows(approvedRows, 'kalan_miktar')),
+        [approvedRows, mode, visibleRows],
+    );
 
     return (
         <>
@@ -329,15 +644,24 @@ export default function OrdersDashboard({ page, mode }) {
                     </div>
                 </section>
 
-                <SearchPanel filters={filters} setFilters={setFilters} loading={loading} mode={mode} />
+                <SearchPanel filters={filters} setFilters={setFilters} loading={loading} mode={mode} productOptions={productOptions} />
+
+                {mode === 'verilen' && (
+                    <DeliveryWeekFilter filters={filters} setFilters={setFilters} weekOptions={deliveryWeekOptions} />
+                )}
 
                 <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                     {cards.map((card) => <KpiCard key={card.label} {...card} />)}
                 </section>
 
+                <OrdersPieChart
+                    title={mode === 'verilen' ? 'Verilen Sipariş Ürün Dağılımı' : 'Onaylı Alınan Sipariş Ürün Dağılımı'}
+                    items={chartItems}
+                />
+
                 {activeError && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">{activeError}</div>}
-                {loading && <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm font-semibold text-blue-700">Sipariş verisi yükleniyor...</div>}
-                {!loading && !activeError && rows.length === 0 && (
+                {loading && <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm font-semibold text-blue-700">Sipariş verisi yenileniyor...</div>}
+                {!loading && !activeError && visibleRows.length === 0 && (
                     <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600">Seçili filtrelerde açık sipariş bulunamadı.</div>
                 )}
 

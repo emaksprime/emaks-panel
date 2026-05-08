@@ -33,6 +33,164 @@ export function textValue(row, keys, fallback = '') {
     return fallback;
 }
 
+export function normalizeOrderText(value) {
+    return String(value ?? '')
+        .trim()
+        .toLocaleUpperCase('tr');
+}
+
+export function csvValues(value) {
+    if (Array.isArray(value)) {
+        return [...new Set(value.map((item) => String(item ?? '').trim()).filter(Boolean))];
+    }
+
+    return [...new Set(String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean))];
+}
+
+export function brandKeyForRow(row) {
+    const raw = normalizeOrderText(textValue(row, ['brand_key', 'marka', 'brand_code', 'brand_name'], ''));
+
+    if (raw === 'PHILIPS') {
+        return 'philips';
+    }
+
+    if (['EMAKS_PRIME', 'EMAKS PRIME', 'EMAKS'].includes(raw)) {
+        return 'emaks_prime';
+    }
+
+    if (['OTHER', 'DİĞER MARKA'].includes(raw)) {
+        return 'other';
+    }
+
+    return textValue(row, ['brand_key'], '') || 'other';
+}
+
+export function brandLabelForKey(key) {
+    if (key === 'philips') {
+        return 'PHILIPS';
+    }
+
+    if (key === 'emaks_prime') {
+        return 'EMAKS PRIME';
+    }
+
+    return 'Diğer Marka';
+}
+
+export function orderProductLabel(row) {
+    return textValue(row, ['urun_adi', 'stok_adi', 'model_adi', 'stok_kodu'], 'Ürün');
+}
+
+export function productOptionsForRows(rows, brandFilter = 'all') {
+    const options = new Map();
+
+    for (const row of rows) {
+        const brandKey = brandKeyForRow(row);
+
+        if (brandFilter !== 'all' && brandKey !== brandFilter) {
+            continue;
+        }
+
+        const label = orderProductLabel(row);
+
+        if (!label) {
+            continue;
+        }
+
+        const current = options.get(label) ?? {
+            value: label,
+            label,
+            brandKey,
+            brandLabel: brandLabelForKey(brandKey),
+            quantity: 0,
+            amount: 0,
+            stockCode: textValue(row, ['stok_kodu'], ''),
+        };
+
+        current.quantity += numberValue(row.kalan_miktar ?? row.siparis_miktari);
+        current.amount += numberValue(row.kalan_tutar ?? row.siparis_tutari);
+        options.set(label, current);
+    }
+
+    return [...options.values()].sort((first, second) => first.label.localeCompare(second.label, 'tr'));
+}
+
+export function filterRowsForOrderDashboard(rows, filters = {}, mode = 'alinan') {
+    const brandFilter = filters.brand_filter ?? 'all';
+    const productTokens = csvValues(filters.product_filter).map(normalizeOrderText);
+    const search = normalizeOrderText(filters.search);
+    const deliveryWeek = filters.delivery_week ?? 'all';
+
+    return rows.filter((row) => {
+        if (brandFilter !== 'all' && brandKeyForRow(row) !== brandFilter) {
+            return false;
+        }
+
+        if (productTokens.length > 0) {
+            const productHaystack = normalizeOrderText([
+                textValue(row, ['stok_kodu']),
+                orderProductLabel(row),
+                textValue(row, ['stok_adi']),
+            ].join(' '));
+
+            if (!productTokens.some((token) => productHaystack.includes(token))) {
+                return false;
+            }
+        }
+
+        if (search !== '') {
+            const searchHaystack = normalizeOrderText([
+                textValue(row, ['cari_adi']),
+                textValue(row, ['urun_adi']),
+                textValue(row, ['stok_adi']),
+                textValue(row, ['stok_kodu']),
+                textValue(row, ['sip_aciklama2']),
+                textValue(row, ['sorumluluk_kodu']),
+                textValue(row, ['stok_kategori_adi']),
+            ].join(' '));
+
+            if (!searchHaystack.includes(search)) {
+                return false;
+            }
+        }
+
+        if (mode === 'verilen' && deliveryWeek !== 'all' && deliveryWeekForRow(row) !== deliveryWeek) {
+            return false;
+        }
+
+        return true;
+    });
+}
+
+export function pieItemsForOrderRows(rows, quantityKey) {
+    const grouped = new Map();
+
+    for (const row of rows) {
+        const label = orderProductLabel(row);
+        const quantity = numberValue(row[quantityKey]);
+
+        if (quantity <= 0) {
+            continue;
+        }
+
+        if (!grouped.has(label)) {
+            grouped.set(label, { label, quantity: 0 });
+        }
+
+        grouped.get(label).quantity += quantity;
+    }
+
+    const total = [...grouped.values()].reduce((sum, item) => sum + item.quantity, 0);
+
+    return [...grouped.values()]
+        .sort((first, second) => second.quantity - first.quantity || first.label.localeCompare(second.label, 'tr'))
+        .slice(0, 8)
+        .map((item) => ({
+            ...item,
+            percentage: total > 0 ? (item.quantity / total) * 100 : 0,
+        }));
+}
+
 export function parseDateValue(value) {
     if (!value) {
         return null;
@@ -109,4 +267,11 @@ export function groupGivenOrders(rows) {
             rows: group.rows.sort((first, second) => textValue(first, ['stok_adi', 'Stok Adı']).localeCompare(textValue(second, ['stok_adi', 'Stok Adı']), 'tr')),
         }))
         .sort((first, second) => first.sort - second.sort || first.label.localeCompare(second.label, 'tr'));
+}
+
+export function deliveryWeekOptionsForRows(rows) {
+    return groupGivenOrders(rows).map((group) => ({
+        label: group.label,
+        value: group.label,
+    }));
 }
