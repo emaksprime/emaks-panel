@@ -3,6 +3,7 @@ import { Check, PieChart, RefreshCw, Search, X } from 'lucide-react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '@/lib/api';
 import {
+    brandComparisonForOrderRows,
     brandLabelForKey,
     csvValues,
     deliveryWeekOptionsForRows,
@@ -147,6 +148,8 @@ function BrandFilter({ value, onChange }) {
 
 function ProductPicker({ value, options, onChange }) {
     const [query, setQuery] = useState('');
+    const [isOpen, setIsOpen] = useState(false);
+    const pickerRef = useRef(null);
     const selectedValues = useMemo(() => csvValues(value), [value]);
     const selectedLookup = useMemo(() => new Set(selectedValues), [selectedValues]);
     const normalizedQuery = query.trim().toLocaleUpperCase('tr');
@@ -159,12 +162,33 @@ function ProductPicker({ value, options, onChange }) {
 
     const optionByValue = useMemo(() => new Map(options.map((option) => [option.value, option])), [options]);
 
+    useEffect(() => {
+        const closeOnOutsideClick = (event) => {
+            if (pickerRef.current && !pickerRef.current.contains(event.target)) {
+                setIsOpen(false);
+            }
+        };
+        const closeOnEscape = (event) => {
+            if (event.key === 'Escape') {
+                setIsOpen(false);
+            }
+        };
+
+        document.addEventListener('pointerdown', closeOnOutsideClick);
+        document.addEventListener('keydown', closeOnEscape);
+
+        return () => {
+            document.removeEventListener('pointerdown', closeOnOutsideClick);
+            document.removeEventListener('keydown', closeOnEscape);
+        };
+    }, []);
+
     const commit = (nextValues) => {
         onChange(nextValues.join(', '));
     };
 
     return (
-        <div className="grid gap-2">
+        <div ref={pickerRef} className="grid gap-2">
             <label className="grid gap-1 text-sm font-semibold text-slate-700">
                 Ürün / Model
                 <div className="relative">
@@ -172,7 +196,13 @@ function ProductPicker({ value, options, onChange }) {
                     <input
                         type="search"
                         value={query}
-                        onChange={(event) => setQuery(event.target.value)}
+                        aria-expanded={isOpen}
+                        onFocus={() => setIsOpen(true)}
+                        onClick={() => setIsOpen(true)}
+                        onChange={(event) => {
+                            setQuery(event.target.value);
+                            setIsOpen(true);
+                        }}
                         placeholder="Ürün, model veya stok kodu ara"
                         className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
                     />
@@ -199,31 +229,34 @@ function ProductPicker({ value, options, onChange }) {
                 </div>
             )}
 
-            <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2">
-                {visibleOptions.length === 0 ? (
-                    <p className="px-2 py-3 text-sm text-slate-500">Seçilebilir ürün bulunamadı.</p>
-                ) : visibleOptions.map((option) => (
-                    <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => {
-                            commit([...selectedValues, option.value]);
-                            setQuery('');
-                        }}
-                        className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition hover:bg-white hover:shadow-sm"
-                    >
-                        <span className="min-w-0">
-                            <span className="block truncate text-sm font-bold text-slate-900">{option.label}</span>
-                            <span className="mt-0.5 block text-xs text-slate-500">
-                                {brandLabelForKey(option.brandKey)} · {quantity(option.quantity)} adet · {money(option.amount)}
+            {isOpen && (
+                <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2">
+                    {visibleOptions.length === 0 ? (
+                        <p className="px-2 py-3 text-sm text-slate-500">Seçilebilir ürün bulunamadı.</p>
+                    ) : visibleOptions.map((option) => (
+                        <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => {
+                                commit([...selectedValues, option.value]);
+                                setQuery('');
+                                setIsOpen(true);
+                            }}
+                            className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition hover:bg-white hover:shadow-sm"
+                        >
+                            <span className="min-w-0">
+                                <span className="block truncate text-sm font-bold text-slate-900">{option.label}</span>
+                                <span className="mt-0.5 block text-xs text-slate-500">
+                                    {brandLabelForKey(option.brandKey)} · {quantity(option.quantity)} adet · {money(option.amount)}
+                                </span>
                             </span>
-                        </span>
-                        <span className="grid size-5 shrink-0 place-items-center rounded border border-slate-300 bg-white text-white">
-                            <Check className="size-3.5" />
-                        </span>
-                    </button>
-                ))}
-            </div>
+                            <span className="grid size-5 shrink-0 place-items-center rounded border border-slate-300 bg-white text-white">
+                                <Check className="size-3.5" />
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -367,6 +400,44 @@ function summaryForGiven(rows, groups) {
     ];
 }
 
+function BrandComparisonStrip({ items }) {
+    if (items.length === 0) {
+        return null;
+    }
+
+    return (
+        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Marka Karşılaştırması</p>
+                <p className="mt-1 text-sm text-slate-500">Filtreli siparişlerde marka bazlı adet ve tutar dağılımı.</p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+                {items.map((item, index) => (
+                    <article key={item.key} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                            <h3 className="text-sm font-black text-slate-950">{item.label}</h3>
+                            <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-blue-700">%{item.percentage.toFixed(1)}</span>
+                        </div>
+                        <div className="mt-4 grid gap-1">
+                            <p className="text-2xl font-black text-slate-950">{money(item.amount)}</p>
+                            <p className="text-sm font-semibold text-slate-600">{quantity(item.quantity)} adet</p>
+                        </div>
+                        <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
+                            <div
+                                className="h-full rounded-full"
+                                style={{
+                                    width: `${Math.min(100, Math.max(0, item.percentage))}%`,
+                                    backgroundColor: PIE_COLORS[index % PIE_COLORS.length],
+                                }}
+                            />
+                        </div>
+                    </article>
+                ))}
+            </div>
+        </section>
+    );
+}
+
 function OrdersPieChart({ title, items }) {
     const total = items.reduce((sum, item) => sum + item.quantity, 0);
     let cursor = 0;
@@ -410,7 +481,7 @@ function OrdersPieChart({ title, items }) {
                                     <span className="truncate text-sm font-bold text-slate-900">{item.label}</span>
                                 </div>
                                 <div className="text-sm font-semibold text-slate-700">
-                                    {quantity(item.quantity)} · %{item.percentage.toFixed(1)}
+                                    {quantity(item.quantity)} adet · {money(item.amount)} · %{item.percentage.toFixed(1)}
                                 </div>
                             </div>
                         ))}
@@ -562,10 +633,13 @@ export default function OrdersDashboard({ page, mode }) {
         const requestId = requestIdRef.current + 1;
         requestIdRef.current = requestId;
         setLoading(true);
+        const requestFilters = mode === 'verilen'
+            ? { ...deferredFilters, delivery_week: 'all', delivery_date: '' }
+            : deferredFilters;
 
         void apiRequest(`/api/data/${slug}`, {
             method: 'POST',
-            body: JSON.stringify({ ...deferredFilters, bypass_cache: true }),
+            body: JSON.stringify({ ...requestFilters, bypass_cache: true }),
         })
             .then((response) => {
                 if (requestId === requestIdRef.current) {
@@ -586,15 +660,13 @@ export default function OrdersDashboard({ page, mode }) {
                     setLoading(false);
                 }
             });
-    }, [deferredFilters, signature, slug]);
+    }, [deferredFilters, mode, signature, slug]);
 
     const rows = data?.rows ?? [];
     const activeError = error?.message ?? null;
     const optionCacheKey = [
         slug,
         filters.brand_filter,
-        filters.delivery_week,
-        filters.delivery_date,
         filters.date_from,
         filters.date_to,
         filters.search,
@@ -617,15 +689,21 @@ export default function OrdersDashboard({ page, mode }) {
         ? productOptionsCache.options
         : liveProductOptions;
     const visibleRows = useMemo(() => filterRowsForOrderDashboard(rows, filters, mode), [filters, mode, rows]);
-    const deliveryWeekOptions = useMemo(() => deliveryWeekOptionsForRows(filterRowsForOrderDashboard(rows, { ...filters, delivery_week: 'all' }, 'verilen')), [filters, rows]);
+    const deliveryWeekOptions = useMemo(() => deliveryWeekOptionsForRows(filterRowsForOrderDashboard(rows, { ...filters, delivery_week: 'all', delivery_date: '' }, 'verilen')), [filters, rows]);
     const givenGroups = useMemo(() => groupGivenOrders(visibleRows), [visibleRows]);
     const approvedRows = visibleRows.filter((row) => approvedGroup(row) === 'approved');
     const pendingRows = visibleRows.filter((row) => approvedGroup(row) === 'pending');
     const cards = mode === 'verilen' ? summaryForGiven(visibleRows, givenGroups) : summaryForReceived(approvedRows, pendingRows);
     const chartItems = useMemo(
         () => (mode === 'verilen'
-            ? pieItemsForOrderRows(visibleRows, 'siparis_miktari')
-            : pieItemsForOrderRows(approvedRows, 'kalan_miktar')),
+            ? pieItemsForOrderRows(visibleRows, 'siparis_miktari', 'siparis_tutari')
+            : pieItemsForOrderRows(approvedRows, 'kalan_miktar', 'kalan_tutar')),
+        [approvedRows, mode, visibleRows],
+    );
+    const brandComparisonItems = useMemo(
+        () => (mode === 'verilen'
+            ? brandComparisonForOrderRows(visibleRows, 'siparis_miktari', 'siparis_tutari')
+            : brandComparisonForOrderRows(approvedRows, 'kalan_miktar', 'kalan_tutar')),
         [approvedRows, mode, visibleRows],
     );
 
@@ -653,6 +731,8 @@ export default function OrdersDashboard({ page, mode }) {
                 <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                     {cards.map((card) => <KpiCard key={card.label} {...card} />)}
                 </section>
+
+                <BrandComparisonStrip items={brandComparisonItems} />
 
                 <OrdersPieChart
                     title={mode === 'verilen' ? 'Verilen Sipariş Ürün Dağılımı' : 'Onaylı Alınan Sipariş Ürün Dağılımı'}

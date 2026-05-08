@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Models\UserAccess;
+use App\Models\RoleResourcePermission;
 use Database\Seeders\PanelDataSourcesSeeder;
 use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
@@ -40,7 +41,11 @@ class OrdersDashboardTest extends TestCase
                 'product_filter' => 'DDL720 FVP',
                 'bypass_cache' => true,
             ])
-            ->assertOk();
+            ->assertOk()
+            ->assertJsonPath('queryMeta.ordersScope', 'all')
+            ->assertJsonPath('queryMeta.effectiveRepCode', null)
+            ->assertJsonPath('queryMeta.canOrdersAlinanAll', true)
+            ->assertJsonPath('queryMeta.deniedOrdersAlinanAll', false);
 
         [$request] = Http::recorded()->first();
         $payload = $request->data();
@@ -82,7 +87,12 @@ class OrdersDashboardTest extends TestCase
                 'product_filter' => 'GALAXY',
                 'bypass_cache' => true,
             ])
-            ->assertOk();
+            ->assertOk()
+            ->assertJsonPath('queryMeta.ordersScope', 'temsilci')
+            ->assertJsonPath('queryMeta.effectiveRepCode', '0003')
+            ->assertJsonPath('queryMeta.canOrdersAlinanAll', false)
+            ->assertJsonPath('queryMeta.canOrdersAlinanTemsilci', true)
+            ->assertJsonPath('queryMeta.deniedOrdersAlinanAll', false);
 
         [$request] = Http::recorded()->first();
         $payload = $request->data();
@@ -118,7 +128,11 @@ class OrdersDashboardTest extends TestCase
             ->postJson('/api/data/orders_alinan', [
                 'bypass_cache' => true,
             ])
-            ->assertOk();
+            ->assertOk()
+            ->assertJsonPath('queryMeta.ordersScope', 'temsilci')
+            ->assertJsonPath('queryMeta.effectiveRepCode', '__NO_REP_CODE__')
+            ->assertJsonPath('queryMeta.canOrdersAlinanAll', false)
+            ->assertJsonPath('queryMeta.canOrdersAlinanTemsilci', true);
 
         [$request] = Http::recorded()->first();
         $payload = $request->data();
@@ -152,7 +166,10 @@ class OrdersDashboardTest extends TestCase
             ->postJson('/api/data/orders_alinan', [
                 'bypass_cache' => true,
             ])
-            ->assertOk();
+            ->assertOk()
+            ->assertJsonPath('queryMeta.ordersScope', 'all')
+            ->assertJsonPath('queryMeta.effectiveRepCode', null)
+            ->assertJsonPath('queryMeta.canOrdersAlinanAll', true);
 
         [$request] = Http::recorded()->first();
         $payload = $request->data();
@@ -166,6 +183,54 @@ class OrdersDashboardTest extends TestCase
         $this->assertSame('all', $params['orders_scope'] ?? null);
     }
 
+    public function test_orders_alinan_all_deny_override_forces_representative_scope_payload(): void
+    {
+        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+
+        RoleResourcePermission::query()->updateOrCreate(
+            ['role_code' => 'viewer', 'resource_code' => 'orders_alinan_all'],
+            ['can_view' => true, 'can_execute' => true],
+        );
+
+        $user = User::factory()->create([
+            'role_code' => 'viewer',
+            'temsilci_kodu' => '0024',
+            'aktif' => true,
+        ]);
+
+        foreach ([
+            'orders_alinan' => true,
+            'orders_alinan_all' => false,
+            'orders_alinan_temsilci' => true,
+        ] as $resourceCode => $canView) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => $canView,
+            ]);
+        }
+
+        $response = $this->actingAs($user)
+            ->postJson('/api/data/orders_alinan', [
+                'bypass_cache' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('queryMeta.ordersScope', 'temsilci')
+            ->assertJsonPath('queryMeta.effectiveRepCode', '0024')
+            ->assertJsonPath('queryMeta.canOrdersAlinanAll', false)
+            ->assertJsonPath('queryMeta.canOrdersAlinanTemsilci', true)
+            ->assertJsonPath('queryMeta.deniedOrdersAlinanAll', true);
+
+        [$request] = Http::recorded()->first();
+        $payload = $request->data();
+        $params = $payload['params'] ?? [];
+
+        $this->assertSame('0024', $payload['rep_code'] ?? null);
+        $this->assertSame('0024', $params['rep_code'] ?? null);
+        $this->assertSame('temsilci', $params['orders_scope'] ?? null);
+        $this->assertSame('temsilci', $response->json('queryMeta.ordersScope'));
+    }
+
     public function test_orders_verilen_sends_brand_product_and_delivery_filters_to_gateway(): void
     {
         Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
@@ -175,7 +240,7 @@ class OrdersDashboardTest extends TestCase
             'aktif' => true,
         ]);
 
-        $this->actingAs($user)
+        $response = $this->actingAs($user)
             ->postJson('/api/data/orders_verilen', [
                 'brand_filter' => 'emaks_prime',
                 'product_filter' => 'DDL720',
@@ -196,5 +261,6 @@ class OrdersDashboardTest extends TestCase
         $this->assertSame('DDL720', $params['product_filter'] ?? null);
         $this->assertSame("MAYIS'IN 3. HAFTASI", $params['delivery_week'] ?? null);
         $this->assertSame('2026-05-15', $params['delivery_date'] ?? null);
+        $this->assertArrayNotHasKey('ordersScope', $response->json('queryMeta'));
     }
 }
