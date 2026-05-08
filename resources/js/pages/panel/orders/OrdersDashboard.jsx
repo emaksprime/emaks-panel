@@ -94,7 +94,7 @@ function allowedTabs(page) {
 
 function KpiCard({ label, value, hint }) {
     return (
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-white/80 bg-white/95 p-4 shadow-[0_18px_45px_rgba(15,23,42,0.07)] ring-1 ring-slate-100/80">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</p>
             <p className="mt-2 text-2xl font-bold text-slate-950">{value}</p>
             {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
@@ -136,7 +136,7 @@ function BrandFilter({ value, onChange }) {
             <select
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
-                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
             >
                 {BRAND_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
@@ -188,7 +188,7 @@ function ProductPicker({ value, options, onChange }) {
     };
 
     return (
-        <div ref={pickerRef} className="grid gap-2">
+        <div ref={pickerRef} className="relative grid gap-2">
             <label className="grid gap-1 text-sm font-semibold text-slate-700">
                 Ürün / Model
                 <div className="relative">
@@ -204,13 +204,13 @@ function ProductPicker({ value, options, onChange }) {
                             setIsOpen(true);
                         }}
                         placeholder="Ürün, model veya stok kodu ara"
-                        className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+                        className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
                     />
                 </div>
             </label>
 
             {selectedValues.length > 0 && (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex max-h-16 flex-wrap gap-2 overflow-y-auto pr-1">
                     {selectedValues.map((selected) => {
                         const option = optionByValue.get(selected);
 
@@ -219,7 +219,7 @@ function ProductPicker({ value, options, onChange }) {
                                 key={selected}
                                 type="button"
                                 onClick={() => commit(selectedValues.filter((item) => item !== selected))}
-                                className="inline-flex max-w-full items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-800"
+                                className="inline-flex max-w-[260px] items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-800 shadow-sm"
                             >
                                 <span className="truncate">{option?.label ?? selected}</span>
                                 <X className="size-3.5" />
@@ -230,7 +230,7 @@ function ProductPicker({ value, options, onChange }) {
             )}
 
             {isOpen && (
-                <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2">
+                <div className="absolute left-0 right-0 top-full z-40 mt-2 max-h-72 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl shadow-slate-900/12 ring-1 ring-slate-100">
                     {visibleOptions.length === 0 ? (
                         <p className="px-2 py-3 text-sm text-slate-500">Seçilebilir ürün bulunamadı.</p>
                     ) : visibleOptions.map((option) => (
@@ -242,7 +242,7 @@ function ProductPicker({ value, options, onChange }) {
                                 setQuery('');
                                 setIsOpen(true);
                             }}
-                            className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition hover:bg-white hover:shadow-sm"
+                            className="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-blue-50"
                         >
                             <span className="min-w-0">
                                 <span className="block truncate text-sm font-bold text-slate-900">{option.label}</span>
@@ -250,7 +250,7 @@ function ProductPicker({ value, options, onChange }) {
                                     {brandLabelForKey(option.brandKey)} · {quantity(option.quantity)} adet · {money(option.amount)}
                                 </span>
                             </span>
-                            <span className="grid size-5 shrink-0 place-items-center rounded border border-slate-300 bg-white text-white">
+                            <span className="grid size-6 shrink-0 place-items-center rounded-lg border border-blue-200 bg-white text-blue-600 shadow-sm">
                                 <Check className="size-3.5" />
                             </span>
                         </button>
@@ -267,13 +267,13 @@ function DeliveryWeekFilter({ filters, setFilters, weekOptions }) {
     }
 
     return (
-        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <section className="grid gap-3 rounded-2xl border border-blue-100 bg-white/95 p-3 shadow-[0_18px_45px_rgba(15,23,42,0.06)] ring-1 ring-slate-100/80">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Teslim Haftası</p>
-                    <p className="mt-1 text-sm text-slate-500">Tarih seçimi ilgili haftayı filtreler; ana gösterim hafta etiketidir.</p>
+                    <p className="mt-1 text-xs text-slate-500">Hafta havuzu sabit kalır; tarih yalnızca aktif haftayı seçer.</p>
                 </div>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                <label className="grid gap-1 text-xs font-bold uppercase tracking-[0.12em] text-slate-500 lg:w-56">
                     Tarihten hafta seç
                     <input
                         type="date"
@@ -289,18 +289,18 @@ function DeliveryWeekFilter({ filters, setFilters, weekOptions }) {
                                 bypass_cache: true,
                             }));
                         }}
-                        className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+                        className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
                     />
                 </label>
             </div>
-            <div className="flex gap-2 overflow-x-auto pb-1">
+            <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:thin]">
                 <button
                     type="button"
                     onClick={() => setFilters((current) => ({ ...current, delivery_week: 'all', delivery_date: '', page: 1, bypass_cache: true }))}
                     className={[
-                        'shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition',
+                        'shrink-0 rounded-full border px-4 py-2 text-sm font-bold transition',
                         filters.delivery_week === 'all'
-                            ? 'border-slate-950 bg-slate-950 text-white'
+                            ? 'border-slate-950 bg-slate-950 text-white shadow-lg shadow-slate-900/15'
                             : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400',
                     ].join(' ')}
                 >
@@ -312,9 +312,9 @@ function DeliveryWeekFilter({ filters, setFilters, weekOptions }) {
                         type="button"
                         onClick={() => setFilters((current) => ({ ...current, delivery_week: option.value, delivery_date: '', page: 1, bypass_cache: true }))}
                         className={[
-                            'shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition',
+                            'shrink-0 rounded-full border px-4 py-2 text-sm font-bold transition',
                             filters.delivery_week === option.value
-                                ? 'border-blue-700 bg-blue-700 text-white'
+                                ? 'border-blue-700 bg-blue-700 text-white shadow-lg shadow-blue-700/20'
                                 : 'border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100',
                         ].join(' ')}
                     >
@@ -332,8 +332,8 @@ function SearchPanel({ filters, setFilters, loading, mode, productOptions }) {
         : 'Cari adı, ürün, açıklama2 veya sorumluluk kodu ara';
 
     return (
-        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_220px_minmax(280px,0.9fr)_auto] xl:items-start">
+        <section className="relative z-20 rounded-2xl border border-white/80 bg-white/95 p-3 shadow-[0_18px_45px_rgba(15,23,42,0.06)] ring-1 ring-slate-100/80 md:p-4">
+            <div className="grid gap-3 xl:grid-cols-[minmax(280px,1fr)_180px_minmax(320px,0.95fr)_auto] xl:items-start">
                 <label className="relative grid gap-1 text-sm font-semibold text-slate-700">
                     Genel Arama
                     <span className="relative">
@@ -343,7 +343,7 @@ function SearchPanel({ filters, setFilters, loading, mode, productOptions }) {
                             value={filters.search}
                             onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value, page: 1, bypass_cache: true }))}
                             placeholder={placeholder}
-                            className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+                            className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
                         />
                     </span>
                 </label>
@@ -362,7 +362,7 @@ function SearchPanel({ filters, setFilters, loading, mode, productOptions }) {
                 <button
                     type="button"
                     onClick={() => setFilters((current) => ({ ...current, bypass_cache: !current.bypass_cache }))}
-                    className="inline-flex h-11 items-center justify-center gap-2 self-end rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-semibold text-blue-700 transition hover:bg-blue-100"
+                    className="inline-flex h-10 items-center justify-center gap-2 self-end rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-bold text-blue-700 transition hover:bg-blue-100 xl:min-w-28"
                 >
                     <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
                     Yenile
@@ -406,23 +406,26 @@ function BrandComparisonStrip({ items }) {
     }
 
     return (
-        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Marka Karşılaştırması</p>
-                <p className="mt-1 text-sm text-slate-500">Filtreli siparişlerde marka bazlı adet ve tutar dağılımı.</p>
+        <section className="grid gap-4 rounded-3xl border border-white/80 bg-white/95 p-4 shadow-[0_24px_70px_rgba(15,23,42,0.08)] ring-1 ring-slate-100/80">
+            <div className="flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
+                <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Marka Karşılaştırması</p>
+                    <p className="mt-1 text-sm text-slate-500">Filtreli siparişlerde marka bazlı adet ve tutar dağılımı.</p>
+                </div>
+                <p className="text-xs font-semibold text-slate-400">Adet, tutar ve pay</p>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
                 {items.map((item, index) => (
-                    <article key={item.key} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                    <article key={item.key} className="overflow-hidden rounded-2xl border border-slate-100 bg-gradient-to-br from-slate-50 via-white to-blue-50/60 p-4 shadow-sm">
                         <div className="flex items-center justify-between gap-3">
                             <h3 className="text-sm font-black text-slate-950">{item.label}</h3>
-                            <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-blue-700">%{item.percentage.toFixed(1)}</span>
+                            <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-blue-700 shadow-sm">%{item.percentage.toFixed(1)}</span>
                         </div>
-                        <div className="mt-4 grid gap-1">
-                            <p className="text-2xl font-black text-slate-950">{money(item.amount)}</p>
-                            <p className="text-sm font-semibold text-slate-600">{quantity(item.quantity)} adet</p>
+                        <div className="mt-4 grid gap-2">
+                            <p className="text-2xl font-black tracking-tight text-slate-950">{money(item.amount)}</p>
+                            <p className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-sm font-bold text-slate-600 shadow-sm">{quantity(item.quantity)} adet</p>
                         </div>
-                        <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
+                        <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-white shadow-inner">
                             <div
                                 className="h-full rounded-full"
                                 style={{
@@ -452,21 +455,26 @@ function OrdersPieChart({ title, items }) {
         }).join(', ');
 
     return (
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center gap-2">
-                <PieChart className="size-5 text-blue-700" />
-                <div>
-                    <h2 className="text-lg font-bold text-slate-950">{title}</h2>
-                    <p className="text-sm text-slate-500">Ürün/model bazlı açık sipariş dağılımı</p>
+        <section className="rounded-3xl border border-white/80 bg-white/95 p-5 shadow-[0_24px_70px_rgba(15,23,42,0.08)] ring-1 ring-slate-100/80">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="flex items-center gap-3">
+                    <span className="grid size-10 place-items-center rounded-2xl bg-blue-50 text-blue-700">
+                        <PieChart className="size-5" />
+                    </span>
+                    <div>
+                        <h2 className="text-lg font-bold text-slate-950">{title}</h2>
+                        <p className="text-sm text-slate-500">Ürün/model bazlı açık sipariş dağılımı</p>
+                    </div>
                 </div>
+                {items.length > 0 && <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{items.length} model</span>}
             </div>
 
             {items.length === 0 ? (
                 <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-500">Grafik için uygun sipariş satırı yok.</div>
             ) : (
-                <div className="mt-5 grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-center">
-                    <div className="mx-auto grid size-48 place-items-center rounded-full" style={{ background: `conic-gradient(${gradient})` }}>
-                        <div className="grid size-28 place-items-center rounded-full bg-white text-center shadow-inner">
+                <div className="mt-5 grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)] lg:items-center">
+                    <div className="mx-auto grid size-52 place-items-center rounded-full p-3 shadow-[0_20px_55px_rgba(29,78,216,0.16)]" style={{ background: `conic-gradient(${gradient})` }}>
+                        <div className="grid size-32 place-items-center rounded-full bg-white text-center shadow-inner">
                             <span>
                                 <span className="block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Toplam</span>
                                 <span className="block text-xl font-bold text-slate-950">{quantity(total)}</span>
@@ -475,13 +483,15 @@ function OrdersPieChart({ title, items }) {
                     </div>
                     <div className="grid gap-2">
                         {items.map((item, index) => (
-                            <div key={item.label} className="grid gap-2 rounded-xl border border-slate-100 bg-slate-50 p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                            <div key={item.label} className="grid gap-2 rounded-2xl border border-slate-100 bg-slate-50/80 p-3 transition hover:bg-white hover:shadow-sm md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                                 <div className="flex min-w-0 items-center gap-2">
                                     <span className="size-3 shrink-0 rounded-full" style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }} />
                                     <span className="truncate text-sm font-bold text-slate-900">{item.label}</span>
                                 </div>
-                                <div className="text-sm font-semibold text-slate-700">
-                                    {quantity(item.quantity)} adet · {money(item.amount)} · %{item.percentage.toFixed(1)}
+                                <div className="flex flex-wrap justify-start gap-2 text-xs font-bold text-slate-700 md:justify-end">
+                                    <span className="rounded-full bg-white px-2 py-1 shadow-sm">{quantity(item.quantity)} adet</span>
+                                    <span className="rounded-full bg-white px-2 py-1 shadow-sm">{money(item.amount)}</span>
+                                    <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700">%{item.percentage.toFixed(1)}</span>
                                 </div>
                             </div>
                         ))}
