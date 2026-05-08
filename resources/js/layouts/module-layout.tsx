@@ -1,5 +1,5 @@
 import { Link, usePage } from '@inertiajs/react';
-import { ChevronsUpDown } from 'lucide-react';
+import { ChevronRight, ChevronsUpDown } from 'lucide-react';
 import AppLogo from '@/components/app-logo';
 import {
     DropdownMenu,
@@ -111,31 +111,36 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                         </Link>
                     </div>
 
-                    <nav className="flex min-w-0 gap-2 overflow-x-auto rounded-full bg-slate-100/80 p-1 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden">
-                        {moduleItems
-                            .map((item) => ({
-                                ...item,
-                                visibleHref: selectModuleHref(item.candidates, visibleHrefs),
-                            }))
-                            .filter((item) => item.visibleHref !== null)
-                            .map((item) => {
-                                const active = item.match.includes(routePath);
-                                const tone = moduleToneClasses[item.tone as keyof typeof moduleToneClasses];
+                    <div className="relative min-w-0">
+                        <nav className="flex min-w-0 gap-2 overflow-x-auto rounded-full border border-slate-200/80 bg-white/80 p-1 pr-10 shadow-inner shadow-slate-100 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden">
+                            {moduleItems
+                                .map((item) => ({
+                                    ...item,
+                                    visibleHref: selectModuleHref(item.candidates, visibleHrefs),
+                                }))
+                                .filter((item) => item.visibleHref !== null)
+                                .map((item) => {
+                                    const active = item.match.includes(routePath);
+                                    const tone = moduleToneClasses[item.tone as keyof typeof moduleToneClasses];
 
-                                return (
-                                    <Link
-                                        key={item.label}
-                                        href={item.visibleHref ?? '#'}
-                                        className={[
-                                            'shrink-0 rounded-full border px-3 py-2 text-[0.82rem] font-semibold shadow-sm transition hover:-translate-y-0.5 xl:px-4 xl:text-sm',
-                                            active ? tone.active : tone.idle,
-                                        ].join(' ')}
-                                    >
-                                        {item.label}
-                                    </Link>
-                                );
-                            })}
-                    </nav>
+                                    return (
+                                        <Link
+                                            key={item.label}
+                                            href={item.visibleHref ?? '#'}
+                                            className={[
+                                                'shrink-0 rounded-full border px-3 py-2 text-[0.82rem] font-semibold shadow-sm transition hover:-translate-y-0.5 xl:px-4 xl:text-sm',
+                                                active ? tone.active : tone.idle,
+                                            ].join(' ')}
+                                        >
+                                            {item.label}
+                                        </Link>
+                                    );
+                                })}
+                        </nav>
+                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center rounded-r-full bg-gradient-to-l from-white via-white/95 to-transparent pl-8 pr-2 text-slate-400">
+                            <ChevronRight className="size-4" />
+                        </div>
+                    </div>
 
                     {auth.user && (
                         <DropdownMenu>
