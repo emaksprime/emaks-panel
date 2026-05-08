@@ -36,4 +36,14 @@ return new class extends Migration
             );
         }
     }
+
+    public function down(): void
+    {
+        DB::table('panel.resources')
+            ->whereIn('code', [
+                'orders_alinan_all',
+                'orders_alinan_temsilci',
+            ])
+            ->delete();
+    }
 };
