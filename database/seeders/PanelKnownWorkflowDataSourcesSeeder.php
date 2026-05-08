@@ -381,6 +381,7 @@ WITH HamVeri AS
             WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'EMAKS PRIME'
             ELSE N'Diğer Marka'
         END AS marka,
+        LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) AS temsilci_kodu,
         LTRIM(RTRIM(
             CASE
                 WHEN ISNULL(sip.sip_cari_sormerk, N'') <> N'' THEN sip.sip_cari_sormerk
@@ -413,9 +414,10 @@ WITH HamVeri AS
         AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
         AND (
             @OrdersScope <> N'temsilci'
-            OR @RepCode = N''
-            OR LTRIM(RTRIM(ISNULL(sip.sip_cari_sormerk, N''))) = @RepCode
-            OR LTRIM(RTRIM(ISNULL(sip.sip_stok_sormerk, N''))) = @RepCode
+            OR (
+                @RepCode <> N''
+                AND LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) = @RepCode
+            )
         )
         AND (
             @BrandFilter IN (N'all', N'tumu')
@@ -438,6 +440,7 @@ Hesaplanmis AS
         brand_code,
         brand_key,
         marka,
+        temsilci_kodu,
         sorumluluk_kodu,
         CASE
             WHEN UPPER(ISNULL(stok_adi, N'')) LIKE N'%STAND%'
@@ -482,6 +485,7 @@ Filtreli AS
         brand_code,
         brand_key,
         marka,
+        temsilci_kodu,
         sorumluluk_kodu,
         kalan_miktar,
         birim_fiyat,
@@ -530,6 +534,7 @@ SELECT TOP (@Limit)
     brand_code,
     brand_key,
     marka,
+    temsilci_kodu,
     sorumluluk_kodu,
     siparis_grubu,
     kalan_miktar,
@@ -548,6 +553,7 @@ WHERE
         OR cari_adi LIKE N'%' + @Search + N'%'
         OR urun_adi LIKE N'%' + @Search + N'%'
         OR sip_aciklama2 LIKE N'%' + @Search + N'%'
+        OR temsilci_kodu LIKE N'%' + @Search + N'%'
         OR sorumluluk_kodu LIKE N'%' + @Search + N'%'
     )
 ORDER BY

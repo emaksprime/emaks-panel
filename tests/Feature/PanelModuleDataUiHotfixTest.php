@@ -170,6 +170,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('STRING_SPLIT(@ProductFilter', $alinan);
         $this->assertStringContainsString('brand_key', $alinan);
         $this->assertStringContainsString('marka', $alinan);
+        $this->assertStringContainsString('sip.sip_satici_kod', $alinan);
+        $this->assertStringContainsString('AS temsilci_kodu', $alinan);
+        $this->assertStringContainsString("AND LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) = @RepCode", $alinan);
 
         $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*1/i', $verilen);
         $this->assertMatchesRegularExpression('/sip\.sip_iptal\s*=\s*0/i', $verilen);

@@ -256,8 +256,8 @@ class PanelPageDataService
 
         $representativeCode = trim((string) ($user->temsilci_kodu ?? '')) ?: null;
 
-        if ($this->access->userCanAccess($user, 'orders_alinan_temsilci') && $representativeCode !== null) {
-            return ['temsilci', $representativeCode];
+        if ($this->access->userCanAccess($user, 'orders_alinan_temsilci')) {
+            return ['temsilci', $representativeCode ?? '__NO_REP_CODE__'];
         }
 
         return ['legacy', $fallbackRepresentativeCode];

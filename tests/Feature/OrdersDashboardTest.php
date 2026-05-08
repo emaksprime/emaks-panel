@@ -96,6 +96,76 @@ class OrdersDashboardTest extends TestCase
         $this->assertSame('GALAXY', $params['product_filter'] ?? null);
     }
 
+    public function test_orders_alinan_representative_scope_without_user_rep_code_uses_safe_no_match_payload(): void
+    {
+        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+
+        $user = User::factory()->create([
+            'role_code' => 'viewer',
+            'temsilci_kodu' => null,
+            'aktif' => true,
+        ]);
+
+        foreach (['orders_alinan', 'orders_alinan_temsilci'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => true,
+            ]);
+        }
+
+        $this->actingAs($user)
+            ->postJson('/api/data/orders_alinan', [
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        [$request] = Http::recorded()->first();
+        $payload = $request->data();
+        $params = $payload['params'] ?? [];
+
+        $this->assertSame('orders_alinan', $payload['source_code'] ?? null);
+        $this->assertSame('__NO_REP_CODE__', $payload['rep_code'] ?? null);
+        $this->assertSame('__NO_REP_CODE__', $params['rep_code'] ?? null);
+        $this->assertSame('temsilci', $params['orders_scope'] ?? null);
+    }
+
+    public function test_orders_alinan_all_scope_resource_keeps_all_payload_even_with_user_rep_code(): void
+    {
+        Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
+
+        $user = User::factory()->create([
+            'role_code' => 'viewer',
+            'temsilci_kodu' => '0003',
+            'aktif' => true,
+        ]);
+
+        foreach (['orders_alinan', 'orders_alinan_all'] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => true,
+            ]);
+        }
+
+        $this->actingAs($user)
+            ->postJson('/api/data/orders_alinan', [
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        [$request] = Http::recorded()->first();
+        $payload = $request->data();
+        $params = $payload['params'] ?? [];
+
+        $this->assertSame('orders_alinan', $payload['source_code'] ?? null);
+        $this->assertArrayHasKey('rep_code', $payload);
+        $this->assertNull($payload['rep_code']);
+        $this->assertArrayHasKey('rep_code', $params);
+        $this->assertNull($params['rep_code']);
+        $this->assertSame('all', $params['orders_scope'] ?? null);
+    }
+
     public function test_orders_verilen_sends_brand_product_and_delivery_filters_to_gateway(): void
     {
         Http::fake(['*' => Http::response(['ok' => true, 'rows' => []])]);
