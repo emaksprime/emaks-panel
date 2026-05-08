@@ -173,6 +173,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('sip.sip_satici_kod', $alinan);
         $this->assertStringContainsString('AS temsilci_kodu', $alinan);
         $this->assertStringContainsString("AND LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) = @RepCode", $alinan);
+        $this->assertStringNotContainsString("sip.sip_cari_sormerk, N''))) = @RepCode", $alinan);
+        $this->assertStringNotContainsString("sip.sip_stok_sormerk, N''))) = @RepCode", $alinan);
 
         $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*1/i', $verilen);
         $this->assertMatchesRegularExpression('/sip\.sip_iptal\s*=\s*0/i', $verilen);
@@ -239,6 +241,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('break-words', $dashboard);
         $this->assertStringContainsString('ProductPicker', $dashboard);
         $this->assertStringContainsString('OrdersPieChart', $dashboard);
+        $this->assertStringContainsString('BrandComparisonStrip', $dashboard);
         $this->assertStringContainsString('BrandFilter', $dashboard);
         $this->assertStringContainsString('DeliveryWeekFilter', $dashboard);
         $this->assertStringContainsString('Onaylı Açık Sipariş Satırı', $dashboard);
@@ -247,22 +250,56 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('product_filter', $dashboard);
         $this->assertStringContainsString('delivery_week', $dashboard);
         $this->assertStringContainsString('requestIdRef', $dashboard);
+        $this->assertStringContainsString('aria-expanded={isOpen}', $dashboard);
+        $this->assertStringContainsString('document.addEventListener(\'pointerdown\'', $dashboard);
+        $this->assertStringContainsString("delivery_week: 'all', delivery_date: ''", $dashboard);
+        $this->assertStringContainsString('pieItemsForOrderRows(approvedRows', $dashboard);
+        $this->assertStringContainsString('brandComparisonForOrderRows(approvedRows', $dashboard);
         $this->assertStringNotContainsString('disabled={loading}', $dashboard);
         $this->assertStringContainsString("candidates: ['/orders/alinan', '/orders/verilen', '/orders']", $layout);
         $this->assertStringContainsString("Route::get('orders', [PanelPageController::class, 'orders'])", $routes);
 
         [$exitCode, $output, $error] = $this->runNodeModule(<<<'JS'
-            import { estimatedWeekLabel, groupGivenOrders } from './resources/js/pages/panel/orders/ordersUtils.js';
+            import {
+                brandComparisonForOrderRows,
+                deliveryWeekOptionsForRows,
+                estimatedWeekLabel,
+                filterRowsForOrderDashboard,
+                groupGivenOrders,
+                pieItemsForOrderRows,
+            } from './resources/js/pages/panel/orders/ordersUtils.js';
 
             const groups = groupGivenOrders([
                 { teslim_tarihi: '2026-05-15', stok_adi: 'B Model', siparis_miktari: 1 },
                 { teslim_tarihi: '2026-05-01', stok_adi: 'A Model', siparis_miktari: 2 },
                 { teslim_tarihi: null, stok_adi: 'Z Model', siparis_miktari: 3 },
             ]);
+            const givenRows = [
+                { teslim_tarihi: '2026-05-15', stok_adi: 'B Model', siparis_miktari: 1 },
+                { teslim_tarihi: '2026-06-01', stok_adi: 'C Model', siparis_miktari: 2 },
+            ];
+            const filteredWeekRows = filterRowsForOrderDashboard(givenRows, { delivery_week: "MAYIS'IN 3. HAFTASI" }, 'verilen');
+            const weekOptions = deliveryWeekOptionsForRows(givenRows);
+            const pie = pieItemsForOrderRows([
+                { urun_adi: 'A Model', kalan_miktar: 1, kalan_tutar: 100, brand_key: 'philips' },
+                { urun_adi: 'B Model', kalan_miktar: 10, kalan_tutar: 200, brand_key: 'emaks_prime' },
+                { urun_adi: 'Servis Yol', kalan_miktar: 99, kalan_tutar: 999, brand_key: 'other' },
+            ], 'kalan_miktar', 'kalan_tutar');
+            const brands = brandComparisonForOrderRows([
+                { urun_adi: 'A Model', kalan_miktar: 1, kalan_tutar: 100, brand_key: 'philips' },
+                { urun_adi: 'B Model', kalan_miktar: 10, kalan_tutar: 200, brand_key: 'emaks_prime' },
+                { urun_adi: 'Servis Yol', kalan_miktar: 99, kalan_tutar: 999, brand_key: 'other' },
+            ], 'kalan_miktar', 'kalan_tutar');
 
             console.log(JSON.stringify({
                 label: estimatedWeekLabel('2026-05-15'),
                 groups: groups.map((group) => group.label),
+                filteredWeekCount: filteredWeekRows.length,
+                weekOptions: weekOptions.map((option) => option.value),
+                pieLabels: pie.map((item) => item.label),
+                pieAmounts: pie.map((item) => item.amount),
+                pieHasPercentage: pie.every((item) => typeof item.percentage === 'number'),
+                brandLabels: brands.map((item) => item.label),
             }));
         JS);
 
@@ -276,6 +313,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
             "MAYIS'IN 3. HAFTASI",
             'TESLİM TARİHİ BELİRSİZ',
         ], $results['groups']);
+        $this->assertSame(1, $results['filteredWeekCount']);
+        $this->assertSame(["MAYIS'IN 3. HAFTASI", "HAZİRAN'IN 1. HAFTASI"], $results['weekOptions']);
+        $this->assertSame(['B Model', 'A Model'], $results['pieLabels']);
+        $this->assertSame([200, 100], $results['pieAmounts']);
+        $this->assertTrue($results['pieHasPercentage']);
+        $this->assertSame(['PHILIPS', 'EMAKS PRIME'], $results['brandLabels']);
     }
 
     public function test_sales_online_and_bayi_use_processed_dashboard_config(): void

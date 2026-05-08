@@ -67,6 +67,7 @@ class PanelPageDataService
                 'gatewayMeta' => $result['meta'] ?? null,
                 'gatewayRequest' => $result['request'] ?? null,
                 'stockScope' => $stockScope,
+                ...$this->ordersAlinanDebugMeta($source, $user, $payload),
             ],
         ];
     }
@@ -127,6 +128,7 @@ class PanelPageDataService
                 'gatewayMeta' => $result['meta'] ?? null,
                 'gatewayRequest' => $result['request'] ?? null,
                 'stockScope' => $stockScope,
+                ...$this->ordersAlinanDebugMeta($source, $user, $payload),
             ],
         ];
     }
@@ -250,7 +252,14 @@ class PanelPageDataService
      */
     private function ordersAlinanScopeFor(User $user, ?string $fallbackRepresentativeCode): array
     {
-        if ($this->access->isPrivileged($user) || $this->access->userCanAccess($user, 'orders_alinan_all')) {
+        if ($this->access->isPrivileged($user)) {
+            return ['all', null];
+        }
+
+        $canSeeAll = ! $this->access->userHasDenyOverride($user, 'orders_alinan_all')
+            && $this->access->userCanAccess($user, 'orders_alinan_all');
+
+        if ($canSeeAll) {
             return ['all', null];
         }
 
@@ -260,7 +269,29 @@ class PanelPageDataService
             return ['temsilci', $representativeCode ?? '__NO_REP_CODE__'];
         }
 
-        return ['legacy', $fallbackRepresentativeCode];
+        return ['temsilci', $fallbackRepresentativeCode ?? '__NO_REP_CODE__'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function ordersAlinanDebugMeta(DataSource $source, User $user, array $payload): array
+    {
+        if ($source->code !== 'orders_alinan') {
+            return [];
+        }
+
+        $deniedAll = $this->access->userHasDenyOverride($user, 'orders_alinan_all');
+
+        return [
+            'ordersScope' => $payload['orders_scope'] ?? null,
+            'effectiveRepCode' => $payload['rep_code'] ?? null,
+            'canOrdersAlinanAll' => $this->access->isPrivileged($user)
+                || (! $deniedAll && $this->access->userCanAccess($user, 'orders_alinan_all')),
+            'canOrdersAlinanTemsilci' => $this->access->userCanAccess($user, 'orders_alinan_temsilci'),
+            'deniedOrdersAlinanAll' => $deniedAll,
+        ];
     }
 
     private function isCustomerDataSource(string $sourceCode): bool
