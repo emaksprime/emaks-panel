@@ -24,7 +24,11 @@ export function AppSidebar() {
             <SidebarHeader>
                 <SidebarMenu>
                     <SidebarMenuItem>
-                        <SidebarMenuButton size="lg" asChild>
+                        <SidebarMenuButton
+                            size="lg"
+                            asChild
+                            className={state === 'collapsed' ? '' : 'h-auto justify-center py-3 hover:bg-transparent'}
+                        >
                             <Link href="/dashboard" prefetch className={state === 'collapsed' ? 'justify-center' : ''}>
                                 {state === 'collapsed' ? (
                                     <>

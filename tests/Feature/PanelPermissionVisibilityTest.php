@@ -163,7 +163,7 @@ class PanelPermissionVisibilityTest extends TestCase
         $this->assertStringContainsString('href="/dashboard"', $appSidebar);
         $this->assertStringContainsString('moduleToneClasses', $moduleLayout);
         $this->assertStringContainsString('max-w-[1600px]', $moduleLayout);
-        $this->assertStringContainsString('minmax(255px,280px)', $moduleLayout);
+        $this->assertStringContainsString('minmax(170px,190px)', $moduleLayout);
         $this->assertStringContainsString('overflow-x-auto', $moduleLayout);
         $this->assertStringContainsString('ChevronRight', $moduleLayout);
         $this->assertStringContainsString('bg-gradient-to-l', $moduleLayout);
