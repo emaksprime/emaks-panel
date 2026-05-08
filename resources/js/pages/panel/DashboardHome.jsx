@@ -89,7 +89,7 @@ export default function DashboardHome() {
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.24),transparent_34%),radial-gradient(circle_at_bottom_left,rgba(30,64,175,0.16),transparent_30%),linear-gradient(135deg,rgba(255,255,255,0.98),rgba(239,246,255,0.94))]" />
                     <div className="absolute right-10 top-8 hidden h-28 w-28 rounded-full bg-blue-200/30 blur-2xl lg:block" />
                     <div className="absolute bottom-0 left-1/2 hidden h-20 w-72 -translate-x-1/2 rounded-full bg-sky-300/20 blur-3xl lg:block" />
-                    <div className="relative grid gap-8 p-6 md:p-8 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-center">
+                    <div className="relative p-6 md:p-8 xl:p-10">
                         <div className="min-w-0">
                             <div className="inline-flex items-center gap-3 rounded-full border border-blue-100 bg-white/80 px-3 py-2 text-xs font-bold uppercase tracking-[0.18em] text-blue-700 shadow-sm">
                                 <Sparkles className="size-4" />
@@ -110,17 +110,6 @@ export default function DashboardHome() {
                                 Web Sitesine Git
                                 <ExternalLink className="size-4" />
                             </a>
-                        </div>
-                        <div className="relative overflow-hidden rounded-3xl border border-white/80 bg-white/80 p-6 shadow-xl shadow-blue-100/60">
-                            <div className="absolute inset-x-8 top-4 h-16 rounded-full bg-blue-100/70 blur-2xl" />
-                            <img
-                                src="/assets/primecrm/emaks-prime.png"
-                                alt="Emaks Prime"
-                                className="relative mx-auto h-28 w-auto object-contain"
-                            />
-                            <div className="relative mt-6 h-2 overflow-hidden rounded-full bg-slate-100">
-                                <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-blue-700 via-sky-500 to-cyan-400" />
-                            </div>
                         </div>
                     </div>
                 </section>

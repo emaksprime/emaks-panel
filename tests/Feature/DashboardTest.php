@@ -66,7 +66,9 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('Teknik Servis', $dashboard);
         $this->assertStringContainsString('Müşteri Yönetimi', $dashboard);
         $this->assertStringContainsString('Proforma', $dashboard);
-        $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
+        $this->assertStringNotContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
+        $this->assertStringNotContainsString('relative mt-6 h-2', $dashboard);
+        $this->assertStringNotContainsString('w-2/3 rounded-full', $dashboard);
         $this->assertStringContainsString('Ana Giriş', $header);
         $this->assertStringContainsString('Operasyon Paneli', $header);
         $this->assertStringContainsString('const showContextBadges = !isDashboard', $header);
@@ -74,6 +76,7 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('href="/dashboard"', file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '');
         $this->assertStringContainsString('Operasyon Paneli', $appLogo);
         $this->assertStringContainsString('Emaks Prime logo', $appLogo);
+        $this->assertStringContainsString('flex-col', $appLogo);
         $this->assertStringContainsString('whitespace-nowrap', $appLogo);
         $this->assertStringNotContainsString('>Emaks Prime<', $appLogo);
         $this->assertStringNotContainsString('truncate', $appLogo);

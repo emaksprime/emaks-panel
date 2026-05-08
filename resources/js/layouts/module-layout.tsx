@@ -104,9 +104,9 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
     return (
         <div className="min-h-screen bg-slate-100">
             <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-                <div className="mx-auto grid max-w-[1600px] gap-3 px-4 py-3 lg:grid-cols-[minmax(255px,280px)_minmax(0,1fr)_auto] lg:items-center xl:px-6">
-                    <div className="flex min-w-0 items-center">
-                        <Link href="/dashboard" className="flex min-w-[255px] shrink-0 items-center gap-2">
+                <div className="mx-auto grid max-w-[1600px] gap-3 px-4 py-2.5 lg:grid-cols-[minmax(170px,190px)_minmax(0,1fr)_auto] lg:items-center xl:px-6">
+                    <div className="flex min-w-0 items-center justify-center lg:justify-start">
+                        <Link href="/dashboard" className="flex min-w-[160px] shrink-0 items-center justify-center">
                             <AppLogo />
                         </Link>
                     </div>
