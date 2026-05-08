@@ -161,6 +161,18 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('GARANTI DISI KONTROL', $alinan);
         $this->assertStringContainsString('sorumluluk_kodu', $alinan);
         $this->assertStringContainsString('kalan_tutar', $alinan);
+        $this->assertStringContainsString('DECLARE @OrdersScope', $alinan);
+        $this->assertStringContainsString('[[rep_code]]', $alinan);
+        $this->assertStringContainsString('[[orders_scope]]', $alinan);
+        $this->assertStringContainsString('[[brand_filter]]', $alinan);
+        $this->assertStringContainsString('[[product_filter]]', $alinan);
+        $this->assertStringContainsString('sto.sto_marka_kodu', $alinan);
+        $this->assertStringContainsString('STRING_SPLIT(@ProductFilter', $alinan);
+        $this->assertStringContainsString('brand_key', $alinan);
+        $this->assertStringContainsString('marka', $alinan);
+        $this->assertStringContainsString('sip.sip_satici_kod', $alinan);
+        $this->assertStringContainsString('AS temsilci_kodu', $alinan);
+        $this->assertStringContainsString("AND LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) = @RepCode", $alinan);
 
         $this->assertMatchesRegularExpression('/sip\.sip_tip\s*=\s*1/i', $verilen);
         $this->assertMatchesRegularExpression('/sip\.sip_iptal\s*=\s*0/i', $verilen);
@@ -175,16 +187,36 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('teslim_sira', $verilen);
         $this->assertStringContainsString('stok_kategori_adi', $verilen);
         $this->assertStringContainsString('siparis_tutari', $verilen);
+        $this->assertStringContainsString('[[brand_filter]]', $verilen);
+        $this->assertStringContainsString('[[product_filter]]', $verilen);
+        $this->assertStringContainsString('[[delivery_week]]', $verilen);
+        $this->assertStringContainsString('[[delivery_date]]', $verilen);
+        $this->assertStringContainsString('sto.sto_marka_kodu', $verilen);
+        $this->assertStringContainsString('STRING_SPLIT(@ProductFilter', $verilen);
+        $this->assertStringContainsString('@DeliveryWeek', $verilen);
+        $this->assertStringContainsString('brand_key', $verilen);
+        $this->assertStringContainsString('marka', $verilen);
         $this->assertNotSame($alinan, $verilen);
 
         $this->assertSame(
-            ['search', 'date_from', 'date_to', 'status', 'page', 'limit', 'bypass_cache'],
+            ['search', 'date_from', 'date_to', 'status', 'rep_code', 'orders_scope', 'brand_filter', 'product_filter', 'page', 'limit', 'bypass_cache'],
             DataSource::query()->where('code', 'orders_alinan')->firstOrFail()->allowed_params,
         );
         $this->assertSame(
-            ['search', 'date_from', 'date_to', 'page', 'limit', 'bypass_cache'],
+            ['search', 'date_from', 'date_to', 'brand_filter', 'product_filter', 'delivery_week', 'delivery_date', 'page', 'limit', 'bypass_cache'],
             DataSource::query()->where('code', 'orders_verilen')->firstOrFail()->allowed_params,
         );
+
+        $this->assertDatabaseHas('panel.resources', [
+            'code' => 'orders_alinan_all',
+            'type' => 'scope',
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('panel.resources', [
+            'code' => 'orders_alinan_temsilci',
+            'type' => 'scope',
+            'active' => true,
+        ]);
     }
 
     public function test_orders_dashboard_frontend_contract_and_delivery_week_helpers(): void
@@ -205,6 +237,17 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('table-fixed', $dashboard);
         $this->assertStringContainsString('md:hidden', $dashboard);
         $this->assertStringContainsString('break-words', $dashboard);
+        $this->assertStringContainsString('ProductPicker', $dashboard);
+        $this->assertStringContainsString('OrdersPieChart', $dashboard);
+        $this->assertStringContainsString('BrandFilter', $dashboard);
+        $this->assertStringContainsString('DeliveryWeekFilter', $dashboard);
+        $this->assertStringContainsString('Onaylı Açık Sipariş Satırı', $dashboard);
+        $this->assertStringContainsString('Onay Bekleyen Açık Sipariş Satırı', $dashboard);
+        $this->assertStringContainsString('brand_filter', $dashboard);
+        $this->assertStringContainsString('product_filter', $dashboard);
+        $this->assertStringContainsString('delivery_week', $dashboard);
+        $this->assertStringContainsString('requestIdRef', $dashboard);
+        $this->assertStringNotContainsString('disabled={loading}', $dashboard);
         $this->assertStringContainsString("candidates: ['/orders/alinan', '/orders/verilen', '/orders']", $layout);
         $this->assertStringContainsString("Route::get('orders', [PanelPageController::class, 'orders'])", $routes);
 

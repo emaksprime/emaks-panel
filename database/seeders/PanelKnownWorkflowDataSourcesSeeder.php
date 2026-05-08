@@ -340,10 +340,20 @@ DECLARE @BasTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_from]]', N''))
 DECLARE @BitTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_to]]', N'')), CONVERT(date, GETDATE()));
 DECLARE @Search NVARCHAR(255) = LTRIM(RTRIM(N'[[search]]'));
 DECLARE @Status NVARCHAR(30) = LOWER(LTRIM(RTRIM(N'[[status]]')));
+DECLARE @RepCode NVARCHAR(50) = LTRIM(RTRIM(N'[[rep_code]]'));
+DECLARE @OrdersScope NVARCHAR(30) = LOWER(LTRIM(RTRIM(N'[[orders_scope]]')));
+DECLARE @BrandFilter NVARCHAR(50) = LOWER(REPLACE(LTRIM(RTRIM(N'[[brand_filter]]')), N'-', N'_'));
+DECLARE @ProductFilter NVARCHAR(MAX) = LTRIM(RTRIM(N'[[product_filter]]'));
 DECLARE @Limit INT = TRY_CONVERT(int, NULLIF(N'[[limit]]', N''));
 
 IF @Status = N''
     SET @Status = N'all';
+
+IF @OrdersScope = N''
+    SET @OrdersScope = N'legacy';
+
+IF @BrandFilter = N''
+    SET @BrandFilter = N'all';
 
 IF @Limit IS NULL OR @Limit <= 0
     SET @Limit = 500;
@@ -355,10 +365,23 @@ WITH HamVeri AS
         sip.sip_evrakno_seri,
         sip.sip_evrakno_sira,
         sip.sip_aciklama2,
+        sip.sip_stok_kod,
         cari.cari_unvan1 AS cari_adi,
         sto.sto_isim AS stok_adi,
         mdl.mdl_ismi AS model_adi,
         crg.crg_isim AS cari_grup_adi,
+        LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))) AS brand_code,
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS' THEN N'philips'
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'emaks_prime'
+            ELSE N'other'
+        END AS brand_key,
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS' THEN N'PHILIPS'
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'EMAKS PRIME'
+            ELSE N'Diğer Marka'
+        END AS marka,
+        LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) AS temsilci_kodu,
         LTRIM(RTRIM(
             CASE
                 WHEN ISNULL(sip.sip_cari_sormerk, N'') <> N'' THEN sip.sip_cari_sormerk
@@ -389,6 +412,18 @@ WITH HamVeri AS
         AND CAST(sip.sip_tarih AS date) >= @BasTar
         AND CAST(sip.sip_tarih AS date) <= @BitTar
         AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
+        AND (
+            @OrdersScope <> N'temsilci'
+            OR (
+                @RepCode <> N''
+                AND LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) = @RepCode
+            )
+        )
+        AND (
+            @BrandFilter IN (N'all', N'tumu')
+            OR (@BrandFilter = N'philips' AND UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS')
+            OR (@BrandFilter = N'emaks_prime' AND UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS'))
+        )
         AND UPPER(LTRIM(RTRIM(ISNULL(crg.crg_isim, N'')))) NOT LIKE N'%İHRACAT%'
 ),
 Hesaplanmis AS
@@ -398,9 +433,14 @@ Hesaplanmis AS
         sip_evrakno_seri,
         sip_evrakno_sira,
         sip_aciklama2,
+        sip_stok_kod,
         cari_adi,
         stok_adi,
         model_adi,
+        brand_code,
+        brand_key,
+        marka,
+        temsilci_kodu,
         sorumluluk_kodu,
         CASE
             WHEN UPPER(ISNULL(stok_adi, N'')) LIKE N'%STAND%'
@@ -439,8 +479,13 @@ Filtreli AS
         sip_evrakno_seri,
         sip_evrakno_sira,
         sip_aciklama2,
+        sip_stok_kod AS stok_kodu,
         cari_adi,
         urun_adi,
+        brand_code,
+        brand_key,
+        marka,
+        temsilci_kodu,
         sorumluluk_kodu,
         kalan_miktar,
         birim_fiyat,
@@ -465,14 +510,31 @@ Filtreli AS
             )
             OR kalan_tutar > 10
         )
+        AND (
+            @ProductFilter = N''
+            OR EXISTS (
+                SELECT 1
+                FROM STRING_SPLIT(@ProductFilter, N',') pf
+                WHERE LTRIM(RTRIM(pf.value)) <> N''
+                    AND (
+                        sip_stok_kod LIKE N'%' + LTRIM(RTRIM(pf.value)) + N'%'
+                        OR urun_adi LIKE N'%' + LTRIM(RTRIM(pf.value)) + N'%'
+                    )
+            )
+        )
 )
 SELECT TOP (@Limit)
     CONVERT(varchar(10), sip_tarih, 23) AS siparis_tarihi,
     sip_evrakno_seri,
     sip_evrakno_sira,
     sip_aciklama2,
+    stok_kodu,
     cari_adi,
     urun_adi,
+    brand_code,
+    brand_key,
+    marka,
+    temsilci_kodu,
     sorumluluk_kodu,
     siparis_grubu,
     kalan_miktar,
@@ -491,6 +553,7 @@ WHERE
         OR cari_adi LIKE N'%' + @Search + N'%'
         OR urun_adi LIKE N'%' + @Search + N'%'
         OR sip_aciklama2 LIKE N'%' + @Search + N'%'
+        OR temsilci_kodu LIKE N'%' + @Search + N'%'
         OR sorumluluk_kodu LIKE N'%' + @Search + N'%'
     )
 ORDER BY
@@ -499,7 +562,7 @@ ORDER BY
     cari_adi,
     urun_adi;
 SQL_ORDERS_ALINAN,
-            ['search', 'date_from', 'date_to', 'status', 'page', 'limit', 'bypass_cache'],
+            ['search', 'date_from', 'date_to', 'status', 'rep_code', 'orders_scope', 'brand_filter', 'product_filter', 'page', 'limit', 'bypass_cache'],
             'EMAKS PRIME - Siparisler Workflow (TAM FIX) Code - Build SQL Alinan node sorgusu.',
             'EMAKS PRIME - Siparisler Workflow (TAM FIX).json'
         );
@@ -511,7 +574,41 @@ SQL_ORDERS_ALINAN,
 DECLARE @BasTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_from]]', N'')), CONVERT(date, '2025-01-01'));
 DECLARE @BitTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_to]]', N'')), CONVERT(date, GETDATE()));
 DECLARE @Search NVARCHAR(255) = LTRIM(RTRIM(N'[[search]]'));
+DECLARE @BrandFilter NVARCHAR(50) = LOWER(REPLACE(LTRIM(RTRIM(N'[[brand_filter]]')), N'-', N'_'));
+DECLARE @ProductFilter NVARCHAR(MAX) = LTRIM(RTRIM(N'[[product_filter]]'));
+DECLARE @DeliveryWeek NVARCHAR(120) = LTRIM(RTRIM(N'[[delivery_week]]'));
+DECLARE @DeliveryDate DATE = TRY_CONVERT(date, NULLIF(N'[[delivery_date]]', N''));
 DECLARE @Limit INT = TRY_CONVERT(int, NULLIF(N'[[limit]]', N''));
+
+IF @BrandFilter = N''
+    SET @BrandFilter = N'all';
+
+IF @DeliveryWeek = N''
+    SET @DeliveryWeek = N'all';
+
+IF @DeliveryDate IS NOT NULL AND @DeliveryWeek IN (N'all', N'tumu')
+    SET @DeliveryWeek =
+        CASE DATEPART(MONTH, @DeliveryDate)
+            WHEN 1 THEN N'OCAK'
+            WHEN 2 THEN N'ŞUBAT'
+            WHEN 3 THEN N'MART'
+            WHEN 4 THEN N'NİSAN'
+            WHEN 5 THEN N'MAYIS'
+            WHEN 6 THEN N'HAZİRAN'
+            WHEN 7 THEN N'TEMMUZ'
+            WHEN 8 THEN N'AĞUSTOS'
+            WHEN 9 THEN N'EYLÜL'
+            WHEN 10 THEN N'EKİM'
+            WHEN 11 THEN N'KASIM'
+            WHEN 12 THEN N'ARALIK'
+            ELSE N''
+        END + N'''IN ' +
+        CASE
+            WHEN DATEPART(DAY, @DeliveryDate) BETWEEN 1 AND 7 THEN N'1. HAFTASI'
+            WHEN DATEPART(DAY, @DeliveryDate) BETWEEN 8 AND 14 THEN N'2. HAFTASI'
+            WHEN DATEPART(DAY, @DeliveryDate) BETWEEN 15 AND 21 THEN N'3. HAFTASI'
+            ELSE N'4. HAFTASI'
+        END;
 
 IF @Limit IS NULL OR @Limit <= 0
     SET @Limit = 500;
@@ -529,6 +626,17 @@ WITH VerilenSiparisler AS
         sto.sto_kategori_kodu,
         ktg.ktg_isim AS stok_kategori_adi,
         mdl.mdl_ismi AS model_adi,
+        LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))) AS brand_code,
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS' THEN N'philips'
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'emaks_prime'
+            ELSE N'other'
+        END AS brand_key,
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS' THEN N'PHILIPS'
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'EMAKS PRIME'
+            ELSE N'Diğer Marka'
+        END AS marka,
         ISNULL(sip.sip_miktar, 0) AS siparis_miktari,
         ISNULL(sip.sip_teslim_miktar, 0) AS teslim_miktari,
         ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) AS kalan_miktar,
@@ -554,6 +662,24 @@ WITH VerilenSiparisler AS
         AND CAST(sip.sip_tarih AS date) >= @BasTar
         AND CAST(sip.sip_tarih AS date) <= @BitTar
         AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
+        AND (
+            @BrandFilter IN (N'all', N'tumu')
+            OR (@BrandFilter = N'philips' AND UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS')
+            OR (@BrandFilter = N'emaks_prime' AND UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS'))
+        )
+        AND (
+            @ProductFilter = N''
+            OR EXISTS (
+                SELECT 1
+                FROM STRING_SPLIT(@ProductFilter, N',') pf
+                WHERE LTRIM(RTRIM(pf.value)) <> N''
+                    AND (
+                        sip.sip_stok_kod LIKE N'%' + LTRIM(RTRIM(pf.value)) + N'%'
+                        OR sto.sto_isim LIKE N'%' + LTRIM(RTRIM(pf.value)) + N'%'
+                        OR mdl.mdl_ismi LIKE N'%' + LTRIM(RTRIM(pf.value)) + N'%'
+                    )
+            )
+        )
 )
 SELECT
     TOP (@Limit)
@@ -588,6 +714,9 @@ SELECT
     sip_stok_kod AS [stok_kodu],
     ISNULL(NULLIF(model_adi, N''), stok_adi) AS [stok_adi],
     stok_kategori_adi,
+    brand_code,
+    brand_key,
+    marka,
     kalan_miktar AS [siparis_miktari],
     ROUND(
         CASE
@@ -617,16 +746,48 @@ SELECT
     ) AS siparis_tutari
 FROM VerilenSiparisler
 WHERE
-    @Search = N''
-    OR sip_stok_kod LIKE N'%' + @Search + N'%'
-    OR ISNULL(NULLIF(model_adi, N''), stok_adi) LIKE N'%' + @Search + N'%'
-    OR stok_kategori_adi LIKE N'%' + @Search + N'%'
+    (
+        @Search = N''
+        OR sip_stok_kod LIKE N'%' + @Search + N'%'
+        OR ISNULL(NULLIF(model_adi, N''), stok_adi) LIKE N'%' + @Search + N'%'
+        OR stok_kategori_adi LIKE N'%' + @Search + N'%'
+    )
+    AND (
+        @DeliveryWeek IN (N'all', N'tumu')
+        OR (
+            CASE
+                WHEN sip_teslim_tarih IS NULL THEN N'TESLİM TARİHİ BELİRSİZ'
+                ELSE
+                    CASE DATEPART(MONTH, sip_teslim_tarih)
+                        WHEN 1 THEN N'OCAK'
+                        WHEN 2 THEN N'ŞUBAT'
+                        WHEN 3 THEN N'MART'
+                        WHEN 4 THEN N'NİSAN'
+                        WHEN 5 THEN N'MAYIS'
+                        WHEN 6 THEN N'HAZİRAN'
+                        WHEN 7 THEN N'TEMMUZ'
+                        WHEN 8 THEN N'AĞUSTOS'
+                        WHEN 9 THEN N'EYLÜL'
+                        WHEN 10 THEN N'EKİM'
+                        WHEN 11 THEN N'KASIM'
+                        WHEN 12 THEN N'ARALIK'
+                        ELSE N''
+                    END + N'''IN ' +
+                    CASE
+                        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 1 AND 7 THEN N'1. HAFTASI'
+                        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 8 AND 14 THEN N'2. HAFTASI'
+                        WHEN DATEPART(DAY, sip_teslim_tarih) BETWEEN 15 AND 21 THEN N'3. HAFTASI'
+                        ELSE N'4. HAFTASI'
+                    END
+            END
+        ) = @DeliveryWeek
+    )
 ORDER BY
     CASE WHEN sip_teslim_tarih IS NULL THEN 1 ELSE 0 END,
     sip_teslim_tarih ASC,
     ISNULL(NULLIF(model_adi, N''), stok_adi);
 SQL_ORDERS_VERILEN,
-            ['search', 'date_from', 'date_to', 'page', 'limit', 'bypass_cache'],
+            ['search', 'date_from', 'date_to', 'brand_filter', 'product_filter', 'delivery_week', 'delivery_date', 'page', 'limit', 'bypass_cache'],
             'EMAKS PRIME - Siparisler Workflow (TAM FIX) Code - Build SQL Verilen node sorgusu.',
             'EMAKS PRIME - Siparisler Workflow (TAM FIX).json'
         );

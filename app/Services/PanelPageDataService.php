@@ -216,9 +216,16 @@ class PanelPageDataService
             $customerGroupScope = $customerScopeKey;
         }
 
+        $ordersScope = $filters['orders_scope'] ?? null;
+
+        if ($source->code === 'orders_alinan') {
+            [$ordersScope, $representativeCode] = $this->ordersAlinanScopeFor($user, $representativeCode);
+        }
+
         $payload = [
             ...$filters,
             'rep_code' => $representativeCode,
+            'orders_scope' => $ordersScope,
             'customer_scope_key' => $customerScopeKey,
             'customer_group_scope' => $customerGroupScope,
             'role_code' => $user->role_code,
@@ -236,6 +243,24 @@ class PanelPageDataService
         return collect($payload)
             ->only([...$allowed, 'role_code', 'bypass_cache'])
             ->all();
+    }
+
+    /**
+     * @return array{0: string, 1: string|null}
+     */
+    private function ordersAlinanScopeFor(User $user, ?string $fallbackRepresentativeCode): array
+    {
+        if ($this->access->isPrivileged($user) || $this->access->userCanAccess($user, 'orders_alinan_all')) {
+            return ['all', null];
+        }
+
+        $representativeCode = trim((string) ($user->temsilci_kodu ?? '')) ?: null;
+
+        if ($this->access->userCanAccess($user, 'orders_alinan_temsilci')) {
+            return ['temsilci', $representativeCode ?? '__NO_REP_CODE__'];
+        }
+
+        return ['legacy', $fallbackRepresentativeCode];
     }
 
     private function isCustomerDataSource(string $sourceCode): bool
@@ -359,6 +384,12 @@ class PanelPageDataService
             'scope_key' => (string) ($input['scope_key'] ?? 'all'),
             'customer_filter' => $this->normalizeListFilter($input['customer_filter'] ?? $input['cari_filter'] ?? ''),
             'cari_filter' => $this->normalizeListFilter($input['cari_filter'] ?? $input['customer_filter'] ?? ''),
+            'brand_filter' => $this->normalizeBrandFilter($input['brand_filter'] ?? 'all'),
+            'category_filter' => $this->normalizeCategoryFilter($input['category_filter'] ?? 'all'),
+            'product_filter' => $this->normalizeListFilter($input['product_filter'] ?? ''),
+            'delivery_week' => $this->normalizeDeliveryWeek($input['delivery_week'] ?? 'all'),
+            'delivery_date' => $this->normalizeOptionalDate($input['delivery_date'] ?? null),
+            'orders_scope' => (string) ($input['orders_scope'] ?? ''),
             'customer_code' => (string) ($input['customer_code'] ?? ''),
             'guid' => (string) ($input['guid'] ?? ''),
             'hareket_guid' => (string) ($input['hareket_guid'] ?? ''),
@@ -373,6 +404,34 @@ class PanelPageDataService
             'limit' => max(1, min(500, (int) ($input['limit'] ?? 100))),
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
         ];
+    }
+
+    private function normalizeBrandFilter(mixed $value): string
+    {
+        $normalized = str_replace('-', '_', strtolower(trim((string) $value)));
+
+        return in_array($normalized, ['philips', 'emaks_prime'], true) ? $normalized : 'all';
+    }
+
+    private function normalizeCategoryFilter(mixed $value): string
+    {
+        $normalized = strtoupper(trim((string) $value));
+
+        return $normalized !== '' ? $normalized : 'all';
+    }
+
+    private function normalizeDeliveryWeek(mixed $value): string
+    {
+        $normalized = trim((string) $value);
+
+        return $normalized !== '' ? $normalized : 'all';
+    }
+
+    private function normalizeOptionalDate(mixed $value): string
+    {
+        return is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)
+            ? $value
+            : '';
     }
 
     private function normalizeListFilter(mixed $value): string
