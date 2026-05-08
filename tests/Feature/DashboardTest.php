@@ -45,6 +45,7 @@ class DashboardTest extends TestCase
         $dashboard = file_get_contents(resource_path('js/pages/panel/DashboardHome.jsx')) ?: '';
         $panelPage = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
         $header = file_get_contents(resource_path('js/components/app-sidebar-header.tsx')) ?: '';
+        $appLogo = file_get_contents(resource_path('js/components/app-logo.tsx')) ?: '';
 
         $this->assertStringContainsString('DashboardHome', $panelPage);
         $this->assertStringContainsString("matchesPage('dashboard', '/dashboard')", $panelPage);
@@ -67,6 +68,12 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $dashboard);
         $this->assertStringContainsString('Emaks Prime Operasyon Paneli', $header);
         $this->assertStringContainsString('Ana giriş ekranı', $header);
+        $this->assertStringContainsString('const showContextBadges = !isDashboard', $header);
+        $this->assertStringContainsString('{showContextBadges &&', $header);
+        $this->assertStringContainsString('href="/dashboard"', file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '');
+        $this->assertStringContainsString('Operasyon Paneli', $appLogo);
+        $this->assertStringContainsString('whitespace-nowrap', $appLogo);
+        $this->assertStringNotContainsString('truncate', $appLogo);
         $this->assertStringNotContainsString('Güvenli yetki görünümü', $dashboard);
         $this->assertStringNotContainsString('erişilebilir modül', $dashboard);
         $this->assertStringNotContainsString('Operasyon Merkezi', $dashboard);

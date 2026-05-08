@@ -15,16 +15,19 @@ const moduleItems = [
         label: 'Satış Yönetimi',
         candidates: ['/sales/main', '/sales/online', '/sales/bayi'],
         match: ['/sales/main', '/sales/online', '/sales/bayi'],
+        tone: 'blue',
     },
     {
         label: 'Stok Yönetimi',
         candidates: ['/stock', '/stock/critical'],
         match: ['/stock', '/stock/critical'],
+        tone: 'slate',
     },
     {
         label: 'Sipariş Yönetimi',
         candidates: ['/orders/alinan', '/orders/verilen', '/orders'],
         match: ['/orders', '/orders/alinan', '/orders/verilen'],
+        tone: 'cyan',
     },
     {
         label: 'Teknik Servis',
@@ -44,22 +47,52 @@ const moduleItems = [
             '/technical-service/earnings',
             '/technical-service/admin',
         ],
+        tone: 'emerald',
     },
     {
         label: 'Müşteri Yönetimi',
         candidates: ['/cari', '/cari/balance'],
         match: ['/cari', '/cari/balance', '/cari/detail', '/cari/document-detail'],
+        tone: 'indigo',
     },
     {
         label: 'Proforma',
         candidates: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
         match: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
+        tone: 'amber',
     },
 ];
 
 function selectModuleHref(candidates: string[], visibleHrefs: Set<string>) {
     return candidates.find((href) => visibleHrefs.has(href)) ?? null;
 }
+
+const moduleToneClasses = {
+    blue: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-blue-100 bg-blue-50 text-blue-800 hover:border-blue-200 hover:bg-blue-100',
+    },
+    slate: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100',
+    },
+    cyan: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-cyan-100 bg-cyan-50 text-cyan-800 hover:border-cyan-200 hover:bg-cyan-100',
+    },
+    emerald: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-emerald-100 bg-emerald-50 text-emerald-800 hover:border-emerald-200 hover:bg-emerald-100',
+    },
+    indigo: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-indigo-100 bg-indigo-50 text-indigo-800 hover:border-indigo-200 hover:bg-indigo-100',
+    },
+    amber: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-amber-100 bg-amber-50 text-amber-900 hover:border-amber-200 hover:bg-amber-100',
+    },
+};
 
 export default function ModuleLayout({ children }: { children: React.ReactNode }) {
     const { auth, panelNavigation, page } = usePage<SharedPageProps & { page?: { routePath?: string } }>().props;
@@ -71,14 +104,14 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
     return (
         <div className="min-h-screen bg-slate-100">
             <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-                <div className="mx-auto grid max-w-7xl gap-3 px-4 py-3 lg:grid-cols-[minmax(230px,auto)_minmax(0,1fr)_auto] lg:items-center">
+                <div className="mx-auto grid max-w-[1600px] gap-3 px-4 py-3 lg:grid-cols-[minmax(255px,280px)_minmax(0,1fr)_auto] lg:items-center xl:px-6">
                     <div className="flex min-w-0 items-center">
-                        <Link href="/dashboard" className="flex min-w-[230px] shrink-0 items-center gap-2">
+                        <Link href="/dashboard" className="flex min-w-[255px] shrink-0 items-center gap-2">
                             <AppLogo />
                         </Link>
                     </div>
 
-                    <nav className="flex min-w-0 gap-2 overflow-x-auto pb-1 [scrollbar-width:none] lg:flex-wrap lg:justify-center lg:overflow-visible lg:pb-0 [&::-webkit-scrollbar]:hidden">
+                    <nav className="flex min-w-0 gap-2 overflow-x-auto rounded-full bg-slate-100/80 p-1 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden">
                         {moduleItems
                             .map((item) => ({
                                 ...item,
@@ -87,16 +120,15 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                             .filter((item) => item.visibleHref !== null)
                             .map((item) => {
                                 const active = item.match.includes(routePath);
+                                const tone = moduleToneClasses[item.tone as keyof typeof moduleToneClasses];
 
                                 return (
                                     <Link
                                         key={item.label}
                                         href={item.visibleHref ?? '#'}
                                         className={[
-                                            'shrink-0 rounded-full border px-3 py-2 text-sm font-semibold transition xl:px-4',
-                                            active
-                                                ? 'border-slate-950 bg-slate-950 text-white'
-                                                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-950',
+                                            'shrink-0 rounded-full border px-3 py-2 text-[0.82rem] font-semibold shadow-sm transition hover:-translate-y-0.5 xl:px-4 xl:text-sm',
+                                            active ? tone.active : tone.idle,
                                         ].join(' ')}
                                     >
                                         {item.label}
@@ -108,7 +140,7 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                     {auth.user && (
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                                <button className="inline-flex min-w-48 items-center gap-2 justify-self-start rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm font-semibold text-slate-700 shadow-sm lg:justify-self-end">
+                                <button className="inline-flex min-w-48 items-center gap-2 justify-self-start rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 lg:justify-self-end">
                                     <UserInfo user={auth.user} />
                                     <ChevronsUpDown className="ml-auto size-4" />
                                 </button>
