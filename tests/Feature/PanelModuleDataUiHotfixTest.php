@@ -252,6 +252,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('requestIdRef', $dashboard);
         $this->assertStringContainsString('aria-expanded={isOpen}', $dashboard);
         $this->assertStringContainsString('document.addEventListener(\'pointerdown\'', $dashboard);
+        $this->assertStringContainsString('absolute left-0 right-0 top-full z-40', $dashboard);
+        $this->assertStringContainsString('max-h-72 overflow-y-auto rounded-2xl', $dashboard);
+        $this->assertStringContainsString('max-w-[260px]', $dashboard);
+        $this->assertStringContainsString('shadow-[0_24px_70px_rgba(15,23,42,0.08)]', $dashboard);
+        $this->assertStringContainsString('h-2.5 overflow-hidden rounded-full bg-white shadow-inner', $dashboard);
+        $this->assertStringContainsString('Adet, tutar ve pay', $dashboard);
+        $this->assertStringContainsString('Hafta havuzu sabit kalır', $dashboard);
         $this->assertStringContainsString("delivery_week: 'all', delivery_date: ''", $dashboard);
         $this->assertStringContainsString('pieItemsForOrderRows(approvedRows', $dashboard);
         $this->assertStringContainsString('brandComparisonForOrderRows(approvedRows', $dashboard);
