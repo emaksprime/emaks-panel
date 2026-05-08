@@ -18,6 +18,6 @@ class LoginResponse implements LoginResponseContract
             return response()->noContent();
         }
 
-        return redirect()->intended($this->navigation->homePathFor($request->user()));
+        return redirect()->to($this->navigation->homePathFor($request->user()));
     }
 }

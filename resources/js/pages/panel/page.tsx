@@ -34,6 +34,7 @@ import type {
 import CustomerDocumentDetailPage from './customer-crm/CustomerDocumentDetail.jsx';
 import CustomerInfoPage, { CustomerBalancePage } from './customer-crm/CustomerInfo.jsx';
 import CustomerStatementPage from './customer-crm/CustomerStatement.jsx';
+import DashboardHome from './DashboardHome.jsx';
 import OrdersDashboard from './orders/OrdersDashboard.jsx';
 import StockDashboard from './stock/StockDashboard.jsx';
 
@@ -413,6 +414,10 @@ export default function PanelPage({
     const normalizedCode = String(page.code ?? page.slug ?? '').trim();
     const routePath = String(page.routePath ?? (page as any).route ?? '').trim();
     const matchesPage = (...values: string[]) => values.includes(normalizedCode) || values.includes(routePath);
+
+    if (matchesPage('dashboard', '/dashboard')) {
+        return <DashboardHome />;
+    }
 
     if (matchesPage('cari', '/cari')) {
         return <CustomerInfoPage />;

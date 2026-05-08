@@ -104,9 +104,26 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $this->actingAs($user)->get('/dashboard')->assertForbidden();
     }
 
-    public function test_login_redirects_to_first_accessible_route(): void
+    public function test_login_redirects_to_dashboard_when_dashboard_is_accessible(): void
     {
         $stock = User::factory()->create(['role_code' => 'stock']);
+
+        $this->post(route('login.store'), [
+            'email' => $stock->username,
+            'password' => 'password',
+        ])->assertRedirect('/dashboard');
+
+        $this->assertAuthenticatedAs($stock);
+    }
+
+    public function test_login_redirect_falls_back_to_first_allowed_route_when_dashboard_is_denied(): void
+    {
+        $stock = User::factory()->create(['role_code' => 'stock']);
+        UserAccess::query()->create([
+            'user_id' => $stock->id,
+            'resource_code' => 'dashboard',
+            'can_view' => false,
+        ]);
 
         $this->post(route('login.store'), [
             'email' => $stock->username,
@@ -116,12 +133,20 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $this->assertAuthenticatedAs($stock);
     }
 
-    public function test_role_specific_login_redirects_to_first_allowed_route(): void
+    public function test_role_specific_login_redirects_to_dashboard_when_allowed(): void
     {
         $technical = User::factory()->create(['role_code' => 'technical']);
         $onlineOnly = User::factory()->create(['role_code' => 'viewer']);
         $bayiOnly = User::factory()->create(['role_code' => 'viewer']);
         $customersOnly = User::factory()->create(['role_code' => 'viewer']);
+
+        foreach ([$technical, $onlineOnly, $bayiOnly, $customersOnly] as $user) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => 'dashboard',
+                'can_view' => true,
+            ]);
+        }
 
         UserAccess::query()->create([
             'user_id' => $onlineOnly->id,
@@ -149,25 +174,25 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $this->post(route('login.store'), [
             'email' => $technical->username,
             'password' => 'password',
-        ])->assertRedirect('/technical-service');
+        ])->assertRedirect('/dashboard');
         auth()->logout();
 
         $this->post(route('login.store'), [
             'email' => $onlineOnly->username,
             'password' => 'password',
-        ])->assertRedirect('/sales/online');
+        ])->assertRedirect('/dashboard');
         auth()->logout();
 
         $this->post(route('login.store'), [
             'email' => $bayiOnly->username,
             'password' => 'password',
-        ])->assertRedirect('/sales/bayi');
+        ])->assertRedirect('/dashboard');
         auth()->logout();
 
         $this->post(route('login.store'), [
             'email' => $customersOnly->username,
             'password' => 'password',
-        ])->assertRedirect('/cari');
+        ])->assertRedirect('/dashboard');
     }
 
     public function test_admin_user_resource_list_is_unique_and_grouped(): void
