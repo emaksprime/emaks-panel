@@ -1,11 +1,12 @@
 import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Heading from '@/components/heading'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
-import { ServiceFilters } from '@/components/technical-service/ServiceFilters'
+import {
+  type OperationQuickFilterKey,
+  type WorkflowFilterKey,
+  TechnicalServiceOperationsDashboard,
+} from '@/components/technical-service/OperationCenterDashboard'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
-import { ServiceRequestTable } from '@/components/technical-service/ServiceRequestTable'
-import { ServiceSummaryCards } from '@/components/technical-service/ServiceSummaryCards'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import {
   findProvinceByName,
@@ -22,17 +23,18 @@ import type {
   ServiceFilters as FilterState,
   ServiceRequest,
   ServiceTechnician,
-  SummaryItem,
   WarrantySerialResponse,
 } from '@/components/technical-service/types'
 import {
   calculateTravelPreview,
   formatTechnicalServiceDateTime,
+  formatTechnicalServiceDate,
   formatTechnicalServiceMrn,
   getServicePaymentInfo,
   normalizeTechnicalServiceText,
   toTechnicalServiceDateTimeInputValue,
 } from '@/components/technical-service/utils'
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -67,6 +69,8 @@ type ApiTechnicalServiceRequest = {
   technical_service_technician_id?: number | string | null
   technician_name?: string | null
   scheduled_at?: string | null
+  scheduled_date?: string | null
+  scheduled_time?: string | null
   completed_at?: string | null
   description?: string | null
   resolution_notes?: string | null
@@ -78,6 +82,54 @@ type ApiTechnicalServiceRequest = {
   technician_payment_amount?: number | string | null
   travel_calculation_source?: string | null
   travel_calculated_at?: string | null
+  customer_contact_status?: string | null
+  customer_contacted_at?: string | null
+  customer_contact_note?: string | null
+  customer_confirmed_at?: string | null
+  customer_confirmation_method?: string | null
+  technician_approval_status?: string | null
+  technician_approved_at?: string | null
+  technician_revision_requested_at?: string | null
+  technician_revision_note?: string | null
+  technician_confirmation_status?: string | null
+  revision_requested?: boolean | number | string | null
+  reschedule_requested?: boolean | number | string | null
+  field_status?: string | null
+  field_started_at?: string | null
+  field_arrived_at?: string | null
+  field_completed_at?: string | null
+  missing_info_reason?: string | null
+  pending_reason?: string | null
+  requires_reschedule?: boolean | number | string | null
+  reschedule_reason?: string | null
+  document_status?: string | null
+  photo_status?: string | null
+  customer_closure_approval_status?: string | null
+  customer_closure_approved_at?: string | null
+  cancellation_reason?: string | null
+  workflow_status?: string | null
+  next_action?: string | null
+  sla_due_at?: string | null
+  sla_status?: string | null
+  allowed_workflow_actions?: Record<string, { label: string, target: string }> | null
+  allowed_workflow_transitions?: string[] | null
+  audit_logs?: Array<{
+    id: string | number
+    entity_type: string
+    entity_id: string | number
+    action_type: string
+    old_value?: Record<string, unknown> | null
+    new_value?: Record<string, unknown> | null
+    user_id?: number | null
+    user_name?: string | null
+    note?: string | null
+    created_at: string
+  }> | null
+  latest_event?: string | null
+  document?: unknown
+  documents?: unknown
+  photo?: unknown
+  photos?: unknown
 }
 
 type ApiTechnicalServiceEvent = {
@@ -100,6 +152,25 @@ type SummaryResponse = {
   priority_counts: Record<string, number>
   scheduled_today: number
 }
+
+type OperationsDashboardRequest = {
+  id: number | string
+  mrn: string
+  customer_name: string
+  status: string
+  scheduled_at?: string | null
+}
+
+type OperationsDashboardResponse = {
+  summary: Record<string, number>
+  today_appointments: OperationsDashboardRequest[]
+  overdue_requests: OperationsDashboardRequest[]
+  warranty_started_requests: OperationsDashboardRequest[]
+  past_scheduled_not_completed: OperationsDashboardRequest[]
+}
+
+type QuickFilterKey = OperationQuickFilterKey
+type WorkflowQueueKey = WorkflowFilterKey
 
 const initialFilters: FilterState = {
   search: '',
@@ -175,6 +246,8 @@ function statusFilterLabel(status: FilterState['status']): string {
       return 'Tamamlandı'
     case 'İptal':
       return 'İptal'
+    case 'closure_pending':
+      return 'Kapanış Onayı Bekleyen İşler'
     default:
       return 'Tümü'
   }
@@ -196,6 +269,217 @@ function technicianDisplayName(technician: ServiceTechnician): string {
 
 function normalizeLocationText(value: string | null | undefined): string {
   return normalizeTurkishLocation(value)
+}
+
+function startOfLocalDay(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate())
+}
+
+function addDays(value: Date, amount: number): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate() + amount)
+}
+
+function startOfWeek(value: Date): Date {
+  const currentDay = startOfLocalDay(value).getDay()
+  const offset = currentDay === 0 ? -6 : 1 - currentDay
+
+  return addDays(value, offset)
+}
+
+function startOfMonth(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), 1)
+}
+
+function addMonths(value: Date, amount: number): Date {
+  return new Date(value.getFullYear(), value.getMonth() + amount, 1)
+}
+
+function toDateKey(value: Date): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return toDateKey(a) === toDateKey(b)
+}
+
+function parseLocalDateValue(value: string | null | undefined): Date | null {
+  if (!value) {
+    return null
+  }
+
+  const trimmed = value.trim()
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [year, month, day] = trimmed.split('-').map(Number)
+
+    return new Date(year, (month ?? 1) - 1, day ?? 1)
+  }
+
+  const parsed = new Date(trimmed)
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function normalizeRequestStatus(status: string): string {
+  const normalized = normalizeTechnicalServiceText(status)
+
+  switch (normalized) {
+    case 'atandi':
+      return 'Atandı'
+    case 'tamamlandi':
+      return 'Tamamlandı'
+    case 'iptal':
+      return 'İptal'
+    case 'devam ediyor':
+      return 'Devam Ediyor'
+    default:
+      return status
+  }
+}
+
+function isClosedStatus(status: string): boolean {
+  const normalized = normalizeRequestStatus(status)
+
+  return normalized === 'Tamamlandı' || normalized === 'İptal'
+}
+
+function quickFilterItemsLabel(filter: QuickFilterKey): string {
+  switch (filter) {
+    case 'all_open':
+      return 'Tüm Açık İşler'
+    case 'unassigned':
+      return 'Atama Bekleyen'
+    case 'appointment_pending':
+      return 'Randevu Bekleyen'
+    case 'overdue':
+      return 'Geciken'
+    case 'in_service':
+      return 'Serviste'
+    case 'completed':
+      return 'Tamamlanan'
+    default:
+      return 'İş Filtreleri'
+  }
+}
+
+function getRequestScheduledDate(request: ServiceRequest): Date | null {
+  return parseLocalDateValue(request.scheduledAt ?? request.scheduledDate ?? null)
+}
+
+function workflowPanelLabel(filter: WorkflowQueueKey | null): string | null {
+  switch (filter) {
+    case 'missing_info':
+      return 'Eksik Bilgi / Fotoğraf Bekleyen İşler'
+    case 'customer_call':
+      return 'Müşteri Aranacak İşler'
+    case 'customer_unreachable':
+      return 'Müşteriye Ulaşılamadı Kayıtları'
+    case 'customer_confirmation':
+      return 'Müşteri Onayı Bekleyen İşler'
+    case 'schedule_planning':
+      return 'Randevu Planlanacak İşler'
+    case 'unassigned':
+      return 'Usta Ataması Bekleyen İşler'
+    case 'technician_approval':
+      return 'Usta Onayı Bekleyen İşler'
+    case 'technician_reschedule':
+      return 'Usta Tarih Revize Talepleri'
+    case 'document_pending':
+      return 'Belge / Fotoğraf Bekleyen İşler'
+    case 'closure_pending':
+      return 'Kapanış Onayı Bekleyen İşler'
+    default:
+      return null
+  }
+}
+
+function toComparableText(...values: Array<string | null | undefined>): string {
+  return values
+    .map((value) => normalizeTechnicalServiceText(value))
+    .filter((value) => value !== '')
+    .join(' ')
+}
+
+function hasKeywordMatch(haystack: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => haystack.includes(normalizeTechnicalServiceText(keyword)))
+}
+
+function parseLooseBoolean(value: boolean | number | string | null | undefined): boolean | null {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'number') {
+    return value !== 0
+  }
+
+  if (typeof value === 'string') {
+    const normalized = normalizeTechnicalServiceText(value)
+
+    if (['1', 'true', 'evet', 'yes', 'var'].includes(normalized)) {
+      return true
+    }
+
+    if (['0', 'false', 'hayir', 'hayır', 'no', 'yok'].includes(normalized)) {
+      return false
+    }
+  }
+
+  return null
+}
+
+function displayStatusLabel(status: string): string {
+  const normalized = normalizeTechnicalServiceText(status)
+
+  switch (normalized) {
+    case 'atandi':
+      return 'Atandı'
+    case 'tamamlandi':
+      return 'Tamamlandı'
+    case 'iptal':
+      return 'İptal'
+    default:
+      return status
+  }
+}
+
+function hasPendingAssets(value: unknown): boolean | null {
+  if (Array.isArray(value)) {
+    return value.length === 0 ? true : false
+  }
+
+  if (typeof value === 'string') {
+    const normalized = normalizeTechnicalServiceText(value)
+
+    if (!normalized) {
+      return true
+    }
+
+    if (['none', 'null', 'yok', 'eksik', 'bekleniyor', 'pending'].some((keyword) => normalized.includes(keyword))) {
+      return true
+    }
+
+    return false
+  }
+
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if ('length' in record && typeof record.length === 'number') {
+      return Number(record.length) === 0
+    }
+
+    return Object.keys(record).length === 0
+  }
+
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  return false
 }
 
 type TechnicianMatch = {
@@ -249,12 +533,14 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
       ? null
       : String(request.technical_service_technician_id),
     technician: request.technician_name ?? 'Atanmadı',
-    appointment: formatTechnicalServiceDateTime(request.scheduled_at, 'Belirlenmedi'),
-    status: request.status,
+    appointment: formatTechnicalServiceDateTime(request.scheduled_at ?? request.scheduled_date ?? null, 'Belirlenmedi'),
+    status: displayStatusLabel(request.status),
     address: request.service_address,
     notes: request.description ?? request.resolution_notes ?? '',
     channel: request.source_channel ?? '',
     scheduledAt: request.scheduled_at ?? null,
+    scheduledDate: request.scheduled_date ?? null,
+    scheduledTime: request.scheduled_time ?? null,
     createdAt: request.created_at ?? null,
     completedAt: request.completed_at ?? null,
     travelRoundTripKm: parseNullableNumber(request.travel_round_trip_km),
@@ -263,12 +549,157 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     technicianPaymentAmount: parseNullableNumber(request.technician_payment_amount),
     travelCalculationSource: request.travel_calculation_source ?? null,
     travelCalculatedAt: request.travel_calculated_at ?? null,
+    customerContactStatus: request.customer_contact_status ?? null,
+    customerContactedAt: request.customer_contacted_at ?? null,
+    customerContactNote: request.customer_contact_note ?? null,
+    customerConfirmedAt: request.customer_confirmed_at ?? null,
+    customerConfirmationMethod: request.customer_confirmation_method ?? null,
+    technicianApprovalStatus: request.technician_approval_status ?? null,
+    technicianApprovedAt: request.technician_approved_at ?? null,
+    technicianRevisionRequestedAt: request.technician_revision_requested_at ?? null,
+    technicianRevisionNote: request.technician_revision_note ?? null,
+    technicianConfirmationStatus: request.technician_confirmation_status ?? null,
+    revisionRequested: parseLooseBoolean(request.revision_requested),
+    rescheduleRequested: parseLooseBoolean(request.reschedule_requested),
+    fieldStatus: request.field_status ?? null,
+    fieldStartedAt: request.field_started_at ?? null,
+    fieldArrivedAt: request.field_arrived_at ?? null,
+    fieldCompletedAt: request.field_completed_at ?? null,
+    missingInfoReason: request.missing_info_reason ?? null,
+    pendingReason: request.pending_reason ?? null,
+    requiresReschedule: parseLooseBoolean(request.requires_reschedule),
+    rescheduleReason: request.reschedule_reason ?? null,
+    documentStatus: request.document_status ?? null,
+    photoStatus: request.photo_status ?? null,
+    customerClosureApprovalStatus: request.customer_closure_approval_status ?? null,
+    customerClosureApprovedAt: request.customer_closure_approved_at ?? null,
+    cancellationReason: request.cancellation_reason ?? null,
+    workflowStatus: request.workflow_status ?? null,
+    nextAction: request.next_action ?? null,
+    slaDueAt: request.sla_due_at ?? null,
+    slaStatus: request.sla_status ?? null,
+    allowedWorkflowActions: request.allowed_workflow_actions ?? null,
+    allowedWorkflowTransitions: request.allowed_workflow_transitions ?? null,
+    auditLogs: request.audit_logs ?? null,
+    latestEvent: request.latest_event ?? null,
+    document: request.document,
+    documents: request.documents,
+    photo: request.photo,
+    photos: request.photos,
   }
 }
 
-export default function TechnicalService() {
+function requestWorkflowText(request: ServiceRequest): string {
+  return toComparableText(
+    request.status,
+    request.notes,
+    request.workflowStatus,
+    request.latestEvent,
+    request.technicianApprovalStatus,
+    request.technicianConfirmationStatus,
+  )
+}
+
+function isUnassignedWorkflowRequest(request: ServiceRequest): boolean {
+  const technicianName = normalizeTechnicalServiceText(request.technician)
+
+  return technicianName === '' || technicianName === 'atanmadi' || technicianName === 'atanmadı'
+}
+
+function isTechnicianApprovalPendingRequest(request: ServiceRequest): boolean {
+  const approvalStatus = normalizeTechnicalServiceText(request.technicianApprovalStatus)
+  const confirmationStatus = normalizeTechnicalServiceText(request.technicianConfirmationStatus)
+  const workflowText = requestWorkflowText(request)
+
+  if (approvalStatus && ['bekliyor', 'pending', 'waiting', 'onay bekliyor', 'usta onayi bekliyor', 'usta onayı bekliyor'].some((keyword) => approvalStatus.includes(normalizeTechnicalServiceText(keyword)))) {
+    return true
+  }
+
+  if (confirmationStatus && ['bekliyor', 'pending'].some((keyword) => confirmationStatus.includes(normalizeTechnicalServiceText(keyword)))) {
+    return true
+  }
+
+  return hasKeywordMatch(workflowText, ['usta onayı', 'usta onayi', 'onay bekliyor', 'teknisyen onayı', 'teknisyen onayi', 'usta bekliyor'])
+}
+
+function isTechnicianRescheduleRequest(request: ServiceRequest): boolean {
+  if (request.rescheduleRequested === true || request.revisionRequested === true) {
+    return true
+  }
+
+  return hasKeywordMatch(requestWorkflowText(request), ['revize', 'tarih revize', 'tarih değişikliği', 'tarih degisikligi', 'randevu değişikliği', 'randevu degisikligi', 'usta tarih'])
+}
+
+function isCustomerConfirmationPendingRequest(request: ServiceRequest): boolean {
+  const confirmationStatus = normalizeTechnicalServiceText(request.technicianConfirmationStatus)
+
+  if (confirmationStatus && ['bekliyor', 'pending', 'teyit bekliyor', 'musteri teyidi bekliyor', 'müşteri teyidi bekliyor'].some((keyword) => confirmationStatus.includes(normalizeTechnicalServiceText(keyword)))) {
+    return true
+  }
+
+  return hasKeywordMatch(requestWorkflowText(request), ['müşteri teyidi', 'musteri teyidi', 'teyit bekliyor', 'müşteri aranacak', 'musteri aranacak', 'ulaşılamadı', 'ulasilamadi'])
+}
+
+function isDocumentPendingRequest(request: ServiceRequest): boolean {
+  const documentState = [request.document, request.documents, request.photo, request.photos]
+    .map((value) => hasPendingAssets(value))
+    .find((value) => value !== null)
+
+  if (documentState === true) {
+    return true
+  }
+
+  return hasKeywordMatch(requestWorkflowText(request), ['belge', 'fotoğraf', 'fotograf', 'eksik evrak', 'garanti belgesi'])
+}
+
+function matchesWorkflowStatus(request: ServiceRequest, statuses: string[]): boolean {
+  const workflowStatus = normalizeTechnicalServiceText(request.workflowStatus)
+
+  return statuses.some((status) => workflowStatus === normalizeTechnicalServiceText(status))
+}
+
+function hasLegacyStatus(request: ServiceRequest, status: string): boolean {
+  return normalizeTechnicalServiceText(displayStatusLabel(request.status)) === normalizeTechnicalServiceText(status)
+}
+
+function matchesNewWorkflowQueue(request: ServiceRequest, filter: WorkflowQueueKey | null, isOverdueRequest: (request: ServiceRequest) => boolean): boolean {
+  switch (filter) {
+    case 'missing_info':
+      return matchesWorkflowStatus(request, ['Eksik Bilgi / Fotoğraf Bekleyen'])
+    case 'customer_call':
+      return matchesWorkflowStatus(request, ['Müşteri Aranacak'])
+    case 'customer_unreachable':
+      return matchesWorkflowStatus(request, ['Müşteriye Ulaşılamadı'])
+    case 'customer_confirmation':
+      return matchesWorkflowStatus(request, ['Müşteri Onayı Bekleyen'])
+    case 'schedule_planning':
+      return matchesWorkflowStatus(request, ['Müşteri Onayladı', 'Randevu Planlandı'])
+    case 'unassigned':
+      return matchesWorkflowStatus(request, ['Usta Ataması Bekleyen'])
+    case 'technician_approval':
+      return matchesWorkflowStatus(request, ['Usta Onayı Bekleyen'])
+    case 'technician_reschedule':
+      return matchesWorkflowStatus(request, ['Usta Tarih Revize Talebi'])
+    case 'sla_overdue':
+      return request.slaStatus === 'geciken' || isOverdueRequest(request)
+    case 'parts_pending':
+      return matchesWorkflowStatus(request, ['Parça Bekleniyor'])
+    case 'document_pending':
+      return matchesWorkflowStatus(request, ['Belge / Fotoğraf Bekleyen'])
+    case 'closure_pending':
+      return matchesWorkflowStatus(request, ['Müşteri Kapanış Onayı Bekleyen'])
+    default:
+      return true
+  }
+}
+
+export function TechnicalServiceOperationCenter() {
   const [filters, setFilters] = useState<FilterState>(initialFilters)
+  const [quickFilter, setQuickFilter] = useState<QuickFilterKey>('all_open')
+  const [workflowFilter, setWorkflowFilter] = useState<WorkflowQueueKey | null>(null)
   const [requests, setRequests] = useState<ServiceRequest[]>([])
+  const [weekReferenceDate, setWeekReferenceDate] = useState<Date>(() => new Date())
+  const [selectedDate, setSelectedDate] = useState<Date>(() => startOfLocalDay(new Date()))
   const [technicians, setTechnicians] = useState<ServiceTechnician[]>([])
   const [techniciansLoading, setTechniciansLoading] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -309,13 +740,18 @@ export default function TechnicalService() {
   const [reopenError, setReopenError] = useState<string | null>(null)
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [workflowActionLoading, setWorkflowActionLoading] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
+  const [operationsData, setOperationsData] = useState<OperationsDashboardResponse | null>(null)
   const [mikroMountCheck, setMikroMountCheck] = useState<MikroMountCheckResult | null>(null)
   const [mikroMountLoading, setMikroMountLoading] = useState(false)
   const [mikroMountError, setMikroMountError] = useState<string | null>(null)
   const [warranty, setWarranty] = useState<WarrantySerialResponse | null>(null)
   const [warrantyLoading, setWarrantyLoading] = useState(false)
   const [warrantyError, setWarrantyError] = useState<string | null>(null)
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false)
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => startOfMonth(new Date()))
+  const datePickerRef = useRef<HTMLDivElement | null>(null)
   const selectedIdRef = useRef<string | null>(null)
   const detailRequestTokenRef = useRef(0)
   const serialLookupTokenRef = useRef(0)
@@ -365,6 +801,15 @@ export default function TechnicalService() {
       setAssignError(caught instanceof Error ? caught.message : 'Usta listesi alınamadı.')
     } finally {
       setTechniciansLoading(false)
+    }
+  }, [])
+
+  const loadOperationsData = useCallback(async () => {
+    try {
+      const response = await apiRequest('/api/technical-service/operations-dashboard')
+      setOperationsData(response as OperationsDashboardResponse)
+    } catch {
+      setOperationsData(null)
     }
   }, [])
 
@@ -449,6 +894,10 @@ export default function TechnicalService() {
   }, [loadTechnicians])
 
   useEffect(() => {
+    void Promise.resolve().then(loadOperationsData)
+  }, [loadOperationsData])
+
+  useEffect(() => {
     let cancelled = false
 
     if (!selectedId) {
@@ -488,42 +937,93 @@ export default function TechnicalService() {
     }
   }, [loadRequestDetail, selectedId])
 
-  const filteredRequests = useMemo(() => {
+  useEffect(() => {
+    if (!isDatePickerOpen) {
+      return
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!datePickerRef.current?.contains(event.target as Node)) {
+        setIsDatePickerOpen(false)
+      }
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsDatePickerOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isDatePickerOpen])
+
+  const todayDate = useMemo(() => startOfLocalDay(new Date()), [])
+  const weekStartDate = useMemo(() => startOfWeek(weekReferenceDate), [weekReferenceDate])
+  const weekEndDate = useMemo(() => addDays(weekStartDate, 7), [weekStartDate])
+
+  const isOpenRequest = useCallback((request: ServiceRequest) => {
+    const normalized = normalizeTechnicalServiceText(request.status)
+
+    return normalized !== 'tamamlandi' && normalized !== 'iptal'
+  }, [])
+  const isUnassignedRequest = useCallback((request: ServiceRequest) => isUnassignedWorkflowRequest(request), [])
+  const hasScheduledAppointment = useCallback((request: ServiceRequest) => getRequestScheduledDate(request) !== null, [])
+  const isTodayAppointment = useCallback((request: ServiceRequest) => {
+    const scheduled = getRequestScheduledDate(request)
+
+    return scheduled !== null && isSameLocalDay(scheduled, todayDate) && isOpenRequest(request)
+  }, [isOpenRequest, todayDate])
+  const isThisWeekAppointment = useCallback((request: ServiceRequest) => {
+    const scheduled = getRequestScheduledDate(request)
+
+    return scheduled !== null && scheduled >= weekStartDate && scheduled < weekEndDate && isOpenRequest(request)
+  }, [isOpenRequest, weekEndDate, weekStartDate])
+  const isOverdueRequest = useCallback((request: ServiceRequest) => {
+    const scheduled = getRequestScheduledDate(request)
+
+    return scheduled !== null && scheduled < todayDate && isOpenRequest(request)
+  }, [isOpenRequest, todayDate])
+  const matchesWorkflowFilter = useCallback((request: ServiceRequest, filter: WorkflowQueueKey | null) => {
+    return matchesNewWorkflowQueue(request, filter, isOverdueRequest)
+  }, [isOverdueRequest])
+
+  const compareRequestsBySchedule = useCallback((a: ServiceRequest, b: ServiceRequest) => {
+    const aScheduled = getRequestScheduledDate(a)
+    const bScheduled = getRequestScheduledDate(b)
+
+    if (aScheduled && bScheduled && aScheduled.getTime() !== bScheduled.getTime()) {
+      return aScheduled.getTime() - bScheduled.getTime()
+    }
+
+    if (aScheduled && !bScheduled) {
+      return -1
+    }
+
+    if (!aScheduled && bScheduled) {
+      return 1
+    }
+
+    const aTime = a.scheduledTime?.trim() ?? ''
+    const bTime = b.scheduledTime?.trim() ?? ''
+
+    if (aTime !== bTime) {
+      return aTime.localeCompare(bTime, 'tr')
+    }
+
+    const aCreated = parseLocalDateValue(a.createdAt)?.getTime() ?? 0
+    const bCreated = parseLocalDateValue(b.createdAt)?.getTime() ?? 0
+
+    return bCreated - aCreated
+  }, [])
+
+  const allFilteredRequests = useMemo(() => {
     const search = normalizeSearchText(filters.search)
-    const today = new Date()
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-    const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
-
-    const isTodayAppointment = (request: ServiceRequest) => {
-      const scheduled = request.scheduledAt ? new Date(request.scheduledAt) : null
-
-      return scheduled !== null && scheduled >= todayStart && scheduled < todayEnd
-    }
-
-    const isOpenRequest = (request: ServiceRequest) => request.status !== 'Tamamlandı' && request.status !== 'İptal'
-    const isUnassignedRequest = (request: ServiceRequest) => !request.technician?.trim() || request.technician === 'Atanmadı'
-    const hasScheduledAppointment = (request: ServiceRequest) => Boolean(request.scheduledAt)
-
-    const compareRequests = (a: ServiceRequest, b: ServiceRequest) => {
-      const aUnassigned = a.technician === 'Atanmadı' || a.technician.trim() === ''
-      const bUnassigned = b.technician === 'Atanmadı' || b.technician.trim() === ''
-
-      if (aUnassigned !== bUnassigned) {
-        return aUnassigned ? -1 : 1
-      }
-
-      const aToday = isTodayAppointment(a)
-      const bToday = isTodayAppointment(b)
-
-      if (aToday !== bToday) {
-        return aToday ? -1 : 1
-      }
-
-      const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0
-      const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0
-
-      return bCreated - aCreated
-    }
 
     return requests
       .filter((request) => {
@@ -543,36 +1043,16 @@ export default function TechnicalService() {
           request.technician,
           request.appointment,
           request.scheduledAt,
+          request.scheduledDate,
+          request.scheduledTime,
           request.notes,
         ]
 
-        const matchesSearch =
-          !search ||
-          values.some((value) => normalizeSearchText(value).includes(search))
-
-        const matchesStatus = (() => {
-          switch (filters.status) {
-            case '':
-              return true
-            case 'unassigned':
-              return isOpenRequest(request) && isUnassignedRequest(request)
-            case 'today_installations':
-              return request.serviceType === 'Montaj' && isTodayAppointment(request)
-            case 'scheduled':
-              return isOpenRequest(request) && hasScheduledAppointment(request)
-            case 'Tamamlandı':
-              return request.status === 'Tamamlandı'
-            case 'İptal':
-              return request.status === 'İptal'
-            default:
-              return true
-          }
-        })()
-
-        return matchesSearch && matchesStatus
+        const matchesSearch = !search || values.some((value) => normalizeSearchText(value).includes(search))
+        return matchesSearch
       })
-      .sort(compareRequests)
-  }, [filters, requests])
+      .sort(compareRequestsBySchedule)
+  }, [compareRequestsBySchedule, filters.search, requests])
 
   const selectedRequest = selectedId
     ? requests.find((request) => request.id === selectedId) ?? null
@@ -599,7 +1079,7 @@ export default function TechnicalService() {
     assignTravelPreview.roundTripKm,
     assignTravelPreview.travelFeeAmount,
   )
-  const mountPaymentMissing = modalRequest?.serviceType === 'Montaj' && mikroMountCheck?.montaj_durumu === 'Montaj HariÃ§'
+  const mountPaymentMissing = modalRequest?.serviceType === 'Montaj' && mikroMountCheck?.montaj_durumu === 'Montaj Hariç'
   const effectiveMountPaymentMissing = modalRequest?.serviceType === 'Montaj' && isMountPaymentMissing(mikroMountCheck)
   const mountPaymentAccepted = modalRequest?.serviceType === 'Montaj' && isMountPaymentAccepted(mikroMountCheck)
   const effectiveAssignOverrideReady = !effectiveMountPaymentMissing || (assignOverrideWithoutPayment && assignOverrideReason.trim().length >= 5)
@@ -633,39 +1113,239 @@ export default function TechnicalService() {
     ? technicianMatches
     : sameCityTechnicians
 
-  const unassignedCount = requests.filter((request) => {
-    const isOpen = request.status !== 'Tamamlandı' && request.status !== 'İptal'
-    const isUnassigned = !request.technician?.trim() || request.technician === 'Atanmadı'
+  const selectedDayRequests = useMemo(() => {
+    return requests
+      .filter((request) => {
+        const scheduled = getRequestScheduledDate(request)
+        return scheduled !== null && isSameLocalDay(scheduled, selectedDate)
+      })
+      .sort(compareRequestsBySchedule)
+  }, [compareRequestsBySchedule, requests, selectedDate])
 
-    return isOpen && isUnassigned
-  }).length
-  const activeStatusFilterLabel = statusFilterLabel(filters.status)
+  const selectedDayScopedRequests = useMemo(() => {
+    return allFilteredRequests
+      .filter((request) => {
+        const scheduled = getRequestScheduledDate(request)
 
-  const summaryItems: SummaryItem[] = [
+        if (scheduled === null || !isSameLocalDay(scheduled, selectedDate)) {
+          return false
+        }
+
+        switch (quickFilter) {
+          case 'all_open':
+            return isOpenRequest(request)
+          case 'unassigned':
+            return isOpenRequest(request) && isUnassignedRequest(request)
+          case 'appointment_pending':
+            return isOpenRequest(request) && (!request.scheduledTime?.trim() || hasLegacyStatus(request, 'Yeni'))
+          case 'overdue':
+            return isOverdueRequest(request)
+          case 'in_service':
+            return hasLegacyStatus(request, 'Devam Ediyor')
+          case 'completed':
+            return normalizeRequestStatus(request.status) === 'Tamamlandı'
+          default:
+            return true
+        }
+      })
+      .sort(compareRequestsBySchedule)
+  }, [allFilteredRequests, compareRequestsBySchedule, isOpenRequest, isOverdueRequest, isUnassignedRequest, quickFilter, selectedDate])
+
+  const selectedDayFilteredRequests = useMemo(() => {
+    return selectedDayScopedRequests
+      .filter((request) => matchesWorkflowFilter(request, workflowFilter))
+      .sort(compareRequestsBySchedule)
+  }, [compareRequestsBySchedule, matchesWorkflowFilter, selectedDayScopedRequests, workflowFilter])
+
+  const selectedDaySummary = useMemo(() => {
+    const appointmentCount = selectedDayRequests.length
+    const assignedCount = selectedDayRequests.filter((request) => !isUnassignedRequest(request)).length
+    const unassignedCount = selectedDayRequests.filter((request) => isUnassignedRequest(request)).length
+    const overdueCount = selectedDayRequests.filter((request) => isOverdueRequest(request)).length
+
+    return {
+      appointmentCount,
+      assignedCount,
+      unassignedCount,
+      overdueCount,
+    }
+  }, [isOverdueRequest, isUnassignedRequest, selectedDayRequests])
+
+  const selectedDayTechnicianSummary = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    selectedDayRequests.forEach((request) => {
+      const key = request.technician?.trim() && request.technician !== 'Atanmadı' ? request.technician.trim() : 'Atanmamış'
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    })
+
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'tr'))
+  }, [selectedDayRequests])
+
+  const weeklyDayCounts = useMemo(() => {
+    const labels = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz']
+
+    const densityLabelForCount = (count: number): 'Yok' | 'Dusuk' | 'Normal' | 'Orta' | 'Yogun' => {
+      if (count <= 0) {
+        return 'Yok'
+      }
+
+      if (count <= 5) {
+        return 'Dusuk'
+      }
+
+      if (count <= 12) {
+        return 'Normal'
+      }
+
+      if (count <= 18) {
+        return 'Orta'
+      }
+
+      return 'Yogun'
+    }
+
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = addDays(weekStartDate, index)
+      const count = requests.filter((request) => {
+        const scheduled = getRequestScheduledDate(request)
+
+        return scheduled !== null && isSameLocalDay(scheduled, date) && isOpenRequest(request)
+      }).length
+
+      return {
+        key: toDateKey(date),
+        label: labels[index] ?? '',
+        shortDate: date.toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit' }),
+        fullDate: date.toLocaleDateString('tr-TR', { day: '2-digit', month: 'long', year: 'numeric' }),
+        count,
+        densityLabel: densityLabelForCount(count),
+        isToday: isSameLocalDay(date, todayDate),
+        isSelected: isSameLocalDay(date, selectedDate),
+      }
+    })
+  }, [isOpenRequest, requests, selectedDate, todayDate, weekStartDate])
+
+  const selectedDateLabel = selectedDate.toLocaleDateString('tr-TR', {
+    day: '2-digit',
+    month: 'long',
+    weekday: 'long',
+  })
+  const selectedDateButtonLabel = selectedDate.toLocaleDateString('tr-TR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
+  const selectedDayDescription = `${selectedDateLabel.replace(/^./, (character) => character.toLocaleUpperCase('tr-TR'))} operasyon görünümü`
+  const calendarMonthLabel = calendarMonth.toLocaleDateString('tr-TR', {
+    month: 'long',
+    year: 'numeric',
+  }).replace(/^./, (character) => character.toLocaleUpperCase('tr-TR'))
+  const calendarWeekdays = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz']
+  const calendarDays = useMemo(() => {
+    const monthStart = startOfMonth(calendarMonth)
+    const gridStart = startOfWeek(monthStart)
+
+    return Array.from({ length: 42 }, (_, index) => {
+      const date = addDays(gridStart, index)
+
+      return {
+        key: toDateKey(date),
+        date,
+        label: String(date.getDate()),
+        inCurrentMonth: date.getMonth() === calendarMonth.getMonth(),
+        isToday: isSameLocalDay(date, todayDate),
+        isSelected: isSameLocalDay(date, selectedDate),
+      }
+    })
+  }, [calendarMonth, selectedDate, todayDate])
+
+  const workflowQueuePanelItems = useMemo(() => ([
     {
-      label: 'Açık Talep',
-      value: summaryLoading ? '...' : String(summaryData?.ongoing_requests ?? 0),
-      tone: 'accent',
-      description: 'Henüz tamamlanmamış teknik servis talepleri',
+      key: 'missing_info' as const,
+      label: 'Eksik Bilgi / Fotoğraf',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'missing_info')).length,
     },
     {
-      label: 'Bugünkü Randevu',
-      value: summaryLoading ? '...' : String(summaryData?.scheduled_today ?? 0),
-      tone: 'warning',
-      description: 'Bugün planlanmış servis ziyaretleri',
+      key: 'customer_call' as const,
+      label: 'Müşteri Aranacak',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'customer_call')).length,
     },
     {
-      label: 'Tamamlanan İş',
-      value: summaryLoading ? '...' : String(summaryData?.status_counts?.Tamamlandı ?? 0),
-      tone: 'default',
-      description: 'Bugüne kadar kapatılmış talepler',
+      key: 'customer_unreachable' as const,
+      label: 'Müşteriye Ulaşılamadı',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'customer_unreachable')).length,
     },
     {
-      label: 'Atanmamış Talep',
-      value: loading ? '...' : String(unassignedCount),
-      tone: 'default',
-      description: 'Usta atanmamış talepler',
+      key: 'customer_confirmation' as const,
+      label: 'Müşteri Onayı Bekleyen',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'customer_confirmation')).length,
     },
+    {
+      key: 'schedule_planning' as const,
+      label: 'Randevu Planlanacak',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'schedule_planning')).length,
+    },
+    {
+      key: 'unassigned' as const,
+      label: 'Usta Ataması Bekleyen',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'unassigned')).length,
+    },
+    {
+      key: 'technician_approval' as const,
+      label: 'Usta Onayı Bekleyen',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'technician_approval')).length,
+    },
+    {
+      key: 'technician_reschedule' as const,
+      label: 'Usta Tarih Revize Talebi',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'technician_reschedule')).length,
+    },
+    {
+      key: 'sla_overdue' as const,
+      label: 'Geciken SLA',
+      count: selectedDayRequests.filter((request) => matchesWorkflowFilter(request, 'sla_overdue')).length,
+    },
+    {
+      key: 'parts_pending' as const,
+      label: 'Parça Bekleyen',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'parts_pending')).length,
+    },
+    {
+      key: 'document_pending' as const,
+      label: 'Belge / Fotoğraf Bekleyen',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'document_pending')).length,
+    },
+    {
+      key: 'closure_pending' as const,
+      label: 'Kapanış Onayı Bekleyen',
+      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'closure_pending')).length,
+    },
+  ]), [isOpenRequest, matchesWorkflowFilter, selectedDayRequests])
+
+  const workflowTitle = workflowPanelLabel(workflowFilter)
+  const tableTitle = workflowTitle ?? (isSameLocalDay(selectedDate, todayDate)
+    ? 'Bugünün Randevuları'
+    : `${selectedDateLabel.replace(/^./, (character) => character.toLocaleUpperCase('tr-TR'))} Randevuları`)
+
+  const tableSubtitle = `${quickFilterItemsLabel(quickFilter)}${workflowTitle ? ` • ${workflowTitle}` : ''} • ${formatTechnicalServiceDate(toDateKey(selectedDate))}`
+
+  const quickFilterItems = [
+    { key: 'all_open' as const, label: 'Tüm Açık İşler', count: selectedDayRequests.filter((request) => isOpenRequest(request)).length },
+    { key: 'unassigned' as const, label: 'Atama Bekleyen', count: selectedDayRequests.filter((request) => isOpenRequest(request) && isUnassignedRequest(request)).length },
+    { key: 'appointment_pending' as const, label: 'Randevu Bekleyen', count: selectedDayRequests.filter((request) => isOpenRequest(request) && (!request.scheduledTime?.trim() || hasLegacyStatus(request, 'Yeni'))).length },
+    { key: 'overdue' as const, label: 'Geciken', count: selectedDayRequests.filter((request) => isOverdueRequest(request)).length },
+    { key: 'in_service' as const, label: 'Serviste', count: selectedDayRequests.filter((request) => hasLegacyStatus(request, 'Devam Ediyor')).length },
+    { key: 'completed' as const, label: 'Tamamlanan', count: selectedDayRequests.filter((request) => normalizeRequestStatus(request.status) === 'Tamamlandı').length },
+  ]
+
+  const summaryMetrics = [
+    { label: 'Randevu Sayısı', value: selectedDaySummary.appointmentCount, tone: 'blue' as const },
+    { label: 'Atanmış İş', value: selectedDaySummary.assignedCount, tone: 'green' as const },
+    { label: 'Atanmamış İş', value: selectedDaySummary.unassignedCount, tone: 'purple' as const },
+    { label: 'Geciken İş', value: selectedDaySummary.overdueCount, tone: 'red' as const },
   ]
 
   const handleCreateChange = (field: keyof NewRequestForm, value: string) => {
@@ -823,6 +1503,32 @@ export default function TechnicalService() {
       setReopenError(caught instanceof Error ? caught.message : 'Talep yeniden açma işlemi başarısız oldu.')
     } finally {
       setReopenLoading(false)
+    }
+  }
+
+  const handleWorkflowAction = async (action: string) => {
+    if (!selectedId) {
+      return
+    }
+
+    setWorkflowActionLoading(action)
+    setDetailError(null)
+
+    try {
+      await apiRequest(`/api/technical-service/requests/${selectedId}/workflow`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          action,
+        }),
+      })
+
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setDetailError(caught instanceof Error ? caught.message : 'Workflow aksiyonu uygulanamadı.')
+    } finally {
+      setWorkflowActionLoading(null)
     }
   }
 
@@ -1028,23 +1734,201 @@ export default function TechnicalService() {
     }
   }
 
+  const openDatePicker = useCallback(() => {
+    setCalendarMonth(startOfMonth(selectedDate))
+    setIsDatePickerOpen(true)
+  }, [selectedDate])
+
+  const openRequestDetail = useCallback((request: ServiceRequest) => {
+    detailRequestTokenRef.current += 1
+    setSelectedListRequest(request)
+    setSelectedDetailRequest(null)
+    setSelectedEvents([])
+    setDetailError(null)
+    setMikroMountCheck(null)
+    setMikroMountError(null)
+    setMikroMountLoading(false)
+    setWarranty(null)
+    setWarrantyError(null)
+    setWarrantyLoading(false)
+    setSelectedId(request.id)
+    setIsDetailDialogOpen(true)
+  }, [])
+
   return (
     <>
-      <Head title="Teknik Servis" />
+      <Head title="Teknik Servis Operasyon Merkezi" />
 
-      <div className="mx-auto w-full max-w-[2200px] space-y-6 px-4 py-6 md:px-6 lg:px-12">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <Heading
-              title="Teknik Servis"
-              description="Montaj ve servis taleplerini takip edin, randevu ve talep detaylarını görüntüleyin."
-            />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <TechnicalServicePageLinks />
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+      <div className="relative min-h-screen overflow-hidden bg-[#F4F7FB]">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top_left,_rgba(6,20,58,0.08),_transparent_38%),radial-gradient(circle_at_top_right,_rgba(37,99,235,0.06),_transparent_34%)]" />
+        <div className="relative mx-auto w-full max-w-[1800px] space-y-6 px-4 py-6 md:px-6 lg:px-10">
+        <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-sm sm:px-6 sm:py-6">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-[20px] bg-[#06143A] text-white shadow-[0_12px_24px_rgba(6,20,58,0.18)]">
+                <Wrench className="h-6 w-6" />
+              </div>
+              <div className="max-w-3xl">
+                <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Teknik Servis Operasyon Merkezi</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                  Teknik servis taleplerini takip edin, randevuları yönetin ve operasyonu kolayca izleyin.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 xl:items-end">
+              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
+                  title="Önceki haftaya git"
+                  aria-label="Önceki haftaya git"
+                  onClick={() => {
+                    setWeekReferenceDate((current) => addDays(current, -7))
+                    setSelectedDate((current) => addDays(current, -7))
+                  }}
+                >
+                  <ChevronLeft className="mr-2 h-4 w-4" />
+                  Önceki Hafta
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const now = new Date()
+                    setWeekReferenceDate(now)
+                    setSelectedDate(startOfLocalDay(now))
+                  }}
+                >
+                  <CalendarDays className="mr-2 h-4 w-4" />
+                  Bugün
+                </Button>
+                <div ref={datePickerRef} className="relative">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
+                    onClick={() => {
+                      if (isDatePickerOpen) {
+                        setIsDatePickerOpen(false)
+                        return
+                      }
+
+                      openDatePicker()
+                    }}
+                    aria-label="Tarih seç"
+                    title="Tarih seç"
+                    aria-expanded={isDatePickerOpen}
+                  >
+                    <span>{selectedDateButtonLabel}</span>
+                    <ChevronDown className={['ml-2 h-4 w-4 text-slate-400 transition-transform', isDatePickerOpen ? 'rotate-180' : 'rotate-0'].join(' ')} />
+                  </Button>
+
+                  {isDatePickerOpen ? (
+                    <div className="absolute top-[calc(100%+10px)] right-0 z-30 w-[320px] rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
+                      <div className="mb-4 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setCalendarMonth((current) => addMonths(current, -1))}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+                          aria-label="Önceki ay"
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </button>
+                        <p className="text-sm font-semibold text-slate-950">{calendarMonthLabel}</p>
+                        <button
+                          type="button"
+                          onClick={() => setCalendarMonth((current) => addMonths(current, 1))}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+                          aria-label="Sonraki ay"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-semibold text-slate-500">
+                        {calendarWeekdays.map((weekday) => (
+                          <span key={weekday} className="py-1">
+                            {weekday}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-7 gap-2">
+                        {calendarDays.map((day) => (
+                          <button
+                            key={day.key}
+                            type="button"
+                            onClick={() => {
+                              setSelectedDate(startOfLocalDay(day.date))
+                              setWeekReferenceDate(startOfLocalDay(day.date))
+                              setCalendarMonth(startOfMonth(day.date))
+                              setIsDatePickerOpen(false)
+                            }}
+                            className={[
+                              'flex h-10 items-center justify-center rounded-2xl text-sm font-medium transition',
+                              day.isSelected
+                                ? 'bg-[#06143A] text-white shadow-[0_10px_20px_rgba(6,20,58,0.18)]'
+                                : day.isToday
+                                  ? 'border border-blue-200 bg-blue-50 text-blue-700'
+                                  : day.inCurrentMonth
+                                    ? 'text-slate-700 hover:bg-slate-50'
+                                    : 'text-slate-300 hover:bg-slate-50',
+                            ].join(' ')}
+                          >
+                            {day.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="mt-4 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = startOfLocalDay(new Date())
+                            setSelectedDate(now)
+                            setWeekReferenceDate(now)
+                            setCalendarMonth(startOfMonth(now))
+                            setIsDatePickerOpen(false)
+                          }}
+                          className="text-sm font-medium text-[#06143A] transition hover:text-slate-900"
+                        >
+                          Bugün
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsDatePickerOpen(false)}
+                          className="text-sm font-medium text-slate-500 transition hover:text-slate-900"
+                        >
+                          Kapat
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
+                  title="Sonraki haftaya git"
+                  aria-label="Sonraki haftaya git"
+                  onClick={() => {
+                    setWeekReferenceDate((current) => addDays(current, 7))
+                    setSelectedDate((current) => addDays(current, 7))
+                  }}
+                >
+                  Sonraki Hafta
+                  <ChevronRight className="ml-2 h-4 w-4" />
+                </Button>
+              </div>
+
+              <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
               <DialogTrigger asChild>
-                <Button type="button">Yeni Servis Talebi</Button>
+                <Button type="button" className="h-11 rounded-2xl bg-[#06143A] px-5 text-white shadow-[0_12px_24px_rgba(6,20,58,0.16)] hover:bg-[#0b1d51]">
+                  Yeni Servis Talebi
+                </Button>
               </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
@@ -1179,6 +2063,10 @@ export default function TechnicalService() {
             </DialogContent>
             </Dialog>
           </div>
+        </div>
+      </section>
+
+      <TechnicalServicePageLinks />
 
           <Dialog open={assignDialogOpen} onOpenChange={(open) => {
             setAssignDialogOpen(open)
@@ -1664,14 +2552,37 @@ export default function TechnicalService() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        </div>
+        <TechnicalServiceOperationsDashboard
+          quickFilters={quickFilterItems}
+          activeQuickFilter={quickFilter}
+          onQuickFilterChange={(nextFilter) => setQuickFilter(nextFilter)}
+          weekDays={weeklyDayCounts}
+          onSelectDay={(key) => {
+            const nextDate = parseLocalDateValue(key)
 
-        <ServiceSummaryCards items={summaryItems} />
+            if (!nextDate) {
+              return
+            }
 
-        <ServiceFilters
-          filters={filters}
-          onChange={setFilters}
-          onReset={() => setFilters(initialFilters)}
+            setSelectedDate(startOfLocalDay(nextDate))
+            setWeekReferenceDate(startOfLocalDay(nextDate))
+          }}
+          tableTitle={tableTitle}
+          tableSubtitle={tableSubtitle}
+          tableSearch={filters.search}
+          onTableSearchChange={(value) => setFilters((current) => ({ ...current, search: value }))}
+          appointments={selectedDayFilteredRequests}
+          selectedRequestId={selectedRequest?.id ?? ''}
+          onSelectRequest={openRequestDetail}
+          summaryMetrics={summaryMetrics}
+          summaryDescription={selectedDayDescription}
+          workflowQueues={workflowQueuePanelItems}
+          activeWorkflowFilter={workflowFilter}
+          onWorkflowFilterChange={setWorkflowFilter}
+          technicianSummary={selectedDayTechnicianSummary}
+          weeklyLegend={['Yogun', 'Orta', 'Normal', 'Dusuk', 'Yok']}
+          loading={loading}
+          error={error}
         />
 
         <Dialog open={isDetailDialogOpen} onOpenChange={(open) => {
@@ -1687,7 +2598,7 @@ export default function TechnicalService() {
             setWarrantyLoading(false)
           }
         }}>
-          <DialogContent className="w-[calc(100vw-16px)] sm:w-[calc(100vw-24px)] sm:max-w-[900px] h-[96dvh] sm:h-[90vh] max-h-[96dvh] sm:max-h-[90vh] p-0 overflow-hidden flex flex-col rounded-[20px]">
+          <DialogContent className="w-[calc(100vw-16px)] h-[100dvh] max-h-[100dvh] p-0 overflow-hidden flex flex-col rounded-none sm:left-auto sm:right-0 sm:top-0 sm:h-screen sm:max-h-screen sm:w-[880px] sm:max-w-[880px] sm:translate-x-0 sm:translate-y-0 sm:rounded-l-[28px] sm:rounded-r-none">
             <div className="flex h-full min-h-[420px] flex-col overflow-hidden bg-white">
               <DialogHeader className="sticky top-0 z-20 border-b border-slate-200 bg-white px-4 py-4 md:px-6 md:py-5">
                 <div className="flex items-start justify-between gap-4">
@@ -1739,6 +2650,8 @@ export default function TechnicalService() {
                     onAssign={() => setAssignDialogOpen(true)}
                     onComplete={openCompleteDialog}
                     onReopen={() => setReopenDialogOpen(true)}
+                    onWorkflowAction={handleWorkflowAction}
+                    workflowActionInFlight={workflowActionLoading}
                   />
                 ) : (
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
@@ -1750,63 +2663,16 @@ export default function TechnicalService() {
           </DialogContent>
         </Dialog>
 
-        <div className="space-y-6">
-          <div className="space-y-4">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">Montaj / Servis Talepleri</p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Filtre: {activeStatusFilterLabel} • Toplam {filteredRequests.length} kayıt bulundu.
-                  </p>
-                </div>
-                <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                  Liste
-                </div>
-              </div>
-            </div>
-
-            {error ? (
-              <div className="rounded-3xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700">
-                {error}
-              </div>
-            ) : loading ? (
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
-                Teknik servis talepleri yükleniyor...
-              </div>
-            ) : requests.length === 0 ? (
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
-                Henüz teknik servis talebi yok.
-              </div>
-            ) : filteredRequests.length === 0 ? (
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
-                Filtreye uygun teknik servis talebi bulunamadı.
-              </div>
-            ) : (
-              <ServiceRequestTable
-                requests={filteredRequests}
-                selectedId={selectedRequest?.id ?? ''}
-                onSelect={(request) => {
-                  detailRequestTokenRef.current += 1
-                  setSelectedListRequest(request)
-                  setSelectedDetailRequest(null)
-                  setSelectedEvents([])
-                  setDetailError(null)
-                  setMikroMountCheck(null)
-                  setMikroMountError(null)
-                  setMikroMountLoading(false)
-                  setWarranty(null)
-                  setWarrantyError(null)
-                  setWarrantyLoading(false)
-                  setSelectedId(request.id)
-                  setIsDetailDialogOpen(true)
-                }}
-              />
-            )}
-          </div>
-
         </div>
       </div>
     </>
   )
 }
+
+export default function TechnicalService() {
+  return <TechnicalServiceOperationCenter />
+}
+
+
+
+

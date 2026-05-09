@@ -27,12 +27,39 @@ class TechnicalServiceRequest extends Model
         'serial_number',
         'service_type',
         'status',
+        'workflow_status',
         'priority',
         'risk_level',
+        'customer_contact_status',
+        'customer_contacted_at',
+        'customer_contact_note',
+        'customer_confirmed_at',
+        'customer_confirmation_method',
         'technician_name',
         'technical_service_technician_id',
+        'technician_approval_status',
+        'technician_approved_at',
+        'technician_revision_requested_at',
+        'technician_revision_note',
+        'scheduled_date',
+        'scheduled_time',
         'scheduled_at',
+        'field_status',
+        'field_started_at',
+        'field_arrived_at',
+        'field_completed_at',
+        'missing_info_reason',
+        'pending_reason',
+        'requires_reschedule',
+        'reschedule_reason',
+        'document_status',
+        'photo_status',
+        'customer_closure_approval_status',
+        'customer_closure_approved_at',
+        'cancellation_reason',
+        'next_action',
         'sla_due_at',
+        'sla_status',
         'completed_at',
         'installation_completed_at',
         'cancelled_at',
@@ -55,7 +82,17 @@ class TechnicalServiceRequest extends Model
     ];
 
     protected $casts = [
+        'customer_contacted_at' => 'datetime',
+        'customer_confirmed_at' => 'datetime',
+        'scheduled_date' => 'date',
         'scheduled_at' => 'datetime',
+        'technician_approved_at' => 'datetime',
+        'technician_revision_requested_at' => 'datetime',
+        'field_started_at' => 'datetime',
+        'field_arrived_at' => 'datetime',
+        'field_completed_at' => 'datetime',
+        'requires_reschedule' => 'boolean',
+        'customer_closure_approved_at' => 'datetime',
         'sla_due_at' => 'datetime',
         'completed_at' => 'datetime',
         'installation_completed_at' => 'datetime',
@@ -72,6 +109,12 @@ class TechnicalServiceRequest extends Model
     public function events(): HasMany
     {
         return $this->hasMany(TechnicalServiceRequestEvent::class, 'technical_service_request_id');
+    }
+
+    public function auditLogs(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceAuditLog::class, 'entity_id')
+            ->where('entity_type', 'technical_service_request');
     }
 
     public function technicianRecord(): BelongsTo

@@ -1,9 +1,24 @@
 export type ServiceType = 'Montaj' | 'Arıza' | 'Kontrol'
 
-export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 'Tamamlandı' | 'İptal'
+export type ServiceStatus = string
 export type ServiceStatusFilter = '' | 'unassigned' | 'today_installations' | 'scheduled' | 'Tamamlandı' | 'İptal'
 
 export type ServicePriority = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
+export type WorkflowStatus = string
+export type WorkflowActionKey = string
+
+export type ServiceAuditLog = {
+  id: string | number
+  entity_type: string
+  entity_id: string | number
+  action_type: string
+  old_value?: Record<string, unknown> | null
+  new_value?: Record<string, unknown> | null
+  user_id?: number | null
+  user_name?: string | null
+  note?: string | null
+  created_at: string
+}
 
 export type ServiceRequest = {
   id: string
@@ -25,6 +40,8 @@ export type ServiceRequest = {
   channel: string
   notes: string
   scheduledAt?: string | null
+  scheduledDate?: string | null
+  scheduledTime?: string | null
   createdAt?: string | null
   completedAt?: string | null
   travelRoundTripKm?: number | null
@@ -33,6 +50,43 @@ export type ServiceRequest = {
   technicianPaymentAmount?: number | null
   travelCalculationSource?: string | null
   travelCalculatedAt?: string | null
+  technicianApprovalStatus?: string | null
+  technicianApprovedAt?: string | null
+  technicianRevisionRequestedAt?: string | null
+  technicianRevisionNote?: string | null
+  technicianConfirmationStatus?: string | null
+  revisionRequested?: boolean | null
+  rescheduleRequested?: boolean | null
+  workflowStatus?: WorkflowStatus | null
+  nextAction?: string | null
+  slaDueAt?: string | null
+  slaStatus?: 'normal' | 'yaklaşan' | 'geciken' | string | null
+  customerContactStatus?: string | null
+  customerContactedAt?: string | null
+  customerContactNote?: string | null
+  customerConfirmedAt?: string | null
+  customerConfirmationMethod?: string | null
+  fieldStatus?: string | null
+  fieldStartedAt?: string | null
+  fieldArrivedAt?: string | null
+  fieldCompletedAt?: string | null
+  missingInfoReason?: string | null
+  pendingReason?: string | null
+  requiresReschedule?: boolean | null
+  rescheduleReason?: string | null
+  documentStatus?: string | null
+  photoStatus?: string | null
+  customerClosureApprovalStatus?: string | null
+  customerClosureApprovedAt?: string | null
+  cancellationReason?: string | null
+  latestEvent?: string | null
+  allowedWorkflowActions?: Record<WorkflowActionKey, { label: string, target: WorkflowStatus }> | null
+  allowedWorkflowTransitions?: WorkflowStatus[] | null
+  auditLogs?: ServiceAuditLog[] | null
+  document?: unknown
+  documents?: unknown
+  photo?: unknown
+  photos?: unknown
 }
 
 export type ServiceTechnician = {

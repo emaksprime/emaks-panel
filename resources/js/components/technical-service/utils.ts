@@ -89,18 +89,18 @@ export function normalizeTechnicalServiceText(value: string | null | undefined):
     .toLocaleLowerCase('tr-TR')
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
-    .replace(/ı/g, 'i')
+    .replace(/Ä±/g, 'i')
 }
 
 const normalizeLocationCode = (value?: string) => {
   const mapped = normalizeTechnicalServiceText(value)
     .toUpperCase()
-    .replace(/İ/g, 'I')
-    .replace(/Ş/g, 'S')
-    .replace(/Ğ/g, 'G')
-    .replace(/Ü/g, 'U')
-    .replace(/Ö/g, 'O')
-    .replace(/Ç/g, 'C')
+    .replace(/Ä°/g, 'I')
+    .replace(/Å/g, 'S')
+    .replace(/Ä/g, 'G')
+    .replace(/Ãœ/g, 'U')
+    .replace(/Ã–/g, 'O')
+    .replace(/Ã‡/g, 'C')
   const letters = mapped.replace(/[^A-Z]/g, '')
 
   return (letters.slice(0, 3) || 'XXX').padEnd(3, 'X')

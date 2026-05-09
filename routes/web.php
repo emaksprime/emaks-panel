@@ -85,6 +85,21 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/assign', [TechnicalServiceController::class, 'assign'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.assign');
+            Route::patch('requests/{technicalServiceRequest}/workflow', [TechnicalServiceController::class, 'updateWorkflow'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.workflow');
+            Route::patch('requests/{technicalServiceRequest}/schedule', [TechnicalServiceController::class, 'updateSchedule'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.schedule');
+            Route::patch('requests/{technicalServiceRequest}/technician', [TechnicalServiceController::class, 'updateTechnician'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.technician');
+            Route::post('requests/{technicalServiceRequest}/contact-log', [TechnicalServiceController::class, 'storeContactLog'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.contact-log');
+            Route::get('requests/{technicalServiceRequest}/audit-logs', [TechnicalServiceController::class, 'auditLogs'])
+                ->middleware('panel.access:technical_service')
+                ->name('api.technical-service.requests.audit-logs');
             Route::get('summary', [TechnicalServiceController::class, 'summary'])
                 ->middleware('panel.access:technical_service')
                 ->name('api.technical-service.summary');

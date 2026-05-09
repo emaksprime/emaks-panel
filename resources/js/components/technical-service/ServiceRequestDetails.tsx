@@ -1,4 +1,4 @@
-import { Link } from '@inertiajs/react'
+﻿import { Link } from '@inertiajs/react'
 import { ChevronDown, Info } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -41,6 +41,8 @@ type ServiceRequestDetailsProps = {
   onAssign?: () => void
   onComplete?: () => void
   onReopen?: () => void
+  onWorkflowAction?: (action: string) => void
+  workflowActionInFlight?: string | null
 }
 
 const eventTime = (timestamp: string): string => {
@@ -123,6 +125,17 @@ const warrantyStartedState = (warranty: WarrantySerialResponse | null | undefine
   }
 
   return warranty.status === 'Garanti Başlamadı' ? 'Başlamadı' : 'Başladı'
+}
+
+const slaTone = (status: ServiceRequest['slaStatus']) => {
+  switch (status) {
+    case 'geciken':
+      return 'border-rose-200 bg-rose-50 text-rose-700'
+    case 'yaklaşan':
+      return 'border-amber-200 bg-amber-50 text-amber-800'
+    default:
+      return 'border-slate-200 bg-slate-100 text-slate-700'
+  }
 }
 
 const decisionSourceLabel = (
@@ -290,6 +303,8 @@ export function ServiceRequestDetails({
   onAssign,
   onComplete,
   onReopen,
+  onWorkflowAction,
+  workflowActionInFlight = null,
 }: ServiceRequestDetailsProps) {
   const [isMountReferenceOpen, setIsMountReferenceOpen] = useState(false)
   const [isWarrantyReferenceOpen, setIsWarrantyReferenceOpen] = useState(false)
@@ -316,12 +331,16 @@ export function ServiceRequestDetails({
   const serialQueryHref = hasSerialNumber
     ? `/technical-service/serial-query?serial_no=${encodeURIComponent(request.serialNumber.trim())}`
     : '/technical-service/serial-query'
+  const phoneDigits = request.phone.replace(/[^\d+]/g, '')
+  const phoneHref = phoneDigits ? `tel:${phoneDigits}` : ''
+  const whatsappHref = phoneDigits ? `https://wa.me/${phoneDigits.replace(/^\+/, '')}` : ''
   const summaryNote = warranty?.status === 'Garanti Başlamadı'
     ? warranty.warnings[0] ?? mikroMountCheck?.montaj_ek_aciklama ?? null
     : null
   const approvalState = technicianApprovalState(request, events)
   const overrideDecisionInfo = latestOverrideDecisionInfo(events, mikroMountCheck, warranty)
   const sortedEvents = [...events].sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
+  const workflowActions = Object.entries(request.allowedWorkflowActions ?? {})
   const isMountPositive = mikroMountCheck?.montaj_durumu === 'Montaj Dahil' || mikroMountCheck?.montaj_durumu === 'Montaj Sonradan Dahil'
   const costDelta = paymentInfo.customerAmount !== null && paymentInfo.totalTechnicianCostAmount !== null
     ? paymentInfo.customerAmount - paymentInfo.totalTechnicianCostAmount
@@ -362,6 +381,20 @@ export function ServiceRequestDetails({
         link: 'text-rose-700 hover:text-rose-900',
       }
 
+  const handleWorkflowAction = (action: string) => {
+    if (action === 'assign_technician' || action === 'schedule_planned') {
+      onAssign?.()
+      return
+    }
+
+    if (action === 'complete') {
+      onComplete?.()
+      return
+    }
+
+    onWorkflowAction?.(action)
+  }
+
   return (
     <Card className="rounded-3xl border-slate-200 bg-white shadow-sm break-words min-w-0">
       <CardHeader className="space-y-3 px-6 py-4 sm:py-6 min-w-0">
@@ -389,6 +422,68 @@ export function ServiceRequestDetails({
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Adres</p>
             <p className="mt-3 text-sm text-slate-900 break-words">{request.address}</p>
             <p className="mt-2 text-sm text-slate-600 break-words">{request.city} / {request.district}</p>
+          </div>
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">MRN Durumu</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">{request.workflowStatus || request.status}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Badge variant={statusVariant(request.status)}>{request.status}</Badge>
+              <span className={['inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')}>
+                SLA: {request.slaStatus || 'normal'}
+              </span>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Sıradaki Aksiyon</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">{request.nextAction || '-'}</p>
+            <p className="mt-2 text-xs text-slate-500">
+              SLA hedefi: {request.slaDueAt ? formatTechnicalServiceDateTime(request.slaDueAt, '-') : '-'}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Müşteri İletişim Durumu</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">{formatDisplayValue(request.customerContactStatus)}</p>
+            <p className="mt-2 text-xs text-slate-500">
+              Son temas: {request.customerContactedAt ? formatTechnicalServiceDateTime(request.customerContactedAt, '-') : '-'}
+            </p>
+            <p className="mt-2 text-xs text-slate-500 break-words">{formatDisplayValue(request.customerContactNote)}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Randevu Bilgisi</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">{request.scheduledDate || '-'}</p>
+            <p className="mt-1 text-sm text-slate-600">{request.scheduledTime || request.appointment}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Saha Durumu</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">{formatDisplayValue(request.fieldStatus)}</p>
+            <p className="mt-2 text-xs text-slate-500">
+              Başlangıç: {request.fieldStartedAt ? formatTechnicalServiceDateTime(request.fieldStartedAt, '-') : '-'}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Varış: {request.fieldArrivedAt ? formatTechnicalServiceDateTime(request.fieldArrivedAt, '-') : '-'}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Belge / Fotoğraf Durumu</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">
+              {formatDisplayValue(request.documentStatus)} / {formatDisplayValue(request.photoStatus)}
+            </p>
+            <p className="mt-2 text-xs text-slate-500 break-words">
+              Eksik bilgi: {formatDisplayValue(request.missingInfoReason)}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Kapanış Onayı Durumu</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">{formatDisplayValue(request.customerClosureApprovalStatus)}</p>
+            <p className="mt-2 text-xs text-slate-500">
+              Onay zamanı: {request.customerClosureApprovedAt ? formatTechnicalServiceDateTime(request.customerClosureApprovedAt, '-') : '-'}
+            </p>
+            <p className="mt-2 text-xs text-slate-500 break-words">
+              Bekleme nedeni: {formatDisplayValue(request.pendingReason || request.cancellationReason || request.rescheduleReason)}
+            </p>
           </div>
         </section>
 
@@ -457,7 +552,7 @@ export function ServiceRequestDetails({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300">
+          <div id="garanti-belge-durumu" className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300">
             <button
               type="button"
               onClick={() => setIsMountReferenceOpen((current) => !current)}
@@ -620,9 +715,35 @@ export function ServiceRequestDetails({
           </div>
         </section>
 
-        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 break-words">
+        <section id="talep-notlari" className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 break-words">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Notlar</p>
           <p className="mt-2 text-sm leading-6 text-slate-700 break-words whitespace-pre-wrap">{request.notes}</p>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Audit / İşlem Geçmişi</p>
+          <div className="mt-4 space-y-3">
+            {(request.auditLogs ?? []).length === 0 ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                Audit kaydı bulunmuyor.
+              </div>
+            ) : (
+              (request.auditLogs ?? []).map((log) => (
+                <div key={String(log.id)} className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-900">{log.action_type}</p>
+                    <span className="text-xs text-slate-500">{formatTechnicalServiceDateTime(log.created_at, '-')}</span>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    {log.user_name || 'Sistem'}
+                  </p>
+                  {log.note ? (
+                    <p className="mt-2 text-sm text-slate-700 break-words">{log.note}</p>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </div>
         </section>
 
         <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -663,34 +784,51 @@ export function ServiceRequestDetails({
         className="mt-2 border-t border-slate-200 px-3 pt-4 sm:px-6"
         style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+          {workflowActions.map(([actionKey, action]) => (
+            <Button
+              key={actionKey}
+              className="h-9 text-xs sm:text-sm"
+              variant={actionKey === 'complete' ? 'default' : actionKey === 'cancel' ? 'destructive' : 'outline'}
+              type="button"
+              onClick={() => handleWorkflowAction(actionKey)}
+              disabled={isActionDisabled || workflowActionInFlight !== null}
+              title={isActionDisabled ? disabledTitle : undefined}
+            >
+              {workflowActionInFlight === actionKey ? 'İşleniyor...' : action.label}
+            </Button>
+          ))}
           <Button
+            asChild
             className="h-9 text-xs sm:text-sm"
-            type="button"
-            onClick={() => onAssign?.()}
-            disabled={isActionDisabled}
-            title={isActionDisabled ? disabledTitle : undefined}
+            variant="outline"
+            disabled={!phoneHref}
           >
-            Usta Ata
+            <a href={phoneHref || '#'}>Müşteriyi Ara</a>
           </Button>
           <Button
+            asChild
             className="h-9 text-[0.72rem] sm:text-sm"
             variant="secondary"
-            type="button"
-            disabled
-            title="WhatsApp link gönderimi henüz aktif değil"
+            disabled={!whatsappHref}
           >
-            WhatsApp Link Gönder
+            <a href={whatsappHref || '#'} target="_blank" rel="noreferrer">WhatsApp Aç</a>
           </Button>
           <Button
             className="h-9 text-xs sm:text-sm"
-            variant="destructive"
+            variant="outline"
             type="button"
-            onClick={() => !isActionDisabled && onComplete?.()}
-            disabled={isActionDisabled}
-            title={isActionDisabled ? disabledTitle : undefined}
+            onClick={() => document.getElementById('talep-notlari')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
           >
-            Kapat / İptal Et
+            Not Ekle
+          </Button>
+          <Button
+            className="h-9 text-xs sm:text-sm"
+            variant="outline"
+            type="button"
+            onClick={() => document.getElementById('garanti-belge-durumu')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          >
+            Belge Kontrol Et
           </Button>
           {isReopenVisible ? (
             <Button
@@ -707,3 +845,4 @@ export function ServiceRequestDetails({
     </Card>
   )
 }
+
