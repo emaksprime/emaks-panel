@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+﻿import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
@@ -231,33 +231,42 @@ export default function TechnicalServiceEarnings() {
 
   return (
     <>
-      <Head title="Servis Hakedişleri" />
-      <div className="mx-auto w-full max-w-[1800px] space-y-6 px-4 py-6 md:px-6 lg:px-10">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <Heading
-            title="Servis Hakedişleri"
-            description="Servis ve çilingir bazlı aylık hakediş kontrolü."
-          />
-          <div className="flex flex-wrap gap-2">
-            <TechnicalServicePageLinks />
-            <Button type="button" onClick={() => void loadEarnings()} disabled={loading}>{loading ? 'Yükleniyor...' : 'Yenile'}</Button>
-          </div>
-        </div>
+      <Head title="Hakedişler" />
+      <div className="relative min-h-screen overflow-hidden bg-[#eaf1f8]">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top_left,_rgba(15,23,42,0.14),_transparent_38%),radial-gradient(circle_at_top_right,_rgba(37,99,235,0.12),_transparent_34%)]" />
+        <div className="relative mx-auto w-full max-w-[1800px] space-y-6 px-4 py-6 md:px-6 lg:px-10">
+          <section className="relative overflow-hidden rounded-[28px] border border-white/80 bg-white/92 px-5 py-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ring-slate-200/70 backdrop-blur sm:px-6 sm:py-6">
+            <div className="absolute inset-x-0 top-0 h-1.5 bg-slate-950" />
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">HAKEDİŞ OPERASYONU</p>
+                <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Hakedişler</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                  Teknik servis hakedişlerini, onay ve ödeme durumlarını takip edin.
+                </p>
+              </div>
+              <Button type="button" onClick={() => void loadEarnings()} disabled={loading} className="h-11 rounded-xl bg-slate-950 px-5 text-white hover:bg-slate-900">
+                {loading ? 'Yükleniyor...' : 'Yenile'}
+              </Button>
+            </div>
+          </section>
 
-        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-5">
+          <TechnicalServicePageLinks />
+
+          <section className="grid gap-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/70 md:grid-cols-5">
           <label className="grid gap-1 text-xs font-semibold text-slate-600">
             Ay
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={month} onChange={(event) => setMonth(event.target.value)}>
+            <select className="h-11 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm" value={month} onChange={(event) => setMonth(event.target.value)}>
               {months.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </label>
           <label className="grid gap-1 text-xs font-semibold text-slate-600">
             Yıl
-            <Input value={year} onChange={(event) => setYear(event.target.value)} />
+            <Input className="h-11 border-slate-200 bg-slate-50" value={year} onChange={(event) => setYear(event.target.value)} />
           </label>
           <label className="grid gap-1 text-xs font-semibold text-slate-600">
             Servis / Usta
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={technicianId} onChange={(event) => setTechnicianId(event.target.value)}>
+            <select className="h-11 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm" value={technicianId} onChange={(event) => setTechnicianId(event.target.value)}>
               <option value="">Tümü</option>
               {technicians.map((technician) => (
                 <option key={technician.id} value={String(technician.id)}>{technician.name}</option>
@@ -266,42 +275,41 @@ export default function TechnicalServiceEarnings() {
           </label>
           <label className="grid gap-1 text-xs font-semibold text-slate-600">
             Durum
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={status} onChange={(event) => setStatus(event.target.value)}>
+            <select className="h-11 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm" value={status} onChange={(event) => setStatus(event.target.value)}>
               {statusOptions.map((option) => <option key={option || 'all'} value={option}>{option || 'Tümü'}</option>)}
             </select>
           </label>
           <div className="flex items-end">
-            <Button className="w-full" type="button" onClick={() => void calculatePeriod()} disabled={calculating}>
+            <Button className="h-11 w-full rounded-xl bg-slate-950 text-white hover:bg-slate-900" type="button" onClick={() => void calculatePeriod()} disabled={calculating}>
               {calculating ? 'Hesaplanıyor...' : 'Hesapla / Yeniden Hesapla'}
             </Button>
           </div>
-        </section>
+          </section>
 
         {error ? (
           <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>
         ) : null}
 
-        <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {[
-            ['Servis Sayısı', summary.technician_count],
-            ['İş Sayısı', summary.job_count],
-            ['Hizmet Bedeli', money(summary.labor_total)],
-            ['Yol Ücreti', money(summary.travel_fee_total)],
-            ['Genel Hakediş', money(summary.grand_total)],
-            ['Ödenecek / Ödendi / İtirazlı', `${summary.payable_count} / ${summary.paid_count} / ${summary.disputed_count}`],
-          ].map(([label, value]) => (
-            <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
-              <p className="mt-2 text-lg font-semibold text-slate-950">{value}</p>
-            </div>
+            ['Toplam Hakediş', money(summary.grand_total), 'Dönem toplam ödeme hacmi'],
+            ['Onaylanan', summary.paid_count, 'Ödemesi tamamlanan kayıtlar'],
+            ['Bekleyen', summary.payable_count, 'İşlem sırası bekleyen hakedişler'],
+            ['Ödenecek', money(summary.labor_total + summary.travel_fee_total), 'Ödeme planına düşen toplam tutar'],
+          ].map(([label, value, detail]) => (
+            <article key={String(label)} className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/70">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
+              <p className="mt-4 text-4xl font-semibold tracking-[-0.04em] text-slate-950">{value}</p>
+              <p className="mt-3 text-sm text-slate-600">{detail}</p>
+            </article>
           ))}
-        </section>
+          </section>
 
-        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/70">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4">
             <div>
-              <h2 className="text-sm font-semibold text-slate-950">Servis Bazlı Hakedişler</h2>
-              <p className="mt-1 text-xs text-slate-500">Period: {data?.period ? `${data.period.month}/${data.period.year} - ${data.period.status}` : 'Henüz hesaplanmadı'}</p>
+              <h2 className="text-sm font-semibold text-slate-950">Hakediş tablosu</h2>
+              <p className="mt-1 text-xs text-slate-500">Dönem: {data?.period ? `${data.period.month}/${data.period.year} - ${data.period.status}` : 'Henüz hesaplanmadı'}</p>
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -322,7 +330,7 @@ export default function TechnicalServiceEarnings() {
               </thead>
               <tbody>
                 {data?.items.length ? data.items.map((earning) => (
-                  <tr key={earning.id} className="border-t border-slate-100 align-top">
+                  <tr key={earning.id} className="border-t border-slate-100 align-top transition hover:bg-slate-50">
                     <td className="px-4 py-3 font-semibold text-slate-950">{earning.technician_name_snapshot}</td>
                     <td className="px-4 py-3 text-slate-700">{earning.city_snapshot || '-'}</td>
                     <td className="px-4 py-3 text-slate-700">{earning.job_count}</td>
@@ -349,7 +357,8 @@ export default function TechnicalServiceEarnings() {
               </tbody>
             </table>
           </div>
-        </section>
+          </section>
+        </div>
       </div>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
@@ -416,3 +425,4 @@ export default function TechnicalServiceEarnings() {
     </>
   )
 }
+

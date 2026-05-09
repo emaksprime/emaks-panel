@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+﻿import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Heading from '@/components/heading'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
@@ -319,27 +319,56 @@ export default function TechnicalServiceTechnicians() {
 
   return (
     <>
-      <Head title="Ustalar / Çilingirler" />
+      <Head title="Teknisyen Yönetimi" />
 
-      <div className="mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 md:px-6 lg:px-12">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <Heading
-            title="Ustalar / Çilingirler"
-            description="Teknik servis atamalarında kullanılacak usta kayıtlarını yönetin."
-          />
-          <div className="flex flex-wrap gap-2">
-            <TechnicalServicePageLinks />
-            <Button type="button" onClick={openCreate}>Yeni Usta</Button>
-          </div>
-        </div>
+      <div className="relative min-h-screen overflow-hidden bg-[#eaf1f8]">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top_left,_rgba(15,23,42,0.14),_transparent_38%),radial-gradient(circle_at_top_right,_rgba(37,99,235,0.12),_transparent_34%)]" />
+        <div className="relative mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 md:px-6 lg:px-10">
+          <section className="relative overflow-hidden rounded-[28px] border border-white/80 bg-white/92 px-5 py-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ring-slate-200/70 backdrop-blur sm:px-6 sm:py-6">
+            <div className="absolute inset-x-0 top-0 h-1.5 bg-slate-950" />
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">TEKNİSYEN EKİBİ</p>
+                <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">Teknisyen Yönetimi</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                  Teknik servis ekibini, konum bilgilerini ve operasyon için kullanılan saha kayıtlarını yönetin.
+                </p>
+              </div>
+              <Button type="button" onClick={openCreate} className="h-11 rounded-xl bg-slate-950 px-5 text-white hover:bg-slate-900">
+                Yeni Teknisyen
+              </Button>
+            </div>
+          </section>
 
-        <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+          <TechnicalServicePageLinks />
+
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {[
+              ['Toplam Teknisyen', technicians.length, 'Kayıtlı ekip'],
+              ['Aktif Teknisyen', technicians.filter((item) => item.active).length, 'Sahada kullanılabilir'],
+              ['Bugün Gösterilen', filteredTechnicians.length, loading ? 'Yükleniyor...' : 'Filtre sonucu'],
+              ['Şehir Kapsamı', new Set(technicians.map((item) => item.city).filter(Boolean)).size, 'Aktif bölge sayısı'],
+            ].map(([label, value, detail]) => (
+              <article key={String(label)} className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/70">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
+                <p className="mt-4 text-4xl font-semibold tracking-[-0.04em] text-slate-950">{value}</p>
+                <p className="mt-3 text-sm text-slate-600">{detail}</p>
+              </article>
+            ))}
+          </section>
+
+          <section className="grid gap-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/70">
+            <div className="flex flex-col gap-1">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Teknisyen Havuzu</p>
+              <p className="text-sm text-slate-600">Arama ve operasyon görünümü üzerinden ekip kayıtlarını yönetin.</p>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
             <label className="grid gap-2 text-sm font-medium text-slate-700">
-              Usta ara
-              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Ad, soyad, telefon, il, ilçe, Mikro cari" />
+              Arama
+              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Ad, soyad, telefon, il, ilçe veya Mikro cari ile ara" className="h-11 border-slate-200 bg-slate-50" />
             </label>
-            <div className="text-sm font-semibold text-slate-600">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
               {loading ? 'Yükleniyor...' : `${filteredTechnicians.length} kayıt`}
             </div>
           </div>
@@ -363,10 +392,17 @@ export default function TechnicalServiceTechnicians() {
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredTechnicians.map((technician) => (
-                  <tr key={technician.id}>
+                  <tr key={technician.id} className="transition hover:bg-slate-50">
                     <td className="px-4 py-3">
-                      <p className="font-semibold text-slate-950">{displayName(technician)}</p>
-                      {technician.note ? <p className="mt-1 text-xs text-slate-500">{technician.note}</p> : null}
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white">
+                          {displayName(technician).split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-slate-950">{displayName(technician)}</p>
+                          {technician.note ? <p className="mt-1 text-xs text-slate-500">{technician.note}</p> : null}
+                        </div>
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-slate-700">{technician.phone || '-'}</td>
                     <td className="px-4 py-3 text-slate-700">
@@ -383,8 +419,8 @@ export default function TechnicalServiceTechnicians() {
                     </td>
                     <td className="px-4 py-3">
                       <span className={[
-                        'inline-flex rounded-full px-2.5 py-1 text-xs font-semibold',
-                        technician.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500',
+                        'inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold',
+                        technician.active ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-500',
                       ].join(' ')}>
                         {technician.active ? 'Aktif' : 'Pasif'}
                       </span>
@@ -407,11 +443,12 @@ export default function TechnicalServiceTechnicians() {
               </tbody>
             </table>
           </div>
-        </section>
+          </section>
 
-        <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <section className="grid gap-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/70">
           <div>
-            <h2 className="text-lg font-semibold text-slate-950">CSV ile toplu ekleme</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Toplu İşlem</p>
+            <h2 className="mt-2 text-lg font-semibold text-slate-950">CSV ile toplu ekleme</h2>
             <p className="mt-1 text-sm text-slate-500">Beklenen kolon sırası:</p>
             <code className="mt-2 block overflow-x-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-700">
               {csvColumns.join(',')}
@@ -445,7 +482,8 @@ export default function TechnicalServiceTechnicians() {
               ) : null}
             </div>
           ) : null}
-        </section>
+          </section>
+        </div>
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -615,3 +653,4 @@ export default function TechnicalServiceTechnicians() {
     </>
   )
 }
+
