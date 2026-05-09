@@ -131,7 +131,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertDatabaseHas('technical_service_audit_logs', [
             'entity_type' => 'technical_service_request',
             'entity_id' => $request->id,
-            'action_type' => 'customer_contact_logged',
+            'action_type' => 'customer_called',
         ]);
     }
 

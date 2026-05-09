@@ -66,6 +66,11 @@ export type ServiceRequest = {
   customerContactNote?: string | null
   customerConfirmedAt?: string | null
   customerConfirmationMethod?: string | null
+  customerPreferredDate?: string | null
+  customerPreferredTimeStart?: string | null
+  customerPreferredTimeEnd?: string | null
+  customerCallbackAt?: string | null
+  customerRejectionReason?: string | null
   fieldStatus?: string | null
   fieldStartedAt?: string | null
   fieldArrivedAt?: string | null

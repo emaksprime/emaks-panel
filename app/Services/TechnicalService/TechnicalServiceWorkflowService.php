@@ -51,8 +51,13 @@ class TechnicalServiceWorkflowService
         return [
             'mark_missing_info' => 'Eksik Bilgi / Fotoğraf',
             'customer_called' => 'Müşteri Arandı',
-            'customer_unreachable' => 'Müşteriye Ulaşılamadı',
+            'customer_unreachable' => 'Ulaşılamadı',
+            'customer_callback_scheduled' => 'Tekrar Arama Planla',
+            'customer_confirmation_pending' => 'Onay Bekliyor',
             'customer_confirmed' => 'Müşteri Onayladı',
+            'customer_rejected' => 'Müşteri Reddetti',
+            'wrong_number' => 'Yanlış Numara',
+            'customer_requested_cancel' => 'İptal Talebi',
             'schedule_planned' => 'Randevu Planla',
             'assign_technician' => 'Usta Ata',
             'wait_technician_approval' => 'Usta Onayı Bekle',
@@ -74,20 +79,20 @@ class TechnicalServiceWorkflowService
     public static function transitionMap(): array
     {
         return [
-            'Yeni Talep' => ['Eksik Bilgi / Fotoğraf Bekleyen', 'Müşteri Aranacak'],
-            'Eksik Bilgi / Fotoğraf Bekleyen' => ['Müşteri Aranacak'],
-            'Müşteri Aranacak' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı'],
-            'Müşteriye Ulaşılamadı' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı'],
-            'Müşteri Onayı Bekleyen' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayladı'],
-            'Müşteri Onayladı' => ['Randevu Planlandı'],
-            'Randevu Planlandı' => ['Usta Ataması Bekleyen', 'Usta Onayı Bekleyen'],
-            'Usta Ataması Bekleyen' => ['Usta Onayı Bekleyen', 'Usta Tarih Revize Talebi'],
-            'Usta Onayı Bekleyen' => ['Planlı', 'Usta Tarih Revize Talebi'],
-            'Usta Tarih Revize Talebi' => ['Müşteri Aranacak', 'Randevu Planlandı', 'Usta Onayı Bekleyen'],
+            'Yeni Talep' => ['Eksik Bilgi / Fotoğraf Bekleyen', 'Müşteri Aranacak', 'Müşteri Onayı Bekleyen'],
+            'Eksik Bilgi / Fotoğraf Bekleyen' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen'],
+            'Müşteri Aranacak' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede'],
+            'Müşteriye Ulaşılamadı' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede'],
+            'Müşteri Onayı Bekleyen' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayladı', 'Beklemede'],
+            'Müşteri Onayladı' => ['Randevu Planlandı', 'Beklemede'],
+            'Randevu Planlandı' => ['Usta Ataması Bekleyen', 'Usta Onayı Bekleyen', 'Beklemede'],
+            'Usta Ataması Bekleyen' => ['Usta Onayı Bekleyen', 'Usta Tarih Revize Talebi', 'Beklemede'],
+            'Usta Onayı Bekleyen' => ['Planlı', 'Usta Tarih Revize Talebi', 'Beklemede'],
+            'Usta Tarih Revize Talebi' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Randevu Planlandı', 'Usta Onayı Bekleyen'],
             'Planlı' => ['Yolda', 'Sahada', 'Beklemede', 'İptal'],
             'Yolda' => ['Sahada', 'Beklemede', 'İptal'],
             'Sahada' => ['Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı', 'Parça Bekleniyor', 'Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil'],
-            'Beklemede' => ['Randevu Planlandı', 'Usta Ataması Bekleyen', 'Parça Bekleniyor', 'İptal'],
+            'Beklemede' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Randevu Planlandı', 'Usta Ataması Bekleyen', 'Parça Bekleniyor', 'İptal'],
             'Müşteri Yerinde Yok' => ['Randevu Planlandı', 'Müşteri Aranacak', 'İptal'],
             'Montaj Yeri Hazır Değil' => ['Randevu Planlandı', 'Beklemede', 'İptal'],
             'Parça Bekleniyor' => ['Randevu Planlandı', 'Belge / Fotoğraf Bekleyen', 'Beklemede'],
@@ -110,25 +115,43 @@ class TechnicalServiceWorkflowService
             'Yeni Talep' => [
                 'mark_missing_info' => 'Eksik Bilgi / Fotoğraf Bekleyen',
                 'customer_called' => 'Müşteri Onayı Bekleyen',
+                'customer_unreachable' => 'Müşteriye Ulaşılamadı',
             ],
             'Eksik Bilgi / Fotoğraf Bekleyen' => [
                 'customer_called' => 'Müşteri Onayı Bekleyen',
+                'customer_unreachable' => 'Müşteriye Ulaşılamadı',
             ],
             'Müşteri Aranacak' => [
                 'customer_called' => 'Müşteri Onayı Bekleyen',
                 'customer_unreachable' => 'Müşteriye Ulaşılamadı',
+                'customer_callback_scheduled' => 'Müşteriye Ulaşılamadı',
+                'customer_confirmation_pending' => 'Müşteri Onayı Bekleyen',
                 'customer_confirmed' => 'Müşteri Onayladı',
+                'customer_rejected' => 'Beklemede',
+                'wrong_number' => 'Beklemede',
+                'customer_requested_cancel' => 'Beklemede',
             ],
             'Müşteriye Ulaşılamadı' => [
                 'customer_called' => 'Müşteri Onayı Bekleyen',
+                'customer_callback_scheduled' => 'Müşteriye Ulaşılamadı',
+                'customer_confirmation_pending' => 'Müşteri Onayı Bekleyen',
                 'customer_confirmed' => 'Müşteri Onayladı',
+                'customer_rejected' => 'Beklemede',
+                'wrong_number' => 'Beklemede',
+                'customer_requested_cancel' => 'Beklemede',
             ],
             'Müşteri Onayı Bekleyen' => [
                 'customer_unreachable' => 'Müşteriye Ulaşılamadı',
+                'customer_callback_scheduled' => 'Müşteriye Ulaşılamadı',
+                'customer_confirmation_pending' => 'Müşteri Onayı Bekleyen',
                 'customer_confirmed' => 'Müşteri Onayladı',
+                'customer_rejected' => 'Beklemede',
+                'wrong_number' => 'Beklemede',
+                'customer_requested_cancel' => 'Beklemede',
             ],
             'Müşteri Onayladı' => [
                 'schedule_planned' => 'Randevu Planlandı',
+                'customer_rejected' => 'Beklemede',
             ],
             'Randevu Planlandı' => [
                 'assign_technician' => 'Usta Ataması Bekleyen',
@@ -159,6 +182,8 @@ class TechnicalServiceWorkflowService
                 'pause' => 'Beklemede',
             ],
             'Beklemede' => [
+                'customer_called' => 'Müşteri Onayı Bekleyen',
+                'customer_confirmation_pending' => 'Müşteri Onayı Bekleyen',
                 'schedule_planned' => 'Randevu Planlandı',
                 'parts_pending' => 'Parça Bekleniyor',
                 'cancel' => 'İptal',
@@ -306,7 +331,12 @@ class TechnicalServiceWorkflowService
     public function transition(TechnicalServiceRequest $request, string $targetWorkflowStatus, array $payload = [], ?Authenticatable $user = null, string $actionType = 'workflow_transition'): TechnicalServiceRequest
     {
         $current = $this->currentWorkflowStatus($request);
-        $target = $this->normalizeWorkflowStatus($targetWorkflowStatus, $targetWorkflowStatus, filled($request->technical_service_technician_id) || filled($request->technician_name), $request->scheduled_at !== null);
+        $target = $this->normalizeWorkflowStatus(
+            $targetWorkflowStatus,
+            $targetWorkflowStatus,
+            filled($request->technical_service_technician_id) || filled($request->technician_name),
+            $request->scheduled_at !== null
+        );
 
         if ($current !== $target) {
             $this->assertTransitionAllowed($current, $target);
@@ -318,6 +348,7 @@ class TechnicalServiceWorkflowService
         if ($target !== 'İptal') {
             $request->cancelled_at = null;
         }
+
         $this->applyPayloadForWorkflow($request, $target, $payload);
         $this->applyDerivedState($request, $payload);
         $request->updated_by_user_id = $user?->id;
@@ -344,6 +375,25 @@ class TechnicalServiceWorkflowService
         $request->reschedule_reason = Arr::get($payload, 'reschedule_reason');
         $request->pending_reason = Arr::get($payload, 'pending_reason', $request->pending_reason);
         $request->updated_by_user_id = $user?->id;
+
+        $preferredDate = $request->customer_preferred_date?->toDateString();
+        $preferredStart = $request->customer_preferred_time_start;
+        $preferredEnd = $request->customer_preferred_time_end;
+        $differsFromPreference = $preferredDate !== null
+            && (
+                $preferredDate !== $payload['scheduled_date']
+                || ($preferredStart !== null && $preferredStart !== $payload['scheduled_time'])
+            );
+
+        if ($differsFromPreference) {
+            $payload['preferred_schedule_diff'] = [
+                'customer_preferred_date' => $preferredDate,
+                'customer_preferred_time_start' => $preferredStart,
+                'customer_preferred_time_end' => $preferredEnd,
+                'scheduled_date' => $payload['scheduled_date'],
+                'scheduled_time' => $payload['scheduled_time'],
+            ];
+        }
 
         $target = filled($request->technical_service_technician_id) || filled($request->technician_name)
             ? 'Usta Onayı Bekleyen'
@@ -402,9 +452,11 @@ class TechnicalServiceWorkflowService
     public function logCustomerContact(TechnicalServiceRequest $request, array $payload, ?Authenticatable $user = null): TechnicalServiceRequest
     {
         $action = (string) ($payload['action'] ?? 'customer_called');
+
         $target = match ($action) {
-            'customer_unreachable' => 'Müşteriye Ulaşılamadı',
+            'customer_unreachable', 'customer_callback_scheduled' => 'Müşteriye Ulaşılamadı',
             'customer_confirmed' => 'Müşteri Onayladı',
+            'customer_rejected', 'wrong_number', 'customer_requested_cancel' => 'Beklemede',
             default => 'Müşteri Onayı Bekleyen',
         };
 
@@ -414,7 +466,7 @@ class TechnicalServiceWorkflowService
             $payload['customer_confirmed_at'] = $payload['contacted_at'] ?? now();
         }
 
-        return $this->transition($request, $target, $payload, $user, 'customer_contact_logged');
+        return $this->transition($request, $target, $payload, $user, $action);
     }
 
     /**
@@ -425,9 +477,15 @@ class TechnicalServiceWorkflowService
         $status = $this->currentWorkflowStatus($request);
         $dueAt = null;
 
-        if (in_array($status, ['Yeni Talep', 'Eksik Bilgi / Fotoğraf Bekleyen', 'Müşteri Aranacak', 'Müşteriye Ulaşılamadı'], true)
-            && $request->customer_contacted_at === null) {
+        if (in_array($status, ['Yeni Talep', 'Eksik Bilgi / Fotoğraf Bekleyen', 'Müşteri Aranacak'], true)) {
             $base = $request->created_at ? CarbonImmutable::parse($request->created_at) : CarbonImmutable::now();
+            $dueAt = $base->addHours(24);
+        } elseif ($status === 'Müşteriye Ulaşılamadı' && $request->customer_callback_at !== null) {
+            $dueAt = CarbonImmutable::parse($request->customer_callback_at);
+        } elseif ($status === 'Müşteri Onayı Bekleyen') {
+            $base = $request->customer_contacted_at
+                ? CarbonImmutable::parse($request->customer_contacted_at)
+                : ($request->updated_at ? CarbonImmutable::parse($request->updated_at) : CarbonImmutable::now());
             $dueAt = $base->addHours(24);
         } elseif ($status === 'Müşteri Onayladı' && $request->scheduled_at === null) {
             $base = $request->customer_confirmed_at
@@ -468,7 +526,9 @@ class TechnicalServiceWorkflowService
                 : 'Müşteri aranmalı',
             'Eksik Bilgi / Fotoğraf Bekleyen' => 'Eksik bilgi/fotoğraf tamamlanmalı',
             'Müşteri Aranacak' => 'Müşteri ile uygun gün/saat görüşülmeli',
-            'Müşteriye Ulaşılamadı' => 'Tekrar arama tarihi planlanmalı',
+            'Müşteriye Ulaşılamadı' => $request->customer_callback_at !== null
+                ? 'Belirlenen tarihte müşteri tekrar aranmalı'
+                : 'Tekrar arama tarihi planlanmalı',
             'Müşteri Onayı Bekleyen' => 'Müşteri randevu onayı alınmalı',
             'Müşteri Onayladı' => 'Randevu planlanmalı',
             'Randevu Planlandı' => 'Usta ataması yapılmalı',
@@ -478,7 +538,8 @@ class TechnicalServiceWorkflowService
             'Planlı' => 'Saha süreci bekleniyor',
             'Yolda' => 'Usta sahaya gidiyor',
             'Sahada' => 'Checklist ve fotoğraf süreci tamamlanmalı',
-            'Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil' => 'Revize randevu planlanmalı',
+            'Beklemede' => $this->pendingNextAction($request),
+            'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil' => 'Revize randevu planlanmalı',
             'Parça Bekleniyor' => 'Parça temini ve ikinci randevu planlanmalı',
             'Belge / Fotoğraf Bekleyen' => 'Zorunlu belgeler tamamlanmalı',
             'Müşteri Kapanış Onayı Bekleyen' => 'OTP veya imza ile müşteri kapanış onayı alınmalı',
@@ -532,6 +593,59 @@ class TechnicalServiceWorkflowService
      */
     private function applyPayloadForWorkflow(TechnicalServiceRequest $request, string $target, array $payload): void
     {
+        $action = (string) ($payload['action'] ?? '');
+
+        if ($action !== '') {
+            $request->customer_contact_note = $payload['customer_contact_note'] ?? $payload['note'] ?? $request->customer_contact_note;
+            $request->customer_contacted_at = $this->castDateTime($payload['customer_contacted_at'] ?? $payload['contacted_at'] ?? $request->customer_contacted_at);
+
+            switch ($action) {
+                case 'customer_called':
+                    $request->customer_contact_status = 'arandı';
+                    $request->customer_callback_at = null;
+                    $request->customer_rejection_reason = null;
+                    break;
+                case 'customer_unreachable':
+                    $request->customer_contact_status = 'ulaşılamadı';
+                    $request->customer_callback_at = $this->castDateTime($payload['customer_callback_at'] ?? $request->customer_callback_at);
+                    break;
+                case 'customer_callback_scheduled':
+                    $request->customer_contact_status = 'tekrar_aranacak';
+                    $request->customer_callback_at = $this->castDateTime($payload['customer_callback_at'] ?? $request->customer_callback_at);
+                    break;
+                case 'customer_confirmation_pending':
+                    $request->customer_contact_status = 'müşteri_onayı_bekleniyor';
+                    $request->customer_preferred_date = $this->castDate($payload['customer_preferred_date'] ?? $request->customer_preferred_date);
+                    $request->customer_preferred_time_start = $payload['customer_preferred_time_start'] ?? $request->customer_preferred_time_start;
+                    $request->customer_preferred_time_end = $payload['customer_preferred_time_end'] ?? $request->customer_preferred_time_end;
+                    break;
+                case 'customer_confirmed':
+                    $request->customer_contact_status = 'müşteri_onayladı';
+                    $request->customer_confirmed_at = $this->castDateTime($payload['customer_confirmed_at'] ?? now());
+                    $request->customer_confirmation_method = $payload['customer_confirmation_method']
+                        ?? $payload['contact_method']
+                        ?? $request->customer_confirmation_method
+                        ?? 'telefon';
+                    $request->customer_preferred_date = $this->castDate($payload['customer_preferred_date'] ?? $request->customer_preferred_date);
+                    $request->customer_preferred_time_start = $payload['customer_preferred_time_start'] ?? $request->customer_preferred_time_start;
+                    $request->customer_preferred_time_end = $payload['customer_preferred_time_end'] ?? $request->customer_preferred_time_end;
+                    $request->customer_callback_at = null;
+                    $request->customer_rejection_reason = null;
+                    break;
+                case 'customer_rejected':
+                    $request->customer_contact_status = 'müşteri_reddetti';
+                    $request->customer_rejection_reason = $payload['customer_rejection_reason'] ?? $request->customer_rejection_reason;
+                    break;
+                case 'wrong_number':
+                    $request->customer_contact_status = 'yanlış_numara';
+                    break;
+                case 'customer_requested_cancel':
+                    $request->customer_contact_status = 'iptal_talebi';
+                    $request->cancellation_reason = $payload['cancellation_reason'] ?? $payload['note'] ?? $request->cancellation_reason;
+                    break;
+            }
+        }
+
         switch ($target) {
             case 'Eksik Bilgi / Fotoğraf Bekleyen':
                 $request->missing_info_reason = $payload['missing_info_reason'] ?? $payload['note'] ?? $request->missing_info_reason;
@@ -539,19 +653,13 @@ class TechnicalServiceWorkflowService
                 $request->photo_status = 'bekleniyor';
                 break;
             case 'Müşteriye Ulaşılamadı':
-                $request->customer_contact_status = 'ulaşılamadı';
-                $request->customer_contacted_at = $this->castDateTime($payload['customer_contacted_at'] ?? $payload['contacted_at'] ?? now());
-                $request->customer_contact_note = $payload['customer_contact_note'] ?? $payload['note'] ?? $request->customer_contact_note;
+                $request->customer_contact_status = $request->customer_contact_status ?? 'ulaşılamadı';
                 break;
             case 'Müşteri Onayı Bekleyen':
-                $request->customer_contact_status = 'arıldı';
-                $request->customer_contacted_at = $this->castDateTime($payload['customer_contacted_at'] ?? now());
-                $request->customer_contact_note = $payload['customer_contact_note'] ?? $payload['note'] ?? $request->customer_contact_note;
+                $request->customer_contact_status = $request->customer_contact_status ?? 'müşteri_onayı_bekleniyor';
                 break;
             case 'Müşteri Onayladı':
-                $request->customer_contact_status = 'onayladı';
-                $request->customer_confirmed_at = $this->castDateTime($payload['customer_confirmed_at'] ?? now());
-                $request->customer_confirmation_method = $payload['customer_confirmation_method'] ?? $request->customer_confirmation_method ?? 'telefon';
+                $request->customer_contact_status = $request->customer_contact_status ?? 'müşteri_onayladı';
                 break;
             case 'Usta Onayı Bekleyen':
                 $request->technician_approval_status = 'bekliyor';
@@ -631,8 +739,8 @@ class TechnicalServiceWorkflowService
             $request->scheduled_time = $request->scheduled_at->format('H:i');
         }
 
-        if ($request->workflow_status === 'Müşteri Aranacak' && ! $request->customer_contact_status) {
-            $request->customer_contact_status = 'bekliyor';
+        if ($request->workflow_status === 'Müşteri Aranacak' && blank($request->customer_contact_status)) {
+            $request->customer_contact_status = 'aranacak';
         }
 
         if ($request->workflow_status === 'Usta Ataması Bekleyen' && blank($request->technician_name) && blank($request->technical_service_technician_id)) {
@@ -651,7 +759,7 @@ class TechnicalServiceWorkflowService
             $request->field_status = 'tamamlandı';
         }
 
-        if (array_key_exists('next_action', $payload)) {
+        if (array_key_exists('next_action', $payload) && is_string($payload['next_action'])) {
             $request->next_action = $payload['next_action'];
         }
 
@@ -719,7 +827,14 @@ class TechnicalServiceWorkflowService
             'workflow_status',
             'customer_contact_status',
             'customer_contacted_at',
+            'customer_contact_note',
             'customer_confirmed_at',
+            'customer_confirmation_method',
+            'customer_preferred_date',
+            'customer_preferred_time_start',
+            'customer_preferred_time_end',
+            'customer_callback_at',
+            'customer_rejection_reason',
             'scheduled_at',
             'scheduled_date',
             'scheduled_time',
@@ -732,6 +847,7 @@ class TechnicalServiceWorkflowService
             'customer_closure_approval_status',
             'completed_at',
             'cancelled_at',
+            'cancellation_reason',
             'next_action',
             'sla_due_at',
             'sla_status',
@@ -760,6 +876,25 @@ class TechnicalServiceWorkflowService
         }
 
         return CarbonImmutable::parse($value);
+    }
+
+    private function castDate(mixed $value): ?CarbonInterface
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return CarbonImmutable::parse($value)->startOfDay();
+    }
+
+    private function pendingNextAction(TechnicalServiceRequest $request): string
+    {
+        return match ($request->customer_contact_status) {
+            'müşteri_reddetti' => 'Müşteri ret nedeni değerlendirilmeli',
+            'yanlış_numara' => 'Doğru müşteri telefonu güncellenmeli',
+            'iptal_talebi' => 'İptal nedeni onaylanmalı',
+            default => 'Revize randevu planlanmalı',
+        };
     }
 
     private function normalizeToken(?string $value): string

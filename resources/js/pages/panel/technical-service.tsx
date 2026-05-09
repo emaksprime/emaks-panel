@@ -87,6 +87,11 @@ type ApiTechnicalServiceRequest = {
   customer_contact_note?: string | null
   customer_confirmed_at?: string | null
   customer_confirmation_method?: string | null
+  customer_preferred_date?: string | null
+  customer_preferred_time_start?: string | null
+  customer_preferred_time_end?: string | null
+  customer_callback_at?: string | null
+  customer_rejection_reason?: string | null
   technician_approval_status?: string | null
   technician_approved_at?: string | null
   technician_revision_requested_at?: string | null
@@ -151,6 +156,8 @@ type SummaryResponse = {
   status_counts: Record<string, number>
   priority_counts: Record<string, number>
   scheduled_today: number
+  workflow_queue_counts?: Record<string, number>
+  customer_contact_counts?: Record<string, number>
 }
 
 type OperationsDashboardRequest = {
@@ -220,6 +227,8 @@ const APPOINTMENT_TIME_SLOTS = [
   { value: '14:00 - 16:00', start: '14:00' },
   { value: '16:00 - 18:00', start: '16:00' },
 ] as const
+
+const CONTACT_CONFIRMATION_METHODS = ['telefon', 'whatsapp', 'sms', 'eposta', 'panel'] as const
 
 function isMountPaymentMissing(result: MikroMountCheckResult | null | undefined): boolean {
   return result?.montaj_durumu === 'Montaj Hariç'
@@ -371,6 +380,23 @@ function getRequestScheduledDate(request: ServiceRequest): Date | null {
 }
 
 function workflowPanelLabel(filter: WorkflowQueueKey | null): string | null {
+  if (filter === null) {
+    return null
+  }
+
+  const labels: Record<WorkflowQueueKey, string> = {
+    customer_call: 'Müşteri Aranacak İşler',
+    customer_unreachable: 'Müşteriye Ulaşılamayan İşler',
+    customer_callback: 'Tekrar Aranacak İşler',
+    customer_confirmation: 'Müşteri Onayı Bekleyen İşler',
+    schedule_planning: 'Randevu Planlanacak İşler',
+    unassigned: 'Usta Ataması Bekleyen İşler',
+    technician_approval: 'Usta Onayı Bekleyen İşler',
+    sla_overdue: 'Geciken SLA İşleri',
+  }
+
+  return labels[filter]
+
   switch (filter) {
     case 'missing_info':
       return 'Eksik Bilgi / Fotoğraf Bekleyen İşler'
@@ -402,6 +428,17 @@ function toComparableText(...values: Array<string | null | undefined>): string {
     .map((value) => normalizeTechnicalServiceText(value))
     .filter((value) => value !== '')
     .join(' ')
+}
+
+function isCustomerCommunicationQueue(filter: WorkflowQueueKey | null): filter is Extract<
+  WorkflowQueueKey,
+  'customer_call' | 'customer_unreachable' | 'customer_callback' | 'customer_confirmation' | 'schedule_planning'
+> {
+  return filter === 'customer_call'
+    || filter === 'customer_unreachable'
+    || filter === 'customer_callback'
+    || filter === 'customer_confirmation'
+    || filter === 'schedule_planning'
 }
 
 function hasKeywordMatch(haystack: string, keywords: string[]): boolean {
@@ -554,6 +591,11 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     customerContactNote: request.customer_contact_note ?? null,
     customerConfirmedAt: request.customer_confirmed_at ?? null,
     customerConfirmationMethod: request.customer_confirmation_method ?? null,
+    customerPreferredDate: request.customer_preferred_date ?? null,
+    customerPreferredTimeStart: request.customer_preferred_time_start ?? null,
+    customerPreferredTimeEnd: request.customer_preferred_time_end ?? null,
+    customerCallbackAt: request.customer_callback_at ?? null,
+    customerRejectionReason: request.customer_rejection_reason ?? null,
     technicianApprovalStatus: request.technician_approval_status ?? null,
     technicianApprovedAt: request.technician_approved_at ?? null,
     technicianRevisionRequestedAt: request.technician_revision_requested_at ?? null,
@@ -663,6 +705,42 @@ function hasLegacyStatus(request: ServiceRequest, status: string): boolean {
 }
 
 function matchesNewWorkflowQueue(request: ServiceRequest, filter: WorkflowQueueKey | null, isOverdueRequest: (request: ServiceRequest) => boolean): boolean {
+  if (filter === null) {
+    return true
+  }
+
+  if (filter === 'customer_call') {
+    return matchesWorkflowStatus(request, ['Müşteri Aranacak'])
+  }
+
+  if (filter === 'customer_unreachable') {
+    return matchesWorkflowStatus(request, ['Müşteriye Ulaşılamadı']) && normalizeTechnicalServiceText(request.customerContactStatus) !== 'tekrar_aranacak'
+  }
+
+  if (filter === 'customer_callback') {
+    return normalizeTechnicalServiceText(request.customerContactStatus) === 'tekrar_aranacak'
+  }
+
+  if (filter === 'customer_confirmation') {
+    return matchesWorkflowStatus(request, ['Müşteri Onayı Bekleyen'])
+  }
+
+  if (filter === 'schedule_planning') {
+    return matchesWorkflowStatus(request, ['Müşteri Onayladı'])
+  }
+
+  if (filter === 'unassigned') {
+    return matchesWorkflowStatus(request, ['Usta Ataması Bekleyen'])
+  }
+
+  if (filter === 'technician_approval') {
+    return matchesWorkflowStatus(request, ['Usta Onayı Bekleyen'])
+  }
+
+  if (filter === 'sla_overdue') {
+    return request.slaStatus === 'geciken' || isOverdueRequest(request)
+  }
+
   switch (filter) {
     case 'missing_info':
       return matchesWorkflowStatus(request, ['Eksik Bilgi / Fotoğraf Bekleyen'])
@@ -715,6 +793,9 @@ export function TechnicalServiceOperationCenter() {
   const [selectedEvents, setSelectedEvents] = useState<ApiTechnicalServiceEvent[]>([])
   const [selectedDetailRequest, setSelectedDetailRequest] = useState<ServiceRequest | null>(null)
   const [assignDialogOpen, setAssignDialogOpen] = useState(false)
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
+  const [contactDialogOpen, setContactDialogOpen] = useState(false)
+  const [contactAction, setContactAction] = useState<string | null>(null)
   const [assignTechnicianOption, setAssignTechnicianOption] = useState('')
   const [assignOtherTechnician, setAssignOtherTechnician] = useState('')
   const [assignNote, setAssignNote] = useState('')
@@ -723,9 +804,22 @@ export function TechnicalServiceOperationCenter() {
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
+  const [scheduleNote, setScheduleNote] = useState('')
+  const [scheduleLoading, setScheduleLoading] = useState(false)
+  const [scheduleError, setScheduleError] = useState<string | null>(null)
   const [travelRoundTripKm, setTravelRoundTripKm] = useState('')
   const [assignOverrideWithoutPayment, setAssignOverrideWithoutPayment] = useState(false)
   const [assignOverrideReason, setAssignOverrideReason] = useState('')
+  const [contactMethod, setContactMethod] = useState('telefon')
+  const [contactNote, setContactNote] = useState('')
+  const [contactPreferredDate, setContactPreferredDate] = useState('')
+  const [contactPreferredTimeStart, setContactPreferredTimeStart] = useState('')
+  const [contactPreferredTimeEnd, setContactPreferredTimeEnd] = useState('')
+  const [contactCallbackAt, setContactCallbackAt] = useState('')
+  const [contactRejectionReason, setContactRejectionReason] = useState('')
+  const [contactCancellationReason, setContactCancellationReason] = useState('')
+  const [contactLoading, setContactLoading] = useState(false)
+  const [contactError, setContactError] = useState<string | null>(null)
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
   const [completionReason, setCompletionReason] = useState('')
   const [completionOtherNote, setCompletionOtherNote] = useState('')
@@ -1022,37 +1116,48 @@ export function TechnicalServiceOperationCenter() {
     return bCreated - aCreated
   }, [])
 
-  const allFilteredRequests = useMemo(() => {
+  const matchesSearchFilter = useCallback((request: ServiceRequest) => {
     const search = normalizeSearchText(filters.search)
 
-    return requests
-      .filter((request) => {
-        const displayMrn = formatTechnicalServiceMrn(request)
-        const values = [
-          request.mrn,
-          displayMrn,
-          request.customer,
-          request.phone,
-          request.city,
-          request.district,
-          request.product,
-          request.model,
-          request.serialNumber,
-          request.serviceType,
-          request.status,
-          request.technician,
-          request.appointment,
-          request.scheduledAt,
-          request.scheduledDate,
-          request.scheduledTime,
-          request.notes,
-        ]
+    if (!search) {
+      return true
+    }
 
-        const matchesSearch = !search || values.some((value) => normalizeSearchText(value).includes(search))
-        return matchesSearch
-      })
-      .sort(compareRequestsBySchedule)
-  }, [compareRequestsBySchedule, filters.search, requests])
+    const displayMrn = formatTechnicalServiceMrn(request)
+    const values = [
+      request.mrn,
+      displayMrn,
+      request.customer,
+      request.phone,
+      request.city,
+      request.district,
+      request.product,
+      request.model,
+      request.serialNumber,
+      request.serviceType,
+      request.status,
+      request.technician,
+      request.appointment,
+      request.scheduledAt,
+      request.scheduledDate,
+      request.scheduledTime,
+      request.notes,
+      request.workflowStatus,
+      request.customerContactStatus,
+      request.customerPreferredDate,
+      request.customerCallbackAt,
+    ]
+
+    return values.some((value) => normalizeSearchText(value).includes(search))
+  }, [filters.search])
+
+  const sortedRequests = useMemo(() => {
+    return [...requests].sort(compareRequestsBySchedule)
+  }, [compareRequestsBySchedule, requests])
+
+  const allFilteredRequests = useMemo(() => {
+    return sortedRequests.filter((request) => matchesSearchFilter(request))
+  }, [matchesSearchFilter, sortedRequests])
 
   const selectedRequest = selectedId
     ? requests.find((request) => request.id === selectedId) ?? null
@@ -1087,8 +1192,6 @@ export function TechnicalServiceOperationCenter() {
     !assignLoading &&
     assignTechnicianOption &&
     (assignTechnicianOption !== 'other' || assignOtherTechnician.trim()) &&
-    scheduleDate &&
-    scheduleTimeSlot &&
     travelRoundTripKm.trim() !== '' &&
     Number.isFinite(Number(travelRoundTripKm)) &&
     Number(travelRoundTripKm) >= 0 &&
@@ -1114,13 +1217,12 @@ export function TechnicalServiceOperationCenter() {
     : sameCityTechnicians
 
   const selectedDayRequests = useMemo(() => {
-    return requests
+    return sortedRequests
       .filter((request) => {
         const scheduled = getRequestScheduledDate(request)
         return scheduled !== null && isSameLocalDay(scheduled, selectedDate)
       })
-      .sort(compareRequestsBySchedule)
-  }, [compareRequestsBySchedule, requests, selectedDate])
+  }, [selectedDate, sortedRequests])
 
   const selectedDayScopedRequests = useMemo(() => {
     return allFilteredRequests
@@ -1156,6 +1258,43 @@ export function TechnicalServiceOperationCenter() {
       .filter((request) => matchesWorkflowFilter(request, workflowFilter))
       .sort(compareRequestsBySchedule)
   }, [compareRequestsBySchedule, matchesWorkflowFilter, selectedDayScopedRequests, workflowFilter])
+
+  const operationDateScopedRequests = useMemo(() => {
+    if (isCustomerCommunicationQueue(workflowFilter)) {
+      return sortedRequests.filter((request) => isOpenRequest(request))
+    }
+
+    return selectedDayRequests
+  }, [isOpenRequest, selectedDayRequests, sortedRequests, workflowFilter])
+
+  const operationWorkflowScopedRequests = useMemo(() => {
+    return operationDateScopedRequests.filter((request) => matchesWorkflowFilter(request, workflowFilter))
+  }, [matchesWorkflowFilter, operationDateScopedRequests, workflowFilter])
+
+  const operationSearchScopedRequests = useMemo(() => {
+    return operationWorkflowScopedRequests.filter((request) => matchesSearchFilter(request))
+  }, [matchesSearchFilter, operationWorkflowScopedRequests])
+
+  const operationFilteredRequests = useMemo(() => {
+    return operationSearchScopedRequests.filter((request) => {
+      switch (quickFilter) {
+        case 'all_open':
+          return isOpenRequest(request)
+        case 'unassigned':
+          return isOpenRequest(request) && isUnassignedRequest(request)
+        case 'appointment_pending':
+          return isOpenRequest(request) && (!request.scheduledTime?.trim() || hasLegacyStatus(request, 'Yeni'))
+        case 'overdue':
+          return isOverdueRequest(request)
+        case 'in_service':
+          return hasLegacyStatus(request, 'Devam Ediyor')
+        case 'completed':
+          return normalizeRequestStatus(request.status) === 'Tamamlandı'
+        default:
+          return true
+      }
+    })
+  }, [isOpenRequest, isOverdueRequest, isUnassignedRequest, operationSearchScopedRequests, quickFilter])
 
   const selectedDaySummary = useMemo(() => {
     const appointmentCount = selectedDayRequests.length
@@ -1264,9 +1403,9 @@ export function TechnicalServiceOperationCenter() {
 
   const workflowQueuePanelItems = useMemo(() => ([
     {
-      key: 'missing_info' as const,
-      label: 'Eksik Bilgi / Fotoğraf',
-      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'missing_info')).length,
+      key: 'customer_call' as const,
+      label: 'Müşteri Aranacak',
+      count: operationsData?.summary?.customer_call ?? 0,
     },
     {
       key: 'customer_call' as const,
@@ -1299,9 +1438,9 @@ export function TechnicalServiceOperationCenter() {
       count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'technician_approval')).length,
     },
     {
-      key: 'technician_reschedule' as const,
-      label: 'Usta Tarih Revize Talebi',
-      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'technician_reschedule')).length,
+      key: 'customer_callback' as const,
+      label: 'Tekrar Aranacak',
+      count: operationsData?.summary?.customer_callback ?? 0,
     },
     {
       key: 'sla_overdue' as const,
@@ -1309,21 +1448,76 @@ export function TechnicalServiceOperationCenter() {
       count: selectedDayRequests.filter((request) => matchesWorkflowFilter(request, 'sla_overdue')).length,
     },
     {
-      key: 'parts_pending' as const,
-      label: 'Parça Bekleyen',
-      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'parts_pending')).length,
+      key: 'customer_confirmation' as const,
+      label: 'Müşteri Onayı Bekleyen',
+      count: operationsData?.summary?.customer_confirmation ?? 0,
     },
     {
-      key: 'document_pending' as const,
-      label: 'Belge / Fotoğraf Bekleyen',
-      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'document_pending')).length,
+      key: 'schedule_planning' as const,
+      label: 'Müşteri Onayladı / Randevu Planlanacak',
+      count: operationsData?.summary?.schedule_planning ?? 0,
     },
     {
-      key: 'closure_pending' as const,
-      label: 'Kapanış Onayı Bekleyen',
-      count: selectedDayRequests.filter((request) => isOpenRequest(request) && matchesWorkflowFilter(request, 'closure_pending')).length,
+      key: 'sla_overdue' as const,
+      label: 'Geciken SLA',
+      count: operationsData?.summary?.sla_overdue ?? 0,
     },
-  ]), [isOpenRequest, matchesWorkflowFilter, selectedDayRequests])
+  ]), [isOpenRequest, matchesWorkflowFilter, operationsData?.summary, selectedDayRequests])
+
+  const phaseTwoWorkflowQueuePanelItems = useMemo(() => {
+    const summary = operationsData?.summary ?? {}
+
+    return [
+      {
+        key: 'customer_call' as const,
+        label: 'Müşteri Aranacak',
+        description: 'Yeni talepler için ilk müşteri araması bekleniyor',
+        count: summary.customer_call ?? 0,
+      },
+      {
+        key: 'customer_unreachable' as const,
+        label: 'Müşteriye Ulaşılamadı',
+        description: 'Ulaşılamayan kayıtlar yeniden değerlendirme bekliyor',
+        count: summary.customer_unreachable ?? 0,
+      },
+      {
+        key: 'customer_callback' as const,
+        label: 'Tekrar Aranacak',
+        description: 'Planlanan geri arama zamanı gelen kayıtlar',
+        count: summary.customer_callback ?? 0,
+      },
+      {
+        key: 'customer_confirmation' as const,
+        label: 'Müşteri Onayı Bekleyen',
+        description: 'Uygun gün ve saat teyidi tamamlanmalı',
+        count: summary.customer_confirmation ?? 0,
+      },
+      {
+        key: 'schedule_planning' as const,
+        label: 'Müşteri Onayladı / Randevu Planlanacak',
+        description: 'Müşteri tercihi alındı, kesin randevu planlanmalı',
+        count: summary.schedule_planning ?? 0,
+      },
+      {
+        key: 'unassigned' as const,
+        label: 'Usta Ataması Bekleyen',
+        description: 'Kesin randevusu olan işlerde usta seçimi bekleniyor',
+        count: summary.unassigned ?? 0,
+      },
+      {
+        key: 'technician_approval' as const,
+        label: 'Usta Onayı Bekleyen',
+        description: 'Atanan usta onayı henüz tamamlanmadı',
+        count: summary.technician_approval ?? 0,
+      },
+      {
+        key: 'sla_overdue' as const,
+        label: 'Geciken SLA',
+        description: 'Zaman hedefini aşan kayıtlar öncelikli aksiyon bekliyor',
+        count: summary.sla_overdue ?? 0,
+      },
+    ]
+  }, [operationsData?.summary])
 
   const workflowTitle = workflowPanelLabel(workflowFilter)
   const tableTitle = workflowTitle ?? (isSameLocalDay(selectedDate, todayDate)
@@ -1331,6 +1525,14 @@ export function TechnicalServiceOperationCenter() {
     : `${selectedDateLabel.replace(/^./, (character) => character.toLocaleUpperCase('tr-TR'))} Randevuları`)
 
   const tableSubtitle = `${quickFilterItemsLabel(quickFilter)}${workflowTitle ? ` • ${workflowTitle}` : ''} • ${formatTechnicalServiceDate(toDateKey(selectedDate))}`
+
+  const resolvedTableTitle = workflowTitle ?? (isSameLocalDay(selectedDate, todayDate)
+    ? 'Bugünün Randevuları'
+    : `${selectedDateLabel.replace(/^./, (character) => character.toLocaleUpperCase('tr-TR'))} Randevuları`)
+  const resolvedTableSubtitle = isCustomerCommunicationQueue(workflowFilter)
+    ? `${quickFilterItemsLabel(quickFilter)}${workflowTitle ? ` • ${workflowTitle}` : ''} • Açık kayıtlar içinde gösteriliyor`
+    : `${quickFilterItemsLabel(quickFilter)}${workflowTitle ? ` • ${workflowTitle}` : ''} • ${formatTechnicalServiceDate(toDateKey(selectedDate))}`
+  const tableEmptyMessage = workflowFilter ? 'Bu kuyrukta gösterilecek kayıt yok.' : 'Seçili gün için randevu bulunamadı.'
 
   const quickFilterItems = [
     { key: 'all_open' as const, label: 'Tüm Açık İşler', count: selectedDayRequests.filter((request) => isOpenRequest(request)).length },
@@ -1435,13 +1637,31 @@ export function TechnicalServiceOperationCenter() {
     setAssignTechnicianOption('')
     setAssignOtherTechnician('')
     setAssignNote('')
-    setScheduleDate('')
-    setScheduleTimeSlot('')
     setTravelRoundTripKm('')
     setAssignOverrideWithoutPayment(false)
     setAssignOverrideReason('')
     setShowNearbyTechnicians(false)
     setAssignError(null)
+  }
+
+  const handleScheduleReset = () => {
+    setScheduleDate('')
+    setScheduleTimeSlot('')
+    setScheduleNote('')
+    setScheduleError(null)
+  }
+
+  const handleContactReset = () => {
+    setContactAction(null)
+    setContactMethod('telefon')
+    setContactNote('')
+    setContactPreferredDate('')
+    setContactPreferredTimeStart('')
+    setContactPreferredTimeEnd('')
+    setContactCallbackAt('')
+    setContactRejectionReason('')
+    setContactCancellationReason('')
+    setContactError(null)
   }
 
   const handleCompleteReset = () => {
@@ -1511,6 +1731,22 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    if ([
+      'customer_called',
+      'customer_unreachable',
+      'customer_callback_scheduled',
+      'customer_confirmation_pending',
+      'customer_confirmed',
+      'customer_rejected',
+      'wrong_number',
+      'customer_requested_cancel',
+    ].includes(action)) {
+      setContactAction(action)
+      setContactDialogOpen(true)
+      setContactError(null)
+      return
+    }
+
     setWorkflowActionLoading(action)
     setDetailError(null)
 
@@ -1529,6 +1765,157 @@ export function TechnicalServiceOperationCenter() {
       setDetailError(caught instanceof Error ? caught.message : 'Workflow aksiyonu uygulanamadı.')
     } finally {
       setWorkflowActionLoading(null)
+    }
+  }
+
+  const handleScheduleSubmit = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    if (true) {
+      if (effectiveMountPaymentMissing && !assignOverrideWithoutPayment) {
+        setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
+
+        return
+      }
+
+      if (effectiveMountPaymentMissing && assignOverrideReason.trim().length < 5) {
+        setAssignError('Atama nedeni en az 5 karakter olmalıdır.')
+
+        return
+      }
+
+      const parsedTravelRoundTripKm = Number(travelRoundTripKm)
+
+      if (travelRoundTripKm.trim() === '' || !Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
+        setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
+
+        return
+      }
+
+      setAssignLoading(true)
+      setAssignError(null)
+
+      try {
+        await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
+          method: 'POST',
+          body: JSON.stringify({
+            ...(isManualTechnician
+              ? { technician_name: selectedTechnician }
+              : { technical_service_technician_id: assignTechnicianOption }),
+            travel_round_trip_km: parsedTravelRoundTripKm,
+            mount_payment_missing: effectiveMountPaymentMissing,
+            override_without_payment: effectiveMountPaymentMissing ? assignOverrideWithoutPayment : false,
+            override_reason: effectiveMountPaymentMissing ? assignOverrideReason.trim() || null : null,
+            note: isManualTechnician ? assignNote || null : null,
+          }),
+        })
+
+        setAssignDialogOpen(false)
+        handleAssignReset()
+        await loadRequests()
+        await loadSummary()
+        await loadRequestDetail(selectedId)
+      } catch (caught) {
+        setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
+      } finally {
+        setAssignLoading(false)
+      }
+
+      return
+    }
+
+    if (!scheduleDate || !scheduleTimeSlot) {
+      setScheduleError('Lütfen randevu tarihi ve saat aralığı seçin.')
+      return
+    }
+
+    setScheduleLoading(true)
+    setScheduleError(null)
+
+    try {
+      const selectedTimeSlot = APPOINTMENT_TIME_SLOTS.find((slot) => slot.value === scheduleTimeSlot)
+
+      await apiRequest(`/api/technical-service/requests/${selectedId}/schedule`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          scheduled_date: scheduleDate,
+          scheduled_time: selectedTimeSlot?.start ?? '10:00',
+          note: scheduleNote || null,
+        }),
+      })
+
+      setScheduleDialogOpen(false)
+      handleScheduleReset()
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setScheduleError(caught instanceof Error ? caught.message : 'Randevu planlama işlemi başarısız oldu.')
+    } finally {
+      setScheduleLoading(false)
+    }
+  }
+
+  const handleContactActionSubmit = async () => {
+    if (!selectedId || !contactAction) {
+      return
+    }
+
+    setContactLoading(true)
+    setContactError(null)
+
+    try {
+      const payload: Record<string, string | null> = {
+        action: contactAction,
+        note: contactNote || null,
+      }
+
+      if (contactAction === 'customer_called') {
+        payload.contact_method = contactMethod
+      }
+
+      if (contactAction === 'customer_unreachable' && contactCallbackAt) {
+        payload.customer_callback_at = contactCallbackAt
+      }
+
+      if (contactAction === 'customer_callback_scheduled') {
+        payload.customer_callback_at = contactCallbackAt || null
+      }
+
+      if (contactAction === 'customer_confirmation_pending' || contactAction === 'customer_confirmed') {
+        payload.customer_preferred_date = contactPreferredDate || null
+        payload.customer_preferred_time_start = contactPreferredTimeStart || null
+        payload.customer_preferred_time_end = contactPreferredTimeEnd || null
+      }
+
+      if (contactAction === 'customer_confirmed') {
+        payload.customer_confirmation_method = contactMethod
+      }
+
+      if (contactAction === 'customer_rejected') {
+        payload.customer_rejection_reason = contactRejectionReason || null
+      }
+
+      if (contactAction === 'customer_requested_cancel') {
+        payload.cancellation_reason = contactCancellationReason || null
+      }
+
+      await apiRequest(`/api/technical-service/requests/${selectedId}/contact-log`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+
+      setContactDialogOpen(false)
+      handleContactReset()
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setContactError(caught instanceof Error ? caught.message : 'Müşteri iletişimi kaydedilemedi.')
+    } finally {
+      setContactLoading(false)
     }
   }
 
@@ -2085,9 +2472,9 @@ export function TechnicalServiceOperationCenter() {
                 </button>
               </DialogClose>
               <DialogHeader>
-                <DialogTitle>Usta ata ve randevu ver</DialogTitle>
+                <DialogTitle>Usta Ata</DialogTitle>
                 <DialogDescription>
-                  {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} adına usta atanıyor.` : 'Seçili talep yok.'}
+                  {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} adına usta atayın.` : 'Seçili talep yok.'}
                 </DialogDescription>
                 {modalRequest?.serviceType ? (
                   <p className="text-sm leading-6 text-slate-600">
@@ -2277,31 +2664,6 @@ export function TechnicalServiceOperationCenter() {
                   </div>
                 ) : null}
 
-                <div className="grid gap-2 text-sm font-medium text-slate-700">
-                  <label>Randevu tarihi</label>
-                  <Input
-                    type="date"
-                    value={scheduleDate}
-                    onChange={(event) => setScheduleDate(event.target.value)}
-                  />
-                </div>
-
-                <label className="grid gap-2 text-sm font-medium text-slate-700">
-                  Randevu saat aralığı
-                  <select
-                    value={scheduleTimeSlot}
-                    onChange={(event) => setScheduleTimeSlot(event.target.value)}
-                    className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                  >
-                    <option value="">Saat aralığı seçin</option>
-                    {APPOINTMENT_TIME_SLOTS.map((slot) => (
-                      <option key={slot.value} value={slot.value}>
-                        {slot.value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
                 <label className="grid gap-2 text-sm font-medium text-slate-700">
                   Gidiş-geliş km
                   <Input
@@ -2345,7 +2707,190 @@ export function TechnicalServiceOperationCenter() {
                   onClick={handleAssignSubmit}
                   disabled={!canSubmitAssign}
                 >
-                  {assignLoading ? 'Kaydediliyor...' : 'Usta Ata ve Randevu Ver'}
+                  {assignLoading ? 'Kaydediliyor...' : 'Usta Ata'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={scheduleDialogOpen} onOpenChange={(open) => {
+            setScheduleDialogOpen(open)
+
+            if (!open) {
+              handleScheduleReset()
+            }
+          }}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Randevu Planla</DialogTitle>
+                <DialogDescription>
+                  {modalDisplayMrn ? `${modalDisplayMrn} için kesin randevu planlayın.` : 'Seçili talep yok.'}
+                </DialogDescription>
+              </DialogHeader>
+
+              {scheduleError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {scheduleError}
+                </div>
+              ) : null}
+
+              {modalRequest?.customerPreferredDate || modalRequest?.customerPreferredTimeStart ? (
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+                  <p className="font-semibold">Müşteri Tercihi</p>
+                  <p className="mt-1">Tarih: {modalRequest.customerPreferredDate ?? '-'}</p>
+                  <p className="mt-1">Saat: {modalRequest.customerPreferredTimeStart ?? '-'}{modalRequest.customerPreferredTimeEnd ? ` - ${modalRequest.customerPreferredTimeEnd}` : ''}</p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="mt-3"
+                    onClick={() => {
+                      setScheduleDate(modalRequest.customerPreferredDate ?? '')
+                      if (modalRequest.customerPreferredTimeStart) {
+                        const matchingSlot = APPOINTMENT_TIME_SLOTS.find((slot) => slot.start === modalRequest.customerPreferredTimeStart)
+                        setScheduleTimeSlot(matchingSlot?.value ?? '')
+                      }
+                    }}
+                  >
+                    Müşteri tercihini kullan
+                  </Button>
+                </div>
+              ) : null}
+
+              <div className="grid gap-4 pt-2">
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Randevu tarihi
+                  <Input type="date" value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Randevu saat aralığı
+                  <select
+                    value={scheduleTimeSlot}
+                    onChange={(event) => setScheduleTimeSlot(event.target.value)}
+                    className={selectClassName}
+                  >
+                    <option value="">Saat aralığı seçin</option>
+                    {APPOINTMENT_TIME_SLOTS.map((slot) => (
+                      <option key={slot.value} value={slot.value}>
+                        {slot.value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Planlama notu
+                  <textarea
+                    value={scheduleNote}
+                    onChange={(event) => setScheduleNote(event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                    placeholder="Müşteri tercihi ile fark varsa kısa açıklama ekleyin"
+                  />
+                </label>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <DialogClose asChild>
+                  <Button variant="secondary" type="button" onClick={handleScheduleReset}>
+                    İptal
+                  </Button>
+                </DialogClose>
+                <Button type="button" onClick={handleScheduleSubmit} disabled={scheduleLoading}>
+                  {scheduleLoading ? 'Kaydediliyor...' : 'Randevuyu Planla'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={contactDialogOpen} onOpenChange={(open) => {
+            setContactDialogOpen(open)
+
+            if (!open) {
+              handleContactReset()
+            }
+          }}>
+            <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{contactAction ? contactAction : 'Müşteri İletişimi'}</DialogTitle>
+                <DialogDescription>
+                  {modalDisplayMrn ? `${modalDisplayMrn} için müşteri iletişimi kaydı oluşturun.` : 'Seçili talep yok.'}
+                </DialogDescription>
+              </DialogHeader>
+
+              {contactError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {contactError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-4 pt-2">
+                {(contactAction === 'customer_called' || contactAction === 'customer_confirmed') ? (
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    İletişim / onay yöntemi
+                    <select value={contactMethod} onChange={(event) => setContactMethod(event.target.value)} className={selectClassName}>
+                      {CONTACT_CONFIRMATION_METHODS.map((method) => (
+                        <option key={method} value={method}>{method}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+
+                {(contactAction === 'customer_confirmation_pending' || contactAction === 'customer_confirmed') ? (
+                  <>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Uygun gün
+                      <Input type="date" value={contactPreferredDate} onChange={(event) => setContactPreferredDate(event.target.value)} />
+                    </label>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Başlangıç saati
+                        <Input type="time" value={contactPreferredTimeStart} onChange={(event) => setContactPreferredTimeStart(event.target.value)} />
+                      </label>
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Bitiş saati
+                        <Input type="time" value={contactPreferredTimeEnd} onChange={(event) => setContactPreferredTimeEnd(event.target.value)} />
+                      </label>
+                    </div>
+                  </>
+                ) : null}
+
+                {(contactAction === 'customer_unreachable' || contactAction === 'customer_callback_scheduled') ? (
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Tekrar arama tarihi
+                    <Input type="datetime-local" value={contactCallbackAt} onChange={(event) => setContactCallbackAt(event.target.value)} />
+                  </label>
+                ) : null}
+
+                {contactAction === 'customer_rejected' ? (
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Ret nedeni
+                    <Input value={contactRejectionReason} onChange={(event) => setContactRejectionReason(event.target.value)} />
+                  </label>
+                ) : null}
+
+                {contactAction === 'customer_requested_cancel' ? (
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    İptal nedeni
+                    <Input value={contactCancellationReason} onChange={(event) => setContactCancellationReason(event.target.value)} />
+                  </label>
+                ) : null}
+
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Not
+                  <textarea
+                    value={contactNote}
+                    onChange={(event) => setContactNote(event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                  />
+                </label>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <DialogClose asChild>
+                  <Button variant="secondary" type="button" onClick={handleContactReset}>
+                    İptal
+                  </Button>
+                </DialogClose>
+                <Button type="button" onClick={handleContactActionSubmit} disabled={contactLoading}>
+                  {contactLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -2567,16 +3112,17 @@ export function TechnicalServiceOperationCenter() {
             setSelectedDate(startOfLocalDay(nextDate))
             setWeekReferenceDate(startOfLocalDay(nextDate))
           }}
-          tableTitle={tableTitle}
-          tableSubtitle={tableSubtitle}
+          tableTitle={resolvedTableTitle}
+          tableSubtitle={resolvedTableSubtitle}
           tableSearch={filters.search}
           onTableSearchChange={(value) => setFilters((current) => ({ ...current, search: value }))}
-          appointments={selectedDayFilteredRequests}
+          appointments={operationFilteredRequests}
+          emptyMessage={tableEmptyMessage}
           selectedRequestId={selectedRequest?.id ?? ''}
           onSelectRequest={openRequestDetail}
           summaryMetrics={summaryMetrics}
           summaryDescription={selectedDayDescription}
-          workflowQueues={workflowQueuePanelItems}
+          workflowQueues={phaseTwoWorkflowQueuePanelItems}
           activeWorkflowFilter={workflowFilter}
           onWorkflowFilterChange={setWorkflowFilter}
           technicianSummary={selectedDayTechnicianSummary}
@@ -2648,6 +3194,7 @@ export function TechnicalServiceOperationCenter() {
                     warrantyLoading={warrantyLoading}
                     warrantyError={warrantyError}
                     onAssign={() => setAssignDialogOpen(true)}
+                    onSchedule={() => setScheduleDialogOpen(true)}
                     onComplete={openCompleteDialog}
                     onReopen={() => setReopenDialogOpen(true)}
                     onWorkflowAction={handleWorkflowAction}
@@ -2672,7 +3219,3 @@ export function TechnicalServiceOperationCenter() {
 export default function TechnicalService() {
   return <TechnicalServiceOperationCenter />
 }
-
-
-
-

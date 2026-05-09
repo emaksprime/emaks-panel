@@ -18,7 +18,6 @@ use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -266,7 +265,7 @@ class TechnicalServiceController extends Controller
     public function storeContactLog(StoreTechnicalServiceContactLogRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         $payload = $request->validated();
-        $payload['customer_confirmation_method'] = $payload['contact_method'] ?? null;
+        $payload['customer_confirmation_method'] = $payload['customer_confirmation_method'] ?? $payload['contact_method'] ?? null;
 
         $technicalServiceRequest = $this->workflowService->logCustomerContact(
             $technicalServiceRequest,
@@ -341,6 +340,18 @@ class TechnicalServiceController extends Controller
             'priority_counts' => $priorityCounts,
             'risk_level_counts' => $riskCounts,
             'workflow_status_counts' => $workflowCounts,
+            'workflow_queue_counts' => $this->workflowQueueCounts($requests),
+            'customer_contact_counts' => [
+                'aranacak' => $requests->where('customer_contact_status', 'aranacak')->count(),
+                'arandı' => $requests->where('customer_contact_status', 'arandı')->count(),
+                'ulaşılamadı' => $requests->where('customer_contact_status', 'ulaşılamadı')->count(),
+                'tekrar_aranacak' => $requests->where('customer_contact_status', 'tekrar_aranacak')->count(),
+                'müşteri_onayı_bekleniyor' => $requests->where('customer_contact_status', 'müşteri_onayı_bekleniyor')->count(),
+                'müşteri_onayladı' => $requests->where('customer_contact_status', 'müşteri_onayladı')->count(),
+                'müşteri_reddetti' => $requests->where('customer_contact_status', 'müşteri_reddetti')->count(),
+                'yanlış_numara' => $requests->where('customer_contact_status', 'yanlış_numara')->count(),
+                'iptal_talebi' => $requests->where('customer_contact_status', 'iptal_talebi')->count(),
+            ],
             'scheduled_today' => $requests->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)->count(),
         ]);
     }
@@ -392,6 +403,13 @@ class TechnicalServiceController extends Controller
                 'warranty_started' => $warrantyStarted->count(),
                 'past_scheduled_not_completed' => $pastScheduledNotCompleted->count(),
                 'sla_overdue' => $requests->where('sla_status', TechnicalServiceWorkflowService::SLA_OVERDUE)->count(),
+                'customer_call' => $requests->where('workflow_status', 'Müşteri Aranacak')->count(),
+                'customer_unreachable' => $requests->where('workflow_status', 'Müşteriye Ulaşılamadı')->count(),
+                'customer_callback' => $requests->where('customer_contact_status', 'tekrar_aranacak')->count(),
+                'customer_confirmation' => $requests->where('workflow_status', 'Müşteri Onayı Bekleyen')->count(),
+                'schedule_planning' => $requests->where('workflow_status', 'Müşteri Onayladı')->count(),
+                'unassigned' => $requests->where('workflow_status', 'Usta Ataması Bekleyen')->count(),
+                'technician_approval' => $requests->where('workflow_status', 'Usta Onayı Bekleyen')->count(),
             ],
             'today_appointments' => $todayAppointments->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request))->all(),
             'overdue_requests' => $overdue->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request, true))->all(),
@@ -420,6 +438,7 @@ class TechnicalServiceController extends Controller
                 ->sortByDesc('open_requests')
                 ->values()
                 ->all(),
+            'workflow_queue_counts' => $this->workflowQueueCounts($requests),
         ]);
     }
 
@@ -470,6 +489,11 @@ class TechnicalServiceController extends Controller
             'workflow_status' => $request->workflow_status,
             'next_action' => $request->next_action,
             'sla_status' => $request->sla_status,
+            'customer_contact_status' => $request->customer_contact_status,
+            'customer_callback_at' => $request->customer_callback_at?->toISOString(),
+            'customer_preferred_date' => $request->customer_preferred_date?->toDateString(),
+            'customer_preferred_time_start' => $request->customer_preferred_time_start,
+            'customer_preferred_time_end' => $request->customer_preferred_time_end,
             'installation_completed_at' => $request->installation_completed_at?->toISOString(),
             'warranty_started_at' => $request->installation_completed_at?->toDateString(),
             'overdue_label' => $includeOverdue ? $this->overdueLabel($request) : null,
@@ -506,6 +530,20 @@ class TechnicalServiceController extends Controller
         }
 
         return $hours > 0 ? "{$hours} saat gecikmiş" : "{$minutes} dakika gecikmiş";
+    }
+
+    private function workflowQueueCounts($requests): array
+    {
+        return [
+            'customer_call' => $requests->where('workflow_status', 'Müşteri Aranacak')->count(),
+            'customer_unreachable' => $requests->where('workflow_status', 'Müşteriye Ulaşılamadı')->count(),
+            'customer_callback' => $requests->where('customer_contact_status', 'tekrar_aranacak')->count(),
+            'customer_confirmation' => $requests->where('workflow_status', 'Müşteri Onayı Bekleyen')->count(),
+            'schedule_planning' => $requests->where('workflow_status', 'Müşteri Onayladı')->count(),
+            'unassigned' => $requests->where('workflow_status', 'Usta Ataması Bekleyen')->count(),
+            'technician_approval' => $requests->where('workflow_status', 'Usta Onayı Bekleyen')->count(),
+            'sla_overdue' => $requests->where('sla_status', TechnicalServiceWorkflowService::SLA_OVERDUE)->count(),
+        ];
     }
 
     private function generateMrn(): string

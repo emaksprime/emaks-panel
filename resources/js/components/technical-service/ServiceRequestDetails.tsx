@@ -39,6 +39,7 @@ type ServiceRequestDetailsProps = {
   warrantyLoading?: boolean
   warrantyError?: string | null
   onAssign?: () => void
+  onSchedule?: () => void
   onComplete?: () => void
   onReopen?: () => void
   onWorkflowAction?: (action: string) => void
@@ -301,6 +302,7 @@ export function ServiceRequestDetails({
   warrantyLoading = false,
   warrantyError = null,
   onAssign,
+  onSchedule,
   onComplete,
   onReopen,
   onWorkflowAction,
@@ -382,8 +384,13 @@ export function ServiceRequestDetails({
       }
 
   const handleWorkflowAction = (action: string) => {
-    if (action === 'assign_technician' || action === 'schedule_planned') {
+    if (action === 'assign_technician') {
       onAssign?.()
+      return
+    }
+
+    if (action === 'schedule_planned') {
+      onSchedule?.()
       return
     }
 
@@ -443,13 +450,48 @@ export function ServiceRequestDetails({
               SLA hedefi: {request.slaDueAt ? formatTechnicalServiceDateTime(request.slaDueAt, '-') : '-'}
             </p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Müşteri İletişim Durumu</p>
-            <p className="mt-3 text-sm font-semibold text-slate-950">{formatDisplayValue(request.customerContactStatus)}</p>
-            <p className="mt-2 text-xs text-slate-500">
-              Son temas: {request.customerContactedAt ? formatTechnicalServiceDateTime(request.customerContactedAt, '-') : '-'}
-            </p>
-            <p className="mt-2 text-xs text-slate-500 break-words">{formatDisplayValue(request.customerContactNote)}</p>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:col-span-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Müşteri İletişimi &amp; Randevu Teyidi</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div>
+                <p className="text-xs text-slate-500">İletişim Durumu</p>
+                <p className="mt-1 text-sm font-semibold text-slate-950">{formatDisplayValue(request.customerContactStatus)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Son Arama Tarihi</p>
+                <p className="mt-1 text-sm font-semibold text-slate-950">
+                  {request.customerContactedAt ? formatTechnicalServiceDateTime(request.customerContactedAt, '-') : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Tekrar Arama Tarihi</p>
+                <p className="mt-1 text-sm font-semibold text-slate-950">
+                  {request.customerCallbackAt ? formatTechnicalServiceDateTime(request.customerCallbackAt, '-') : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Onay Yöntemi</p>
+                <p className="mt-1 text-sm font-semibold text-slate-950">{formatDisplayValue(request.customerConfirmationMethod)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Müşteri Uygun Günü</p>
+                <p className="mt-1 text-sm font-semibold text-slate-950">{formatOptionalDate(request.customerPreferredDate)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Müşteri Uygun Saat Aralığı</p>
+                <p className="mt-1 text-sm font-semibold text-slate-950">
+                  {request.customerPreferredTimeStart ? `${request.customerPreferredTimeStart}${request.customerPreferredTimeEnd ? ` - ${request.customerPreferredTimeEnd}` : ''}` : '-'}
+                </p>
+              </div>
+              <div className="sm:col-span-2 xl:col-span-2">
+                <p className="text-xs text-slate-500">İletişim Notu</p>
+                <p className="mt-1 text-sm text-slate-950 break-words">{formatDisplayValue(request.customerContactNote)}</p>
+              </div>
+              <div className="sm:col-span-2 xl:col-span-4">
+                <p className="text-xs text-slate-500">Sıradaki Aksiyon</p>
+                <p className="mt-1 text-sm font-semibold text-slate-950">{request.nextAction || '-'}</p>
+              </div>
+            </div>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Randevu Bilgisi</p>

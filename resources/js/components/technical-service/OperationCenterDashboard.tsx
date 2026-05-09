@@ -53,18 +53,14 @@ export type TechnicianLoadItem = {
 }
 
 export type WorkflowFilterKey =
-  | 'missing_info'
   | 'customer_call'
   | 'customer_unreachable'
+  | 'customer_callback'
   | 'schedule_planning'
   | 'technician_approval'
-  | 'technician_reschedule'
   | 'unassigned'
   | 'customer_confirmation'
   | 'sla_overdue'
-  | 'parts_pending'
-  | 'document_pending'
-  | 'closure_pending'
 
 export type WorkflowQueueItem = {
   key: WorkflowFilterKey
@@ -84,6 +80,7 @@ type OperationCenterDashboardProps = {
   tableSearch: string
   onTableSearchChange: (value: string) => void
   appointments: ServiceRequest[]
+  emptyMessage?: string
   selectedRequestId: string
   onSelectRequest: (request: ServiceRequest) => void
   summaryMetrics: OperationMetric[]
@@ -148,30 +145,22 @@ const getMetricIcon = (tone: OperationMetric['tone']) => {
 
 const getWorkflowIcon = (key: WorkflowFilterKey) => {
   switch (key) {
-    case 'missing_info':
-      return FileClock
     case 'customer_call':
       return Phone
     case 'customer_unreachable':
       return AlertTriangle
+    case 'customer_callback':
+      return Clock3
     case 'schedule_planning':
       return CalendarClock
     case 'technician_approval':
       return CheckCircle2
-    case 'technician_reschedule':
-      return CalendarClock
     case 'unassigned':
       return UserRound
     case 'customer_confirmation':
       return Phone
     case 'sla_overdue':
       return AlertTriangle
-    case 'parts_pending':
-      return Wrench
-    case 'document_pending':
-      return FileClock
-    case 'closure_pending':
-      return ShieldAlert
     default:
       return ShieldAlert
   }
@@ -349,6 +338,7 @@ function SelectedDayAppointmentsTable({
   tableSearch,
   onTableSearchChange,
   appointments,
+  emptyMessage,
   selectedRequestId,
   onSelectRequest,
   loading,
@@ -360,6 +350,7 @@ function SelectedDayAppointmentsTable({
   | 'tableSearch'
   | 'onTableSearchChange'
   | 'appointments'
+  | 'emptyMessage'
   | 'selectedRequestId'
   | 'onSelectRequest'
   | 'loading'
@@ -393,7 +384,7 @@ function SelectedDayAppointmentsTable({
       ) : loading ? (
         <div className="mt-4 rounded-[20px] border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Randevular yükleniyor...</div>
       ) : appointments.length === 0 ? (
-        <div className="mt-4 rounded-[20px] border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Seçili gün için randevu bulunamadı.</div>
+        <div className="mt-4 rounded-[20px] border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">{emptyMessage ?? 'Seçili gün için randevu bulunamadı.'}</div>
       ) : (
         <>
           <div className="mt-4 hidden overflow-hidden rounded-[20px] border border-slate-200 lg:block">
@@ -685,6 +676,7 @@ export function TechnicalServiceOperationsDashboard(props: OperationCenterDashbo
     tableSearch,
     onTableSearchChange,
     appointments,
+    emptyMessage,
     selectedRequestId,
     onSelectRequest,
     summaryMetrics,
@@ -712,6 +704,7 @@ export function TechnicalServiceOperationsDashboard(props: OperationCenterDashbo
           tableSearch={tableSearch}
           onTableSearchChange={onTableSearchChange}
           appointments={appointments}
+          emptyMessage={emptyMessage}
           selectedRequestId={selectedRequestId}
           onSelectRequest={onSelectRequest}
           loading={loading}
