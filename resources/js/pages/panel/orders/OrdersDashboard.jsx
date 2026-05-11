@@ -57,6 +57,27 @@ function deliveryWeekLabel(value) {
     return value === 'TESLÄ°M TARÄ°HÄ° BELÄ°RSÄ°Z' ? 'TESLİM TARİHİ BELİRSİZ' : value;
 }
 
+function orderDateLabel(row) {
+    const displayDate = textValue(row, ['siparis_tarihi_gosterim'], '');
+
+    if (displayDate !== '') {
+        return displayDate;
+    }
+
+    const isoDate = textValue(row, ['siparis_tarihi'], '');
+    const match = isoDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (match) {
+        return `${match[3]}.${match[2]}.${match[1]}`;
+    }
+
+    return isoDate || '-';
+}
+
+function receivedLineAmount(row) {
+    return numberValue(row?.satir_net_tutar_kdv_haric ?? row?.kalan_tutar);
+}
+
 function defaultFilters() {
     return {
         date_from: '2025-01-01',
@@ -518,20 +539,20 @@ function ReceivedTable({ title, rows }) {
                 <table className="w-full table-fixed">
                     <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                         <tr>
-                            <th className="w-28 px-4 py-3">Sipariş Tarihi</th>
+                            <th className="w-24 px-4 py-3 whitespace-nowrap">Sipariş Tarihi</th>
                             <th className="px-4 py-3">Cari Adı</th>
                             <th className="px-4 py-3">Ürün</th>
                             <th className="w-32 px-4 py-3">Marka</th>
                             <th className="px-4 py-3">Açıklama2</th>
                             <th className="w-24 px-4 py-3 text-right">Kalan</th>
                             <th className="w-20 px-4 py-3">Birim</th>
-                            <th className="w-32 px-4 py-3 text-right">Tutar</th>
+                            <th className="w-36 px-4 py-3 text-right">Tutar (KDV Hariç)</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-sm">
                         {rows.map((row, index) => (
                             <tr key={`${textValue(row, ['sip_evrakno_seri'])}-${textValue(row, ['sip_evrakno_sira'])}-${index}`} className="align-top">
-                                <td className="px-4 py-3 font-semibold text-slate-700">{textValue(row, ['siparis_tarihi'], '-')}</td>
+                                <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700">{orderDateLabel(row)}</td>
                                 <td className="break-words px-4 py-3 font-semibold text-slate-950">{textValue(row, ['cari_adi'], '-')}</td>
                                 <td className="break-words px-4 py-3 text-slate-700">
                                     <span className="block">{textValue(row, ['urun_adi'], '-')}</span>
@@ -541,7 +562,7 @@ function ReceivedTable({ title, rows }) {
                                 <td className="break-words px-4 py-3 text-slate-600">{textValue(row, ['sip_aciklama2'], '-')}</td>
                                 <td className="px-4 py-3 text-right font-semibold text-slate-900">{quantity(row.kalan_miktar)}</td>
                                 <td className="px-4 py-3 text-slate-600">{textValue(row, ['birim'], 'Adet')}</td>
-                                <td className="px-4 py-3 text-right font-bold text-slate-950">{money(row.kalan_tutar)}</td>
+                                <td className="px-4 py-3 text-right font-bold text-slate-950">{money(receivedLineAmount(row))}</td>
                             </tr>
                         ))}
                     </tbody>
@@ -553,7 +574,7 @@ function ReceivedTable({ title, rows }) {
                     <article key={`${textValue(row, ['sip_evrakno_seri'])}-${textValue(row, ['sip_evrakno_sira'])}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                         <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                                <p className="text-xs font-semibold text-slate-500">{textValue(row, ['siparis_tarihi'], '-')}</p>
+                                <p className="text-xs font-semibold text-slate-500">{orderDateLabel(row)}</p>
                                 <h3 className="mt-1 break-words text-base font-bold text-slate-950">{textValue(row, ['cari_adi'], '-')}</h3>
                                 <p className="mt-2 break-words text-sm text-slate-700">{textValue(row, ['urun_adi'], '-')}</p>
                                 <em className="mt-1 block text-xs text-slate-500">({textValue(row, ['montaj_durumu'], 'Montaj Hariç')})</em>
@@ -566,7 +587,7 @@ function ReceivedTable({ title, rows }) {
                         </div>
                         <div className="mt-3 grid gap-2 text-sm text-slate-600">
                             <p><strong>Açıklama2:</strong> {textValue(row, ['sip_aciklama2'], '-')}</p>
-                            <p><strong>Tutar:</strong> {money(row.kalan_tutar)}</p>
+                            <p><strong>Tutar (KDV Hariç):</strong> {money(receivedLineAmount(row))}</p>
                         </div>
                     </article>
                 ))}

@@ -559,6 +559,7 @@ Filtreli AS
 )
 SELECT TOP (@Limit)
     CONVERT(varchar(10), sip_tarih, 23) AS siparis_tarihi,
+    CONVERT(varchar(10), sip_tarih, 104) AS siparis_tarihi_gosterim,
     sip_evrakno_seri,
     sip_evrakno_sira,
     sip_aciklama2,
@@ -577,7 +578,8 @@ SELECT TOP (@Limit)
     kalan_miktar,
     N'Adet' AS birim,
     birim_fiyat,
-    kalan_tutar
+    kalan_tutar,
+    kalan_tutar AS satir_net_tutar_kdv_haric
 FROM Filtreli
 WHERE
     (
