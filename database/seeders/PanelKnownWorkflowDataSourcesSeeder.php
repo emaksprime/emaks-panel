@@ -370,6 +370,7 @@ WITH HamVeri AS
         sto.sto_isim AS stok_adi,
         mdl.mdl_ismi AS model_adi,
         crg.crg_isim AS cari_grup_adi,
+        LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) AS kategori_kodu,
         LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N''))) AS brand_code,
         CASE
             WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) = N'PHILIPS' THEN N'philips'
@@ -381,6 +382,26 @@ WITH HamVeri AS
             WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_marka_kodu, N'')))) IN (N'EMAKS PRIME', N'EMAKS') THEN N'EMAKS PRIME'
             ELSE N'Diğer Marka'
         END AS marka,
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM SIPARISLER montaj_sip
+                WHERE montaj_sip.sip_evrakno_seri = sip.sip_evrakno_seri
+                    AND montaj_sip.sip_evrakno_sira = sip.sip_evrakno_sira
+                    AND montaj_sip.sip_stok_kod = N'W-MONTAJ-1'
+                    AND montaj_sip.sip_iptal = 0
+                    AND ISNULL(montaj_sip.sip_miktar, 0) > 0
+            ) THEN N'Montaj Dahil'
+            ELSE N'Montaj Hariç'
+        END AS montaj_durumu,
+        CASE
+            WHEN UPPER(REPLACE(REPLACE(CONCAT(
+                LTRIM(RTRIM(ISNULL(sip.sip_musteri_kod, N''))), N' ',
+                LTRIM(RTRIM(ISNULL(cari.cari_unvan1, N''))), N' ',
+                LTRIM(RTRIM(ISNULL(crg.crg_isim, N'')))
+            ), N'İ', N'I'), N'ı', N'I')) LIKE N'%KONSINYE%' THEN 1
+            ELSE 0
+        END AS konsinye_mi,
         LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) AS temsilci_kodu,
         LTRIM(RTRIM(
             CASE
@@ -412,6 +433,7 @@ WITH HamVeri AS
         AND CAST(sip.sip_tarih AS date) >= @BasTar
         AND CAST(sip.sip_tarih AS date) <= @BitTar
         AND ISNULL(sip.sip_miktar, 0) - ISNULL(sip.sip_teslim_miktar, 0) > 0
+        AND LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N''))) IN (N'A1',N'AS1',N'D1',N'G1',N'K1',N'KA1',N'M1',N'O1',N'OT1',N'YM1')
         AND (
             @OrdersScope <> N'temsilci'
             OR (
@@ -437,9 +459,12 @@ Hesaplanmis AS
         cari_adi,
         stok_adi,
         model_adi,
+        kategori_kodu,
         brand_code,
         brand_key,
         marka,
+        montaj_durumu,
+        konsinye_mi,
         temsilci_kodu,
         sorumluluk_kodu,
         CASE
@@ -482,9 +507,12 @@ Filtreli AS
         sip_stok_kod AS stok_kodu,
         cari_adi,
         urun_adi,
+        kategori_kodu,
         brand_code,
         brand_key,
         marka,
+        montaj_durumu,
+        konsinye_mi,
         temsilci_kodu,
         sorumluluk_kodu,
         kalan_miktar,
@@ -500,6 +528,12 @@ Filtreli AS
         AND urun_adi_norm NOT LIKE N'%KILIT DONUSUM APATAR%'
         AND urun_adi_norm NOT LIKE N'%DONUSUM APARAT%'
         AND urun_adi_norm NOT LIKE N'%DONUSUM APATAR%'
+        AND LTRIM(RTRIM(ISNULL(sip_stok_kod, N''))) <> N'W-MONTAJ-1'
+        AND urun_adi_norm NOT LIKE N'%MONTAJ%'
+        AND urun_adi_norm NOT LIKE N'%HIZMET%'
+        AND urun_adi_norm NOT LIKE N'%SERVIS%'
+        AND urun_adi_norm NOT LIKE N'%YOL%'
+        AND urun_adi_norm NOT LIKE N'%KESIF%'
         AND NOT (urun_adi_norm LIKE N'%YEDEK PARCA%' AND kalan_tutar <= 10)
         AND (
             NOT (
@@ -531,9 +565,12 @@ SELECT TOP (@Limit)
     stok_kodu,
     cari_adi,
     urun_adi,
+    kategori_kodu,
     brand_code,
     brand_key,
     marka,
+    montaj_durumu,
+    konsinye_mi,
     temsilci_kodu,
     sorumluluk_kodu,
     siparis_grubu,
