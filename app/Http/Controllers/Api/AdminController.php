@@ -837,9 +837,9 @@ class AdminController extends Controller
 
         $platform = match (true) {
             stripos($userAgent, 'Windows') !== false => 'Windows',
-            stripos($userAgent, 'Mac OS') !== false || stripos($userAgent, 'Macintosh') !== false => 'macOS',
             stripos($userAgent, 'iPhone') !== false || stripos($userAgent, 'iPad') !== false => 'iOS',
             stripos($userAgent, 'Android') !== false => 'Android',
+            stripos($userAgent, 'Mac OS') !== false || stripos($userAgent, 'Macintosh') !== false => 'macOS',
             stripos($userAgent, 'Linux') !== false => 'Linux',
             default => null,
         };
