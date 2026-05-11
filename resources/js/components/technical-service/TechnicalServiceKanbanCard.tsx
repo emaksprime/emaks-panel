@@ -1,4 +1,4 @@
-import { MoreHorizontal } from 'lucide-react'
+import { MoreHorizontal, Phone } from 'lucide-react'
 import { getTechnicalServiceKanbanColumn } from './technicalServiceKanban'
 import type { ServiceRequest } from './types'
 import { formatTechnicalServiceDateTime, formatTechnicalServiceMrn, getServicePaymentInfo, normalizeTechnicalServiceText } from './utils'
@@ -22,7 +22,59 @@ const badgeTone = (tone: 'neutral' | 'blue' | 'green' | 'amber' | 'rose') => {
 
 const truncateText = (value: string, fallback = '-'): string => {
   const trimmed = value.trim()
+
   return trimmed === '' ? fallback : trimmed
+}
+
+const readFirstText = (...values: Array<string | null | undefined>): string | null => {
+  for (const value of values) {
+    const trimmed = String(value ?? '').trim()
+
+    if (trimmed !== '') {
+      return trimmed
+    }
+  }
+
+  return null
+}
+
+const resolveCustomerPhone = (request: ServiceRequest): string | null => {
+  const requestWithFallbacks = request as ServiceRequest & Record<string, string | null | undefined>
+
+  return readFirstText(
+    requestWithFallbacks.customer_phone,
+    requestWithFallbacks.customerPhone,
+    request.phone,
+    requestWithFallbacks.telefon,
+    requestWithFallbacks.customer_mobile_phone,
+    requestWithFallbacks.customerMobilePhone,
+    requestWithFallbacks.customer_gsm,
+    requestWithFallbacks.customerGsm,
+  )
+}
+
+const resolveTechnicianPhone = (request: ServiceRequest): string | null => {
+  const requestWithFallbacks = request as ServiceRequest & Record<string, unknown>
+  const technicianRecord = typeof requestWithFallbacks.technician === 'object' && requestWithFallbacks.technician !== null
+    ? requestWithFallbacks.technician as Record<string, unknown>
+    : null
+  const technicalServiceTechnicianRecord = typeof requestWithFallbacks.technicalServiceTechnician === 'object' && requestWithFallbacks.technicalServiceTechnician !== null
+    ? requestWithFallbacks.technicalServiceTechnician as Record<string, unknown>
+    : null
+
+  return readFirstText(
+    request.technicianPhone,
+    typeof requestWithFallbacks.technician_phone === 'string' ? requestWithFallbacks.technician_phone : null,
+    typeof requestWithFallbacks.technicianPhone === 'string' ? requestWithFallbacks.technicianPhone : null,
+    typeof requestWithFallbacks.technical_service_phone === 'string' ? requestWithFallbacks.technical_service_phone : null,
+    typeof requestWithFallbacks.technicalServicePhone === 'string' ? requestWithFallbacks.technicalServicePhone : null,
+    typeof requestWithFallbacks.technical_service_technician_phone === 'string' ? requestWithFallbacks.technical_service_technician_phone : null,
+    typeof requestWithFallbacks.technicalServiceTechnicianPhone === 'string' ? requestWithFallbacks.technicalServiceTechnicianPhone : null,
+    typeof requestWithFallbacks.technician_mobile_phone === 'string' ? requestWithFallbacks.technician_mobile_phone : null,
+    typeof requestWithFallbacks.technicianMobilePhone === 'string' ? requestWithFallbacks.technicianMobilePhone : null,
+    typeof technicianRecord?.phone === 'string' ? technicianRecord.phone : null,
+    typeof technicalServiceTechnicianRecord?.phone === 'string' ? technicalServiceTechnicianRecord.phone : null,
+  )
 }
 
 const buildBadges = (request: ServiceRequest): Array<{ label: string, tone: 'neutral' | 'blue' | 'green' | 'amber' | 'rose' }> => {
@@ -89,6 +141,8 @@ export function TechnicalServiceKanbanCard({
   const locationLabel = [request.city, request.district].filter((value) => value.trim() !== '').join(' / ') || '-'
   const productLabel = [request.product, request.model].filter((value) => value.trim() !== '').join(' / ') || '-'
   const badges = buildBadges(request)
+  const customerPhone = resolveCustomerPhone(request)
+  const technicianPhone = resolveTechnicianPhone(request)
 
   const technicianLabel = request.technician && normalizeTechnicalServiceText(request.technician) !== 'atanmadi'
     ? `TS - ${request.technician} - ${request.city || '-'}`
@@ -124,6 +178,12 @@ export function TechnicalServiceKanbanCard({
 
       <div className="mt-4 space-y-2">
         <p className="truncate text-sm font-semibold text-slate-950">{truncateText(request.customer)}</p>
+        {customerPhone ? (
+          <p className="flex items-center gap-1.5 text-xs text-slate-500">
+            <Phone className="h-3.5 w-3.5 text-slate-400" />
+            <span>{customerPhone}</span>
+          </p>
+        ) : null}
         <p className="text-xs text-slate-500">{locationLabel}</p>
         <p className="line-clamp-2 text-sm text-slate-700">{productLabel}</p>
       </div>
@@ -139,10 +199,16 @@ export function TechnicalServiceKanbanCard({
       ) : null}
 
       {technicianLabel ? (
-        <div className="mt-4">
+        <div className="mt-4 space-y-2">
           <span className="inline-flex max-w-full rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
             <span className="truncate">{technicianLabel}</span>
           </span>
+          {technicianPhone ? (
+            <p className="flex items-center gap-1.5 text-xs text-slate-500">
+              <Phone className="h-3.5 w-3.5 text-slate-400" />
+              <span>{technicianPhone}</span>
+            </p>
+          ) : null}
         </div>
       ) : null}
 

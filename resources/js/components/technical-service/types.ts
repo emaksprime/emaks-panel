@@ -25,6 +25,7 @@ export type ServiceRequest = {
   mrn: string
   customer: string
   phone: string
+  technicianPhone?: string | null
   city: string
   district: string
   product: string

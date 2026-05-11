@@ -55,6 +55,10 @@ type ApiTechnicalServiceRequest = {
   mrn: string
   customer_name: string
   customer_phone: string
+  phone?: string | null
+  telefon?: string | null
+  customer_mobile_phone?: string | null
+  customer_gsm?: string | null
   customer_city: string
   customer_district: string
   service_address: string
@@ -66,6 +70,10 @@ type ApiTechnicalServiceRequest = {
   priority: string
   technical_service_technician_id?: number | string | null
   technician_name?: string | null
+  technician_phone?: string | null
+  technical_service_phone?: string | null
+  technical_service_technician_phone?: string | null
+  technician_mobile_phone?: string | null
   scheduled_at?: string | null
   scheduled_date?: string | null
   scheduled_time?: string | null
@@ -147,6 +155,12 @@ type ApiTechnicalServiceRequest = {
     created_at: string
   }> | null
   latest_event?: string | null
+  technician?: {
+    phone?: string | null
+  } | null
+  technicalServiceTechnician?: {
+    phone?: string | null
+  } | null
   document?: unknown
   documents?: unknown
   photo?: unknown
@@ -649,7 +663,12 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     id: String(request.id),
     mrn: request.mrn,
     customer: request.customer_name,
-    phone: request.customer_phone,
+    phone: request.customer_phone
+      ?? request.phone
+      ?? request.telefon
+      ?? request.customer_mobile_phone
+      ?? request.customer_gsm
+      ?? '',
     city: request.customer_city,
     district: request.customer_district,
     product: request.product_name,
@@ -661,6 +680,13 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
       ? null
       : String(request.technical_service_technician_id),
     technician: request.technician_name ?? 'Atanmadı',
+    technicianPhone: request.technician_phone
+      ?? request.technical_service_phone
+      ?? request.technical_service_technician_phone
+      ?? request.technician_mobile_phone
+      ?? request.technician?.phone
+      ?? request.technicalServiceTechnician?.phone
+      ?? null,
     appointment: formatTechnicalServiceDateTime(request.scheduled_at ?? request.scheduled_date ?? null, 'Belirlenmedi'),
     status: displayStatusLabel(request.status),
     address: request.service_address,
@@ -3921,7 +3947,7 @@ export function TechnicalServiceOperationCenter() {
             setWarrantyLoading(false)
           }
         }}>
-          <DialogContent className="w-[calc(100vw-16px)] h-[100dvh] max-h-[100dvh] p-0 overflow-hidden flex flex-col rounded-none sm:left-auto sm:right-0 sm:top-0 sm:h-screen sm:max-h-screen sm:w-[880px] sm:max-w-[880px] sm:translate-x-0 sm:translate-y-0 sm:rounded-l-[28px] sm:rounded-r-none">
+          <DialogContent className="flex max-h-[94vh] w-[calc(100vw-16px)] max-w-[1180px] flex-col overflow-hidden rounded-[28px] p-0 shadow-[0_30px_80px_rgba(15,23,42,0.2)]">
             <div className="flex h-full min-h-[420px] flex-col overflow-hidden bg-white">
               <DialogHeader className="sticky top-0 z-20 border-b border-slate-200 bg-white px-4 py-4 md:px-6 md:py-5">
                 <div className="flex items-start justify-between gap-4">
