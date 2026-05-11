@@ -79,6 +79,52 @@ class PasswordResetTest extends TestCase
         });
     }
 
+    public function test_password_reset_rejects_passwords_shorter_than_eight_characters(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create();
+
+        $this->post(route('password.email'), ['email' => $user->email]);
+
+        Notification::assertSentTo($user, ResetPassword::class, function ($notification) use ($user) {
+            $response = $this->post(route('password.update'), [
+                'token' => $notification->token,
+                'email' => $user->email,
+                'password' => '1234567',
+                'password_confirmation' => '1234567',
+            ]);
+
+            $response->assertSessionHasErrors('password');
+
+            return true;
+        });
+    }
+
+    public function test_password_reset_accepts_eight_character_passwords(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create();
+
+        $this->post(route('password.email'), ['email' => $user->email]);
+
+        Notification::assertSentTo($user, ResetPassword::class, function ($notification) use ($user) {
+            $response = $this->post(route('password.update'), [
+                'token' => $notification->token,
+                'email' => $user->email,
+                'password' => '12345678',
+                'password_confirmation' => '12345678',
+            ]);
+
+            $response
+                ->assertSessionHasNoErrors()
+                ->assertRedirect(route('login'));
+
+            return true;
+        });
+    }
+
     public function test_password_cannot_be_reset_with_invalid_token(): void
     {
         $user = User::factory()->create();
