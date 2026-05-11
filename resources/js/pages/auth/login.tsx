@@ -155,6 +155,6 @@ export default function Login({
 }
 
 Login.layout = {
-    title: 'Emaks Prime Panel Girişi',
-    description: 'Yetkili kullanıcı erişimi',
+    title: '',
+    description: '',
 };

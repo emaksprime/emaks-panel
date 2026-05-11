@@ -40,8 +40,12 @@ class AuthenticationTest extends TestCase
             $layout
         );
         $this->assertStringNotContainsString('AppLogoIcon', $layout);
+        $this->assertStringContainsString('(title || description)', $layout);
 
         $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $login);
+        $this->assertStringContainsString("title: ''", $login);
+        $this->assertStringContainsString("description: ''", $login);
+        $this->assertStringContainsString('Emaks Prime Panel Girişi', $login);
         $this->assertStringContainsString('Kullanıcı adı', $login);
         $this->assertStringContainsString('Şifre', $login);
         $this->assertStringContainsString('Beni hatırla', $login);
