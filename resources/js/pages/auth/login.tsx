@@ -27,20 +27,48 @@ export default function Login({
             <Form
                 {...store.form()}
                 resetOnSuccess={['password']}
-                className="flex flex-col gap-6 rounded-[1.75rem] border border-slate-200 bg-white/95 p-6 shadow-2xl shadow-slate-950/10 backdrop-blur"
+                className="relative overflow-hidden rounded-[2rem] border border-white/80 bg-white/95 p-6 shadow-2xl shadow-slate-950/12 backdrop-blur-xl sm:p-7"
             >
                 {({ processing, errors }) => (
                     <>
-                        <div className="grid justify-items-center gap-3 text-center">
-                            <img src="/assets/primecrm/emaks-prime.png" alt="Emaks Prime" className="h-16 object-contain" />
-                            <div>
-                                <h1 className="text-2xl font-semibold text-slate-950">Emaks Prime Panel</h1>
-                                <p className="mt-1 text-sm text-slate-500">CRM, stok, sipariş, satış ve proforma yönetimi</p>
+                        <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-[#126ec9] via-[#0d4e6f] to-[#39a7df]" />
+
+                        <div className="grid justify-items-center gap-4 text-center">
+                            <div className="rounded-2xl border border-slate-100 bg-slate-50/80 px-5 py-4 shadow-inner shadow-white">
+                                <img
+                                    src="/assets/primecrm/emaks-prime.png"
+                                    alt="Emaks Prime"
+                                    className="h-14 w-auto object-contain sm:h-16"
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <p className="text-xs font-semibold tracking-[0.24em] text-[#126ec9] uppercase">
+                                    Operasyon Paneli
+                                </p>
+                                <h2 className="text-2xl font-semibold tracking-tight text-slate-950">
+                                    Emaks Prime Panel Girişi
+                                </h2>
+                                <p className="mx-auto max-w-xs text-sm leading-6 text-slate-500">
+                                    Satış, stok, sipariş, servis ve proforma
+                                    yönetimi için güvenli panel erişimi.
+                                </p>
                             </div>
                         </div>
+
+                        {status && (
+                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-center text-sm font-medium text-emerald-700">
+                                {status}
+                            </div>
+                        )}
+
                         <div className="grid gap-6">
                             <div className="grid gap-2">
-                                <Label htmlFor="username">Kullanici adi</Label>
+                                <Label
+                                    htmlFor="username"
+                                    className="text-slate-700"
+                                >
+                                    Kullanıcı adı
+                                </Label>
                                 <Input
                                     id="username"
                                     type="text"
@@ -50,17 +78,23 @@ export default function Login({
                                     tabIndex={1}
                                     autoComplete="username"
                                     placeholder="ornek.kullanici"
+                                    className="h-11 rounded-xl border-slate-200 bg-slate-50/80 focus-visible:ring-[#126ec9]"
                                 />
                                 <InputError message={errors.username} />
                             </div>
 
                             <div className="grid gap-2">
                                 <div className="flex items-center">
-                                    <Label htmlFor="password">Şifre</Label>
+                                    <Label
+                                        htmlFor="password"
+                                        className="text-slate-700"
+                                    >
+                                        Şifre
+                                    </Label>
                                     {canResetPassword && (
                                         <TextLink
                                             href="/forgot-password"
-                                            className="ml-auto text-sm"
+                                            className="ml-auto text-sm text-[#126ec9] hover:text-[#0d4e6f]"
                                             tabIndex={5}
                                         >
                                             Şifremi unuttum
@@ -74,6 +108,7 @@ export default function Login({
                                     tabIndex={2}
                                     autoComplete="current-password"
                                     placeholder="Şifre"
+                                    className="h-11 rounded-xl border-slate-200 bg-slate-50/80 focus-visible:ring-[#126ec9]"
                                 />
                                 <InputError message={errors.password} />
                             </div>
@@ -84,12 +119,17 @@ export default function Login({
                                     name="remember"
                                     tabIndex={3}
                                 />
-                                <Label htmlFor="remember">Beni hatırla</Label>
+                                <Label
+                                    htmlFor="remember"
+                                    className="text-slate-600"
+                                >
+                                    Beni hatırla
+                                </Label>
                             </div>
 
                             <Button
                                 type="submit"
-                                className="mt-4 w-full"
+                                className="mt-2 h-11 w-full rounded-xl bg-[#0d4e6f] font-semibold shadow-lg shadow-[#0d4e6f]/25 transition hover:bg-[#126ec9]"
                                 tabIndex={4}
                                 disabled={processing}
                                 data-test="login-button"
@@ -110,17 +150,11 @@ export default function Login({
                     </>
                 )}
             </Form>
-
-            {status && (
-                <div className="mb-4 text-center text-sm font-medium text-green-600">
-                    {status}
-                </div>
-            )}
         </>
     );
 }
 
 Login.layout = {
-    title: 'Emaks Prime panel girisi',
-    description: 'Kullanici adiniz ve sifrenizle giris yapin',
+    title: 'Emaks Prime Panel Girişi',
+    description: 'Yetkili kullanıcı erişimi',
 };
