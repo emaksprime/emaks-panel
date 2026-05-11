@@ -19,6 +19,44 @@ function queryParam(name) {
     return new URLSearchParams(window.location.search).get(name);
 }
 
+function normalizeScopeKey(value, fallback = '') {
+    const normalized = String(value ?? '').trim().replaceAll('-', '_');
+
+    return normalized || fallback;
+}
+
+function visibleScopeKeys(config) {
+    return new Set((config?.managementScopes ?? [])
+        .map((scope) => normalizeScopeKey(scope?.key))
+        .filter(Boolean));
+}
+
+function resolveInitialScopeKey(config, salesMainData) {
+    const visibleKeys = visibleScopeKeys(config);
+    const candidates = [
+        queryParam('scope_key'),
+        config?.defaults?.scopeKey,
+        salesMainData?.filters?.scopeKey,
+    ];
+
+    for (const candidate of candidates) {
+        const normalized = normalizeScopeKey(candidate);
+
+        if (normalized && visibleKeys.has(normalized)) {
+            return normalized;
+        }
+    }
+
+    const firstVisibleScope = config?.managementScopes?.[0]?.key;
+    const normalizedFirstVisibleScope = normalizeScopeKey(firstVisibleScope);
+
+    if (normalizedFirstVisibleScope) {
+        return normalizedFirstVisibleScope;
+    }
+
+    return visibleKeys.has('all') ? 'all' : normalizeScopeKey(config?.defaults?.scopeKey, 'all');
+}
+
 function formatDate(date) {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -128,13 +166,14 @@ export default function SalesMainDashboard({ salesMainConfig, salesMainData }) {
     const config = salesMainConfig;
     const initialGrain = queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week';
     const initialPeriod = resolvePeriodRange(initialGrain);
+    const initialScopeKey = resolveInitialScopeKey(config, salesMainData);
     const [data, setData] = useState(salesMainData);
     const [filters, setFilters] = useState(() => ({
         date_from: queryParam('date_from') ?? salesMainData?.filters?.dateFrom ?? initialPeriod.dateFrom,
         date_to: queryParam('date_to') ?? salesMainData?.filters?.dateTo ?? initialPeriod.dateTo,
         grain: queryParam('grain') ?? salesMainData?.filters?.grain ?? config?.defaults?.grain ?? 'week',
         detail_type: queryParam('detail_type') ?? salesMainData?.filters?.detailType ?? config?.defaults?.detailType ?? 'cari',
-        scope_key: queryParam('scope_key') ?? salesMainData?.filters?.scopeKey ?? config?.defaults?.scopeKey ?? 'all',
+        scope_key: initialScopeKey,
         customer_filter: salesMainData?.filters?.customerFilter ?? '',
         cari_filter: salesMainData?.filters?.customerFilter ?? '',
         brand_filter: queryParam('brand_filter') ?? salesMainData?.filters?.brandFilter ?? 'all',

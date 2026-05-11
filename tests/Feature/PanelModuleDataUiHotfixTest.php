@@ -563,11 +563,17 @@ class PanelModuleDataUiHotfixTest extends TestCase
             '*' => Http::response(['ok' => true, 'rows' => []]),
         ]);
 
-        $onlineUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true]);
-        DB::table('panel.user_access')->updateOrInsert(
-            ['user_id' => $onlineUser->id, 'resource_code' => 'sales_online'],
-            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
-        );
+        $onlineUser = User::factory()->create(['role_code' => 'sales', 'aktif' => true, 'temsilci_kodu' => null]);
+        foreach ([
+            'sales_online' => true,
+            'sales_bayi' => false,
+            'sales_main_all' => false,
+        ] as $resourceCode => $canView) {
+            DB::table('panel.user_access')->updateOrInsert(
+                ['user_id' => $onlineUser->id, 'resource_code' => $resourceCode],
+                ['can_view' => $canView, 'created_at' => now(), 'updated_at' => now()],
+            );
+        }
 
         $this->actingAs($onlineUser)
             ->postJson('/api/data/sales_customer_search', [
@@ -582,8 +588,24 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
             return ($payload['source_code'] ?? null) === 'sales_customer_search'
                 && ($payload['scope_key'] ?? null) === 'online_perakende'
-                && ($payload['params']['scope_key'] ?? null) === 'online_perakende';
+                && ($payload['params']['scope_key'] ?? null) === 'online_perakende'
+                && ($payload['rep_code'] ?? null) === null
+                && ($payload['params']['rep_code'] ?? null) === null;
         });
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $this->actingAs($onlineUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'bayi_proje',
+                'bypass_cache' => true,
+            ])
+            ->assertForbidden();
+
+        Http::assertNothingSent();
 
         Http::fake([
             '*' => Http::response(['ok' => true, 'rows' => []]),
@@ -602,6 +624,156 @@ class PanelModuleDataUiHotfixTest extends TestCase
                 'bypass_cache' => true,
             ])
             ->assertForbidden();
+
+        Http::assertNothingSent();
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $this->actingAs($bayiUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'all',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = $request->data();
+
+            return ($payload['source_code'] ?? null) === 'sales_customer_search'
+                && ($payload['scope_key'] ?? null) === 'bayi_proje'
+                && ($payload['params']['scope_key'] ?? null) === 'bayi_proje'
+                && ($payload['rep_code'] ?? null) === null
+                && ($payload['params']['rep_code'] ?? null) === null;
+        });
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $allUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true, 'temsilci_kodu' => null]);
+        foreach ([
+            'sales_main' => true,
+            'sales_main_all' => true,
+        ] as $resourceCode => $canView) {
+            DB::table('panel.user_access')->updateOrInsert(
+                ['user_id' => $allUser->id, 'resource_code' => $resourceCode],
+                ['can_view' => $canView, 'created_at' => now(), 'updated_at' => now()],
+            );
+        }
+
+        $this->actingAs($allUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'all',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = $request->data();
+
+            return ($payload['source_code'] ?? null) === 'sales_customer_search'
+                && ($payload['scope_key'] ?? null) === 'all'
+                && ($payload['params']['scope_key'] ?? null) === 'all'
+                && ($payload['rep_code'] ?? null) === null
+                && ($payload['params']['rep_code'] ?? null) === null;
+        });
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $repUser = User::factory()->create(['role_code' => 'sales', 'aktif' => true, 'temsilci_kodu' => '0024']);
+        foreach ([
+            'sales_main' => true,
+            'sales_main_all' => false,
+        ] as $resourceCode => $canView) {
+            DB::table('panel.user_access')->updateOrInsert(
+                ['user_id' => $repUser->id, 'resource_code' => $resourceCode],
+                ['can_view' => $canView, 'created_at' => now(), 'updated_at' => now()],
+            );
+        }
+
+        $this->actingAs($repUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'all',
+                'bypass_cache' => true,
+            ])
+            ->assertOk();
+
+        Http::assertSent(function ($request): bool {
+            $payload = $request->data();
+
+            return ($payload['source_code'] ?? null) === 'sales_customer_search'
+                && ($payload['scope_key'] ?? null) === 'salih'
+                && ($payload['params']['scope_key'] ?? null) === 'salih'
+                && ($payload['rep_code'] ?? null) === '0024'
+                && ($payload['params']['rep_code'] ?? null) === '0024';
+        });
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $this->actingAs($repUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'online_perakende',
+                'bypass_cache' => true,
+            ])
+            ->assertForbidden();
+
+        Http::assertNothingSent();
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $noRepUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true, 'temsilci_kodu' => null]);
+        DB::table('panel.user_access')->updateOrInsert(
+            ['user_id' => $noRepUser->id, 'resource_code' => 'sales_main'],
+            ['can_view' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $this->actingAs($noRepUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'all',
+                'bypass_cache' => true,
+            ])
+            ->assertForbidden();
+
+        Http::assertNothingSent();
+
+        Http::fake([
+            '*' => Http::response(['ok' => true, 'rows' => []]),
+        ]);
+
+        $twoSegmentUser = User::factory()->create(['role_code' => 'viewer', 'aktif' => true, 'temsilci_kodu' => null]);
+        foreach ([
+            'sales_online' => true,
+            'sales_bayi' => true,
+            'sales_main_all' => false,
+        ] as $resourceCode => $canView) {
+            DB::table('panel.user_access')->updateOrInsert(
+                ['user_id' => $twoSegmentUser->id, 'resource_code' => $resourceCode],
+                ['can_view' => $canView, 'created_at' => now(), 'updated_at' => now()],
+            );
+        }
+
+        $this->actingAs($twoSegmentUser)
+            ->postJson('/api/data/sales_customer_search', [
+                'search' => 'mehmet',
+                'scope_key' => 'all',
+                'bypass_cache' => true,
+            ])
+            ->assertForbidden();
+
+        Http::assertNothingSent();
     }
 
     public function test_sales_datasources_accept_customer_filter_and_send_cari_filter_to_gateway(): void
@@ -1185,9 +1357,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
     public function test_sales_selected_customer_empty_rows_return_empty_dataset_without_502(): void
     {
         Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::sequence()
-                ->push(['ok' => true, 'rows' => []])
-                ->push(['ok' => true, 'rows' => []]),
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
         ]);
 
         $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
@@ -1200,11 +1373,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
+        $this->assertSame('sales_online_perakende_detail', $payload['queryMeta']['dataSource']);
         $this->assertSame('Seçili müşteri için bu kapsam/dönemde satış kaydı bulunamadı.', $payload['queryMeta']['notice']);
         $this->assertSame([], $payload['table']['rows']);
         $this->assertEquals(0, $payload['kpis'][0]['raw']);
         $this->assertEquals(0, $payload['chart']['totalNet']);
+        Http::assertSentCount(1);
     }
 
     public function test_sales_empty_rows_return_empty_dataset_without_customer_filter(): void
@@ -1369,23 +1543,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertNull($bayiPayload['queryMeta']['gatewayRequest']['rep_code'] ?? null);
     }
 
-    public function test_sales_online_empty_special_source_falls_back_to_main_dashboard_with_same_scope(): void
+    public function test_sales_online_empty_special_source_stays_scoped_without_main_dashboard_fallback(): void
     {
         Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::sequence()
-                ->push(['ok' => true, 'rows' => []])
-                ->push([
-                    'ok' => true,
-                    'rows' => [
-                        [
-                            'satir_tipi' => 'GRUP',
-                            'siralama_1' => 1,
-                            'cari_grup_adi' => 'Online Grup',
-                            'adet' => 2,
-                            'ciro' => 250,
-                        ],
-                    ],
-                ]),
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
         ]);
 
         $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
@@ -1397,11 +1561,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
+        $this->assertSame('sales_online_perakende_detail', $payload['queryMeta']['dataSource']);
         $this->assertSame('online_perakende', $payload['scope']['key']);
-        $this->assertEquals(250, $payload['chart']['totalNet']);
+        $this->assertEquals(0, $payload['chart']['totalNet']);
+        $this->assertSame([], $payload['table']['rows']);
 
-        Http::assertSentCount(2);
+        Http::assertSentCount(1);
     }
 
     public function test_user_without_sales_scope_cannot_fetch_sales_dataset(): void
@@ -1647,6 +1812,10 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('productOptions={productOptionsForPicker}', $dashboard);
         $this->assertStringContainsString("filters.product_filter === ''", $dashboard);
         $this->assertStringContainsString('options: nextData.productOptions', $dashboard);
+        $this->assertStringContainsString('function visibleScopeKeys', $dashboard);
+        $this->assertStringContainsString('function resolveInitialScopeKey', $dashboard);
+        $this->assertStringContainsString('const initialScopeKey = resolveInitialScopeKey(config, salesMainData)', $dashboard);
+        $this->assertStringContainsString('scope_key: initialScopeKey', $dashboard);
         $this->assertStringContainsString('filters.brand_filter', $dashboard);
         $this->assertStringContainsString('filters.category_filter', $dashboard);
         $this->assertStringContainsString('filters.scope_key', $dashboard);
@@ -1682,6 +1851,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringNotContainsString('filters={filters}', $dashboard);
         $this->assertStringNotContainsString('detail_type: config?.defaults?.detailType ?? current.detail_type', $dashboard);
         $this->assertStringNotContainsString('scope_key: config?.defaults?.scopeKey ?? current.scope_key', $dashboard);
+        $this->assertStringNotContainsString("scope_key: queryParam('scope_key') ?? salesMainData?.filters?.scopeKey", $dashboard);
         $this->assertStringContainsString('customer_filter', $dashboard);
         $this->assertStringContainsString('cari_filter: csv', $dashboard);
         $this->assertStringNotContainsString("scope_key: 'all'", $dashboard);
@@ -1699,6 +1869,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('selected.map((item) => item.code)', $picker);
         $this->assertStringContainsString('candidate.code === item.code', $picker);
         $this->assertStringContainsString('selectedCodes.has(customer.code)', $picker);
+        $this->assertStringNotContainsString('disabled={loading}', $picker);
         $this->assertStringContainsString('Müşteri bulunamadı', $picker);
         $this->assertStringContainsString('Ürün Filtresi', $productFilter);
         $this->assertStringContainsString('Ürün, model veya stok kodu ara', $productFilter);

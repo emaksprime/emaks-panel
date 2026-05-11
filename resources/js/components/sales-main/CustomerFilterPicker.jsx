@@ -32,7 +32,6 @@ function normalizeCustomer(row) {
 export function CustomerFilterPicker({
     selected = [],
     onChange,
-    loading,
     scopeKey = 'all',
     dateFrom,
     dateTo,
@@ -139,7 +138,6 @@ export function CustomerFilterPicker({
                 <input
                     type="search"
                     value={query}
-                    disabled={loading}
                     onFocus={() => query.trim().length >= 2 && setOpen(true)}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder="Müşteri ara"
