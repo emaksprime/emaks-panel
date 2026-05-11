@@ -2,10 +2,13 @@
 
 namespace Tests\Feature;
 
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class AppIconMetadataTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_app_blade_contains_emaks_prime_icons_manifest_and_social_preview_meta(): void
     {
         $blade = file_get_contents(resource_path('views/app.blade.php')) ?: '';
