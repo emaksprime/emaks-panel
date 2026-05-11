@@ -6,6 +6,8 @@ use App\Models\AuditLog;
 use App\Models\User;
 use App\Services\AuditLogger;
 use Carbon\CarbonImmutable;
+use Database\Seeders\PanelDataSourcesSeeder;
+use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
@@ -23,6 +25,8 @@ class AdminLogsAuditArchiveTest extends TestCase
         parent::setUp();
 
         $this->seed(PanelMetadataSeeder::class);
+        $this->seed(PanelDataSourcesSeeder::class);
+        $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
         Cache::flush();
     }
 
