@@ -2,12 +2,15 @@
 
 namespace Tests\Feature\Settings;
 
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rules\Password;
 use Tests\TestCase;
 
 class SettingsLocalizationTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_settings_layout_uses_turkish_labels(): void
     {
         $layout = file_get_contents(resource_path('js/layouts/settings/layout.tsx')) ?: '';
