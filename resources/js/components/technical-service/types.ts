@@ -75,6 +75,16 @@ export type ServiceRequest = {
   fieldStartedAt?: string | null
   fieldArrivedAt?: string | null
   fieldCompletedAt?: string | null
+  fieldCompletionNote?: string | null
+  technicianStartedAt?: string | null
+  technicianArrivedAt?: string | null
+  technicianCompletedAt?: string | null
+  checklistPayload?: Record<string, boolean> | null
+  checklistStatus?: string | null
+  checklistCompletedAt?: string | null
+  beforePhotoCount?: number | null
+  afterPhotoCount?: number | null
+  generalPhotoCount?: number | null
   missingInfoReason?: string | null
   pendingReason?: string | null
   requiresReschedule?: boolean | null
@@ -83,6 +93,14 @@ export type ServiceRequest = {
   photoStatus?: string | null
   customerClosureApprovalStatus?: string | null
   customerClosureApprovedAt?: string | null
+  customerClosureApprovalMethod?: string | null
+  customerClosureApprovalCode?: string | null
+  customerSignatureName?: string | null
+  customerSignatureAt?: string | null
+  completionBlockReason?: string | null
+  incompleteReason?: string | null
+  requiresSecondVisit?: boolean | null
+  secondVisitReason?: string | null
   cancellationReason?: string | null
   latestEvent?: string | null
   allowedWorkflowActions?: Record<WorkflowActionKey, { label: string, target: WorkflowStatus }> | null

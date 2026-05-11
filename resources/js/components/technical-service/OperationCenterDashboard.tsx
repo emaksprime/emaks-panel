@@ -61,6 +61,14 @@ export type WorkflowFilterKey =
   | 'unassigned'
   | 'customer_confirmation'
   | 'sla_overdue'
+  | 'travel_pending'
+  | 'on_site_active'
+  | 'checklist_missing'
+  | 'photo_missing'
+  | 'closure_pending_field'
+  | 'incomplete'
+  | 'parts_pending'
+  | 'second_visit'
 
 export type WorkflowQueueItem = {
   key: WorkflowFilterKey
@@ -161,6 +169,22 @@ const getWorkflowIcon = (key: WorkflowFilterKey) => {
       return Phone
     case 'sla_overdue':
       return AlertTriangle
+    case 'travel_pending':
+      return CalendarClock
+    case 'on_site_active':
+      return Wrench
+    case 'checklist_missing':
+      return ShieldAlert
+    case 'photo_missing':
+      return FileClock
+    case 'closure_pending_field':
+      return CheckCircle2
+    case 'incomplete':
+      return AlertTriangle
+    case 'parts_pending':
+      return Package2
+    case 'second_visit':
+      return CalendarClock
     default:
       return ShieldAlert
   }

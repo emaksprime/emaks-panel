@@ -103,6 +103,16 @@ type ApiTechnicalServiceRequest = {
   field_started_at?: string | null
   field_arrived_at?: string | null
   field_completed_at?: string | null
+  field_completion_note?: string | null
+  technician_started_at?: string | null
+  technician_arrived_at?: string | null
+  technician_completed_at?: string | null
+  checklist_payload?: Record<string, boolean> | null
+  checklist_status?: string | null
+  checklist_completed_at?: string | null
+  before_photo_count?: number | null
+  after_photo_count?: number | null
+  general_photo_count?: number | null
   missing_info_reason?: string | null
   pending_reason?: string | null
   requires_reschedule?: boolean | number | string | null
@@ -111,6 +121,14 @@ type ApiTechnicalServiceRequest = {
   photo_status?: string | null
   customer_closure_approval_status?: string | null
   customer_closure_approved_at?: string | null
+  customer_closure_approval_method?: string | null
+  customer_closure_approval_code?: string | null
+  customer_signature_name?: string | null
+  customer_signature_at?: string | null
+  completion_block_reason?: string | null
+  incomplete_reason?: string | null
+  requires_second_visit?: boolean | number | string | null
+  second_visit_reason?: string | null
   cancellation_reason?: string | null
   workflow_status?: string | null
   next_action?: string | null
@@ -164,8 +182,30 @@ type OperationsDashboardRequest = {
   id: number | string
   mrn: string
   customer_name: string
+  customer_phone?: string | null
+  service_address?: string | null
+  customer_city?: string | null
+  customer_district?: string | null
+  product_name?: string | null
+  product_model?: string | null
+  serial_number?: string | null
+  technician_name?: string | null
   status: string
   scheduled_at?: string | null
+  scheduled_time?: string | null
+  workflow_status?: string | null
+  next_action?: string | null
+  sla_status?: string | null
+  field_status?: string | null
+  checklist_status?: string | null
+  photo_status?: string | null
+  document_status?: string | null
+  before_photo_count?: number | null
+  after_photo_count?: number | null
+  general_photo_count?: number | null
+  customer_closure_approval_status?: string | null
+  incomplete_reason?: string | null
+  requires_second_visit?: boolean | null
 }
 
 type OperationsDashboardResponse = {
@@ -229,6 +269,15 @@ const APPOINTMENT_TIME_SLOTS = [
 ] as const
 
 const CONTACT_CONFIRMATION_METHODS = ['telefon', 'whatsapp', 'sms', 'eposta', 'panel'] as const
+const FIELD_CLOSURE_METHODS = ['otp', 'imza', 'telefon', 'panel'] as const
+const FIELD_CHECKLIST_ITEMS = [
+  'Ürün seri numarası kontrol edildi',
+  'Kapı / montaj yeri kontrol edildi',
+  'Montaj uygunluğu kontrol edildi',
+  'Ürün çalışır durumda test edildi',
+  'Müşteriye kullanım bilgisi verildi',
+  'Garanti / servis formu bilgisi kontrol edildi',
+] as const
 
 function isMountPaymentMissing(result: MikroMountCheckResult | null | undefined): boolean {
   return result?.montaj_durumu === 'Montaj Hariç'
@@ -393,34 +442,17 @@ function workflowPanelLabel(filter: WorkflowQueueKey | null): string | null {
     unassigned: 'Usta Ataması Bekleyen İşler',
     technician_approval: 'Usta Onayı Bekleyen İşler',
     sla_overdue: 'Geciken SLA İşleri',
+    travel_pending: 'Yola Çıkacak İşler',
+    on_site_active: 'Sahada Devam Eden İşler',
+    checklist_missing: 'Checklist Eksik İşler',
+    photo_missing: 'Fotoğraf Eksik İşler',
+    closure_pending_field: 'Kapanış Onayı Bekleyen İşler',
+    incomplete: 'Tamamlanamadı İşleri',
+    parts_pending: 'Parça Bekleyen İşler',
+    second_visit: 'İkinci Randevu Gerekli İşler',
   }
 
   return labels[filter]
-
-  switch (filter) {
-    case 'missing_info':
-      return 'Eksik Bilgi / Fotoğraf Bekleyen İşler'
-    case 'customer_call':
-      return 'Müşteri Aranacak İşler'
-    case 'customer_unreachable':
-      return 'Müşteriye Ulaşılamadı Kayıtları'
-    case 'customer_confirmation':
-      return 'Müşteri Onayı Bekleyen İşler'
-    case 'schedule_planning':
-      return 'Randevu Planlanacak İşler'
-    case 'unassigned':
-      return 'Usta Ataması Bekleyen İşler'
-    case 'technician_approval':
-      return 'Usta Onayı Bekleyen İşler'
-    case 'technician_reschedule':
-      return 'Usta Tarih Revize Talepleri'
-    case 'document_pending':
-      return 'Belge / Fotoğraf Bekleyen İşler'
-    case 'closure_pending':
-      return 'Kapanış Onayı Bekleyen İşler'
-    default:
-      return null
-  }
 }
 
 function toComparableText(...values: Array<string | null | undefined>): string {
@@ -527,6 +559,21 @@ type TechnicianMatch = {
   sameCity: boolean
 }
 
+type TechnicianAssignmentInsight = {
+  id: string
+  name: string
+  location: string
+  distanceKmLabel: string
+  scheduledCount: number
+  availableSlots: string[]
+  technicianAmountLabel: string
+  travelAmountLabel: string
+  totalCostLabel: string
+  costDeltaLabel: string
+  recommended: boolean
+  estimatedRoundTripKm: number | null
+}
+
 function technicianMatchInfo(technician: ServiceTechnician, request: ServiceRequest | null): TechnicianMatch {
   const technicianCity = normalizeLocationText(technician.city)
   const technicianDistrict = normalizeLocationText(technician.district)
@@ -551,6 +598,38 @@ function technicianMatchInfo(technician: ServiceTechnician, request: ServiceRequ
   }
 
   return { technician, badge: 'Yakın il / diğer', rank: 2, distanceKm, sameCity }
+}
+
+function resolveAppointmentSlotValue(
+  scheduledTime: string | null | undefined,
+): (typeof APPOINTMENT_TIME_SLOTS)[number]['value'] | null {
+  const normalized = String(scheduledTime ?? '').trim()
+
+  if (normalized === '') {
+    return null
+  }
+
+  const direct = APPOINTMENT_TIME_SLOTS.find((slot) => slot.value === normalized)
+  if (direct) {
+    return direct.value
+  }
+
+  const byStart = APPOINTMENT_TIME_SLOTS.find((slot) => slot.start === normalized.slice(0, 5))
+
+  return byStart?.value ?? null
+}
+
+function formatPreferredAppointmentLabel(request: ServiceRequest | null): string {
+  if (!request?.customerPreferredDate) {
+    return '-'
+  }
+
+  const dateLabel = formatTechnicalServiceDate(request.customerPreferredDate)
+  const timeLabel = request.customerPreferredTimeStart
+    ? `${request.customerPreferredTimeStart}${request.customerPreferredTimeEnd ? ` - ${request.customerPreferredTimeEnd}` : ''}`
+    : null
+
+  return [dateLabel, timeLabel].filter(Boolean).join(' · ')
 }
 
 function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
@@ -607,6 +686,16 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     fieldStartedAt: request.field_started_at ?? null,
     fieldArrivedAt: request.field_arrived_at ?? null,
     fieldCompletedAt: request.field_completed_at ?? null,
+    fieldCompletionNote: request.field_completion_note ?? null,
+    technicianStartedAt: request.technician_started_at ?? null,
+    technicianArrivedAt: request.technician_arrived_at ?? null,
+    technicianCompletedAt: request.technician_completed_at ?? null,
+    checklistPayload: request.checklist_payload ?? null,
+    checklistStatus: request.checklist_status ?? null,
+    checklistCompletedAt: request.checklist_completed_at ?? null,
+    beforePhotoCount: request.before_photo_count ?? null,
+    afterPhotoCount: request.after_photo_count ?? null,
+    generalPhotoCount: request.general_photo_count ?? null,
     missingInfoReason: request.missing_info_reason ?? null,
     pendingReason: request.pending_reason ?? null,
     requiresReschedule: parseLooseBoolean(request.requires_reschedule),
@@ -615,6 +704,14 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     photoStatus: request.photo_status ?? null,
     customerClosureApprovalStatus: request.customer_closure_approval_status ?? null,
     customerClosureApprovedAt: request.customer_closure_approved_at ?? null,
+    customerClosureApprovalMethod: request.customer_closure_approval_method ?? null,
+    customerClosureApprovalCode: request.customer_closure_approval_code ?? null,
+    customerSignatureName: request.customer_signature_name ?? null,
+    customerSignatureAt: request.customer_signature_at ?? null,
+    completionBlockReason: request.completion_block_reason ?? null,
+    incompleteReason: request.incomplete_reason ?? null,
+    requiresSecondVisit: parseLooseBoolean(request.requires_second_visit),
+    secondVisitReason: request.second_visit_reason ?? null,
     cancellationReason: request.cancellation_reason ?? null,
     workflowStatus: request.workflow_status ?? null,
     nextAction: request.next_action ?? null,
@@ -737,38 +834,48 @@ function matchesNewWorkflowQueue(request: ServiceRequest, filter: WorkflowQueueK
     return matchesWorkflowStatus(request, ['Usta Onayı Bekleyen'])
   }
 
+  if (filter === 'travel_pending') {
+    return matchesWorkflowStatus(request, ['Planlı'])
+  }
+
+  if (filter === 'on_site_active') {
+    return matchesWorkflowStatus(request, ['Yolda', 'Sahada'])
+  }
+
+  if (filter === 'checklist_missing') {
+    return matchesWorkflowStatus(request, ['Sahada']) && normalizeTechnicalServiceText(request.checklistStatus) !== 'tamamlandi'
+  }
+
+  if (filter === 'photo_missing') {
+    return matchesWorkflowStatus(request, ['Sahada', 'Belge / Fotoğraf Bekleyen']) && normalizeTechnicalServiceText(request.photoStatus) !== 'tamamlandi'
+  }
+
+  if (filter === 'closure_pending_field') {
+    return matchesWorkflowStatus(request, ['Müşteri Kapanış Onayı Bekleyen'])
+      || (
+        matchesWorkflowStatus(request, ['Sahada', 'Belge / Fotoğraf Bekleyen'])
+        && normalizeTechnicalServiceText(request.customerClosureApprovalStatus) !== 'onaylandi'
+      )
+  }
+
+  if (filter === 'incomplete') {
+    return matchesWorkflowStatus(request, ['Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil'])
+      && Boolean((request.incompleteReason ?? request.pendingReason)?.trim())
+  }
+
+  if (filter === 'parts_pending') {
+    return matchesWorkflowStatus(request, ['Parça Bekleniyor'])
+  }
+
+  if (filter === 'second_visit') {
+    return request.requiresSecondVisit === true
+  }
+
   if (filter === 'sla_overdue') {
     return request.slaStatus === 'geciken' || isOverdueRequest(request)
   }
 
-  switch (filter) {
-    case 'missing_info':
-      return matchesWorkflowStatus(request, ['Eksik Bilgi / Fotoğraf Bekleyen'])
-    case 'customer_call':
-      return matchesWorkflowStatus(request, ['Müşteri Aranacak'])
-    case 'customer_unreachable':
-      return matchesWorkflowStatus(request, ['Müşteriye Ulaşılamadı'])
-    case 'customer_confirmation':
-      return matchesWorkflowStatus(request, ['Müşteri Onayı Bekleyen'])
-    case 'schedule_planning':
-      return matchesWorkflowStatus(request, ['Müşteri Onayladı', 'Randevu Planlandı'])
-    case 'unassigned':
-      return matchesWorkflowStatus(request, ['Usta Ataması Bekleyen'])
-    case 'technician_approval':
-      return matchesWorkflowStatus(request, ['Usta Onayı Bekleyen'])
-    case 'technician_reschedule':
-      return matchesWorkflowStatus(request, ['Usta Tarih Revize Talebi'])
-    case 'sla_overdue':
-      return request.slaStatus === 'geciken' || isOverdueRequest(request)
-    case 'parts_pending':
-      return matchesWorkflowStatus(request, ['Parça Bekleniyor'])
-    case 'document_pending':
-      return matchesWorkflowStatus(request, ['Belge / Fotoğraf Bekleyen'])
-    case 'closure_pending':
-      return matchesWorkflowStatus(request, ['Müşteri Kapanış Onayı Bekleyen'])
-    default:
-      return true
-  }
+  return true
 }
 
 export function TechnicalServiceOperationCenter() {
@@ -820,6 +927,23 @@ export function TechnicalServiceOperationCenter() {
   const [contactCancellationReason, setContactCancellationReason] = useState('')
   const [contactLoading, setContactLoading] = useState(false)
   const [contactError, setContactError] = useState<string | null>(null)
+  const [fieldDialogOpen, setFieldDialogOpen] = useState(false)
+  const [fieldAction, setFieldAction] = useState<string | null>(null)
+  const [fieldNote, setFieldNote] = useState('')
+  const [fieldIncompleteReason, setFieldIncompleteReason] = useState('')
+  const [fieldIncompleteWorkflowStatus, setFieldIncompleteWorkflowStatus] = useState('Beklemede')
+  const [fieldRequiresSecondVisit, setFieldRequiresSecondVisit] = useState(false)
+  const [fieldSecondVisitReason, setFieldSecondVisitReason] = useState('')
+  const [fieldChecklist, setFieldChecklist] = useState<Record<string, boolean>>(() => Object.fromEntries(FIELD_CHECKLIST_ITEMS.map((item) => [item, false])))
+  const [fieldBeforePhotoCount, setFieldBeforePhotoCount] = useState('3')
+  const [fieldAfterPhotoCount, setFieldAfterPhotoCount] = useState('3')
+  const [fieldGeneralPhotoCount, setFieldGeneralPhotoCount] = useState('1')
+  const [fieldDocumentStatus, setFieldDocumentStatus] = useState('tamamlandı')
+  const [fieldApprovalMethod, setFieldApprovalMethod] = useState<(typeof FIELD_CLOSURE_METHODS)[number]>('otp')
+  const [fieldApprovalCode, setFieldApprovalCode] = useState('')
+  const [fieldSignatureName, setFieldSignatureName] = useState('')
+  const [fieldLoading, setFieldLoading] = useState(false)
+  const [fieldError, setFieldError] = useState<string | null>(null)
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false)
   const [completionReason, setCompletionReason] = useState('')
   const [completionOtherNote, setCompletionOtherNote] = useState('')
@@ -1166,6 +1290,28 @@ export function TechnicalServiceOperationCenter() {
   const selectedListDisplayMrn = selectedListRequest ? formatTechnicalServiceMrn(selectedListRequest) : null
   const selectedDetailDisplayMrn = selectedDetailRequest ? formatTechnicalServiceMrn(selectedDetailRequest) : null
   const modalDisplayMrn = selectedListDisplayMrn ?? selectedDetailDisplayMrn
+  const openFieldDialog = useCallback((action: string, request: ServiceRequest | null) => {
+    setFieldAction(action)
+    setFieldNote('')
+    setFieldIncompleteReason(request?.incompleteReason ?? request?.pendingReason ?? '')
+    setFieldIncompleteWorkflowStatus(action === 'parts_pending' ? 'Parça Bekleniyor' : 'Beklemede')
+    setFieldRequiresSecondVisit(action === 'second_visit_required' ? true : (request?.requiresSecondVisit ?? false))
+    setFieldSecondVisitReason(request?.secondVisitReason ?? '')
+    setFieldChecklist(
+      request?.checklistPayload && Object.keys(request.checklistPayload).length > 0
+        ? request.checklistPayload
+        : Object.fromEntries(FIELD_CHECKLIST_ITEMS.map((item) => [item, false])),
+    )
+    setFieldBeforePhotoCount(String(request?.beforePhotoCount ?? 3))
+    setFieldAfterPhotoCount(String(request?.afterPhotoCount ?? 3))
+    setFieldGeneralPhotoCount(String(request?.generalPhotoCount ?? 1))
+    setFieldDocumentStatus(request?.documentStatus ?? 'tamamlandı')
+    setFieldApprovalMethod((request?.customerClosureApprovalMethod as (typeof FIELD_CLOSURE_METHODS)[number] | null) ?? 'otp')
+    setFieldApprovalCode(request?.customerClosureApprovalCode ?? '')
+    setFieldSignatureName(request?.customerSignatureName ?? '')
+    setFieldError(null)
+    setFieldDialogOpen(true)
+  }, [])
   const modalPayment = getServicePaymentInfo(
     modalRequest?.serviceType,
     modalRequest?.travelRoundTripKm,
@@ -1215,6 +1361,122 @@ export function TechnicalServiceOperationCenter() {
   const visibleTechnicianMatches = showNearbyTechnicians
     ? technicianMatches
     : sameCityTechnicians
+  const assignmentReferenceDateKey = useMemo(() => {
+    if (modalRequest?.scheduledDate) {
+      return modalRequest.scheduledDate
+    }
+
+    if (modalRequest?.customerPreferredDate) {
+      return modalRequest.customerPreferredDate
+    }
+
+    return toDateKey(selectedDate)
+  }, [modalRequest?.customerPreferredDate, modalRequest?.scheduledDate, selectedDate])
+  const assignmentReferenceRequests = useMemo(() => {
+    return requests.filter((request) => {
+      const requestDate = request.scheduledDate
+        ?? (request.scheduledAt ? toDateKey(new Date(request.scheduledAt)) : null)
+
+      return requestDate === assignmentReferenceDateKey
+    })
+  }, [assignmentReferenceDateKey, requests])
+  const technicianAssignmentInsights = useMemo<TechnicianAssignmentInsight[]>(() => {
+    const insights = technicianMatches.map((match) => {
+      const technicianName = technicianDisplayName(match.technician)
+      const scheduledJobs = assignmentReferenceRequests.filter((request) => {
+        const requestTechnicianId = request.technicianId ? String(request.technicianId) : null
+        const requestTechnicianName = request.technician?.trim() ?? ''
+
+        return requestTechnicianId === match.technician.id
+          || (requestTechnicianName !== '' && requestTechnicianName === technicianName)
+      })
+      const bookedSlots = new Set(
+        scheduledJobs
+          .map((request) => resolveAppointmentSlotValue(request.scheduledTime))
+          .filter((slot): slot is (typeof APPOINTMENT_TIME_SLOTS)[number]['value'] => slot !== null),
+      )
+      const availableSlots = APPOINTMENT_TIME_SLOTS
+        .filter((slot) => !bookedSlots.has(slot.value))
+        .map((slot) => slot.value)
+      const estimatedRoundTripKm = match.distanceKm !== null
+        ? Math.round(match.distanceKm * 2 * 10) / 10
+        : null
+      const paymentPreview = getServicePaymentInfo(
+        modalRequest?.serviceType,
+        estimatedRoundTripKm,
+      )
+      const costDelta = paymentPreview.customerAmount !== null && paymentPreview.totalTechnicianCostAmount !== null
+        ? paymentPreview.customerAmount - paymentPreview.totalTechnicianCostAmount
+        : null
+
+      return {
+        id: match.technician.id,
+        name: technicianName,
+        location: [match.technician.city, match.technician.district].filter(Boolean).join(' / ') || 'Konum bilgisi yok',
+        distanceKmLabel: match.distanceKm !== null ? `Yaklaşık ${match.distanceKm.toLocaleString('tr-TR')} km` : 'Mesafe yok',
+        scheduledCount: scheduledJobs.length,
+        availableSlots,
+        technicianAmountLabel: paymentPreview.technicianAmountLabel,
+        travelAmountLabel: paymentPreview.travelAmountLabel,
+        totalCostLabel: paymentPreview.totalTechnicianCostLabel,
+        costDeltaLabel: costDelta === null
+          ? '-'
+          : costDelta > 0
+            ? `+${costDelta.toLocaleString('tr-TR')} TL kâr`
+            : costDelta < 0
+              ? `-${Math.abs(costDelta).toLocaleString('tr-TR')} TL fark`
+              : '0 TL',
+        recommended: false,
+        estimatedRoundTripKm,
+      }
+    })
+
+    const recommendedId = [...insights]
+      .sort((a, b) => {
+        const matchA = technicianMatches.find((match) => match.technician.id === a.id)
+        const matchB = technicianMatches.find((match) => match.technician.id === b.id)
+        const rankA = matchA?.rank ?? 99
+        const rankB = matchB?.rank ?? 99
+
+        if (rankA !== rankB) {
+          return rankA - rankB
+        }
+
+        if (a.scheduledCount !== b.scheduledCount) {
+          return a.scheduledCount - b.scheduledCount
+        }
+
+        const distanceA = matchA?.distanceKm ?? Number.POSITIVE_INFINITY
+        const distanceB = matchB?.distanceKm ?? Number.POSITIVE_INFINITY
+
+        return distanceA - distanceB
+      })[0]?.id ?? null
+
+    return insights.map((insight) => ({
+      ...insight,
+      recommended: insight.id === recommendedId,
+    }))
+  }, [assignmentReferenceRequests, modalRequest?.serviceType, technicianMatches])
+  const assignmentScheduleSupport = useMemo(() => {
+    const currentSchedule = modalRequest?.scheduledDate
+      ? [
+          formatTechnicalServiceDate(modalRequest.scheduledDate),
+          modalRequest.scheduledTime || null,
+        ].filter(Boolean).join(' · ')
+      : modalRequest?.appointment || '-'
+
+    const preferredSchedule = formatPreferredAppointmentLabel(modalRequest)
+    const recommendedSlots = technicianAssignmentInsights.find((insight) => insight.recommended)?.availableSlots
+      ?? technicianAssignmentInsights[0]?.availableSlots
+      ?? []
+
+    return {
+      scheduledLabel: currentSchedule || '-',
+      preferredLabel: preferredSchedule,
+      customerContactLabel: modalRequest?.customerContactStatus || 'Müşteri teyidi yok',
+      slotSuggestions: recommendedSlots.slice(0, 3),
+    }
+  }, [modalRequest, technicianAssignmentInsights])
 
   const selectedDayRequests = useMemo(() => {
     return sortedRequests
@@ -1464,7 +1726,7 @@ export function TechnicalServiceOperationCenter() {
     },
   ]), [isOpenRequest, matchesWorkflowFilter, operationsData?.summary, selectedDayRequests])
 
-  const phaseTwoWorkflowQueuePanelItems = useMemo(() => {
+  const operationWorkflowQueuePanelItems = useMemo(() => {
     const summary = operationsData?.summary ?? {}
 
     return [
@@ -1515,6 +1777,54 @@ export function TechnicalServiceOperationCenter() {
         label: 'Geciken SLA',
         description: 'Zaman hedefini aşan kayıtlar öncelikli aksiyon bekliyor',
         count: summary.sla_overdue ?? 0,
+      },
+      {
+        key: 'travel_pending' as const,
+        label: 'Yola Çıkacak İşler',
+        description: 'Planlı olup saha hareketi başlamayan kayıtlar',
+        count: summary.travel_pending ?? 0,
+      },
+      {
+        key: 'on_site_active' as const,
+        label: 'Sahada Devam Eden',
+        description: 'Yolda veya sahada aktif ilerleyen işler',
+        count: summary.on_site_active ?? 0,
+      },
+      {
+        key: 'checklist_missing' as const,
+        label: 'Checklist Eksik',
+        description: 'Saha checklist adımları tamamlanmayı bekliyor',
+        count: summary.checklist_missing ?? 0,
+      },
+      {
+        key: 'photo_missing' as const,
+        label: 'Fotoğraf Eksik',
+        description: 'Öncesi, sonrası veya genel fotoğraf sayıları eksik',
+        count: summary.photo_missing ?? 0,
+      },
+      {
+        key: 'closure_pending_field' as const,
+        label: 'Kapanış Onayı Bekleyen',
+        description: 'Müşteri kapanış onayı alınmadan iş kapatılamıyor',
+        count: summary.closure_pending_field ?? 0,
+      },
+      {
+        key: 'incomplete' as const,
+        label: 'Tamamlanamadı',
+        description: 'Sahada bloke olan ve yeni aksiyon bekleyen kayıtlar',
+        count: summary.incomplete ?? 0,
+      },
+      {
+        key: 'parts_pending' as const,
+        label: 'Parça Bekleyen',
+        description: 'Parça temini sonrası ikinci aksiyon planlanmalı',
+        count: summary.parts_pending ?? 0,
+      },
+      {
+        key: 'second_visit' as const,
+        label: 'İkinci Randevu Gerekli',
+        description: 'İkinci saha ziyareti planlanması gereken işler',
+        count: summary.second_visit ?? 0,
       },
     ]
   }, [operationsData?.summary])
@@ -1664,6 +1974,24 @@ export function TechnicalServiceOperationCenter() {
     setContactError(null)
   }
 
+  const handleFieldReset = useCallback(() => {
+    setFieldAction(null)
+    setFieldNote('')
+    setFieldIncompleteReason('')
+    setFieldIncompleteWorkflowStatus('Beklemede')
+    setFieldRequiresSecondVisit(false)
+    setFieldSecondVisitReason('')
+    setFieldChecklist(Object.fromEntries(FIELD_CHECKLIST_ITEMS.map((item) => [item, false])))
+    setFieldBeforePhotoCount('3')
+    setFieldAfterPhotoCount('3')
+    setFieldGeneralPhotoCount('1')
+    setFieldDocumentStatus('tamamlandı')
+    setFieldApprovalMethod('otp')
+    setFieldApprovalCode('')
+    setFieldSignatureName('')
+    setFieldError(null)
+  }, [])
+
   const handleCompleteReset = () => {
     setCompletionReason('')
     setCompletionOtherNote('')
@@ -1747,6 +2075,24 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    if (['field_travel_started', 'field_arrived', 'field_work_started'].includes(action)) {
+      await submitFieldAction(action, {})
+      return
+    }
+
+    if ([
+      'checklist_updated',
+      'photos_updated',
+      'customer_closure_approved',
+      'field_marked_incomplete',
+      'parts_pending',
+      'second_visit_required',
+      'field_completed',
+    ].includes(action)) {
+      openFieldDialog(action, selectedDetailRequest ?? selectedListRequest ?? selectedRequest)
+      return
+    }
+
     setWorkflowActionLoading(action)
     setDetailError(null)
 
@@ -1770,59 +2116,6 @@ export function TechnicalServiceOperationCenter() {
 
   const handleScheduleSubmit = async () => {
     if (!selectedId) {
-      return
-    }
-
-    if (true) {
-      if (effectiveMountPaymentMissing && !assignOverrideWithoutPayment) {
-        setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
-
-        return
-      }
-
-      if (effectiveMountPaymentMissing && assignOverrideReason.trim().length < 5) {
-        setAssignError('Atama nedeni en az 5 karakter olmalıdır.')
-
-        return
-      }
-
-      const parsedTravelRoundTripKm = Number(travelRoundTripKm)
-
-      if (travelRoundTripKm.trim() === '' || !Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
-        setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
-
-        return
-      }
-
-      setAssignLoading(true)
-      setAssignError(null)
-
-      try {
-        await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
-          method: 'POST',
-          body: JSON.stringify({
-            ...(isManualTechnician
-              ? { technician_name: selectedTechnician }
-              : { technical_service_technician_id: assignTechnicianOption }),
-            travel_round_trip_km: parsedTravelRoundTripKm,
-            mount_payment_missing: effectiveMountPaymentMissing,
-            override_without_payment: effectiveMountPaymentMissing ? assignOverrideWithoutPayment : false,
-            override_reason: effectiveMountPaymentMissing ? assignOverrideReason.trim() || null : null,
-            note: isManualTechnician ? assignNote || null : null,
-          }),
-        })
-
-        setAssignDialogOpen(false)
-        handleAssignReset()
-        await loadRequests()
-        await loadSummary()
-        await loadRequestDetail(selectedId)
-      } catch (caught) {
-        setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
-      } finally {
-        setAssignLoading(false)
-      }
-
       return
     }
 
@@ -1919,6 +2212,101 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const submitFieldAction = useCallback(async (action: string, payload: Record<string, unknown> = {}) => {
+    if (!selectedId) {
+      return
+    }
+
+    setFieldLoading(true)
+    setFieldError(null)
+
+    const actionPath = action === 'field_travel_started'
+      ? 'start-travel'
+      : action === 'field_arrived'
+        ? 'arrive'
+        : action === 'field_work_started'
+          ? 'start-work'
+          : action === 'checklist_updated'
+            ? 'checklist'
+            : action === 'photos_updated'
+              ? 'photos'
+              : action === 'customer_closure_approved'
+                ? 'customer-closure-approval'
+                : action === 'field_completed'
+                  ? 'complete'
+                  : 'mark-incomplete'
+
+    try {
+      await apiRequest(`/api/technical-service/requests/${selectedId}/field/${actionPath}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+
+      setFieldDialogOpen(false)
+      handleFieldReset()
+      await loadRequests()
+      await loadSummary()
+      await loadRequestDetail(selectedId)
+    } catch (caught) {
+      setFieldError(caught instanceof Error ? caught.message : 'Saha aksiyonu kaydedilemedi.')
+    } finally {
+      setFieldLoading(false)
+    }
+  }, [handleFieldReset, loadRequestDetail, loadRequests, loadSummary, selectedId])
+
+  const handleFieldActionSubmit = async () => {
+    if (!fieldAction) {
+      return
+    }
+
+    if (fieldAction === 'checklist_updated') {
+      await submitFieldAction(fieldAction, {
+        checklist_payload: fieldChecklist,
+        note: fieldNote || null,
+      })
+      return
+    }
+
+    if (fieldAction === 'photos_updated') {
+      await submitFieldAction(fieldAction, {
+        before_photo_count: Number(fieldBeforePhotoCount || 0),
+        after_photo_count: Number(fieldAfterPhotoCount || 0),
+        general_photo_count: Number(fieldGeneralPhotoCount || 0),
+        document_status: fieldDocumentStatus,
+        note: fieldNote || null,
+      })
+      return
+    }
+
+    if (fieldAction === 'customer_closure_approved') {
+      await submitFieldAction(fieldAction, {
+        approval_method: fieldApprovalMethod,
+        approval_code: fieldApprovalCode || null,
+        signature_name: fieldSignatureName || null,
+        note: fieldNote || null,
+      })
+      return
+    }
+
+    if (fieldAction === 'field_marked_incomplete' || fieldAction === 'parts_pending' || fieldAction === 'second_visit_required') {
+      await submitFieldAction(fieldAction, {
+        workflow_status: fieldAction === 'parts_pending' ? 'Parça Bekleniyor' : fieldIncompleteWorkflowStatus,
+        incomplete_reason: fieldIncompleteReason,
+        pending_reason: fieldNote || fieldIncompleteReason,
+        requires_second_visit: fieldAction === 'second_visit_required' || fieldRequiresSecondVisit,
+        second_visit_reason: fieldAction === 'second_visit_required' ? (fieldSecondVisitReason || fieldIncompleteReason) : (fieldSecondVisitReason || null),
+        note: fieldNote || null,
+      })
+      return
+    }
+
+    if (fieldAction === 'field_completed') {
+      await submitFieldAction(fieldAction, {
+        note: fieldNote || null,
+      })
+    }
+  }
+
   const handleAssignSubmit = async () => {
     if (!selectedId) {
       return
@@ -1932,12 +2320,6 @@ export function TechnicalServiceOperationCenter() {
 
     if (!selectedTechnician) {
       setAssignError('Lütfen bir usta seçin veya manuel isim girin.')
-
-      return
-    }
-
-    if (!scheduleDate || !scheduleTimeSlot) {
-      setAssignError('Lütfen randevu tarihi ve saatini seçin.')
 
       return
     }
@@ -1966,9 +2348,6 @@ export function TechnicalServiceOperationCenter() {
     setAssignError(null)
 
     try {
-      const selectedTimeSlot = APPOINTMENT_TIME_SLOTS.find((slot) => slot.value === scheduleTimeSlot)
-      const scheduledAt = `${scheduleDate}T${selectedTimeSlot?.start ?? '10:00'}:00`
-
       await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
         method: 'POST',
         body: JSON.stringify({
@@ -1977,18 +2356,9 @@ export function TechnicalServiceOperationCenter() {
             : { technical_service_technician_id: assignTechnicianOption }),
           travel_round_trip_km: parsedTravelRoundTripKm,
           mount_payment_missing: effectiveMountPaymentMissing,
-          appointment_time_slot: scheduleTimeSlot,
           override_without_payment: effectiveMountPaymentMissing ? assignOverrideWithoutPayment : false,
           override_reason: effectiveMountPaymentMissing ? assignOverrideReason.trim() || null : null,
-          note: isManualTechnician ? assignNote || null : null,
-        }),
-      })
-
-      await apiRequest(`/api/technical-service/requests/${selectedId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          scheduled_at: scheduledAt,
-          schedule_note: assignNote || null,
+          note: assignNote || null,
         }),
       })
 
@@ -2490,6 +2860,26 @@ export function TechnicalServiceOperationCenter() {
               ) : null}
 
               <div className="grid gap-4 pt-2">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Kesin Randevu</p>
+                    <p className="mt-2 font-semibold text-slate-900">{assignmentScheduleSupport.scheduledLabel}</p>
+                    <p className="mt-1 text-xs text-slate-500">Usta ataması bu plan üzerinden değerlendirilir.</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Müşteri Tercihi</p>
+                    <p className="mt-2 font-semibold text-slate-900">{assignmentScheduleSupport.preferredLabel}</p>
+                    <p className="mt-1 text-xs text-slate-500">{assignmentScheduleSupport.customerContactLabel}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Önerilen Slotlar</p>
+                  <p className="mt-2 font-semibold text-slate-900">
+                    {assignmentScheduleSupport.slotSuggestions.length > 0 ? assignmentScheduleSupport.slotSuggestions.join(' · ') : 'Boş slot bilgisi yok'}
+                  </p>
+                </div>
+
                 <div className={[
                   'grid gap-3 rounded-2xl border p-4 text-sm',
                   effectiveMountPaymentMissing
@@ -2594,6 +2984,9 @@ export function TechnicalServiceOperationCenter() {
                             onChange={() => {
                               setAssignTechnicianOption(match.technician.id)
                               setShowNearbyTechnicians(false)
+                              if (travelRoundTripKm.trim() === '' && match.distanceKm !== null) {
+                                setTravelRoundTripKm(String(Math.round(match.distanceKm * 2 * 10) / 10))
+                              }
                             }}
                             className="mt-1 h-4 w-4 accent-primary"
                           />
@@ -2615,6 +3008,19 @@ export function TechnicalServiceOperationCenter() {
                                 {[match.technician.mikro_cari_adi || match.technician.mikro_cari_kodu, match.distanceKm !== null ? `Yaklaşık ${match.distanceKm.toLocaleString('tr-TR')} km` : null].filter(Boolean).join(' · ')}
                               </span>
                             ) : null}
+                            {(() => {
+                              const insight = technicianAssignmentInsights.find((item) => item.id === match.technician.id)
+
+                              if (!insight) {
+                                return null
+                              }
+
+                              return (
+                                <span className="mt-2 block text-xs font-normal text-slate-600">
+                                  {[`${insight.scheduledCount} iş`, insight.availableSlots.length > 0 ? `Uygun: ${insight.availableSlots.slice(0, 2).join(' / ')}` : 'Boş slot görünmüyor', insight.costDeltaLabel].filter(Boolean).join(' · ')}
+                                </span>
+                              )
+                            })()}
                           </span>
                         </label>
                       </div>
@@ -2692,6 +3098,18 @@ export function TechnicalServiceOperationCenter() {
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
                     <span className="font-medium text-slate-600">Toplam usta maliyeti</span>
                     <span className="font-semibold text-slate-950">{assignPaymentPreview.totalTechnicianCostLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
+                    <span className="font-medium text-slate-600">Müşteriden alınan ücret</span>
+                    <span className="font-semibold text-slate-950">{modalPayment.customerAmountLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium text-slate-600">Net fark / kâr</span>
+                    <span className="font-semibold text-slate-950">
+                      {modalPayment.customerAmount !== null && assignPaymentPreview.totalTechnicianCostAmount !== null
+                        ? `${(modalPayment.customerAmount - assignPaymentPreview.totalTechnicianCostAmount).toLocaleString('tr-TR')} TL`
+                        : '-'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -2891,6 +3309,177 @@ export function TechnicalServiceOperationCenter() {
                 </DialogClose>
                 <Button type="button" onClick={handleContactActionSubmit} disabled={contactLoading}>
                   {contactLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={fieldDialogOpen} onOpenChange={(open) => {
+            setFieldDialogOpen(open)
+
+            if (!open) {
+              handleFieldReset()
+            }
+          }}>
+            <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{({
+                  checklist_updated: 'Checklist Güncelle',
+                  photos_updated: 'Fotoğraf Sayılarını Güncelle',
+                  customer_closure_approved: 'Müşteri Kapanış Onayı Al',
+                  field_marked_incomplete: 'Tamamlanamadı',
+                  parts_pending: 'Parça Bekleniyor',
+                  second_visit_required: 'İkinci Randevu Gerekli',
+                  field_completed: 'İşi Tamamla',
+                } as Record<string, string>)[fieldAction ?? ''] ?? 'Saha Süreci'}</DialogTitle>
+                <DialogDescription>
+                  {modalDisplayMrn ? `${modalDisplayMrn} için saha süreci bilgisini güncelleyin.` : 'Seçili talep yok.'}
+                </DialogDescription>
+              </DialogHeader>
+
+              {fieldError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {fieldError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-4 pt-2">
+                {fieldAction === 'checklist_updated' ? (
+                  <fieldset className="grid gap-3">
+                    <legend className="text-sm font-medium text-slate-700">Checklist</legend>
+                    <div className="grid gap-2">
+                      {FIELD_CHECKLIST_ITEMS.map((item) => (
+                        <label
+                          key={item}
+                          className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={Boolean(fieldChecklist[item])}
+                            onChange={(event) => setFieldChecklist((current) => ({ ...current, [item]: event.target.checked }))}
+                            className="mt-1 h-4 w-4 accent-primary"
+                          />
+                          <span className="flex-1 break-words">{item}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                ) : null}
+
+                {fieldAction === 'photos_updated' ? (
+                  <>
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Öncesi fotoğraf
+                        <Input type="number" min="0" value={fieldBeforePhotoCount} onChange={(event) => setFieldBeforePhotoCount(event.target.value)} />
+                      </label>
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Sonrası fotoğraf
+                        <Input type="number" min="0" value={fieldAfterPhotoCount} onChange={(event) => setFieldAfterPhotoCount(event.target.value)} />
+                      </label>
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Genel fotoğraf
+                        <Input type="number" min="0" value={fieldGeneralPhotoCount} onChange={(event) => setFieldGeneralPhotoCount(event.target.value)} />
+                      </label>
+                    </div>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Belge durumu
+                      <select
+                        value={fieldDocumentStatus}
+                        onChange={(event) => setFieldDocumentStatus(event.target.value)}
+                        className={selectClassName}
+                      >
+                        <option value="eksik">Eksik</option>
+                        <option value="tamamlandı">Tamamlandı</option>
+                        <option value="gerekli_degil">Belge gerekli değil</option>
+                      </select>
+                    </label>
+                  </>
+                ) : null}
+
+                {fieldAction === 'customer_closure_approved' ? (
+                  <>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Onay yöntemi
+                      <select value={fieldApprovalMethod} onChange={(event) => setFieldApprovalMethod(event.target.value)} className={selectClassName}>
+                        {FIELD_CLOSURE_METHODS.map((method) => (
+                          <option key={method} value={method}>{method}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Onay kodu
+                        <Input value={fieldApprovalCode} onChange={(event) => setFieldApprovalCode(event.target.value)} />
+                      </label>
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        İmza adı
+                        <Input value={fieldSignatureName} onChange={(event) => setFieldSignatureName(event.target.value)} />
+                      </label>
+                    </div>
+                  </>
+                ) : null}
+
+                {(fieldAction === 'field_marked_incomplete' || fieldAction === 'parts_pending' || fieldAction === 'second_visit_required') ? (
+                  <>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Tamamlanamama nedeni
+                      <Input value={fieldIncompleteReason} onChange={(event) => setFieldIncompleteReason(event.target.value)} />
+                    </label>
+
+                    {fieldAction === 'field_marked_incomplete' ? (
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        Bekleme durumu
+                        <select
+                          value={fieldIncompleteWorkflowStatus}
+                          onChange={(event) => setFieldIncompleteWorkflowStatus(event.target.value)}
+                          className={selectClassName}
+                        >
+                          <option value="Beklemede">Beklemede</option>
+                          <option value="Müşteri Yerinde Yok">Müşteri Yerinde Yok</option>
+                          <option value="Montaj Yeri Hazır Değil">Montaj Yeri Hazır Değil</option>
+                        </select>
+                      </label>
+                    ) : null}
+
+                    <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900">
+                      <input
+                        type="checkbox"
+                        checked={fieldAction === 'second_visit_required' ? true : fieldRequiresSecondVisit}
+                        onChange={(event) => setFieldRequiresSecondVisit(event.target.checked)}
+                        className="mt-1 h-4 w-4 accent-primary"
+                        disabled={fieldAction === 'second_visit_required'}
+                      />
+                      <span>İkinci randevu gerekli</span>
+                    </label>
+
+                    {(fieldAction === 'second_visit_required' || fieldRequiresSecondVisit) ? (
+                      <label className="grid gap-2 text-sm font-medium text-slate-700">
+                        İkinci randevu nedeni
+                        <Input value={fieldSecondVisitReason} onChange={(event) => setFieldSecondVisitReason(event.target.value)} />
+                      </label>
+                    ) : null}
+                  </>
+                ) : null}
+
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Not
+                  <textarea
+                    value={fieldNote}
+                    onChange={(event) => setFieldNote(event.target.value)}
+                    className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                  />
+                </label>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <DialogClose asChild>
+                  <Button variant="secondary" type="button" onClick={handleFieldReset}>
+                    İptal
+                  </Button>
+                </DialogClose>
+                <Button type="button" onClick={handleFieldActionSubmit} disabled={fieldLoading}>
+                  {fieldLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -3122,7 +3711,7 @@ export function TechnicalServiceOperationCenter() {
           onSelectRequest={openRequestDetail}
           summaryMetrics={summaryMetrics}
           summaryDescription={selectedDayDescription}
-          workflowQueues={phaseTwoWorkflowQueuePanelItems}
+          workflowQueues={operationWorkflowQueuePanelItems}
           activeWorkflowFilter={workflowFilter}
           onWorkflowFilterChange={setWorkflowFilter}
           technicianSummary={selectedDayTechnicianSummary}
@@ -3176,13 +3765,9 @@ export function TechnicalServiceOperationCenter() {
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
                     Detay yükleniyor...
                   </div>
-                ) : detailError ? (
-                  <div className="rounded-3xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700">
-                    {detailError}
-                  </div>
-                ) : selectedDetailRequest ? (
+                ) : (selectedDetailRequest || modalRequest) ? (
                   <ServiceRequestDetails
-                    request={selectedDetailRequest}
+                    request={selectedDetailRequest ?? modalRequest!}
                     displayMrn={modalDisplayMrn ?? undefined}
                     events={selectedEvents}
                     loading={detailLoading}
@@ -3199,6 +3784,8 @@ export function TechnicalServiceOperationCenter() {
                     onReopen={() => setReopenDialogOpen(true)}
                     onWorkflowAction={handleWorkflowAction}
                     workflowActionInFlight={workflowActionLoading}
+                    technicianSuggestions={technicianAssignmentInsights.slice(0, 4)}
+                    scheduleSupport={assignmentScheduleSupport}
                   />
                 ) : (
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">

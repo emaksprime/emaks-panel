@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -180,6 +181,33 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertArrayHasKey('workflow_status_counts', $payload);
         $this->assertIsArray($payload['workflow_status_counts']);
         $this->assertSame(2, array_sum($payload['workflow_status_counts']));
+    }
+
+    public function test_show_endpoint_returns_detail_payload_and_tolerates_missing_audit_log_table(): void
+    {
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Atandı',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'travel_round_trip_km' => 42,
+            'travel_billable_km' => 12,
+            'travel_fee_amount' => 120,
+            'technician_payment_amount' => 3000,
+        ]);
+
+        Schema::dropIfExists('technical_service_audit_logs');
+
+        $this->actingAs($user)
+            ->getJson("/api/technical-service/requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('request.id', $request->id)
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.customer_fee', 3000)
+            ->assertJsonPath('request.technician_fee', 3000)
+            ->assertJsonPath('request.travel_fee', 120)
+            ->assertJsonPath('request.total_technician_cost', 3120)
+            ->assertJsonPath('request.cost_delta', -120)
+            ->assertJsonPath('request.audit_logs_unavailable', true);
     }
 
     private function adminUser(): User

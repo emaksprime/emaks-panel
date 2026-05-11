@@ -97,6 +97,10 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/contact-log', [TechnicalServiceController::class, 'storeContactLog'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.contact-log');
+            Route::patch('requests/{technicalServiceRequest}/field/{fieldAction}', [TechnicalServiceController::class, 'updateFieldAction'])
+                ->where('fieldAction', 'start-travel|arrive|start-work|mark-incomplete|checklist|photos|customer-closure-approval|complete')
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.field-action');
             Route::get('requests/{technicalServiceRequest}/audit-logs', [TechnicalServiceController::class, 'auditLogs'])
                 ->middleware('panel.access:technical_service')
                 ->name('api.technical-service.requests.audit-logs');
@@ -176,6 +180,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:technical_service_dashboard')->name('technical-service.operations-dashboard');
+
+    Route::get('technical-service/field', fn () => Inertia::render('panel/technical-service-field', [
+        'page' => [
+            'title' => 'Usta Saha İşleri',
+            'slug' => 'technical_service_field',
+            'routePath' => '/technical-service/field',
+            'component' => 'panel/technical-service-field',
+            'layoutType' => 'module',
+            'description' => 'Atanmış saha işleri ve mobil iş akışı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:technical_service_dashboard')->name('technical-service.field');
 
     Route::get('technical-service/technicians', fn () => Inertia::render('panel/technical-service-technicians', [
         'page' => [

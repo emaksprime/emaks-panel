@@ -4,6 +4,7 @@ import type { SharedPageProps } from '@/types'
 
 const links = [
   { href: '/technical-service', label: 'Operasyon Merkezi' },
+  { href: '/technical-service/field', label: 'Saha İşleri' },
   { href: '/technical-service/serial-query', label: 'Seri No Sorgu' },
   { href: '/activation-code-search', label: 'Aktivasyon Kodu Bul' },
   { href: '/technical-service/technicians', label: 'Teknisyen Yönetimi' },

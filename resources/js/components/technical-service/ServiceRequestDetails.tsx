@@ -44,6 +44,25 @@ type ServiceRequestDetailsProps = {
   onReopen?: () => void
   onWorkflowAction?: (action: string) => void
   workflowActionInFlight?: string | null
+  technicianSuggestions?: Array<{
+    id: string
+    name: string
+    location: string
+    distanceKmLabel: string
+    scheduledCount: number
+    availableSlots: string[]
+    technicianAmountLabel: string
+    travelAmountLabel: string
+    totalCostLabel: string
+    costDeltaLabel: string
+    recommended: boolean
+  }>
+  scheduleSupport?: {
+    scheduledLabel: string
+    preferredLabel: string
+    customerContactLabel: string
+    slotSuggestions: string[]
+  } | null
 }
 
 const eventTime = (timestamp: string): string => {
@@ -307,6 +326,8 @@ export function ServiceRequestDetails({
   onReopen,
   onWorkflowAction,
   workflowActionInFlight = null,
+  technicianSuggestions = [],
+  scheduleSupport = null,
 }: ServiceRequestDetailsProps) {
   const [isMountReferenceOpen, setIsMountReferenceOpen] = useState(false)
   const [isWarrantyReferenceOpen, setIsWarrantyReferenceOpen] = useState(false)
@@ -343,6 +364,10 @@ export function ServiceRequestDetails({
   const overrideDecisionInfo = latestOverrideDecisionInfo(events, mikroMountCheck, warranty)
   const sortedEvents = [...events].sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
   const workflowActions = Object.entries(request.allowedWorkflowActions ?? {})
+  const checklistEntries = Object.entries(request.checklistPayload ?? {})
+  const checklistCompletedCount = checklistEntries.filter(([, checked]) => checked).length
+  const checklistTotalCount = checklistEntries.length
+  const photoCompletionLabel = `${request.beforePhotoCount ?? 0} / ${request.afterPhotoCount ?? 0} / ${request.generalPhotoCount ?? 0}`
   const isMountPositive = mikroMountCheck?.montaj_durumu === 'Montaj Dahil' || mikroMountCheck?.montaj_durumu === 'Montaj Sonradan Dahil'
   const costDelta = paymentInfo.customerAmount !== null && paymentInfo.totalTechnicianCostAmount !== null
     ? paymentInfo.customerAmount - paymentInfo.totalTechnicianCostAmount
@@ -419,6 +444,13 @@ export function ServiceRequestDetails({
       </CardHeader>
 
       <CardContent className="space-y-6 px-6 pb-6">
+        {error ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Bazı detay blokları yüklenemedi.</p>
+            <p className="mt-1">{error}</p>
+          </section>
+        ) : null}
+
         <section className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Müşteri</p>
@@ -527,6 +559,81 @@ export function ServiceRequestDetails({
               Bekleme nedeni: {formatDisplayValue(request.pendingReason || request.cancellationReason || request.rescheduleReason)}
             </p>
           </div>
+        </section>
+
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Saha Süreci</p>
+            <p className="mt-2 text-sm text-slate-600">Ustanın sahadaki ilerleyişi, checklist ve kapanış şartları burada izlenir.</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Saha Durumu</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{formatDisplayValue(request.fieldStatus || request.workflowStatus)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Yola Çıkış</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{request.technicianStartedAt ? formatTechnicalServiceDateTime(request.technicianStartedAt, '-') : '-'}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Sahaya Varış</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{request.technicianArrivedAt ? formatTechnicalServiceDateTime(request.technicianArrivedAt, '-') : '-'}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">İş Başlangıcı</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{request.fieldStartedAt ? formatTechnicalServiceDateTime(request.fieldStartedAt, '-') : '-'}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Checklist Durumu</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{formatDisplayValue(request.checklistStatus)}</p>
+              <p className="mt-2 text-xs text-slate-500">{checklistTotalCount > 0 ? `${checklistCompletedCount}/${checklistTotalCount} madde tamam` : 'Checklist henüz girilmedi'}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Öncesi / Sonrası / Genel</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{photoCompletionLabel}</p>
+              <p className="mt-2 text-xs text-slate-500">Hedef: 3 / 3 / 1</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Belge Durumu</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{formatDisplayValue(request.documentStatus)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Fotoğraf Durumu</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{formatDisplayValue(request.photoStatus)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Müşteri Kapanış Onayı</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{formatDisplayValue(request.customerClosureApprovalStatus)}</p>
+              <p className="mt-2 text-xs text-slate-500">Yöntem: {formatDisplayValue(request.customerClosureApprovalMethod)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">Tamamlanamama Nedeni</p>
+              <p className="mt-1 text-sm text-slate-950 break-words">{formatDisplayValue(request.incompleteReason || request.completionBlockReason)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs text-slate-500">İkinci Randevu</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">{request.requiresSecondVisit ? 'Gerekli' : 'Gerekli değil'}</p>
+              <p className="mt-2 text-xs text-slate-500 break-words">{formatDisplayValue(request.secondVisitReason)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:col-span-2 xl:col-span-1">
+              <p className="text-xs text-slate-500">Sıradaki Aksiyon</p>
+              <p className="mt-1 text-sm font-semibold text-slate-950 break-words">{request.nextAction || '-'}</p>
+            </div>
+          </div>
+
+          {checklistEntries.length > 0 ? (
+            <div className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Checklist Maddeleri</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {checklistEntries.map(([label, checked]) => (
+                  <div key={label} className="flex items-start gap-2 text-sm text-slate-700">
+                    <span className={['mt-1 inline-flex h-2.5 w-2.5 rounded-full', checked ? 'bg-emerald-500' : 'bg-slate-300'].join(' ')} />
+                    <span className="break-words">{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -713,22 +820,110 @@ export function ServiceRequestDetails({
         </section>
 
         <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ödeme / Maliyet</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Usta / Atama Karar Desteği</p>
+              <p className="mt-2 text-sm text-slate-600">Randevu, yakın usta, iş yükü ve kârlılık bilgileri eski operasyon karar ekranı mantığıyla birlikte görünür.</p>
+            </div>
+            <Button type="button" variant="outline" onClick={() => onAssign?.()} disabled={isActionDisabled}>
+              Usta Ata
+            </Button>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Kesin Randevu</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{scheduleSupport?.scheduledLabel ?? request.appointment}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Müşteri Tercihi</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{scheduleSupport?.preferredLabel ?? '-'}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Uygun Saatler</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">
+                {scheduleSupport && scheduleSupport.slotSuggestions.length > 0 ? scheduleSupport.slotSuggestions.join(' · ') : '-'}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">{scheduleSupport?.customerContactLabel ?? 'Müşteri teyit bilgisi yok'}</p>
+            </div>
+          </div>
+
+          {technicianSuggestions.length > 0 ? (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {technicianSuggestions.map((suggestion) => (
+                <div key={suggestion.id} className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold text-slate-900">{suggestion.name}</p>
+                        {suggestion.recommended ? (
+                          <Badge variant="secondary">Önerilen Usta</Badge>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">{suggestion.location}</p>
+                    </div>
+                    <p className="text-xs font-semibold text-slate-500">{suggestion.distanceKmLabel}</p>
+                  </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs text-slate-500">İş yükü</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{suggestion.scheduledCount} iş</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Uygun saatler</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {suggestion.availableSlots.length > 0 ? suggestion.availableSlots.join(' · ') : 'Boş slot görünmüyor'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Usta ücreti</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{suggestion.technicianAmountLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Yol ücreti</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{suggestion.travelAmountLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Toplam maliyet</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{suggestion.totalCostLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Net fark / kâr</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{suggestion.costDeltaLabel}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
+              Yakın usta ve müsaitlik bilgisi bulunamadı.
+            </div>
+          )}
+        </section>
+
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ücret &amp; Karlılık</p>
+            {mikroMountCheck?.montaj_durumu === 'Montaj Hariç' ? (
+              <Badge variant="destructive">Montaj Hariç Ödeme Eksik Uyarısı</Badge>
+            ) : null}
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">İşlem tipi</p>
               <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.serviceTypeLabel}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Müşteri tahsilatı</p>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Müşteriden Alınan Ücret</p>
               <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.customerAmountLabel}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Usta ödemesi</p>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Usta Ücreti</p>
               <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.technicianAmountLabel}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Gidiş-geliş km</p>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Yol / KM Bilgisi</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{paymentInfo.roundTripKmLabel}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -740,15 +935,15 @@ export function ServiceRequestDetails({
               <p className="mt-2 text-sm font-semibold text-slate-900">{paymentInfo.billableKmLabel}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Yol ücreti</p>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Yol / KM Ücreti</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{paymentInfo.travelAmountLabel}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:col-span-2">
-              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Toplam usta maliyeti</p>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Toplam Usta Maliyeti</p>
               <p className="mt-2 text-lg font-semibold text-slate-900">{paymentInfo.totalTechnicianCostLabel}</p>
             </div>
             <div className={`rounded-2xl border p-4 sm:col-span-2 ${costDeltaTone}`}>
-              <p className="text-xs uppercase tracking-[0.14em] opacity-75">Müşteri / Usta Maliyet Farkı</p>
+              <p className="text-xs uppercase tracking-[0.14em] opacity-75">Net Fark / Kâr</p>
               <p className="mt-2 text-lg font-semibold">{costDeltaLabel}</p>
               {costDelta !== null && costDelta < 0 ? (
                 <p className="mt-2 text-sm opacity-90">Usta maliyeti müşteriden alınan tutardan yüksek.</p>
@@ -794,10 +989,6 @@ export function ServiceRequestDetails({
             {loading ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
                 Detay yükleniyor...
-              </div>
-            ) : error ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                {error}
               </div>
             ) : sortedEvents.length === 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">

@@ -9,6 +9,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceWorkflowService
@@ -42,6 +43,14 @@ class TechnicalServiceWorkflowService
     public const SLA_OVERDUE = 'geciken';
 
     private const TERMINAL_STATUSES = ['Tamamlandı', 'İptal'];
+    private const CHECKLIST_ITEMS = [
+        'Ürün seri numarası kontrol edildi',
+        'Kapı / montaj yeri kontrol edildi',
+        'Montaj uygunluğu kontrol edildi',
+        'Ürün çalışır durumda test edildi',
+        'Müşteriye kullanım bilgisi verildi',
+        'Garanti / servis formu bilgisi kontrol edildi',
+    ];
 
     /**
      * @return array<string, string>
@@ -70,6 +79,15 @@ class TechnicalServiceWorkflowService
             'closure_pending' => 'Kapanış Onayı Bekliyor',
             'complete' => 'Tamamla',
             'cancel' => 'İptal Et',
+            'field_travel_started' => 'Yola Çıktı',
+            'field_arrived' => 'Sahaya Vardı',
+            'field_work_started' => 'İşe Başladı',
+            'checklist_updated' => 'Checklist Güncelle',
+            'photos_updated' => 'Fotoğraf Sayılarını Güncelle',
+            'customer_closure_approved' => 'Müşteri Kapanış Onayı Al',
+            'field_marked_incomplete' => 'Tamamlanamadı',
+            'second_visit_required' => 'Tekrar Randevu Gerekli',
+            'field_completed' => 'İşi Tamamla',
         ];
     }
 
@@ -168,11 +186,17 @@ class TechnicalServiceWorkflowService
                 'on_site' => 'Sahada',
                 'pause' => 'Beklemede',
                 'cancel' => 'İptal',
+                'field_travel_started' => 'Yolda',
+                'field_marked_incomplete' => 'Beklemede',
+                'second_visit_required' => 'Beklemede',
             ],
             'Yolda' => [
                 'on_site' => 'Sahada',
                 'pause' => 'Beklemede',
                 'cancel' => 'İptal',
+                'field_arrived' => 'Sahada',
+                'field_marked_incomplete' => 'Beklemede',
+                'second_visit_required' => 'Beklemede',
             ],
             'Sahada' => [
                 'document_pending' => 'Belge / Fotoğraf Bekleyen',
@@ -180,6 +204,13 @@ class TechnicalServiceWorkflowService
                 'complete' => 'Tamamlandı',
                 'parts_pending' => 'Parça Bekleniyor',
                 'pause' => 'Beklemede',
+                'field_work_started' => 'Sahada',
+                'checklist_updated' => 'Sahada',
+                'photos_updated' => 'Sahada',
+                'customer_closure_approved' => 'Sahada',
+                'field_marked_incomplete' => 'Beklemede',
+                'second_visit_required' => 'Beklemede',
+                'field_completed' => 'Tamamlandı',
             ],
             'Beklemede' => [
                 'customer_called' => 'Müşteri Onayı Bekleyen',
@@ -201,14 +232,19 @@ class TechnicalServiceWorkflowService
             'Parça Bekleniyor' => [
                 'schedule_planned' => 'Randevu Planlandı',
                 'document_pending' => 'Belge / Fotoğraf Bekleyen',
+                'photos_updated' => 'Parça Bekleniyor',
             ],
             'Belge / Fotoğraf Bekleyen' => [
                 'closure_pending' => 'Müşteri Kapanış Onayı Bekleyen',
                 'complete' => 'Tamamlandı',
+                'photos_updated' => 'Belge / Fotoğraf Bekleyen',
+                'field_completed' => 'Tamamlandı',
             ],
             'Müşteri Kapanış Onayı Bekleyen' => [
                 'document_pending' => 'Belge / Fotoğraf Bekleyen',
                 'complete' => 'Tamamlandı',
+                'customer_closure_approved' => 'Müşteri Kapanış Onayı Bekleyen',
+                'field_completed' => 'Tamamlandı',
             ],
         ];
 
@@ -470,6 +506,112 @@ class TechnicalServiceWorkflowService
     }
 
     /**
+     * @param array<string, mixed> $payload
+     */
+    public function updateFieldWorkflow(TechnicalServiceRequest $request, string $fieldAction, array $payload, ?Authenticatable $user = null): TechnicalServiceRequest
+    {
+        $old = $this->snapshot($request);
+        $current = $this->currentWorkflowStatus($request);
+        $now = CarbonImmutable::now();
+
+        switch ($fieldAction) {
+            case 'start-travel':
+                $this->assertFieldWorkflowStatus($current, ['Planlı']);
+                $request->workflow_status = 'Yolda';
+                $request->field_status = 'yolda';
+                $request->technician_started_at = $this->castDateTime($payload['technician_started_at'] ?? $now);
+                $actionType = 'field_travel_started';
+                break;
+
+            case 'arrive':
+                $this->assertFieldWorkflowStatus($current, ['Yolda', 'Planlı']);
+                $request->workflow_status = 'Sahada';
+                $request->field_status = 'sahada';
+                $request->technician_arrived_at = $this->castDateTime($payload['technician_arrived_at'] ?? $now);
+                $request->field_arrived_at = $request->technician_arrived_at;
+                $actionType = 'field_arrived';
+                break;
+
+            case 'start-work':
+                $this->assertFieldWorkflowStatus($current, ['Sahada', 'Yolda']);
+                $request->workflow_status = 'Sahada';
+                $request->field_status = 'sahada';
+                $request->field_started_at = $this->castDateTime($payload['field_started_at'] ?? $now);
+                $actionType = 'field_work_started';
+                break;
+
+            case 'checklist':
+                $this->assertFieldWorkflowStatus($current, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen']);
+                $request->checklist_payload = $this->normalizedChecklistPayload($payload['checklist_payload'] ?? []);
+                $request->checklist_status = $this->isChecklistComplete($request->checklist_payload) ? 'tamamlandı' : 'eksik';
+                $request->checklist_completed_at = $request->checklist_status === 'tamamlandı' ? $now : null;
+                $actionType = 'checklist_updated';
+                break;
+
+            case 'photos':
+                $this->assertFieldWorkflowStatus($current, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Parça Bekleniyor']);
+                $request->before_photo_count = (int) ($payload['before_photo_count'] ?? 0);
+                $request->after_photo_count = (int) ($payload['after_photo_count'] ?? 0);
+                $request->general_photo_count = (int) ($payload['general_photo_count'] ?? 0);
+                $request->photo_status = $this->photoStatusForCounts($request) ? 'tamamlandı' : 'eksik';
+                if (! isset($payload['document_status']) && blank($request->document_status)) {
+                    $request->document_status = 'eksik';
+                }
+                if (isset($payload['document_status'])) {
+                    $request->document_status = (string) $payload['document_status'];
+                }
+                $actionType = 'photos_updated';
+                break;
+
+            case 'customer-closure-approval':
+                $this->assertFieldWorkflowStatus($current, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen']);
+                $request->customer_closure_approval_status = 'onaylandı';
+                $request->customer_closure_approved_at = $this->castDateTime($payload['customer_closure_approved_at'] ?? $now);
+                $request->customer_closure_approval_method = $payload['approval_method'] ?? $request->customer_closure_approval_method;
+                $request->customer_closure_approval_code = $payload['approval_code'] ?? $request->customer_closure_approval_code;
+                $request->customer_signature_name = $payload['signature_name'] ?? $request->customer_signature_name;
+                $request->customer_signature_at = isset($payload['signature_name'])
+                    ? $this->castDateTime($payload['customer_signature_at'] ?? $now)
+                    : $request->customer_signature_at;
+                $actionType = 'customer_closure_approved';
+                break;
+
+            case 'mark-incomplete':
+                $this->assertFieldWorkflowStatus($current, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen']);
+                $request->incomplete_reason = $payload['incomplete_reason'] ?? null;
+                $request->pending_reason = $payload['pending_reason'] ?? $request->incomplete_reason;
+                $request->requires_second_visit = (bool) ($payload['requires_second_visit'] ?? false);
+                $request->second_visit_reason = $payload['second_visit_reason'] ?? null;
+                $request->field_status = 'beklemede';
+                $request->workflow_status = (string) ($payload['workflow_status'] ?? 'Beklemede');
+                $actionType = match ($request->workflow_status) {
+                    'Parça Bekleniyor' => 'parts_pending',
+                    default => $request->requires_second_visit ? 'second_visit_required' : 'field_marked_incomplete',
+                };
+                break;
+
+            case 'complete':
+                $this->assertFieldWorkflowStatus($current, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen']);
+                return $this->completeFieldWorkflow($request, $payload, $user, $old, $current);
+
+            default:
+                throw ValidationException::withMessages([
+                    'field_action' => 'Geçersiz saha aksiyonu.',
+                ]);
+        }
+
+        $request->field_completion_note = $payload['note'] ?? $request->field_completion_note;
+        $request->updated_by_user_id = $user?->id;
+        $this->applyDerivedState($request, $payload);
+        $request->save();
+
+        $this->writeAuditLog($request, $actionType, $old, $this->snapshot($request), $user, $payload['note'] ?? null);
+        $this->writeEvent($request, $actionType, $current, $this->currentWorkflowStatus($request), $user, $payload);
+
+        return $request->refresh();
+    }
+
+    /**
      * @return array{due_at:?CarbonImmutable,status:string}
      */
     public function computeSla(TechnicalServiceRequest $request): array
@@ -492,12 +634,18 @@ class TechnicalServiceWorkflowService
                 ? CarbonImmutable::parse($request->customer_confirmed_at)
                 : ($request->updated_at ? CarbonImmutable::parse($request->updated_at) : CarbonImmutable::now());
             $dueAt = $base->addHours(24);
-        } elseif ($request->scheduled_at !== null && ! in_array($status, self::TERMINAL_STATUSES, true) && $request->scheduled_at->isPast()) {
+        } elseif ($status === 'Planlı' && $request->scheduled_at !== null && $request->scheduled_at->isPast()) {
             $dueAt = CarbonImmutable::parse($request->scheduled_at);
+        } elseif ($status === 'Yolda' && $request->technician_arrived_at === null) {
+            $base = $request->technician_started_at ?? $request->updated_at ?? $request->created_at ?? now();
+            $dueAt = CarbonImmutable::parse($base)->addHours(2);
         } elseif ($status === 'Sahada' && $request->field_completed_at === null) {
             $base = $request->field_started_at ?? $request->field_arrived_at ?? $request->updated_at ?? $request->created_at ?? now();
-            $dueAt = CarbonImmutable::parse($base)->addHours(24);
+            $dueAt = CarbonImmutable::parse($base)->addHours(4);
         } elseif ($status === 'Belge / Fotoğraf Bekleyen') {
+            $base = $request->field_completed_at ?? $request->updated_at ?? $request->created_at ?? now();
+            $dueAt = CarbonImmutable::parse($base)->addHours(24);
+        } elseif ($status === 'Müşteri Kapanış Onayı Bekleyen') {
             $base = $request->field_completed_at ?? $request->updated_at ?? $request->created_at ?? now();
             $dueAt = CarbonImmutable::parse($base)->addHours(24);
         }
@@ -511,7 +659,13 @@ class TechnicalServiceWorkflowService
             return ['due_at' => $dueAt, 'status' => self::SLA_OVERDUE];
         }
 
-        if ($dueAt->diffInHours($now) <= 4) {
+        $approachingThresholdHours = match ($status) {
+            'Yolda' => 1,
+            'Sahada' => 2,
+            default => 4,
+        };
+
+        if ($dueAt->diffInHours($now) <= $approachingThresholdHours) {
             return ['due_at' => $dueAt, 'status' => self::SLA_APPROACHING];
         }
 
@@ -537,7 +691,9 @@ class TechnicalServiceWorkflowService
             'Usta Tarih Revize Talebi' => 'Yeni tarih için müşteri ile tekrar görüşülmeli',
             'Planlı' => 'Saha süreci bekleniyor',
             'Yolda' => 'Usta sahaya gidiyor',
-            'Sahada' => 'Checklist ve fotoğraf süreci tamamlanmalı',
+            'Sahada' => $request->checklist_status !== 'tamamlandı'
+                ? 'Checklist tamamlanmalı'
+                : ($this->photoStatusForCounts($request) ? 'Müşteri kapanış onayı alınmalı' : 'Checklist ve fotoğraf süreci tamamlanmalı'),
             'Beklemede' => $this->pendingNextAction($request),
             'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil' => 'Revize randevu planlanmalı',
             'Parça Bekleniyor' => 'Parça temini ve ikinci randevu planlanmalı',
@@ -565,10 +721,16 @@ class TechnicalServiceWorkflowService
         $payload['allowed_workflow_actions'] = $this->allowedActionsFor($request);
         $payload['allowed_workflow_transitions'] = self::transitionMap()[$this->currentWorkflowStatus($request)] ?? [];
         $payload['latest_event'] = $request->events->last()?->title;
+        $payload = array_merge($payload, $this->financialAliases($request));
 
         if ($includeHistory) {
-            $request->loadMissing(['auditLogs' => fn ($query) => $query->latest()]);
-            $payload['audit_logs'] = $request->auditLogs->values()->all();
+            if ($this->auditLogTableAvailable()) {
+                $request->loadMissing(['auditLogs' => fn ($query) => $query->latest()]);
+                $payload['audit_logs'] = $request->auditLogs->values()->all();
+            } else {
+                $payload['audit_logs'] = [];
+                $payload['audit_logs_unavailable'] = true;
+            }
         }
 
         return $payload;
@@ -755,8 +917,20 @@ class TechnicalServiceWorkflowService
             $request->field_status = 'planlı';
         }
 
+        if ($request->workflow_status === 'Yolda' && blank($request->field_status)) {
+            $request->field_status = 'yolda';
+        }
+
+        if ($request->workflow_status === 'Sahada' && blank($request->field_status)) {
+            $request->field_status = 'sahada';
+        }
+
         if ($request->workflow_status === 'Tamamlandı' && blank($request->field_status)) {
             $request->field_status = 'tamamlandı';
+        }
+
+        if ($request->checklist_payload === null && in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)) {
+            $request->checklist_payload = $this->defaultChecklistPayload();
         }
 
         if (array_key_exists('next_action', $payload) && is_string($payload['next_action'])) {
@@ -803,6 +977,10 @@ class TechnicalServiceWorkflowService
         ?Authenticatable $user,
         ?string $note
     ): void {
+        if (! $this->auditLogTableAvailable()) {
+            return;
+        }
+
         TechnicalServiceAuditLog::query()->create([
             'entity_type' => 'technical_service_request',
             'entity_id' => $request->id,
@@ -844,14 +1022,94 @@ class TechnicalServiceWorkflowService
             'field_status',
             'document_status',
             'photo_status',
+            'field_started_at',
+            'field_arrived_at',
+            'field_completed_at',
+            'field_completion_note',
+            'technician_started_at',
+            'technician_arrived_at',
+            'technician_completed_at',
+            'checklist_payload',
+            'checklist_status',
+            'checklist_completed_at',
+            'before_photo_count',
+            'after_photo_count',
+            'general_photo_count',
             'customer_closure_approval_status',
+            'customer_closure_approval_method',
+            'customer_closure_approval_code',
             'completed_at',
+            'completion_block_reason',
+            'incomplete_reason',
+            'requires_second_visit',
+            'second_visit_reason',
             'cancelled_at',
             'cancellation_reason',
             'next_action',
             'sla_due_at',
             'sla_status',
         ]);
+    }
+
+    /**
+     * @return array<string, float|int|string|null>
+     */
+    private function financialAliases(TechnicalServiceRequest $request): array
+    {
+        $customerAmount = $this->customerAmountForService($request->service_type);
+        $travelRoundTripKm = $request->travel_round_trip_km !== null ? (float) $request->travel_round_trip_km : null;
+        $travelBillableKm = $request->travel_billable_km !== null
+            ? (float) $request->travel_billable_km
+            : ($travelRoundTripKm !== null ? max($travelRoundTripKm - 30, 0) : null);
+        $travelFee = $request->travel_fee_amount !== null
+            ? (float) $request->travel_fee_amount
+            : ($travelBillableKm !== null ? $travelBillableKm * 10 : null);
+        $technicianFee = $request->technician_payment_amount !== null
+            ? (float) $request->technician_payment_amount
+            : $customerAmount;
+        $totalTechnicianCost = $technicianFee !== null && $travelFee !== null
+            ? $technicianFee + $travelFee
+            : null;
+        $profit = $customerAmount !== null && $totalTechnicianCost !== null
+            ? $customerAmount - $totalTechnicianCost
+            : null;
+
+        return [
+            'customer_fee' => $customerAmount,
+            'customer_amount' => $customerAmount,
+            'customer_price' => $customerAmount,
+            'customer_payment' => $customerAmount,
+            'service_fee' => $customerAmount,
+            'technician_fee' => $technicianFee,
+            'technician_cost' => $technicianFee,
+            'technician_payment' => $technicianFee,
+            'master_fee' => $technicianFee,
+            'labor_cost' => $technicianFee,
+            'travel_fee' => $travelFee,
+            'travel_cost' => $travelFee,
+            'travel_km' => $travelRoundTripKm,
+            'travel_round_trip_km' => $travelRoundTripKm,
+            'travel_billable_km' => $travelBillableKm,
+            'total_technician_cost' => $totalTechnicianCost,
+            'total_technician_cost_amount' => $totalTechnicianCost,
+            'cost_delta' => $profit,
+            'profit' => $profit,
+            'margin' => $profit,
+        ];
+    }
+
+    private function customerAmountForService(?string $serviceType): ?float
+    {
+        return match ($this->normalizeToken($serviceType)) {
+            'montaj' => 3000.0,
+            'servis', 'ariza' => 1800.0,
+            default => null,
+        };
+    }
+
+    private function auditLogTableAvailable(): bool
+    {
+        return Schema::hasTable('technical_service_audit_logs');
     }
 
     /**
@@ -887,8 +1145,164 @@ class TechnicalServiceWorkflowService
         return CarbonImmutable::parse($value)->startOfDay();
     }
 
+    /**
+     * @param list<string> $allowed
+     */
+    private function assertFieldWorkflowStatus(string $current, array $allowed): void
+    {
+        if (! in_array($current, $allowed, true)) {
+            throw ValidationException::withMessages([
+                'workflow_status' => 'Bu saha aksiyonu mevcut durum için kullanılamaz.',
+            ]);
+        }
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    private function defaultChecklistPayload(): array
+    {
+        $payload = [];
+
+        foreach (self::CHECKLIST_ITEMS as $item) {
+            $payload[$item] = false;
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param mixed $payload
+     * @return array<string, bool>
+     */
+    private function normalizedChecklistPayload(mixed $payload): array
+    {
+        $items = is_array($payload) ? $payload : [];
+        $normalized = [];
+
+        foreach (self::CHECKLIST_ITEMS as $item) {
+            $normalized[$item] = filter_var($items[$item] ?? false, FILTER_VALIDATE_BOOL);
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<string, bool>|null $payload
+     */
+    private function isChecklistComplete(?array $payload): bool
+    {
+        if (! is_array($payload) || $payload === []) {
+            return false;
+        }
+
+        foreach (self::CHECKLIST_ITEMS as $item) {
+            if (! ($payload[$item] ?? false)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function photoStatusForCounts(TechnicalServiceRequest $request): bool
+    {
+        return (int) ($request->before_photo_count ?? 0) >= 3
+            && (int) ($request->after_photo_count ?? 0) >= 3
+            && (int) ($request->general_photo_count ?? 0) >= 1;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed> $old
+     */
+    private function completeFieldWorkflow(
+        TechnicalServiceRequest $request,
+        array $payload,
+        ?Authenticatable $user,
+        array $old,
+        string $current
+    ): TechnicalServiceRequest {
+        $blockers = [];
+
+        if ($request->checklist_status !== 'tamamlandı') {
+            $blockers[] = 'Checklist tamamlanmadı';
+        }
+
+        if (! $this->photoStatusForCounts($request)) {
+            $blockers[] = 'Fotoğraf yükleme kriterleri tamamlanmadı';
+        }
+
+        if (! in_array($request->document_status, ['tamamlandı', 'tamam', 'gerekli_degil'], true)) {
+            $blockers[] = 'Belge durumu tamamlanmadı';
+        }
+
+        if ($request->customer_closure_approval_status !== 'onaylandı') {
+            $blockers[] = 'Müşteri kapanış onayı eksik';
+        }
+
+        if ($blockers !== []) {
+            $request->completion_block_reason = implode(' | ', $blockers);
+            $request->updated_by_user_id = $user?->id;
+
+            if ($request->customer_closure_approval_status !== 'onaylandı') {
+                $request->workflow_status = 'Müşteri Kapanış Onayı Bekleyen';
+                $request->customer_closure_approval_status = $request->customer_closure_approval_status ?? 'bekliyor';
+            } elseif (
+                ! $this->photoStatusForCounts($request)
+                || ! in_array($request->document_status, ['tamamlandı', 'tamam', 'gerekli_degil'], true)
+            ) {
+                $request->workflow_status = 'Belge / Fotoğraf Bekleyen';
+                $request->photo_status = $this->photoStatusForCounts($request) ? ($request->photo_status ?? 'tamamlandı') : 'eksik';
+                $request->document_status = in_array($request->document_status, ['tamamlandı', 'tamam', 'gerekli_degil'], true)
+                    ? $request->document_status
+                    : 'eksik';
+            } else {
+                $request->workflow_status = 'Sahada';
+            }
+
+            $this->applyDerivedState($request, $payload);
+            $request->save();
+
+            $this->writeAuditLog($request, 'field_completion_blocked', $old, $this->snapshot($request), $user, $request->completion_block_reason);
+            $this->writeEvent($request, 'field_completion_blocked', $current, $this->currentWorkflowStatus($request), $user, [
+                'note' => $request->completion_block_reason,
+                'blockers' => $blockers,
+            ], 'Saha kapanışı bloklandı');
+
+            throw ValidationException::withMessages([
+                'workflow_status' => $request->completion_block_reason,
+            ]);
+        }
+
+        $request->workflow_status = 'Tamamlandı';
+        $request->field_status = 'tamamlandı';
+        $request->field_completed_at = $this->castDateTime($payload['field_completed_at'] ?? now());
+        $request->technician_completed_at = $this->castDateTime($payload['technician_completed_at'] ?? $request->field_completed_at);
+        $request->completed_at = $request->field_completed_at;
+        $request->field_completion_note = $payload['note'] ?? $request->field_completion_note;
+        $request->completion_block_reason = null;
+        $request->photo_status = 'tamamlandı';
+        $request->updated_by_user_id = $user?->id;
+        $this->applyDerivedState($request, $payload);
+        $request->save();
+
+        $this->writeAuditLog($request, 'field_completed', $old, $this->snapshot($request), $user, $payload['note'] ?? null);
+        $this->writeEvent($request, 'field_completed', $current, $this->currentWorkflowStatus($request), $user, $payload, 'Saha işi tamamlandı');
+
+        return $request->refresh();
+    }
+
     private function pendingNextAction(TechnicalServiceRequest $request): string
     {
+        if ($request->requires_second_visit) {
+            return 'İkinci randevu planlanmalı';
+        }
+
+        if (filled($request->incomplete_reason)) {
+            return 'Tamamlanamama nedeni değerlendirilip yeni aksiyon planlanmalı';
+        }
+
         return match ($request->customer_contact_status) {
             'müşteri_reddetti' => 'Müşteri ret nedeni değerlendirilmeli',
             'yanlış_numara' => 'Doğru müşteri telefonu güncellenmeli',

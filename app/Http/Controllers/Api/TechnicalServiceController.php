@@ -7,6 +7,7 @@ use App\Http\Requests\AssignTechnicalServiceRequest;
 use App\Http\Requests\StoreTechnicalServiceContactLogRequest;
 use App\Http\Requests\StoreTechnicalServiceRequest;
 use App\Http\Requests\UpdateTechnicalServiceRequest;
+use App\Http\Requests\UpdateTechnicalServiceFieldActionRequest;
 use App\Http\Requests\UpdateTechnicalServiceRequestStatus;
 use App\Http\Requests\UpdateTechnicalServiceScheduleRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
@@ -19,6 +20,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceController extends Controller
@@ -276,8 +278,30 @@ class TechnicalServiceController extends Controller
         return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
     }
 
+    public function updateFieldAction(
+        UpdateTechnicalServiceFieldActionRequest $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        string $fieldAction
+    ): JsonResponse {
+        $technicalServiceRequest = $this->workflowService->updateFieldWorkflow(
+            $technicalServiceRequest,
+            $fieldAction,
+            $request->validated(),
+            $request->user()
+        );
+
+        return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
+    }
+
     public function auditLogs(TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
+        if (! Schema::hasTable('technical_service_audit_logs')) {
+            return response()->json([
+                'items' => [],
+                'warning' => 'Audit log tablosu henüz hazır değil.',
+            ]);
+        }
+
         $technicalServiceRequest->load(['auditLogs' => fn ($query) => $query->latest()]);
 
         return response()->json([
@@ -410,6 +434,14 @@ class TechnicalServiceController extends Controller
                 'schedule_planning' => $requests->where('workflow_status', 'Müşteri Onayladı')->count(),
                 'unassigned' => $requests->where('workflow_status', 'Usta Ataması Bekleyen')->count(),
                 'technician_approval' => $requests->where('workflow_status', 'Usta Onayı Bekleyen')->count(),
+                'travel_pending' => $requests->where('workflow_status', 'Planlı')->count(),
+                'on_site_active' => $requests->where('workflow_status', 'Sahada')->count(),
+                'checklist_missing' => $requests->filter(fn (TechnicalServiceRequest $request) => $request->workflow_status === 'Sahada' && $request->checklist_status !== 'tamamlandı')->count(),
+                'photo_missing' => $requests->filter(fn (TechnicalServiceRequest $request) => in_array($request->workflow_status, ['Sahada', 'Belge / Fotoğraf Bekleyen'], true) && ! $this->photosComplete($request))->count(),
+                'closure_pending_field' => $requests->where('workflow_status', 'Müşteri Kapanış Onayı Bekleyen')->count(),
+                'incomplete' => $requests->filter(fn (TechnicalServiceRequest $request) => $request->workflow_status === 'Beklemede' && filled($request->incomplete_reason))->count(),
+                'parts_pending' => $requests->where('workflow_status', 'Parça Bekleniyor')->count(),
+                'second_visit' => $requests->where('requires_second_visit', true)->count(),
             ],
             'today_appointments' => $todayAppointments->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request))->all(),
             'overdue_requests' => $overdue->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request, true))->all(),
@@ -476,8 +508,10 @@ class TechnicalServiceController extends Controller
             'id' => $request->id,
             'mrn' => $request->mrn,
             'customer_name' => $request->customer_name,
+            'customer_phone' => $request->customer_phone,
             'customer_city' => $request->customer_city,
             'customer_district' => $request->customer_district,
+            'service_address' => $request->service_address,
             'product_name' => $request->product_name,
             'product_model' => $request->product_model,
             'serial_number' => $request->serial_number,
@@ -494,6 +528,16 @@ class TechnicalServiceController extends Controller
             'customer_preferred_date' => $request->customer_preferred_date?->toDateString(),
             'customer_preferred_time_start' => $request->customer_preferred_time_start,
             'customer_preferred_time_end' => $request->customer_preferred_time_end,
+            'field_status' => $request->field_status,
+            'checklist_status' => $request->checklist_status,
+            'photo_status' => $request->photo_status,
+            'document_status' => $request->document_status,
+            'before_photo_count' => $request->before_photo_count,
+            'after_photo_count' => $request->after_photo_count,
+            'general_photo_count' => $request->general_photo_count,
+            'customer_closure_approval_status' => $request->customer_closure_approval_status,
+            'incomplete_reason' => $request->incomplete_reason,
+            'requires_second_visit' => $request->requires_second_visit,
             'installation_completed_at' => $request->installation_completed_at?->toISOString(),
             'warranty_started_at' => $request->installation_completed_at?->toDateString(),
             'overdue_label' => $includeOverdue ? $this->overdueLabel($request) : null,
@@ -543,7 +587,22 @@ class TechnicalServiceController extends Controller
             'unassigned' => $requests->where('workflow_status', 'Usta Ataması Bekleyen')->count(),
             'technician_approval' => $requests->where('workflow_status', 'Usta Onayı Bekleyen')->count(),
             'sla_overdue' => $requests->where('sla_status', TechnicalServiceWorkflowService::SLA_OVERDUE)->count(),
+            'travel_pending' => $requests->where('workflow_status', 'Planlı')->count(),
+            'on_site_active' => $requests->where('workflow_status', 'Sahada')->count(),
+            'checklist_missing' => $requests->filter(fn (TechnicalServiceRequest $request) => $request->workflow_status === 'Sahada' && $request->checklist_status !== 'tamamlandı')->count(),
+            'photo_missing' => $requests->filter(fn (TechnicalServiceRequest $request) => in_array($request->workflow_status, ['Sahada', 'Belge / Fotoğraf Bekleyen'], true) && ! $this->photosComplete($request))->count(),
+            'closure_pending_field' => $requests->where('workflow_status', 'Müşteri Kapanış Onayı Bekleyen')->count(),
+            'incomplete' => $requests->filter(fn (TechnicalServiceRequest $request) => $request->workflow_status === 'Beklemede' && filled($request->incomplete_reason))->count(),
+            'parts_pending' => $requests->where('workflow_status', 'Parça Bekleniyor')->count(),
+            'second_visit' => $requests->where('requires_second_visit', true)->count(),
         ];
+    }
+
+    private function photosComplete(TechnicalServiceRequest $request): bool
+    {
+        return (int) ($request->before_photo_count ?? 0) >= 3
+            && (int) ($request->after_photo_count ?? 0) >= 3
+            && (int) ($request->general_photo_count ?? 0) >= 1;
     }
 
     private function generateMrn(): string
