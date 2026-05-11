@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\AuditLog;
+use App\Models\Resource;
+use App\Models\RoleResourcePermission;
 use App\Models\User;
 use App\Models\UserAccess;
 use Database\Seeders\PanelMetadataSeeder;
@@ -81,6 +83,19 @@ class AdminUserManagementTest extends TestCase
             'temsilci_kodu' => '0024',
         ]);
 
+        Resource::query()->updateOrCreate(
+            ['code' => 'role_only_clone_area'],
+            ['name' => 'Role Only Clone Area', 'type' => 'page', 'active' => true],
+        );
+        Resource::query()->updateOrCreate(
+            ['code' => 'blocked_clone_area'],
+            ['name' => 'Blocked Clone Area', 'type' => 'page', 'active' => true],
+        );
+        RoleResourcePermission::query()->updateOrCreate(
+            ['role_code' => 'sales', 'resource_code' => 'role_only_clone_area'],
+            ['can_view' => true, 'can_execute' => false],
+        );
+
         UserAccess::query()->create([
             'user_id' => $source->id,
             'resource_code' => 'sales_main',
@@ -121,6 +136,16 @@ class AdminUserManagementTest extends TestCase
         $this->assertDatabaseHas('panel.user_access', [
             'user_id' => $cloned->id,
             'resource_code' => 'stock',
+            'can_view' => false,
+        ]);
+        $this->assertDatabaseHas('panel.user_access', [
+            'user_id' => $cloned->id,
+            'resource_code' => 'role_only_clone_area',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('panel.user_access', [
+            'user_id' => $cloned->id,
+            'resource_code' => 'blocked_clone_area',
             'can_view' => false,
         ]);
         $this->assertDatabaseHas('panel.logs', [
@@ -193,5 +218,8 @@ class AdminUserManagementTest extends TestCase
         $this->assertStringContainsString('Rol ve izinler kaynak kullanıcıdan kopyalanır', $component);
         $this->assertStringContainsString('Temsilci kodu yeni kullanıcı için ayrı girilir', $component);
         $this->assertStringContainsString('force_password_change: true', $component);
+        $this->assertStringContainsString('strict_access: true', $component);
+        $this->assertStringContainsString('Dar yetkiyi sabitle', $component);
+        $this->assertStringContainsString('rol fallback fazladan alan aÃ§amaz', $component);
     }
 }

@@ -149,8 +149,19 @@ class PageDataController extends Controller
     {
         $scopeKey = str_replace('-', '_', trim($scopeKey) !== '' ? trim($scopeKey) : 'all');
 
-        if ($access->userCanAccess($user, 'sales_main_all')) {
+        if ($access->isPrivileged($user) || $access->userCanAccess($user, 'sales_main_all')) {
+            if (array_key_exists($scopeKey, $this->salesRepresentativeScopeResources())) {
+                return $scopeKey;
+            }
+
             return $scopeKey;
+        }
+
+        $ownScope = $this->ownSalesRepresentativeScopeKey($user);
+        $isOwnRepresentativeSalesUser = $ownScope !== null && $access->userCanAccess($user, 'sales_main');
+
+        if ($isOwnRepresentativeSalesUser && in_array($scopeKey, ['online_perakende', 'bayi_proje'], true)) {
+            abort(403);
         }
 
         if ($scopeKey === 'online_perakende') {
@@ -165,18 +176,62 @@ class PageDataController extends Controller
             return $scopeKey;
         }
 
-        if ($access->userCanAccess($user, 'sales_main')) {
+        $representativeResources = $this->salesRepresentativeScopeResources();
+
+        if (array_key_exists($scopeKey, $representativeResources)) {
+            abort_unless(
+                $access->userCanAccess($user, $representativeResources[$scopeKey])
+                    || $this->ownSalesRepresentativeScopeKey($user) === $scopeKey,
+                403,
+            );
+
             return $scopeKey;
         }
 
-        if ($scopeKey === 'all' && $access->userCanAccess($user, 'sales_online')) {
-            return 'online_perakende';
-        }
+        if ($scopeKey === 'all') {
+            $availableScopes = collect();
 
-        if ($scopeKey === 'all' && $access->userCanAccess($user, 'sales_bayi')) {
-            return 'bayi_proje';
+            if (! $isOwnRepresentativeSalesUser && $access->userCanAccess($user, 'sales_online')) {
+                $availableScopes->push('online_perakende');
+            }
+
+            if (! $isOwnRepresentativeSalesUser && $access->userCanAccess($user, 'sales_bayi')) {
+                $availableScopes->push('bayi_proje');
+            }
+
+            if ($ownScope !== null && $access->userCanAccess($user, 'sales_main')) {
+                $availableScopes->push($ownScope);
+            }
+
+            $availableScopes = $availableScopes->unique()->values();
+
+            if ($availableScopes->count() === 1) {
+                return (string) $availableScopes->first();
+            }
         }
 
         abort(403);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function salesRepresentativeScopeResources(): array
+    {
+        return [
+            'umit' => 'sales_rep_umit_yildiz',
+            'salih' => 'sales_rep_salih_cakir',
+            'bulent_saglam' => 'sales_rep_bulent_saglam',
+        ];
+    }
+
+    private function ownSalesRepresentativeScopeKey(mixed $user): ?string
+    {
+        return match (trim((string) ($user?->temsilci_kodu ?? ''))) {
+            '0003' => 'umit',
+            '0024' => 'salih',
+            '0035' => 'bulent_saglam',
+            default => null,
+        };
     }
 }

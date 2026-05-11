@@ -370,18 +370,7 @@ class SalesMainPageService
 
     private function fallbackSourceForEmptyRows(DataSource $source, string $scopeKey): ?DataSource
     {
-        if ($source->code === 'sales_main_dashboard') {
-            return null;
-        }
-
-        if (! in_array($this->normalizeScopeKey($scopeKey), ['online_perakende', 'bayi_proje'], true)) {
-            return null;
-        }
-
-        return DataSource::query()
-            ->where('code', 'sales_main_dashboard')
-            ->where('active', true)
-            ->first();
+        return null;
     }
 
     /**

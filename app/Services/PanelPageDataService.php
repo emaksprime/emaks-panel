@@ -97,7 +97,9 @@ class PanelPageDataService
         }
 
         if ($source->code === 'sales_customer_search') {
-            $filters['scope_key'] = $this->normalizeSalesCustomerSearchScope($user, $filters['scope_key']);
+            $customerSearchScope = $this->salesCustomerSearchScopeFor($user, $filters['scope_key']);
+            $filters['scope_key'] = $customerSearchScope['scope_key'];
+            $filters['rep_code'] = $customerSearchScope['rep_code'] ?? '';
         }
 
         if ($source->db_type === 'n8n_json' && trim((string) $source->query_template) === '') {
@@ -157,39 +159,121 @@ class PanelPageDataService
         return $this->access->userCanAccess($user, $resourceCode);
     }
 
-    private function normalizeSalesCustomerSearchScope(User $user, string $scopeKey): string
+    /**
+     * @return array{scope_key: string, rep_code: string|null}
+     */
+    private function salesCustomerSearchScopeFor(User $user, string $scopeKey): array
     {
         $scopeKey = $this->normalizeScopeKey($scopeKey);
 
-        if ($this->access->userCanAccess($user, 'sales_main_all')) {
-            return $scopeKey;
+        if ($this->access->isPrivileged($user) || $this->access->userCanAccess($user, 'sales_main_all')) {
+            return [
+                'scope_key' => $scopeKey,
+                'rep_code' => $this->salesCustomerSearchRepCodeForScope($scopeKey),
+            ];
+        }
+
+        $ownScope = $this->ownSalesRepresentativeScopeKey($user);
+        $isOwnRepresentativeSalesUser = $ownScope !== null && $this->access->userCanAccess($user, 'sales_main');
+
+        if ($isOwnRepresentativeSalesUser && in_array($scopeKey, ['online_perakende', 'bayi_proje'], true)) {
+            abort(403);
         }
 
         if ($scopeKey === 'online_perakende') {
             abort_unless($this->access->userCanAccess($user, 'sales_online'), 403);
 
-            return $scopeKey;
+            return ['scope_key' => $scopeKey, 'rep_code' => null];
         }
 
         if ($scopeKey === 'bayi_proje') {
             abort_unless($this->access->userCanAccess($user, 'sales_bayi'), 403);
 
-            return $scopeKey;
+            return ['scope_key' => $scopeKey, 'rep_code' => null];
         }
 
-        if ($this->access->userCanAccess($user, 'sales_main')) {
-            return $scopeKey;
+        $representativeScopeRepCodes = $this->salesRepresentativeScopeRepCodes();
+
+        if (array_key_exists($scopeKey, $representativeScopeRepCodes)) {
+            abort_unless(
+                $this->access->userCanAccess($user, $this->salesRepresentativeScopeResources()[$scopeKey])
+                    || $this->ownSalesRepresentativeScopeKey($user) === $scopeKey,
+                403,
+            );
+
+            return [
+                'scope_key' => $scopeKey,
+                'rep_code' => $representativeScopeRepCodes[$scopeKey],
+            ];
         }
 
-        if ($scopeKey === 'all' && $this->access->userCanAccess($user, 'sales_online')) {
-            return 'online_perakende';
-        }
+        if ($scopeKey === 'all') {
+            $availableScopes = collect();
 
-        if ($scopeKey === 'all' && $this->access->userCanAccess($user, 'sales_bayi')) {
-            return 'bayi_proje';
+            if (! $isOwnRepresentativeSalesUser && $this->access->userCanAccess($user, 'sales_online')) {
+                $availableScopes->push(['scope_key' => 'online_perakende', 'rep_code' => null]);
+            }
+
+            if (! $isOwnRepresentativeSalesUser && $this->access->userCanAccess($user, 'sales_bayi')) {
+                $availableScopes->push(['scope_key' => 'bayi_proje', 'rep_code' => null]);
+            }
+
+            if ($ownScope !== null && $this->access->userCanAccess($user, 'sales_main')) {
+                $availableScopes->push([
+                    'scope_key' => $ownScope,
+                    'rep_code' => $representativeScopeRepCodes[$ownScope] ?? trim((string) ($user->temsilci_kodu ?? '')),
+                ]);
+            }
+
+            $availableScopes = $availableScopes
+                ->unique(fn (array $scope): string => $scope['scope_key'])
+                ->values();
+
+            if ($availableScopes->count() === 1) {
+                return $availableScopes->first();
+            }
         }
 
         abort(403);
+    }
+
+    private function salesCustomerSearchRepCodeForScope(string $scopeKey): ?string
+    {
+        return $this->salesRepresentativeScopeRepCodes()[$scopeKey] ?? null;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function salesRepresentativeScopeRepCodes(): array
+    {
+        return [
+            'umit' => '0003',
+            'salih' => '0024',
+            'bulent_saglam' => '0035',
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function salesRepresentativeScopeResources(): array
+    {
+        return [
+            'umit' => 'sales_rep_umit_yildiz',
+            'salih' => 'sales_rep_salih_cakir',
+            'bulent_saglam' => 'sales_rep_bulent_saglam',
+        ];
+    }
+
+    private function ownSalesRepresentativeScopeKey(User $user): ?string
+    {
+        return match (trim((string) ($user->temsilci_kodu ?? ''))) {
+            '0003' => 'umit',
+            '0024' => 'salih',
+            '0035' => 'bulent_saglam',
+            default => null,
+        };
     }
 
     private function normalizeScopeKey(string $scopeKey): string
@@ -209,7 +293,9 @@ class PanelPageDataService
         $customerScopeKey = $filters['customer_scope_key'] ?? null;
         $customerGroupScope = $filters['customer_group_scope'] ?? null;
 
-        if (str_starts_with($source->code, 'sales_') && $this->access->userCanAccess($user, 'sales_main_all')) {
+        if ($source->code === 'sales_customer_search') {
+            $representativeCode = trim((string) ($filters['rep_code'] ?? '')) ?: null;
+        } elseif (str_starts_with($source->code, 'sales_') && $this->access->userCanAccess($user, 'sales_main_all')) {
             $representativeCode = null;
         }
 
@@ -421,6 +507,7 @@ class PanelPageDataService
             'delivery_week' => $this->normalizeDeliveryWeek($input['delivery_week'] ?? 'all'),
             'delivery_date' => $this->normalizeOptionalDate($input['delivery_date'] ?? null),
             'orders_scope' => (string) ($input['orders_scope'] ?? ''),
+            'rep_code' => (string) ($input['rep_code'] ?? ''),
             'customer_code' => (string) ($input['customer_code'] ?? ''),
             'guid' => (string) ($input['guid'] ?? ''),
             'hareket_guid' => (string) ($input['hareket_guid'] ?? ''),

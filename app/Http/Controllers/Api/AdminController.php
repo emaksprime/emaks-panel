@@ -16,6 +16,7 @@ use App\Models\AuditLog;
 use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\AuditLogger;
+use App\Services\PanelAccessService;
 use App\Services\PanelDataSourceManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -29,6 +30,7 @@ class AdminController extends Controller
     public function __construct(
         private readonly AuditLogger $auditLogger,
         private readonly PanelDataSourceManager $dataSourceManager,
+        private readonly PanelAccessService $access,
     ) {
     }
 
@@ -190,6 +192,7 @@ class AdminController extends Controller
             'temsilci_kodu' => ['nullable', 'string', 'max:32'],
             'aktif' => ['boolean'],
             'force_password_change' => ['boolean'],
+            'strict_access' => ['boolean'],
         ]);
 
         DB::transaction(function () use ($data, $request, $user): void {
@@ -203,28 +206,110 @@ class AdminController extends Controller
                 'force_password_change' => (bool) ($data['force_password_change'] ?? true),
             ]);
 
-            UserAccess::query()
-                ->where('user_id', $user->id)
-                ->orderBy('resource_code')
-                ->get(['resource_code', 'can_view'])
-                ->each(function (UserAccess $access) use ($clonedUser): void {
-                    UserAccess::query()->updateOrCreate([
-                        'user_id' => $clonedUser->id,
-                        'resource_code' => $access->resource_code,
-                    ], [
-                        'user_id' => $clonedUser->id,
-                        'resource_code' => $access->resource_code,
-                        'can_view' => (bool) $access->can_view,
-                    ]);
-                });
+            $strictAccess = (bool) ($data['strict_access'] ?? true);
+            [$allowed, $denied] = $strictAccess
+                ? $this->strictAccessSnapshotForClone($user)
+                : $this->explicitAccessSnapshotForClone($user);
+
+            $this->syncUserAccess($clonedUser, $allowed, $denied);
 
             $this->auditLogger->log($request->user(), 'admin.user.clone', [
                 'source_user_id' => $user->id,
                 'new_user_id' => $clonedUser->id,
+                'strict_access' => $strictAccess,
             ], $request);
         });
 
         return $this->users();
+    }
+
+    /**
+     * @return array{0: \Illuminate\Support\Collection<int, string>, 1: \Illuminate\Support\Collection<int, string>}
+     */
+    private function strictAccessSnapshotForClone(User $source): array
+    {
+        $activeResources = Resource::query()
+            ->where('active', true)
+            ->pluck('code')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ((bool) ($source->role?->is_super_admin ?? false)) {
+            return [$activeResources, collect()];
+        }
+
+        $allowed = $activeResources
+            ->filter(fn (string $resourceCode): bool => $this->access->userCanAccess($source, $resourceCode))
+            ->push('dashboard')
+            ->filter()
+            ->unique()
+            ->values();
+
+        return [
+            $allowed,
+            $activeResources->diff($allowed)->values(),
+        ];
+    }
+
+    /**
+     * @return array{0: \Illuminate\Support\Collection<int, string>, 1: \Illuminate\Support\Collection<int, string>}
+     */
+    private function explicitAccessSnapshotForClone(User $source): array
+    {
+        $overrides = UserAccess::query()
+            ->where('user_id', $source->id)
+            ->orderBy('resource_code')
+            ->get(['resource_code', 'can_view']);
+
+        return [
+            $overrides
+                ->where('can_view', true)
+                ->pluck('resource_code')
+                ->filter()
+                ->unique()
+                ->values(),
+            $overrides
+                ->where('can_view', false)
+                ->pluck('resource_code')
+                ->filter()
+                ->unique()
+                ->values(),
+        ];
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, string>  $allowed
+     * @param  \Illuminate\Support\Collection<int, string>  $denied
+     */
+    private function syncUserAccess(User $user, $allowed, $denied): void
+    {
+        $denied = $denied->filter()->unique()->values();
+        $allowed = $allowed->filter()->unique()->diff($denied)->values();
+
+        UserAccess::query()->where('user_id', $user->id)->delete();
+
+        foreach ($allowed as $resourceCode) {
+            UserAccess::query()->updateOrCreate([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+            ], [
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => true,
+            ]);
+        }
+
+        foreach ($denied as $resourceCode) {
+            UserAccess::query()->updateOrCreate([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+            ], [
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
     }
 
     private function resourceGroupFor(string $code, ?string $type): string

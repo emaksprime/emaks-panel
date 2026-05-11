@@ -23,6 +23,7 @@ const cloneBlank = {
     temsilci_kodu: '',
     aktif: true,
     force_password_change: true,
+    strict_access: true,
 };
 
 const groupOrder = [
@@ -725,6 +726,19 @@ export default function AdminUsers() {
                                         type="checkbox"
                                         checked={cloneForm.force_password_change}
                                         onChange={(event) => setCloneForm({ ...cloneForm, force_password_change: event.target.checked })}
+                                    />
+                                </label>
+                                <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                                    <span>
+                                        Dar yetkiyi sabitle
+                                        <small className="block font-normal text-slate-500">
+                                            Kaynak kullanÄ±cÄ±nÄ±n etkin izinleri yeni kullanÄ±cÄ±ya explicit allow/deny olarak yazÄ±lÄ±r; rol fallback fazladan alan aÃ§amaz.
+                                        </small>
+                                    </span>
+                                    <input
+                                        type="checkbox"
+                                        checked={cloneForm.strict_access}
+                                        onChange={(event) => setCloneForm({ ...cloneForm, strict_access: event.target.checked })}
                                     />
                                 </label>
                             </div>
