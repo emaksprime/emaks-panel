@@ -1,10 +1,10 @@
 import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { TechnicalServiceKanbanBoard } from '@/components/technical-service/TechnicalServiceKanbanBoard'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
 import {
   type OperationQuickFilterKey,
   type WorkflowFilterKey,
-  TechnicalServiceOperationsDashboard,
 } from '@/components/technical-service/OperationCenterDashboard'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
@@ -34,7 +34,7 @@ import {
   normalizeTechnicalServiceText,
   toTechnicalServiceDateTimeInputValue,
 } from '@/components/technical-service/utils'
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Wrench } from 'lucide-react'
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Plus, RefreshCw, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -222,6 +222,11 @@ type WorkflowQueueKey = WorkflowFilterKey
 const initialFilters: FilterState = {
   search: '',
   status: '',
+  serviceType: '',
+  priority: '',
+  city: '',
+  technician: '',
+  onlyOpen: true,
 }
 
 const initialRequestForm: NewRequestForm = {
@@ -1279,9 +1284,72 @@ export function TechnicalServiceOperationCenter() {
     return [...requests].sort(compareRequestsBySchedule)
   }, [compareRequestsBySchedule, requests])
 
+  const serviceTypeOptions = useMemo(() => {
+    return Array.from(new Set(requests.map((request) => request.serviceType).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'))
+  }, [requests])
+
+  const priorityOptions = useMemo(() => {
+    return Array.from(new Set(requests.map((request) => request.priority).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'))
+  }, [requests])
+
+  const cityOptions = useMemo(() => {
+    return Array.from(new Set(requests.map((request) => request.city.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'))
+  }, [requests])
+
+  const technicianOptions = useMemo(() => {
+    return Array.from(
+      new Set(
+        requests
+          .map((request) => request.technician.trim())
+          .filter((value) => value !== '' && normalizeTechnicalServiceText(value) !== 'atanmadi'),
+      ),
+    ).sort((a, b) => a.localeCompare(b, 'tr'))
+  }, [requests])
+
   const allFilteredRequests = useMemo(() => {
     return sortedRequests.filter((request) => matchesSearchFilter(request))
   }, [matchesSearchFilter, sortedRequests])
+
+  const kanbanFilteredRequests = useMemo(() => {
+    return sortedRequests.filter((request) => {
+      if (!matchesSearchFilter(request)) {
+        return false
+      }
+
+      if (filters.onlyOpen && !isOpenRequest(request)) {
+        return false
+      }
+
+      if (filters.serviceType && request.serviceType !== filters.serviceType) {
+        return false
+      }
+
+      if (filters.priority && request.priority !== filters.priority) {
+        return false
+      }
+
+      if (filters.city && request.city !== filters.city) {
+        return false
+      }
+
+      if (filters.technician) {
+        if (filters.technician === '__unassigned__') {
+          return isUnassignedRequest(request)
+        }
+
+        return request.technician.trim() === filters.technician
+      }
+
+      return true
+    })
+  }, [filters.city, filters.onlyOpen, filters.priority, filters.serviceType, filters.technician, isOpenRequest, isUnassignedRequest, matchesSearchFilter, sortedRequests])
+
+  const kanbanSummary = useMemo(() => ({
+    total: kanbanFilteredRequests.length,
+    open: kanbanFilteredRequests.filter((request) => isOpenRequest(request)).length,
+    assigned: kanbanFilteredRequests.filter((request) => !isUnassignedRequest(request)).length,
+    overdue: kanbanFilteredRequests.filter((request) => isOverdueRequest(request)).length,
+  }), [isOpenRequest, isOverdueRequest, isUnassignedRequest, kanbanFilteredRequests])
 
   const selectedRequest = selectedId
     ? requests.find((request) => request.id === selectedId) ?? null
@@ -2518,7 +2586,7 @@ export function TechnicalServiceOperationCenter() {
 
       <div className="relative min-h-screen overflow-hidden bg-[#F4F7FB]">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top_left,_rgba(6,20,58,0.08),_transparent_38%),radial-gradient(circle_at_top_right,_rgba(37,99,235,0.06),_transparent_34%)]" />
-        <div className="relative mx-auto w-full max-w-[1800px] space-y-6 px-4 py-6 md:px-6 lg:px-10">
+        <div className="relative w-full max-w-none space-y-6 px-4 py-6 md:px-6 xl:px-8 2xl:px-10">
         <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-sm sm:px-6 sm:py-6">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
             <div className="flex items-start gap-4">
@@ -2526,165 +2594,48 @@ export function TechnicalServiceOperationCenter() {
                 <Wrench className="h-6 w-6" />
               </div>
               <div className="max-w-3xl">
-                <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Teknik Servis Operasyon Merkezi</h1>
+                <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Teknik Servis</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                  Teknik servis taleplerini takip edin, randevuları yönetin ve operasyonu kolayca izleyin.
+                  Montaj ve servis taleplerini aşama bazlı takip edin.
                 </p>
               </div>
             </div>
 
             <div className="flex flex-col gap-3 xl:items-end">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:min-w-[440px]">
+                {[
+                  { label: 'Açık İş', value: String(kanbanSummary.open) },
+                  { label: 'Atanmış', value: String(kanbanSummary.assigned) },
+                  { label: 'Geciken', value: String(kanbanSummary.overdue) },
+                  { label: 'Toplam', value: String(summaryData?.total_requests ?? kanbanSummary.total) },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-[20px] border border-slate-200 bg-slate-50 px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{item.label}</p>
+                    <p className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+
               <div className="flex flex-wrap items-center gap-2 xl:justify-end">
                 <Button
                   type="button"
                   variant="outline"
                   className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
-                  title="Önceki haftaya git"
-                  aria-label="Önceki haftaya git"
                   onClick={() => {
-                    setWeekReferenceDate((current) => addDays(current, -7))
-                    setSelectedDate((current) => addDays(current, -7))
+                    void loadRequests()
+                    void loadSummary()
+                    void loadOperationsData()
                   }}
                 >
-                  <ChevronLeft className="mr-2 h-4 w-4" />
-                  Önceki Hafta
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Yenile
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
-                  onClick={() => {
-                    const now = new Date()
-                    setWeekReferenceDate(now)
-                    setSelectedDate(startOfLocalDay(now))
-                  }}
-                >
-                  <CalendarDays className="mr-2 h-4 w-4" />
-                  Bugün
-                </Button>
-                <div ref={datePickerRef} className="relative">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
-                    onClick={() => {
-                      if (isDatePickerOpen) {
-                        setIsDatePickerOpen(false)
-                        return
-                      }
-
-                      openDatePicker()
-                    }}
-                    aria-label="Tarih seç"
-                    title="Tarih seç"
-                    aria-expanded={isDatePickerOpen}
-                  >
-                    <span>{selectedDateButtonLabel}</span>
-                    <ChevronDown className={['ml-2 h-4 w-4 text-slate-400 transition-transform', isDatePickerOpen ? 'rotate-180' : 'rotate-0'].join(' ')} />
-                  </Button>
-
-                  {isDatePickerOpen ? (
-                    <div className="absolute top-[calc(100%+10px)] right-0 z-30 w-[320px] rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
-                      <div className="mb-4 flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setCalendarMonth((current) => addMonths(current, -1))}
-                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
-                          aria-label="Önceki ay"
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                        </button>
-                        <p className="text-sm font-semibold text-slate-950">{calendarMonthLabel}</p>
-                        <button
-                          type="button"
-                          onClick={() => setCalendarMonth((current) => addMonths(current, 1))}
-                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
-                          aria-label="Sonraki ay"
-                        >
-                          <ChevronRight className="h-4 w-4" />
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-semibold text-slate-500">
-                        {calendarWeekdays.map((weekday) => (
-                          <span key={weekday} className="py-1">
-                            {weekday}
-                          </span>
-                        ))}
-                      </div>
-
-                      <div className="mt-2 grid grid-cols-7 gap-2">
-                        {calendarDays.map((day) => (
-                          <button
-                            key={day.key}
-                            type="button"
-                            onClick={() => {
-                              setSelectedDate(startOfLocalDay(day.date))
-                              setWeekReferenceDate(startOfLocalDay(day.date))
-                              setCalendarMonth(startOfMonth(day.date))
-                              setIsDatePickerOpen(false)
-                            }}
-                            className={[
-                              'flex h-10 items-center justify-center rounded-2xl text-sm font-medium transition',
-                              day.isSelected
-                                ? 'bg-[#06143A] text-white shadow-[0_10px_20px_rgba(6,20,58,0.18)]'
-                                : day.isToday
-                                  ? 'border border-blue-200 bg-blue-50 text-blue-700'
-                                  : day.inCurrentMonth
-                                    ? 'text-slate-700 hover:bg-slate-50'
-                                    : 'text-slate-300 hover:bg-slate-50',
-                            ].join(' ')}
-                          >
-                            {day.label}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="mt-4 flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const now = startOfLocalDay(new Date())
-                            setSelectedDate(now)
-                            setWeekReferenceDate(now)
-                            setCalendarMonth(startOfMonth(now))
-                            setIsDatePickerOpen(false)
-                          }}
-                          className="text-sm font-medium text-[#06143A] transition hover:text-slate-900"
-                        >
-                          Bugün
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setIsDatePickerOpen(false)}
-                          className="text-sm font-medium text-slate-500 transition hover:text-slate-900"
-                        >
-                          Kapat
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-11 rounded-2xl border-slate-200 bg-white px-4 text-slate-700 hover:bg-slate-50"
-                  title="Sonraki haftaya git"
-                  aria-label="Sonraki haftaya git"
-                  onClick={() => {
-                    setWeekReferenceDate((current) => addDays(current, 7))
-                    setSelectedDate((current) => addDays(current, 7))
-                  }}
-                >
-                  Sonraki Hafta
-                  <ChevronRight className="ml-2 h-4 w-4" />
-                </Button>
-              </div>
 
               <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
               <DialogTrigger asChild>
                 <Button type="button" className="h-11 rounded-2xl bg-[#06143A] px-5 text-white shadow-[0_12px_24px_rgba(6,20,58,0.16)] hover:bg-[#0b1d51]">
-                  Yeni Servis Talebi
+                  <Plus className="mr-2 h-4 w-4" />
+                  Yeni Talep
                 </Button>
               </DialogTrigger>
             <DialogContent className="max-w-2xl">
@@ -2819,11 +2770,105 @@ export function TechnicalServiceOperationCenter() {
               </DialogFooter>
             </DialogContent>
             </Dialog>
+              </div>
           </div>
         </div>
       </section>
 
       <TechnicalServicePageLinks />
+
+      <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-sm sm:px-6 sm:py-6">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,1fr))]">
+          <label className="grid gap-2 text-sm font-medium text-slate-700">
+            Arama
+            <Input
+              value={filters.search}
+              onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
+              placeholder="MRN, müşteri, ürün/model, seri no, teknisyen"
+              className="h-11 rounded-2xl border-slate-200 bg-slate-50"
+            />
+          </label>
+
+          <label className="grid gap-2 text-sm font-medium text-slate-700">
+            Servis tipi
+            <select
+              value={filters.serviceType ?? ''}
+              onChange={(event) => setFilters((current) => ({ ...current, serviceType: event.target.value }))}
+              className={selectClassName}
+            >
+              <option value="">Tümü</option>
+              {serviceTypeOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="grid gap-2 text-sm font-medium text-slate-700">
+            Öncelik
+            <select
+              value={filters.priority ?? ''}
+              onChange={(event) => setFilters((current) => ({ ...current, priority: event.target.value }))}
+              className={selectClassName}
+            >
+              <option value="">Tümü</option>
+              {priorityOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="grid gap-2 text-sm font-medium text-slate-700">
+            İl
+            <select
+              value={filters.city ?? ''}
+              onChange={(event) => setFilters((current) => ({ ...current, city: event.target.value }))}
+              className={selectClassName}
+            >
+              <option value="">Tümü</option>
+              {cityOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="grid gap-2 text-sm font-medium text-slate-700">
+            Teknisyen
+            <select
+              value={filters.technician ?? ''}
+              onChange={(event) => setFilters((current) => ({ ...current, technician: event.target.value }))}
+              className={selectClassName}
+            >
+              <option value="">Tümü</option>
+              <option value="__unassigned__">Atanmamış</option>
+              {technicianOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFilters((current) => ({ ...current, onlyOpen: !current.onlyOpen }))}
+            className={[
+              'inline-flex rounded-full border px-4 py-2 text-sm font-medium transition',
+              filters.onlyOpen
+                ? 'border-[#06143A] bg-[#06143A] text-white'
+                : 'border-slate-200 bg-slate-50 text-slate-700',
+            ].join(' ')}
+          >
+            Sadece açık işler
+          </button>
+          <button
+            type="button"
+            onClick={() => setFilters(initialFilters)}
+            className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-white"
+          >
+            Filtreleri temizle
+          </button>
+        </div>
+      </section>
 
           <Dialog open={assignDialogOpen} onOpenChange={(open) => {
             setAssignDialogOpen(open)
@@ -3686,36 +3731,10 @@ export function TechnicalServiceOperationCenter() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        <TechnicalServiceOperationsDashboard
-          quickFilters={quickFilterItems}
-          activeQuickFilter={quickFilter}
-          onQuickFilterChange={(nextFilter) => setQuickFilter(nextFilter)}
-          weekDays={weeklyDayCounts}
-          onSelectDay={(key) => {
-            const nextDate = parseLocalDateValue(key)
-
-            if (!nextDate) {
-              return
-            }
-
-            setSelectedDate(startOfLocalDay(nextDate))
-            setWeekReferenceDate(startOfLocalDay(nextDate))
-          }}
-          tableTitle={resolvedTableTitle}
-          tableSubtitle={resolvedTableSubtitle}
-          tableSearch={filters.search}
-          onTableSearchChange={(value) => setFilters((current) => ({ ...current, search: value }))}
-          appointments={operationFilteredRequests}
-          emptyMessage={tableEmptyMessage}
+        <TechnicalServiceKanbanBoard
+          requests={kanbanFilteredRequests}
           selectedRequestId={selectedRequest?.id ?? ''}
           onSelectRequest={openRequestDetail}
-          summaryMetrics={summaryMetrics}
-          summaryDescription={selectedDayDescription}
-          workflowQueues={operationWorkflowQueuePanelItems}
-          activeWorkflowFilter={workflowFilter}
-          onWorkflowFilterChange={setWorkflowFilter}
-          technicianSummary={selectedDayTechnicianSummary}
-          weeklyLegend={['Yogun', 'Orta', 'Normal', 'Dusuk', 'Yok']}
           loading={loading}
           error={error}
         />

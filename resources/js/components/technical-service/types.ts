@@ -236,6 +236,11 @@ export type WarrantySerialResponse = {
 export type ServiceFilters = {
   search: string
   status: ServiceStatusFilter
+  serviceType?: string
+  priority?: string
+  city?: string
+  technician?: string
+  onlyOpen?: boolean
 }
 
 export type SummaryItem = {

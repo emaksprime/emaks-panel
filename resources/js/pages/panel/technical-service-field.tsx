@@ -200,7 +200,7 @@ export default function TechnicalServiceFieldPage() {
       <Head title="Usta Saha İşleri" />
 
       <div className="min-h-screen bg-[#eaf1f8]">
-        <div className="mx-auto w-full max-w-6xl space-y-6 px-4 py-6 md:px-6">
+        <div className="w-full max-w-none space-y-6 px-4 py-6 md:px-6 xl:px-8 2xl:px-10">
           <section className="overflow-hidden rounded-[28px] border border-white/80 bg-white/92 px-5 py-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ring-slate-200/70 backdrop-blur sm:px-6 sm:py-6">
             <div className="flex flex-col gap-4">
               <div>
