@@ -711,9 +711,22 @@ class TechnicalServiceWorkflowService
     public function serialize(TechnicalServiceRequest $request, bool $includeHistory = false): array
     {
         $this->applyDerivedState($request);
-        $request->loadMissing(['events' => fn ($query) => $query->orderBy('created_at')]);
+        $request->loadMissing([
+            'events' => fn ($query) => $query->orderBy('created_at'),
+            'technicianRecord',
+        ]);
 
         $payload = $request->toArray();
+        $payload['technician_phone'] = $request->technicianRecord?->phone;
+        $payload['technical_service_technician_phone'] = $request->technicianRecord?->phone;
+        $payload['technical_service_technician'] = $request->technicianRecord
+            ? [
+                'id' => $request->technicianRecord->id,
+                'name' => $request->technicianRecord->name,
+                'phone' => $request->technicianRecord->phone,
+            ]
+            : null;
+        $payload['technicalServiceTechnician'] = $payload['technical_service_technician'];
         $payload['status'] = $request->status;
         $payload['workflow_status'] = $request->workflow_status;
         $payload['next_action'] = $request->next_action;

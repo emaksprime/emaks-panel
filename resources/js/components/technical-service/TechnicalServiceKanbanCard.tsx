@@ -61,6 +61,9 @@ const resolveTechnicianPhone = (request: ServiceRequest): string | null => {
   const technicalServiceTechnicianRecord = typeof requestWithFallbacks.technicalServiceTechnician === 'object' && requestWithFallbacks.technicalServiceTechnician !== null
     ? requestWithFallbacks.technicalServiceTechnician as Record<string, unknown>
     : null
+  const snakeCaseTechnicalServiceTechnicianRecord = typeof requestWithFallbacks.technical_service_technician === 'object' && requestWithFallbacks.technical_service_technician !== null
+    ? requestWithFallbacks.technical_service_technician as Record<string, unknown>
+    : null
 
   return readFirstText(
     request.technicianPhone,
@@ -72,8 +75,16 @@ const resolveTechnicianPhone = (request: ServiceRequest): string | null => {
     typeof requestWithFallbacks.technicalServiceTechnicianPhone === 'string' ? requestWithFallbacks.technicalServiceTechnicianPhone : null,
     typeof requestWithFallbacks.technician_mobile_phone === 'string' ? requestWithFallbacks.technician_mobile_phone : null,
     typeof requestWithFallbacks.technicianMobilePhone === 'string' ? requestWithFallbacks.technicianMobilePhone : null,
+    typeof requestWithFallbacks.technician_gsm === 'string' ? requestWithFallbacks.technician_gsm : null,
+    typeof requestWithFallbacks.technicianGsm === 'string' ? requestWithFallbacks.technicianGsm : null,
     typeof technicianRecord?.phone === 'string' ? technicianRecord.phone : null,
+    typeof technicianRecord?.mobile_phone === 'string' ? technicianRecord.mobile_phone : null,
+    typeof technicianRecord?.mobilePhone === 'string' ? technicianRecord.mobilePhone : null,
+    typeof technicianRecord?.gsm === 'string' ? technicianRecord.gsm : null,
+    typeof snakeCaseTechnicalServiceTechnicianRecord?.phone === 'string' ? snakeCaseTechnicalServiceTechnicianRecord.phone : null,
+    typeof snakeCaseTechnicalServiceTechnicianRecord?.mobile_phone === 'string' ? snakeCaseTechnicalServiceTechnicianRecord.mobile_phone : null,
     typeof technicalServiceTechnicianRecord?.phone === 'string' ? technicalServiceTechnicianRecord.phone : null,
+    typeof technicalServiceTechnicianRecord?.mobilePhone === 'string' ? technicalServiceTechnicianRecord.mobilePhone : null,
   )
 }
 
