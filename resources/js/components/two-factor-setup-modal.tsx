@@ -104,7 +104,7 @@ function TwoFactorSetupStep({
                     <div className="relative flex w-full items-center justify-center">
                         <div className="absolute inset-0 top-1/2 h-px w-full bg-border" />
                         <span className="relative bg-card px-2 py-1">
-                            or, enter the code manually
+                            veya kodu elle girin
                         </span>
                     </div>
 
@@ -209,7 +209,7 @@ function TwoFactorVerificationStep({
                                 onClick={onBack}
                                 disabled={processing}
                             >
-                                Back
+                                Geri
                             </Button>
                             <Button
                                 type="submit"
@@ -218,7 +218,7 @@ function TwoFactorVerificationStep({
                                     processing || code.length < OTP_MAX_LENGTH
                                 }
                             >
-                                Confirm
+                                Onayla
                             </Button>
                         </div>
                     </div>
@@ -261,27 +261,26 @@ export default function TwoFactorSetupModal({
     }>(() => {
         if (twoFactorEnabled) {
             return {
-                title: 'Two-factor authentication enabled',
+                title: 'İki aşamalı doğrulama açıldı',
                 description:
-                    'Two-factor authentication is now enabled. Scan the QR code or enter the setup key in your authenticator app.',
-                buttonText: 'Close',
+                    'İki aşamalı doğrulama artık aktif. QR kodu tarayın veya kurulum anahtarını doğrulama uygulamanıza girin.',
+                buttonText: 'Kapat',
             };
         }
 
         if (showVerificationStep) {
             return {
-                title: 'Verify authentication code',
-                description:
-                    'Enter the 6-digit code from your authenticator app',
-                buttonText: 'Continue',
+                title: 'Doğrulama kodunu onayla',
+                description: 'Doğrulama uygulamanızdaki 6 haneli kodu girin.',
+                buttonText: 'Devam et',
             };
         }
 
         return {
-            title: 'Enable two-factor authentication',
+            title: 'İki aşamalı doğrulamayı aç',
             description:
-                'To finish enabling two-factor authentication, scan the QR code or enter the setup key in your authenticator app',
-            buttonText: 'Continue',
+                'Kurulumu tamamlamak için QR kodu tarayın veya kurulum anahtarını doğrulama uygulamanıza girin.',
+            buttonText: 'Devam et',
         };
     }, [twoFactorEnabled, showVerificationStep]);
 
