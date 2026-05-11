@@ -161,6 +161,8 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('GARANTI DISI KONTROL', $alinan);
         $this->assertStringContainsString('sorumluluk_kodu', $alinan);
         $this->assertStringContainsString('kalan_tutar', $alinan);
+        $this->assertStringContainsString('CONVERT(varchar(10), sip_tarih, 104) AS siparis_tarihi_gosterim', $alinan);
+        $this->assertStringContainsString('satir_net_tutar_kdv_haric', $alinan);
         $this->assertStringContainsString('DECLARE @OrdersScope', $alinan);
         $this->assertStringContainsString('[[rep_code]]', $alinan);
         $this->assertStringContainsString('[[orders_scope]]', $alinan);
@@ -264,6 +266,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('Konsinye Tutarı', $dashboard);
         $this->assertStringContainsString('montaj_durumu', $dashboard);
         $this->assertStringContainsString('Montaj Hariç', $dashboard);
+        $this->assertStringContainsString('orderDateLabel', $dashboard);
+        $this->assertStringContainsString('siparis_tarihi_gosterim', $dashboard);
+        $this->assertStringContainsString('whitespace-nowrap', $dashboard);
+        $this->assertStringContainsString('satir_net_tutar_kdv_haric', $dashboard);
+        $this->assertStringContainsString('Tutar (KDV Hariç)', $dashboard);
+        $this->assertStringNotContainsString('money(row.birim_fiyat)', $dashboard);
         $this->assertStringContainsString('showAmount={mode !==', $dashboard);
         $this->assertStringContainsString('brand_filter', $dashboard);
         $this->assertStringContainsString('product_filter', $dashboard);
