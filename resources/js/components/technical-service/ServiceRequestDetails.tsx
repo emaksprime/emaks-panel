@@ -73,8 +73,6 @@ const formatOptionalDate = (value: string | null | undefined): string => {
   return formatTechnicalServiceDate(value)
 }
 
-const formatDocument = (...parts: Array<string | null | undefined>): string => parts.filter(Boolean).join(' / ')
-
 const formatDisplayValue = (value: string | null | undefined): string => {
   const normalized = String(value ?? '').trim()
 
@@ -355,7 +353,6 @@ export function ServiceRequestDetails({
     ? `/technical-service/serial-query?serial_no=${encodeURIComponent(request.serialNumber.trim())}`
     : '/technical-service/serial-query'
   const phoneDigits = request.phone.replace(/[^\d+]/g, '')
-  const phoneHref = phoneDigits ? `tel:${phoneDigits}` : ''
   const whatsappHref = phoneDigits ? `https://wa.me/${phoneDigits.replace(/^\+/, '')}` : ''
   const summaryNote = warranty?.status === 'Garanti Başlamadı'
     ? warranty.warnings[0] ?? mikroMountCheck?.montaj_ek_aciklama ?? null
@@ -411,16 +408,19 @@ export function ServiceRequestDetails({
   const handleWorkflowAction = (action: string) => {
     if (action === 'assign_technician') {
       onAssign?.()
+
       return
     }
 
     if (action === 'schedule_planned') {
       onSchedule?.()
+
       return
     }
 
     if (action === 'complete') {
       onComplete?.()
+
       return
     }
 
@@ -1033,35 +1033,11 @@ export function ServiceRequestDetails({
           ))}
           <Button
             asChild
-            className="h-9 text-xs sm:text-sm"
-            variant="outline"
-            disabled={!phoneHref}
-          >
-            <a href={phoneHref || '#'}>Müşteriyi Ara</a>
-          </Button>
-          <Button
-            asChild
             className="h-9 text-[0.72rem] sm:text-sm"
             variant="secondary"
             disabled={!whatsappHref}
           >
             <a href={whatsappHref || '#'} target="_blank" rel="noreferrer">WhatsApp Aç</a>
-          </Button>
-          <Button
-            className="h-9 text-xs sm:text-sm"
-            variant="outline"
-            type="button"
-            onClick={() => document.getElementById('talep-notlari')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-          >
-            Not Ekle
-          </Button>
-          <Button
-            className="h-9 text-xs sm:text-sm"
-            variant="outline"
-            type="button"
-            onClick={() => document.getElementById('garanti-belge-durumu')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-          >
-            Belge Kontrol Et
           </Button>
           {isReopenVisible ? (
             <Button
@@ -1078,4 +1054,3 @@ export function ServiceRequestDetails({
     </Card>
   )
 }
-

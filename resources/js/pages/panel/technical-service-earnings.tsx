@@ -1,6 +1,5 @@
 ﻿import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import Heading from '@/components/heading'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import { formatTechnicalServiceDateTime } from '@/components/technical-service/utils'
 import { Badge } from '@/components/ui/badge'
@@ -425,4 +424,3 @@ export default function TechnicalServiceEarnings() {
     </>
   )
 }
-

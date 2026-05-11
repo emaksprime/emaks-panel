@@ -98,7 +98,6 @@ const buildBadges = (request: ServiceRequest): Array<{ label: string, tone: 'neu
     request.technicianPaymentAmount,
   )
   const workflowText = normalizeTechnicalServiceText(request.workflowStatus)
-  const contactText = normalizeTechnicalServiceText(request.customerContactStatus)
   const closureText = normalizeTechnicalServiceText(request.customerClosureApprovalStatus)
 
   if (request.serviceType === 'Montaj') {
@@ -111,10 +110,6 @@ const buildBadges = (request: ServiceRequest): Array<{ label: string, tone: 'neu
 
   if (request.customerClosureApprovalStatus && closureText !== 'onaylandi') {
     badges.push({ label: 'Ödeme Bekleniyor', tone: 'rose' })
-  }
-
-  if (contactText.includes('arandi')) {
-    badges.push({ label: 'Müşteri Arandı', tone: 'blue' })
   }
 
   if (workflowText.includes('onay')) {

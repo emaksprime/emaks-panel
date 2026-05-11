@@ -1,6 +1,5 @@
 ﻿import { Head } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import Heading from '@/components/heading'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import {
   getDistrictOptionsForProvince,
@@ -653,4 +652,3 @@ export default function TechnicalServiceTechnicians() {
     </>
   )
 }
-
