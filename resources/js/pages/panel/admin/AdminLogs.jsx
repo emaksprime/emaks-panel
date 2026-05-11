@@ -38,11 +38,11 @@ export default function AdminLogs() {
     const [error, setError] = useState('');
     const [openLogId, setOpenLogId] = useState(null);
 
-    const loadLogs = () => {
+    const loadLogs = (nextFilters = filters) => {
         setLoading(true);
         setError('');
 
-        apiRequest(`/api/admin/logs?${queryString(filters)}`)
+        apiRequest(`/api/admin/logs?${queryString(nextFilters)}`)
             .then((payload) => setData({
                 logs: payload.logs ?? [],
                 summary: payload.summary ?? {},
@@ -50,6 +50,17 @@ export default function AdminLogs() {
             }))
             .catch((exception) => setError(exception.message || 'Log kayıtları alınamadı.'))
             .finally(() => setLoading(false));
+    };
+
+    const handleSubmit = (event) => {
+        event.preventDefault();
+        loadLogs(filters);
+    };
+
+    const resetFilters = () => {
+        setFilters(defaultFilters);
+        setOpenLogId(null);
+        loadLogs(defaultFilters);
     };
 
     useEffect(() => {
@@ -76,7 +87,7 @@ export default function AdminLogs() {
                     ))}
                 </section>
 
-                <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <form onSubmit={handleSubmit} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                     <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr_1fr_0.9fr_0.9fr_0.7fr_auto]">
                         <label className="grid gap-1 text-sm font-semibold text-slate-700">
                             Kullanıcı / arama
@@ -146,15 +157,14 @@ export default function AdminLogs() {
                         </label>
                         <div className="flex items-end gap-2">
                             <button
-                                type="button"
-                                onClick={loadLogs}
+                                type="submit"
                                 className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
                             >
                                 {loading ? 'Yükleniyor...' : 'Yenile'}
                             </button>
                             <button
                                 type="button"
-                                onClick={() => setFilters(defaultFilters)}
+                                onClick={resetFilters}
                                 className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-950"
                             >
                                 Temizle
@@ -162,7 +172,7 @@ export default function AdminLogs() {
                         </div>
                     </div>
                     {error && <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>}
-                </section>
+                </form>
 
                 <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                     <div className="overflow-x-auto">

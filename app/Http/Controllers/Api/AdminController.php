@@ -801,16 +801,85 @@ class AdminController extends Controller
 
     private function deviceLabel(array $payload): ?string
     {
-        $parts = collect([$payload['device_type'] ?? null, $payload['platform'] ?? null])->filter();
+        $agent = $this->parseUserAgent((string) ($payload['user_agent'] ?? ''));
+        $parts = collect([
+            $payload['device_type'] ?? $agent['device_type'],
+            $payload['platform'] ?? $agent['platform'],
+        ])->filter();
 
         return $parts->isEmpty() ? null : $parts->implode(' / ');
     }
 
     private function browserLabel(array $payload): ?string
     {
-        $parts = collect([$payload['browser'] ?? null, $payload['browser_version'] ?? null])->filter();
+        $agent = $this->parseUserAgent((string) ($payload['user_agent'] ?? ''));
+        $parts = collect([
+            $payload['browser'] ?? $agent['browser'],
+            $payload['browser_version'] ?? $agent['browser_version'],
+        ])->filter();
 
         return $parts->isEmpty() ? null : $parts->implode(' ');
+    }
+
+    /**
+     * @return array{device_type: string|null, browser: string|null, browser_version: string|null, platform: string|null}
+     */
+    private function parseUserAgent(string $userAgent): array
+    {
+        if ($userAgent === '') {
+            return [
+                'device_type' => null,
+                'browser' => null,
+                'browser_version' => null,
+                'platform' => null,
+            ];
+        }
+
+        $platform = match (true) {
+            stripos($userAgent, 'Windows') !== false => 'Windows',
+            stripos($userAgent, 'iPhone') !== false || stripos($userAgent, 'iPad') !== false => 'iOS',
+            stripos($userAgent, 'Android') !== false => 'Android',
+            stripos($userAgent, 'Mac OS') !== false || stripos($userAgent, 'Macintosh') !== false => 'macOS',
+            stripos($userAgent, 'Linux') !== false => 'Linux',
+            default => null,
+        };
+        $device = match (true) {
+            stripos($userAgent, 'Tablet') !== false || stripos($userAgent, 'iPad') !== false => 'Tablet',
+            stripos($userAgent, 'iPhone') !== false || stripos($userAgent, 'Mobile') !== false => 'Mobil',
+            stripos($userAgent, 'Android') !== false => 'Tablet',
+            default => 'Masaüstü',
+        };
+
+        return [
+            'device_type' => $device,
+            'platform' => $platform,
+            ...$this->browserFromUserAgent($userAgent),
+        ];
+    }
+
+    /**
+     * @return array{browser: string|null, browser_version: string|null}
+     */
+    private function browserFromUserAgent(string $userAgent): array
+    {
+        foreach ([
+            'Edge' => '/(?:Edg|EdgA|EdgiOS)\/([0-9.]+)/',
+            'Chrome' => '/(?:Chrome|CriOS)\/([0-9.]+)/',
+            'Firefox' => '/(?:Firefox|FxiOS)\/([0-9.]+)/',
+            'Safari' => '/Version\/([0-9.]+).*Safari/',
+        ] as $browser => $pattern) {
+            if (preg_match($pattern, $userAgent, $matches) === 1) {
+                return [
+                    'browser' => $browser,
+                    'browser_version' => $matches[1] ?? null,
+                ];
+            }
+        }
+
+        return [
+            'browser' => 'Diğer',
+            'browser_version' => null,
+        ];
     }
 
     private function searchTermFromPayload(array $payload): ?string

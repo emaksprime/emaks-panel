@@ -62,7 +62,7 @@ class AuditLogger
 
         return array_filter([
             ...$sanitized,
-            'ip_address' => $request?->ip(),
+            'ip_address' => $this->clientIp($request),
             'user_agent' => $request?->userAgent(),
             'device_type' => $agent['device_type'],
             'browser' => $agent['browser'],
@@ -131,6 +131,54 @@ class AuditLogger
     private function parseUserAgent(?string $userAgent): array
     {
         $userAgent = (string) $userAgent;
+
+        if (stripos($userAgent, 'iPad') !== false) {
+            return [
+                'device_type' => 'Tablet',
+                'platform' => 'iOS',
+                ...$this->browserFromUserAgent($userAgent),
+            ];
+        }
+
+        if (stripos($userAgent, 'iPhone') !== false) {
+            return [
+                'device_type' => 'Mobil',
+                'platform' => 'iOS',
+                ...$this->browserFromUserAgent($userAgent),
+            ];
+        }
+
+        if (stripos($userAgent, 'Android') !== false && stripos($userAgent, 'Mobile') === false) {
+            return [
+                'device_type' => 'Tablet',
+                'platform' => 'Android',
+                ...$this->browserFromUserAgent($userAgent),
+            ];
+        }
+
+        if (stripos($userAgent, 'Android') !== false) {
+            return [
+                'device_type' => 'Mobil',
+                'platform' => 'Android',
+                ...$this->browserFromUserAgent($userAgent),
+            ];
+        }
+
+        if ($userAgent !== '') {
+            $platform = match (true) {
+                stripos($userAgent, 'Windows') !== false => 'Windows',
+                stripos($userAgent, 'Mac OS') !== false || stripos($userAgent, 'Macintosh') !== false => 'macOS',
+                stripos($userAgent, 'Linux') !== false => 'Linux',
+                default => 'Bilinmiyor',
+            };
+
+            return [
+                'device_type' => 'Masaüstü',
+                'platform' => $platform,
+                ...$this->browserFromUserAgent($userAgent),
+            ];
+        }
+
         $platform = match (true) {
             stripos($userAgent, 'Windows') !== false => 'Windows',
             stripos($userAgent, 'Mac OS') !== false || stripos($userAgent, 'Macintosh') !== false => 'macOS',
@@ -168,6 +216,89 @@ class AuditLogger
             'browser_version' => null,
             'platform' => $platform,
         ];
+    }
+
+    /**
+     * @return array{browser: string, browser_version: string|null}
+     */
+    private function browserFromUserAgent(string $userAgent): array
+    {
+        foreach ([
+            'Edge' => '/(?:Edg|EdgA|EdgiOS)\/([0-9.]+)/',
+            'Chrome' => '/(?:Chrome|CriOS)\/([0-9.]+)/',
+            'Firefox' => '/(?:Firefox|FxiOS)\/([0-9.]+)/',
+            'Safari' => '/Version\/([0-9.]+).*Safari/',
+        ] as $browser => $pattern) {
+            if (preg_match($pattern, $userAgent, $matches) === 1) {
+                return [
+                    'browser' => $browser,
+                    'browser_version' => $matches[1] ?? null,
+                ];
+            }
+        }
+
+        return [
+            'browser' => $userAgent !== '' ? 'Diğer' : 'Bilinmiyor',
+            'browser_version' => null,
+        ];
+    }
+
+    private function clientIp(?Request $request): ?string
+    {
+        if ($request === null) {
+            return null;
+        }
+
+        $cloudflareIp = $this->validIpFromHeader((string) $request->headers->get('CF-Connecting-IP'));
+
+        if ($cloudflareIp !== null) {
+            return $cloudflareIp;
+        }
+
+        $forwardedIp = $this->firstForwardedIp((string) $request->headers->get('X-Forwarded-For'));
+
+        if ($forwardedIp !== null) {
+            return $forwardedIp;
+        }
+
+        $realIp = $this->validIpFromHeader((string) $request->headers->get('X-Real-IP'));
+
+        return $realIp ?? $request->ip();
+    }
+
+    private function firstForwardedIp(string $header): ?string
+    {
+        $validIps = collect(explode(',', $header))
+            ->map(fn (string $ip): ?string => $this->validIpFromHeader($ip))
+            ->filter()
+            ->values();
+
+        if ($validIps->isEmpty()) {
+            return null;
+        }
+
+        return $validIps->first(fn (string $ip): bool => filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE,
+        ) !== false) ?? $validIps->first();
+    }
+
+    private function validIpFromHeader(string $value): ?string
+    {
+        $ip = trim($value);
+
+        if ($ip === '') {
+            return null;
+        }
+
+        if (preg_match('/^\[([0-9a-f:.]+)\](?::\d+)?$/i', $ip, $matches) === 1) {
+            $ip = $matches[1];
+        } elseif (substr_count($ip, ':') === 1 && str_contains($ip, '.')) {
+            [$ip] = explode(':', $ip, 2);
+        }
+
+        return filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : null;
     }
 
     private function safeUrl(?Request $request): ?string
