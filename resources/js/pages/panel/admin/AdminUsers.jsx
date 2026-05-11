@@ -16,6 +16,15 @@ const blank = {
     strict_access: false,
 };
 
+const cloneBlank = {
+    username: '',
+    full_name: '',
+    password: '',
+    temsilci_kodu: '',
+    aktif: true,
+    force_password_change: true,
+};
+
 const groupOrder = [
     'Satış Yönetimi',
     'Stok Yönetimi',
@@ -84,6 +93,9 @@ export default function AdminUsers() {
     const [status, setStatus] = useState({ type: 'idle', message: '' });
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
+    const [cloneSource, setCloneSource] = useState(null);
+    const [cloneForm, setCloneForm] = useState(cloneBlank);
+    const [isCloning, setIsCloning] = useState(false);
 
     const load = async () => {
         setIsLoading(true);
@@ -143,6 +155,45 @@ export default function AdminUsers() {
             setStatus({ type: 'error', message: error.message });
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    const openClone = (user) => {
+        setCloneSource(user);
+        setCloneForm(cloneBlank);
+        setStatus({ type: 'idle', message: '' });
+    };
+
+    const closeClone = () => {
+        setCloneSource(null);
+        setCloneForm(cloneBlank);
+        setIsCloning(false);
+    };
+
+    const cloneUser = async (event) => {
+        event.preventDefault();
+
+        if (!cloneSource) {
+            return;
+        }
+
+        setIsCloning(true);
+        setStatus({ type: 'idle', message: '' });
+
+        try {
+            const next = await apiRequest(`/api/admin/users/${cloneSource.id}/clone`, {
+                method: 'POST',
+                body: JSON.stringify(cloneForm),
+            });
+            setData(next);
+            closeClone();
+            setStatus({
+                type: 'success',
+                message: 'Kullanıcı kopyalandı. Rol ve izinler kaynak kullanıcıdan alındı.',
+            });
+        } catch (error) {
+            setStatus({ type: 'error', message: error.message });
+            setIsCloning(false);
         }
     };
 
@@ -341,7 +392,15 @@ export default function AdminUsers() {
                                                     {user.aktif ? 'Aktif' : 'Pasif'}
                                                 </span>
                                             </td>
-                                            <td className="px-5 py-4 text-right">
+                                            <td className="px-5 py-4">
+                                                <div className="flex justify-end gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openClone(user)}
+                                                        className="rounded-xl border border-slate-200 px-4 py-2 font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                                                    >
+                                                        Kopyala
+                                                    </button>
                                                 <button
                                                     type="button"
                                                     onClick={() => editUser(user)}
@@ -349,6 +408,7 @@ export default function AdminUsers() {
                                                 >
                                                     Düzenle
                                                 </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     ))}
@@ -580,6 +640,114 @@ export default function AdminUsers() {
                     </button>
                 </form>
             </section>
+
+            {cloneSource && (
+                <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 px-4 py-6">
+                    <form onSubmit={cloneUser} className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                                    Kullanıcı kopyala
+                                </p>
+                                <h3 className="mt-1 text-xl font-semibold text-slate-950">
+                                    {cloneSource.full_name || cloneSource.username}
+                                </h3>
+                                <p className="mt-2 text-sm text-slate-500">
+                                    Rol ve izinler kaynak kullanıcıdan kopyalanır. Temsilci kodu yeni kullanıcı için ayrı girilir.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={closeClone}
+                                className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-400"
+                            >
+                                Kapat
+                            </button>
+                        </div>
+
+                        <div className="mt-5 grid gap-4">
+                            <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                                Yeni kullanıcı adı
+                                <input
+                                    required
+                                    className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
+                                    placeholder="yeni.kullanici"
+                                    value={cloneForm.username}
+                                    onChange={(event) => setCloneForm({ ...cloneForm, username: event.target.value })}
+                                />
+                            </label>
+
+                            <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                                Yeni tam ad
+                                <input
+                                    required
+                                    className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
+                                    placeholder="Ad Soyad"
+                                    value={cloneForm.full_name}
+                                    onChange={(event) => setCloneForm({ ...cloneForm, full_name: event.target.value })}
+                                />
+                            </label>
+
+                            <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                                Yeni parola
+                                <input
+                                    required
+                                    type="password"
+                                    className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
+                                    placeholder="İlk parola"
+                                    value={cloneForm.password}
+                                    onChange={(event) => setCloneForm({ ...cloneForm, password: event.target.value })}
+                                />
+                            </label>
+
+                            <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                                Temsilci kodu
+                                <input
+                                    className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
+                                    placeholder="0035"
+                                    value={cloneForm.temsilci_kodu ?? ''}
+                                    onChange={(event) => setCloneForm({ ...cloneForm, temsilci_kodu: event.target.value })}
+                                />
+                            </label>
+
+                            <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                                    Aktif
+                                    <input
+                                        type="checkbox"
+                                        checked={cloneForm.aktif}
+                                        onChange={(event) => setCloneForm({ ...cloneForm, aktif: event.target.checked })}
+                                    />
+                                </label>
+                                <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                                    İlk girişte şifre değiştir
+                                    <input
+                                        type="checkbox"
+                                        checked={cloneForm.force_password_change}
+                                        onChange={(event) => setCloneForm({ ...cloneForm, force_password_change: event.target.checked })}
+                                    />
+                                </label>
+                            </div>
+                        </div>
+
+                        <div className="mt-6 flex justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={closeClone}
+                                className="rounded-xl border border-slate-200 px-4 py-3 font-semibold text-slate-600 transition hover:border-slate-400"
+                            >
+                                Vazgeç
+                            </button>
+                            <button
+                                className="rounded-xl bg-slate-950 px-4 py-3 font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled={isCloning}
+                            >
+                                {isCloning ? 'Kopyalanıyor...' : 'Kullanıcıyı kopyala'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
         </AdminFrame>
     );
 }

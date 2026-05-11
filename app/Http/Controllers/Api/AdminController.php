@@ -12,12 +12,14 @@ use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
+use App\Models\AuditLog;
 use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\AuditLogger;
 use App\Services\PanelDataSourceManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 use Throwable;
@@ -37,7 +39,7 @@ class AdminController extends Controller
                 'users' => User::query()->count(),
                 'pages' => Page::query()->count(),
                 'datasources' => DataSource::query()->count(),
-                'logs' => \App\Models\AuditLog::query()->count(),
+                'logs' => AuditLog::query()->count(),
             ],
             'roles' => Role::query()->orderBy('code')->get(['code', 'name', 'description', 'is_super_admin']),
             'urls' => [
@@ -175,6 +177,52 @@ class AdminController extends Controller
         }
 
         $this->auditLogger->log($request->user(), 'admin.user.save', ['target_user_id' => $user->id], $request);
+
+        return $this->users();
+    }
+
+    public function cloneUser(Request $request, User $user): JsonResponse
+    {
+        $data = $request->validate([
+            'username' => ['required', 'string', 'max:255', Rule::unique(User::class, 'username')],
+            'full_name' => ['required', 'string', 'max:255'],
+            'password' => ['required', 'string', 'min:8'],
+            'temsilci_kodu' => ['nullable', 'string', 'max:32'],
+            'aktif' => ['boolean'],
+            'force_password_change' => ['boolean'],
+        ]);
+
+        DB::transaction(function () use ($data, $request, $user): void {
+            $clonedUser = User::query()->create([
+                'username' => $data['username'],
+                'full_name' => $data['full_name'],
+                'password_hash' => Hash::make($data['password']),
+                'role_code' => $user->role_code,
+                'temsilci_kodu' => $data['temsilci_kodu'] ?? null,
+                'aktif' => (bool) ($data['aktif'] ?? true),
+                'force_password_change' => (bool) ($data['force_password_change'] ?? true),
+            ]);
+
+            UserAccess::query()
+                ->where('user_id', $user->id)
+                ->orderBy('resource_code')
+                ->get(['resource_code', 'can_view'])
+                ->each(function (UserAccess $access) use ($clonedUser): void {
+                    UserAccess::query()->updateOrCreate([
+                        'user_id' => $clonedUser->id,
+                        'resource_code' => $access->resource_code,
+                    ], [
+                        'user_id' => $clonedUser->id,
+                        'resource_code' => $access->resource_code,
+                        'can_view' => (bool) $access->can_view,
+                    ]);
+                });
+
+            $this->auditLogger->log($request->user(), 'admin.user.clone', [
+                'source_user_id' => $user->id,
+                'new_user_id' => $clonedUser->id,
+            ], $request);
+        });
 
         return $this->users();
     }
@@ -445,11 +493,37 @@ class AdminController extends Controller
 
     public function logs(): JsonResponse
     {
+        $auditTable = (new AuditLog)->getTable();
+        $userTable = (new User)->getTable();
+
+        $logs = AuditLog::query()
+            ->leftJoin("{$userTable} as log_users", 'log_users.id', '=', "{$auditTable}.user_id")
+            ->orderByDesc("{$auditTable}.created_at")
+            ->limit(200)
+            ->get([
+                "{$auditTable}.id",
+                "{$auditTable}.created_at",
+                "{$auditTable}.user_id",
+                "{$auditTable}.action",
+                "{$auditTable}.payload",
+                'log_users.full_name as user_full_name',
+                'log_users.username as username',
+            ])
+            ->map(fn ($log) => [
+                'id' => $log->id,
+                'created_at' => $log->created_at,
+                'user_id' => $log->user_id,
+                'user_name' => $log->user_id
+                    ? ($log->user_full_name ?: $log->username ?: "Kullanıcı #{$log->user_id}")
+                    : 'Sistem',
+                'full_name' => $log->user_full_name,
+                'username' => $log->username,
+                'action' => $log->action,
+                'payload' => $log->payload ?? [],
+            ]);
+
         return response()->json([
-            'logs' => \App\Models\AuditLog::query()
-                ->orderByDesc('created_at')
-                ->limit(200)
-                ->get(),
+            'logs' => $logs,
         ]);
     }
 }
