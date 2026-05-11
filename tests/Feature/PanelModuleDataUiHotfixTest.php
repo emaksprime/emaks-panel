@@ -1543,23 +1543,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertNull($bayiPayload['queryMeta']['gatewayRequest']['rep_code'] ?? null);
     }
 
-    public function test_sales_online_empty_special_source_falls_back_to_main_dashboard_with_same_scope(): void
+    public function test_sales_online_empty_special_source_stays_scoped_without_main_dashboard_fallback(): void
     {
         Http::fake([
-            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::sequence()
-                ->push(['ok' => true, 'rows' => []])
-                ->push([
-                    'ok' => true,
-                    'rows' => [
-                        [
-                            'satir_tipi' => 'GRUP',
-                            'siralama_1' => 1,
-                            'cari_grup_adi' => 'Online Grup',
-                            'adet' => 2,
-                            'ciro' => 250,
-                        ],
-                    ],
-                ]),
+            'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
         ]);
 
         $payload = app(SalesMainPageService::class)->dataset(User::factory()->create(['role_code' => 'admin']), [
@@ -1571,11 +1561,12 @@ class PanelModuleDataUiHotfixTest extends TestCase
             'bypass_cache' => true,
         ]);
 
-        $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
+        $this->assertSame('sales_online_perakende_detail', $payload['queryMeta']['dataSource']);
         $this->assertSame('online_perakende', $payload['scope']['key']);
-        $this->assertEquals(250, $payload['chart']['totalNet']);
+        $this->assertEquals(0, $payload['chart']['totalNet']);
+        $this->assertSame([], $payload['table']['rows']);
 
-        Http::assertSentCount(2);
+        Http::assertSentCount(1);
     }
 
     public function test_user_without_sales_scope_cannot_fetch_sales_dataset(): void
