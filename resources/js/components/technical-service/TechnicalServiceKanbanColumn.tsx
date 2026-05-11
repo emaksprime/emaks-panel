@@ -15,7 +15,7 @@ export function TechnicalServiceKanbanColumn({
   const hasContent = content.some(Boolean)
 
   return (
-    <section className="flex w-[320px] shrink-0 flex-col rounded-[28px] border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur sm:w-[340px]">
+    <section className="flex min-w-[260px] flex-1 flex-col rounded-[28px] border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur xl:min-w-[272px] 2xl:min-w-[288px]">
       <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
         <h2 className="text-sm font-semibold tracking-[0.01em] text-slate-950">{title}</h2>
         <span className="inline-flex min-w-8 items-center justify-center rounded-full bg-slate-950 px-2.5 py-1 text-xs font-semibold text-white">

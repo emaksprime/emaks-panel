@@ -14,7 +14,7 @@ export default function TechnicalServiceAdmin() {
 
       <div className="relative min-h-screen overflow-hidden bg-[#eaf1f8]">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top_left,_rgba(15,23,42,0.14),_transparent_38%),radial-gradient(circle_at_top_right,_rgba(37,99,235,0.12),_transparent_34%)]" />
-        <div className="relative mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 md:px-6 lg:px-10">
+        <div className="relative w-full max-w-none space-y-6 px-4 py-6 md:px-6 xl:px-8 2xl:px-10">
           <section className="relative overflow-hidden rounded-[28px] border border-white/80 bg-white/92 px-5 py-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ring-slate-200/70 backdrop-blur sm:px-6 sm:py-6">
             <div className="absolute inset-x-0 top-0 h-1.5 bg-slate-950" />
             <div className="max-w-3xl">

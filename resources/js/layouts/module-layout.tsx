@@ -66,6 +66,7 @@ function selectModuleHref(candidates: string[], visibleHrefs: Set<string>) {
 export default function ModuleLayout({ children }: { children: React.ReactNode }) {
     const { auth, panelNavigation, page } = usePage<SharedPageProps & { page?: { routePath?: string } }>().props;
     const routePath = page?.routePath ?? (typeof window !== 'undefined' ? window.location.pathname : '/dashboard');
+    const isTechnicalServiceRoute = routePath.startsWith('/technical-service') || routePath === '/activation-code-search';
     const visibleHrefs = new Set(
         panelNavigation.groups.flatMap((group) => group.items.map((item) => item.href)),
     );
@@ -123,7 +124,12 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                 </div>
             </header>
 
-            <main className="mx-auto w-full max-w-7xl">
+            <main
+                className={[
+                    'w-full min-w-0',
+                    isTechnicalServiceRoute ? 'max-w-none' : 'mx-auto max-w-7xl',
+                ].join(' ')}
+            >
                 {children}
             </main>
         </div>

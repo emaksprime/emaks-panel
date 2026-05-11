@@ -1,13 +1,12 @@
 import { Head } from '@inertiajs/react'
+import { Plus, RefreshCw, Wrench } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { TechnicalServiceKanbanBoard } from '@/components/technical-service/TechnicalServiceKanbanBoard'
 import { DateTimeFields } from '@/components/technical-service/DateTimeFields'
-import {
-  type OperationQuickFilterKey,
-  type WorkflowFilterKey,
-} from '@/components/technical-service/OperationCenterDashboard'
+import type { OperationQuickFilterKey, WorkflowFilterKey } from '@/components/technical-service/OperationCenterDashboard'
 import { ServiceRequestDetails } from '@/components/technical-service/ServiceRequestDetails'
+import { TechnicalServiceKanbanBoard } from '@/components/technical-service/TechnicalServiceKanbanBoard'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
+import { TechnicalServiceWeekNavigator } from '@/components/technical-service/TechnicalServiceWeekNavigator'
 import {
   findProvinceByName,
   getDistrictOptionsForProvince,
@@ -34,7 +33,6 @@ import {
   normalizeTechnicalServiceText,
   toTechnicalServiceDateTimeInputValue,
 } from '@/components/technical-service/utils'
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Plus, RefreshCw, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -218,7 +216,6 @@ type OperationsDashboardResponse = {
 
 type QuickFilterKey = OperationQuickFilterKey
 type WorkflowQueueKey = WorkflowFilterKey
-
 const initialFilters: FilterState = {
   search: '',
   status: '',
@@ -430,7 +427,17 @@ function quickFilterItemsLabel(filter: QuickFilterKey): string {
 }
 
 function getRequestScheduledDate(request: ServiceRequest): Date | null {
-  return parseLocalDateValue(request.scheduledAt ?? request.scheduledDate ?? null)
+  const requestWithFallbacks = request as ServiceRequest & Record<string, string | null | undefined>
+
+  return parseLocalDateValue(
+    request.scheduledDate
+    ?? requestWithFallbacks.scheduled_date
+    ?? request.scheduledAt
+    ?? requestWithFallbacks.scheduled_at
+    ?? request.customerPreferredDate
+    ?? requestWithFallbacks.customer_preferred_date
+    ?? null,
+  )
 }
 
 function workflowPanelLabel(filter: WorkflowQueueKey | null): string | null {
@@ -1310,7 +1317,7 @@ export function TechnicalServiceOperationCenter() {
     return sortedRequests.filter((request) => matchesSearchFilter(request))
   }, [matchesSearchFilter, sortedRequests])
 
-  const kanbanFilteredRequests = useMemo(() => {
+  const baseKanbanRequests = useMemo(() => {
     return sortedRequests.filter((request) => {
       if (!matchesSearchFilter(request)) {
         return false
@@ -1343,6 +1350,8 @@ export function TechnicalServiceOperationCenter() {
       return true
     })
   }, [filters.city, filters.onlyOpen, filters.priority, filters.serviceType, filters.technician, isOpenRequest, isUnassignedRequest, matchesSearchFilter, sortedRequests])
+
+  const kanbanFilteredRequests = baseKanbanRequests
 
   const kanbanSummary = useMemo(() => ({
     total: kanbanFilteredRequests.length,
@@ -1678,10 +1687,15 @@ export function TechnicalServiceOperationCenter() {
 
     return Array.from({ length: 7 }, (_, index) => {
       const date = addDays(weekStartDate, index)
-      const count = requests.filter((request) => {
+      const count = baseKanbanRequests.filter((request) => {
         const scheduled = getRequestScheduledDate(request)
 
-        return scheduled !== null && isSameLocalDay(scheduled, date) && isOpenRequest(request)
+        return scheduled !== null && isSameLocalDay(scheduled, date)
+      }).length
+      const overdueCount = baseKanbanRequests.filter((request) => {
+        const scheduled = getRequestScheduledDate(request)
+
+        return scheduled !== null && isSameLocalDay(scheduled, date) && isOverdueRequest(request)
       }).length
 
       return {
@@ -1690,12 +1704,59 @@ export function TechnicalServiceOperationCenter() {
         shortDate: date.toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit' }),
         fullDate: date.toLocaleDateString('tr-TR', { day: '2-digit', month: 'long', year: 'numeric' }),
         count,
+        overdueCount,
         densityLabel: densityLabelForCount(count),
         isToday: isSameLocalDay(date, todayDate),
         isSelected: isSameLocalDay(date, selectedDate),
       }
     })
-  }, [isOpenRequest, requests, selectedDate, todayDate, weekStartDate])
+  }, [baseKanbanRequests, isOverdueRequest, selectedDate, todayDate, weekStartDate])
+  const weeklyPlanSummary = useMemo(() => {
+    let weekPlanned = 0
+    let todayPlanned = 0
+    let overdue = 0
+    let unscheduled = 0
+    let completedOrCancelled = 0
+
+    baseKanbanRequests.forEach((request) => {
+      const scheduled = getRequestScheduledDate(request)
+
+      if (scheduled === null) {
+        unscheduled += 1
+      } else {
+        if (scheduled >= weekStartDate && scheduled < weekEndDate) {
+          weekPlanned += 1
+        }
+
+        if (isSameLocalDay(scheduled, todayDate)) {
+          todayPlanned += 1
+        }
+      }
+
+      if (isClosedStatus(request.status)) {
+        completedOrCancelled += 1
+      }
+
+      if (isOverdueRequest(request)) {
+        overdue += 1
+      }
+    })
+
+    return { weekPlanned, todayPlanned, overdue, unscheduled, completedOrCancelled }
+  }, [baseKanbanRequests, isOverdueRequest, todayDate, weekEndDate, weekStartDate])
+
+  const selectedPlanDaySummary = useMemo(() => {
+    const matchingRequests = baseKanbanRequests.filter((request) => {
+      const scheduled = getRequestScheduledDate(request)
+
+      return scheduled !== null && isSameLocalDay(scheduled, selectedDate)
+    })
+
+    return {
+      count: matchingRequests.length,
+      overdueCount: matchingRequests.filter((request) => isOverdueRequest(request)).length,
+    }
+  }, [baseKanbanRequests, isOverdueRequest, selectedDate])
 
   const selectedDateLabel = selectedDate.toLocaleDateString('tr-TR', {
     day: '2-digit',
@@ -1708,6 +1769,14 @@ export function TechnicalServiceOperationCenter() {
     year: 'numeric',
   })
   const selectedDayDescription = `${selectedDateLabel.replace(/^./, (character) => character.toLocaleUpperCase('tr-TR'))} operasyon görünümü`
+  const selectedWeekLabel = `${weekStartDate.toLocaleDateString('tr-TR', { day: '2-digit', month: 'long' })} - ${addDays(weekStartDate, 6).toLocaleDateString('tr-TR', { day: '2-digit', month: 'long', year: 'numeric' })}`
+  const weekSummaryItems = [
+    { label: 'Bu Hafta Planli', value: weeklyPlanSummary.weekPlanned, tone: 'blue' as const },
+    { label: 'Bugun Planli', value: weeklyPlanSummary.todayPlanned, tone: 'emerald' as const },
+    { label: 'Geciken', value: weeklyPlanSummary.overdue, tone: 'rose' as const },
+    { label: 'Tarihsiz', value: weeklyPlanSummary.unscheduled, tone: 'amber' as const },
+    { label: 'Tamamlanan / Iptal', value: weeklyPlanSummary.completedOrCancelled, tone: 'slate' as const },
+  ]
   const calendarMonthLabel = calendarMonth.toLocaleDateString('tr-TR', {
     month: 'long',
     year: 'numeric',
@@ -2564,6 +2633,18 @@ export function TechnicalServiceOperationCenter() {
     setIsDatePickerOpen(true)
   }, [selectedDate])
 
+  const handleSelectNavigatorDay = useCallback((key: string) => {
+    const nextDate = parseLocalDateValue(key)
+
+    if (!nextDate) {
+      return
+    }
+
+    const normalizedDate = startOfLocalDay(nextDate)
+    setSelectedDate(normalizedDate)
+    setWeekReferenceDate(normalizedDate)
+  }, [])
+
   const openRequestDetail = useCallback((request: ServiceRequest) => {
     detailRequestTokenRef.current += 1
     setSelectedListRequest(request)
@@ -2776,6 +2857,57 @@ export function TechnicalServiceOperationCenter() {
       </section>
 
       <TechnicalServicePageLinks />
+
+      <TechnicalServiceWeekNavigator
+        weekLabel={selectedWeekLabel}
+        selectedDateButtonLabel={selectedDateButtonLabel}
+        selectedDayLabel={selectedDateLabel}
+        selectedDayCount={selectedPlanDaySummary.count}
+        selectedDayOverdueCount={selectedPlanDaySummary.overdueCount}
+        weekDays={weeklyDayCounts}
+        summaryItems={weekSummaryItems}
+        isDatePickerOpen={isDatePickerOpen}
+        calendarMonthLabel={calendarMonthLabel}
+        calendarWeekdays={calendarWeekdays}
+        calendarDays={calendarDays}
+        datePickerRef={datePickerRef}
+        onPreviousWeek={() => {
+          const nextDate = addDays(weekReferenceDate, -7)
+          setWeekReferenceDate(nextDate)
+          setSelectedDate(startOfLocalDay(nextDate))
+        }}
+        onToday={() => {
+          const now = startOfLocalDay(new Date())
+          setWeekReferenceDate(now)
+          setSelectedDate(now)
+          setCalendarMonth(startOfMonth(now))
+          setIsDatePickerOpen(false)
+        }}
+        onToggleDatePicker={() => {
+          if (isDatePickerOpen) {
+            setIsDatePickerOpen(false)
+            return
+          }
+
+          openDatePicker()
+        }}
+        onPreviousMonth={() => setCalendarMonth((current) => addMonths(current, -1))}
+        onNextMonth={() => setCalendarMonth((current) => addMonths(current, 1))}
+        onSelectCalendarDay={(day) => {
+          const normalizedDate = startOfLocalDay(day)
+          setSelectedDate(normalizedDate)
+          setWeekReferenceDate(normalizedDate)
+          setCalendarMonth(startOfMonth(day))
+          setIsDatePickerOpen(false)
+        }}
+        onSelectDay={handleSelectNavigatorDay}
+        onCloseDatePicker={() => setIsDatePickerOpen(false)}
+        onNextWeek={() => {
+          const nextDate = addDays(weekReferenceDate, 7)
+          setWeekReferenceDate(nextDate)
+          setSelectedDate(startOfLocalDay(nextDate))
+        }}
+      />
 
       <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-sm sm:px-6 sm:py-6">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,1fr))]">

@@ -33,8 +33,8 @@ export function TechnicalServiceKanbanBoard({
 
   return (
     <div className="space-y-4">
-      <div className="overflow-x-auto pb-2">
-        <div className="flex min-w-max gap-4">
+      <div className="w-full min-w-0 overflow-x-auto pb-2">
+        <div className="grid min-w-[1880px] grid-cols-[repeat(7,minmax(260px,1fr))] gap-4 2xl:min-w-[2016px]">
           {(loading ? TECHNICAL_SERVICE_KANBAN_COLUMNS : groupedRequests).map((column) => (
             <TechnicalServiceKanbanColumn
               key={column.id}

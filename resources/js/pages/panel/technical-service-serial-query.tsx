@@ -152,7 +152,7 @@ export default function TechnicalServiceSerialQuery() {
     <>
       <Head title="Seri No Sorgu" />
 
-      <div className="mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 md:px-6 lg:px-12">
+      <div className="w-full max-w-none space-y-6 px-4 py-6 md:px-6 xl:px-8 2xl:px-10">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <Heading
             title="Seri No Sorgu"
