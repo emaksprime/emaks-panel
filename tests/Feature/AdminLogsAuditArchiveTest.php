@@ -63,6 +63,42 @@ class AdminLogsAuditArchiveTest extends TestCase
         $this->assertStringNotContainsString('top-secret', $payload['safe_url']);
     }
 
+    public function test_audit_logger_prefers_real_ip_headers_over_proxy_ip(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $cloudflareRequest = Request::create(
+            'https://panel.test/admin/logs',
+            'GET',
+            server: [
+                'REMOTE_ADDR' => '10.0.1.1',
+                'HTTP_CF_CONNECTING_IP' => '8.8.8.8',
+            ],
+        );
+        app(AuditLogger::class)->log($user, 'panel.page.view', ['page' => 'admin_logs'], $cloudflareRequest);
+
+        $forwardedRequest = Request::create(
+            'https://panel.test/admin/logs',
+            'GET',
+            server: [
+                'REMOTE_ADDR' => '10.0.1.1',
+                'HTTP_X_FORWARDED_FOR' => '8.8.4.4, 10.0.1.1',
+            ],
+        );
+        app(AuditLogger::class)->log($user, 'admin.datasource.test', [], $forwardedRequest);
+
+        $fallbackRequest = Request::create(
+            'https://panel.test/admin/logs',
+            'GET',
+            server: ['REMOTE_ADDR' => '10.0.1.1'],
+        );
+        app(AuditLogger::class)->log($user, 'admin.page.save', [], $fallbackRequest);
+
+        $this->assertSame('8.8.8.8', AuditLog::query()->where('action', 'panel.page.view')->firstOrFail()->payload['ip_address']);
+        $this->assertSame('8.8.4.4', AuditLog::query()->where('action', 'admin.datasource.test')->firstOrFail()->payload['ip_address']);
+        $this->assertSame('10.0.1.1', AuditLog::query()->where('action', 'admin.page.save')->firstOrFail()->payload['ip_address']);
+    }
+
     public function test_admin_logs_endpoint_returns_istanbul_time_and_readable_summary(): void
     {
         $admin = User::factory()->create(['role_code' => 'admin']);
@@ -88,7 +124,7 @@ class AdminLogsAuditArchiveTest extends TestCase
         ]);
 
         $this->actingAs($admin)
-            ->getJson('/api/admin/logs?q=mehmet')
+            ->getJson('/api/admin/logs?q=mehmet&action=sales.customer.search&page=sales_main&date_from=2026-05-11&date_to=2026-05-11&limit=10')
             ->assertOk()
             ->assertJsonPath('summary.total_recent', 1)
             ->assertJsonPath('summary.archived_available', true)
@@ -104,6 +140,29 @@ class AdminLogsAuditArchiveTest extends TestCase
             ->assertJsonPath('logs.0.browser_label', 'Chrome 120');
     }
 
+    public function test_admin_logs_endpoint_parses_legacy_user_agent_device_fallback(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $iphoneSafari = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+
+        AuditLog::query()->create([
+            'user_id' => null,
+            'action' => 'panel.page.view',
+            'payload' => [
+                'page' => 'admin_logs',
+                'user_agent' => $iphoneSafari,
+                'ip_address' => '8.8.8.8',
+            ],
+            'created_at' => now('UTC'),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/admin/logs')
+            ->assertOk()
+            ->assertJsonPath('logs.0.device_label', 'Mobil / iOS')
+            ->assertJsonPath('logs.0.browser_label', 'Safari 17.5');
+    }
+
     public function test_admin_logs_ui_contract_is_readable_not_raw_payload_table(): void
     {
         $component = file_get_contents(resource_path('js/pages/panel/admin/AdminLogs.jsx')) ?: '';
@@ -115,6 +174,10 @@ class AdminLogsAuditArchiveTest extends TestCase
         $this->assertStringContainsString('Arama/Filtre', $component);
         $this->assertStringContainsString('Detay göster', $component);
         $this->assertStringContainsString('raw_payload', $component);
+        $this->assertStringContainsString('<form onSubmit={handleSubmit}', $component);
+        $this->assertStringContainsString('type="submit"', $component);
+        $this->assertStringContainsString('const resetFilters = () =>', $component);
+        $this->assertStringContainsString('loadLogs(defaultFilters)', $component);
         $this->assertStringNotContainsString('JSON.stringify(log.payload', $component);
     }
 
