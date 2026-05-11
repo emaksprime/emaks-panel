@@ -732,7 +732,7 @@ export default function AdminUsers() {
                                     <span>
                                         Dar yetkiyi sabitle
                                         <small className="block font-normal text-slate-500">
-                                            Kaynak kullanÄ±cÄ±nÄ±n etkin izinleri yeni kullanÄ±cÄ±ya explicit allow/deny olarak yazÄ±lÄ±r; rol fallback fazladan alan aÃ§amaz.
+                                            Kaynak kullanıcının etkin izinleri yeni kullanıcıya explicit allow/deny olarak yazılır; rol fallback fazladan alan açamaz.
                                         </small>
                                     </span>
                                     <input

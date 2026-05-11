@@ -220,6 +220,6 @@ class AdminUserManagementTest extends TestCase
         $this->assertStringContainsString('force_password_change: true', $component);
         $this->assertStringContainsString('strict_access: true', $component);
         $this->assertStringContainsString('Dar yetkiyi sabitle', $component);
-        $this->assertStringContainsString('rol fallback fazladan alan aÃ§amaz', $component);
+        $this->assertStringContainsString('rol fallback fazladan alan açamaz', $component);
     }
 }
