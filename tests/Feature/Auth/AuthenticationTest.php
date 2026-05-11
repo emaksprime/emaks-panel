@@ -19,6 +19,40 @@ class AuthenticationTest extends TestCase
         $response->assertOk();
     }
 
+    public function test_login_page_uses_philips_distributor_branding()
+    {
+        $layout = file_get_contents(resource_path('js/layouts/auth/auth-simple-layout.tsx')) ?: '';
+        $login = file_get_contents(resource_path('js/pages/auth/login.tsx')) ?: '';
+        $philipsLogo = public_path('assets/primecrm/philips-logo.png');
+
+        $this->assertFileExists($philipsLogo);
+        $this->assertGreaterThan(10_000, filesize($philipsLogo));
+        $this->assertLessThan(500_000, filesize($philipsLogo));
+
+        $size = getimagesize($philipsLogo);
+        $this->assertIsArray($size);
+        $this->assertSame(2500, (int) $size[0]);
+        $this->assertSame(2246, (int) $size[1]);
+
+        $this->assertStringContainsString('/assets/primecrm/philips-logo.png', $layout);
+        $this->assertStringContainsString(
+            'PHILIPS AKILLI KİLİTLER TÜRKİYE RESMİ DİSTRİBÜTÖRÜ',
+            $layout
+        );
+        $this->assertStringNotContainsString('AppLogoIcon', $layout);
+
+        $this->assertStringContainsString('/assets/primecrm/emaks-prime.png', $login);
+        $this->assertStringContainsString('Kullanıcı adı', $login);
+        $this->assertStringContainsString('Şifre', $login);
+        $this->assertStringContainsString('Beni hatırla', $login);
+        $this->assertStringContainsString('Giriş yap', $login);
+        $this->assertStringContainsString('autoFocus', $login);
+        $this->assertStringContainsString('errors.username', $login);
+        $this->assertStringContainsString('errors.password', $login);
+        $this->assertStringContainsString('canResetPassword', $login);
+        $this->assertStringContainsString('canRegister', $login);
+    }
+
     public function test_users_can_authenticate_using_the_login_screen()
     {
         $user = User::factory()->create();
