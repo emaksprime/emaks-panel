@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\DataSource;
 use App\Models\Page;
+use App\Services\AuditLogger;
 use App\Services\PanelAccessService;
 use App\Services\PanelPageDataService;
 use Illuminate\Http\JsonResponse;
@@ -19,6 +20,7 @@ class PageDataController extends Controller
         string $code,
         PanelPageDataService $pageData,
         PanelAccessService $access,
+        AuditLogger $auditLogger,
     ): JsonResponse
     {
         $user = $request->user();
@@ -87,11 +89,15 @@ class PageDataController extends Controller
         }
 
         try {
-            return response()->json(
-                $page !== null
-                    ? $pageData->dataset($user, $code, $validated)
-                    : $pageData->datasetForSource($user, (string) $source?->code, (string) $sourceResourceCode, $validated),
-            );
+            $dataset = $page !== null
+                ? $pageData->dataset($user, $code, $validated)
+                : $pageData->datasetForSource($user, (string) $source?->code, (string) $sourceResourceCode, $validated);
+
+            if (($source?->code ?? null) === 'sales_customer_search') {
+                $this->logSalesCustomerSearch($auditLogger, $request, $validated, $dataset);
+            }
+
+            return response()->json($dataset);
         } catch (RuntimeException $exception) {
             if ($exception instanceof HttpExceptionInterface) {
                 throw $exception;
@@ -233,5 +239,32 @@ class PageDataController extends Controller
             '0035' => 'bulent_saglam',
             default => null,
         };
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @param  array<string, mixed>  $dataset
+     */
+    private function logSalesCustomerSearch(AuditLogger $auditLogger, Request $request, array $validated, array $dataset): void
+    {
+        $search = trim((string) ($validated['search'] ?? ''));
+
+        if (strlen($search) < 2) {
+            return;
+        }
+
+        $gatewayRequest = $dataset['queryMeta']['gatewayRequest'] ?? [];
+        $params = is_array($gatewayRequest['params'] ?? null) ? $gatewayRequest['params'] : [];
+        $filters = is_array($dataset['filters'] ?? null) ? $dataset['filters'] : [];
+
+        $auditLogger->log($request->user(), 'sales.customer.search', [
+            'page' => 'sales_main',
+            'search' => $search,
+            'scope_key' => $params['scope_key'] ?? $filters['scope_key'] ?? $validated['scope_key'] ?? null,
+            'rep_code' => $params['rep_code'] ?? $filters['rep_code'] ?? $validated['rep_code'] ?? null,
+            'date_from' => $params['date_from'] ?? $filters['date_from'] ?? $validated['date_from'] ?? null,
+            'date_to' => $params['date_to'] ?? $filters['date_to'] ?? $validated['date_to'] ?? null,
+            'result_count' => count(is_array($dataset['rows'] ?? null) ? $dataset['rows'] : []),
+        ], $request);
     }
 }

@@ -18,10 +18,12 @@ use App\Models\UserAccess;
 use App\Services\AuditLogger;
 use App\Services\PanelAccessService;
 use App\Services\PanelDataSourceManager;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 use Throwable;
 
@@ -576,15 +578,53 @@ class AdminController extends Controller
         ]);
     }
 
-    public function logs(): JsonResponse
+    public function logs(Request $request): JsonResponse
     {
+        $filters = $request->validate([
+            'user_id' => ['nullable', 'integer'],
+            'action' => ['nullable', 'string', 'max:160'],
+            'page' => ['nullable', 'string', 'max:160'],
+            'q' => ['nullable', 'string', 'max:255'],
+            'date_from' => ['nullable', 'date_format:Y-m-d'],
+            'date_to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:date_from'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:1000'],
+        ]);
+
+        $limit = (int) ($filters['limit'] ?? 200);
+        $timezone = 'Europe/Istanbul';
         $auditTable = (new AuditLog)->getTable();
         $userTable = (new User)->getTable();
+        $pageLabels = Page::query()
+            ->pluck('name', 'code')
+            ->map(fn ($name) => (string) $name)
+            ->all();
 
-        $logs = AuditLog::query()
+        $query = AuditLog::query()
             ->leftJoin("{$userTable} as log_users", 'log_users.id', '=', "{$auditTable}.user_id")
-            ->orderByDesc("{$auditTable}.created_at")
-            ->limit(200)
+            ->orderByDesc("{$auditTable}.created_at");
+
+        if (! empty($filters['user_id'])) {
+            $query->where("{$auditTable}.user_id", (int) $filters['user_id']);
+        }
+
+        if (! empty($filters['action'])) {
+            $query->where("{$auditTable}.action", (string) $filters['action']);
+        }
+
+        if (! empty($filters['date_from'])) {
+            $query->where("{$auditTable}.created_at", '>=', CarbonImmutable::createFromFormat('Y-m-d', (string) $filters['date_from'], $timezone)
+                ->startOfDay()
+                ->timezone('UTC'));
+        }
+
+        if (! empty($filters['date_to'])) {
+            $query->where("{$auditTable}.created_at", '<=', CarbonImmutable::createFromFormat('Y-m-d', (string) $filters['date_to'], $timezone)
+                ->endOfDay()
+                ->timezone('UTC'));
+        }
+
+        $logs = $query
+            ->limit(min($limit * 5, 5000))
             ->get([
                 "{$auditTable}.id",
                 "{$auditTable}.created_at",
@@ -594,21 +634,246 @@ class AdminController extends Controller
                 'log_users.full_name as user_full_name',
                 'log_users.username as username',
             ])
-            ->map(fn ($log) => [
-                'id' => $log->id,
-                'created_at' => $log->created_at,
-                'user_id' => $log->user_id,
-                'user_name' => $log->user_id
-                    ? ($log->user_full_name ?: $log->username ?: "Kullanıcı #{$log->user_id}")
-                    : 'Sistem',
-                'full_name' => $log->user_full_name,
-                'username' => $log->username,
-                'action' => $log->action,
-                'payload' => $log->payload ?? [],
-            ]);
+            ->map(fn ($log) => $this->formatAuditLog($log, $pageLabels, $timezone))
+            ->filter(function (array $log) use ($filters): bool {
+                if (! empty($filters['page']) && ($log['page'] ?? '') !== (string) $filters['page']) {
+                    return false;
+                }
+
+                $term = trim((string) ($filters['q'] ?? ''));
+
+                if ($term === '') {
+                    return true;
+                }
+
+                $haystack = strtolower(json_encode([
+                    $log['user_name'] ?? '',
+                    $log['username'] ?? '',
+                    $log['action'] ?? '',
+                    $log['action_label'] ?? '',
+                    $log['page_label'] ?? '',
+                    $log['path'] ?? '',
+                    $log['ip_address'] ?? '',
+                    $log['search_term'] ?? '',
+                    $log['filters_summary'] ?? '',
+                    $log['payload_summary'] ?? '',
+                ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+
+                return str_contains($haystack, strtolower($term));
+            })
+            ->take($limit)
+            ->values();
+
+        $todayStartUtc = CarbonImmutable::now($timezone)->startOfDay()->timezone('UTC');
+        $todayQuery = AuditLog::query()->where('created_at', '>=', $todayStartUtc);
+        $lastLog = $logs->first();
 
         return response()->json([
+            'summary' => [
+                'total_recent' => $logs->count(),
+                'today_count' => (clone $todayQuery)->count(),
+                'unique_users_today' => (clone $todayQuery)->whereNotNull('user_id')->distinct('user_id')->count('user_id'),
+                'last_log_at' => $lastLog['created_at_human'] ?? null,
+                'archived_available' => Schema::hasTable('panel.log_archives'),
+            ],
+            'options' => [
+                'actions' => $logs
+                    ->pluck('action')
+                    ->filter()
+                    ->unique()
+                    ->map(fn (string $action) => ['value' => $action, 'label' => $this->actionLabel($action)])
+                    ->values(),
+                'pages' => $logs
+                    ->map(fn (array $log) => ['value' => $log['page'], 'label' => $log['page_label']])
+                    ->filter(fn (array $page) => $page['value'] !== null && $page['value'] !== '')
+                    ->unique('value')
+                    ->values(),
+            ],
             'logs' => $logs,
         ]);
+
+    }
+
+    /**
+     * @param  array<string, string>  $pageLabels
+     * @return array<string, mixed>
+     */
+    private function formatAuditLog(mixed $log, array $pageLabels, string $timezone): array
+    {
+        $payload = is_array($log->payload ?? null) ? $log->payload : [];
+        $createdAt = $this->createdAtUtc($log->created_at);
+        $local = $createdAt->timezone($timezone);
+        $userName = $log->user_id
+            ? ($log->user_full_name ?: $log->username ?: "Kullanıcı #{$log->user_id}")
+            : 'Sistem';
+        $page = $this->pageCodeFromPayload($payload);
+
+        return [
+            'id' => $log->id,
+            'created_at_utc' => $createdAt->toISOString(),
+            'created_at_local' => $local->format('Y-m-d H:i:s'),
+            'created_at_human' => $local->format('d.m.Y H:i:s'),
+            'user_id' => $log->user_id,
+            'user_name' => $userName,
+            'full_name' => $log->user_full_name,
+            'username' => $log->username,
+            'action' => $log->action,
+            'action_label' => $payload['action_label'] ?? $this->actionLabel((string) $log->action),
+            'page' => $page,
+            'page_label' => $this->pageLabel($page, $pageLabels),
+            'path' => $payload['path'] ?? null,
+            'method' => $payload['method'] ?? null,
+            'ip_address' => $payload['ip_address'] ?? null,
+            'device_label' => $this->deviceLabel($payload),
+            'browser_label' => $this->browserLabel($payload),
+            'search_term' => $this->searchTermFromPayload($payload),
+            'filters_summary' => $this->filtersSummary($payload),
+            'payload_summary' => $this->payloadSummary($payload),
+            'raw_payload' => $payload,
+        ];
+    }
+
+    private function createdAtUtc(mixed $createdAt): CarbonImmutable
+    {
+        if ($createdAt instanceof \DateTimeInterface) {
+            return CarbonImmutable::parse($createdAt->format('Y-m-d H:i:s'), 'UTC')->timezone('UTC');
+        }
+
+        return CarbonImmutable::parse((string) $createdAt, 'UTC')->timezone('UTC');
+    }
+
+    private function pageCodeFromPayload(array $payload): ?string
+    {
+        $page = $payload['page'] ?? $payload['page_code'] ?? null;
+
+        if (is_string($page) && trim($page) !== '') {
+            return trim($page);
+        }
+
+        $path = (string) ($payload['path'] ?? '');
+
+        return match (true) {
+            str_contains($path, 'sales') => 'sales_main',
+            str_contains($path, 'stock') => 'stock',
+            str_contains($path, 'orders') => 'orders',
+            str_contains($path, 'admin/logs') => 'admin_logs',
+            str_contains($path, 'admin/users') => 'admin_users',
+            str_contains($path, 'admin/datasources') => 'admin_datasources',
+            str_contains($path, 'admin/pages') => 'admin_pages',
+            str_contains($path, 'admin') => 'admin_panel',
+            default => null,
+        };
+    }
+
+    private function pageLabel(?string $page, array $pageLabels): ?string
+    {
+        if ($page === null || $page === '') {
+            return null;
+        }
+
+        return $pageLabels[$page] ?? match ($page) {
+            'admin_logs' => 'Loglar',
+            'admin_users' => 'Kullanıcı Yönetimi',
+            'admin_datasources' => 'Veri Kaynakları',
+            'admin_pages' => 'Sayfalar',
+            'admin_panel' => 'Yönetim Paneli',
+            'sales_main' => 'Genel Satış',
+            'stock' => 'Stok Yönetimi',
+            'orders' => 'Sipariş Yönetimi',
+            default => $page,
+        };
+    }
+
+    private function actionLabel(string $action): string
+    {
+        return match ($action) {
+            'panel.page.view' => 'Sayfa görüntüledi',
+            'admin.user.save' => 'Kullanıcı kaydetti',
+            'admin.user.clone' => 'Kullanıcı kopyaladı',
+            'admin.datasource.save' => 'Veri kaynağı kaydetti',
+            'admin.datasource.test' => 'Veri kaynağı test etti',
+            'admin.page.save' => 'Sayfa kaydetti',
+            'sales.customer.search' => 'Müşteri aradı',
+            'sales.data.view', 'sales.data.filter' => 'Satış verisi filtreledi',
+            default => $action,
+        };
+    }
+
+    private function deviceLabel(array $payload): ?string
+    {
+        $parts = collect([$payload['device_type'] ?? null, $payload['platform'] ?? null])->filter();
+
+        return $parts->isEmpty() ? null : $parts->implode(' / ');
+    }
+
+    private function browserLabel(array $payload): ?string
+    {
+        $parts = collect([$payload['browser'] ?? null, $payload['browser_version'] ?? null])->filter();
+
+        return $parts->isEmpty() ? null : $parts->implode(' ');
+    }
+
+    private function searchTermFromPayload(array $payload): ?string
+    {
+        foreach (['search', 'query', 'customer_filter', 'cari_filter', 'product_filter'] as $key) {
+            $value = $payload[$key] ?? null;
+
+            if (is_string($value) && trim($value) !== '') {
+                return trim($value);
+            }
+        }
+
+        return null;
+    }
+
+    private function filtersSummary(array $payload): ?string
+    {
+        $labels = [
+            'scope_key' => 'Kapsam',
+            'detail_type' => 'Detay',
+            'brand_filter' => 'Marka',
+            'category_filter' => 'Kategori',
+            'customer_filter' => 'Müşteri',
+            'cari_filter' => 'Cari',
+            'product_filter' => 'Ürün',
+            'date_from' => 'Başlangıç',
+            'date_to' => 'Bitiş',
+            'rep_code' => 'Temsilci',
+            'result_count' => 'Sonuç',
+        ];
+        $parts = [];
+
+        foreach ($labels as $key => $label) {
+            $value = $payload[$key] ?? null;
+
+            if ($value === null || $value === '' || $value === []) {
+                continue;
+            }
+
+            $parts[] = "{$label}: ".(is_scalar($value) ? (string) $value : json_encode($value, JSON_UNESCAPED_UNICODE));
+        }
+
+        return $parts === [] ? null : implode(' | ', $parts);
+    }
+
+    private function payloadSummary(array $payload): ?string
+    {
+        if (($payload['target_user_id'] ?? null) !== null) {
+            return 'Hedef kullanıcı #'.$payload['target_user_id'];
+        }
+
+        if (($payload['source_user_id'] ?? null) !== null && ($payload['new_user_id'] ?? null) !== null) {
+            return 'Kaynak #'.$payload['source_user_id'].' -> Yeni #'.$payload['new_user_id'];
+        }
+
+        if (($payload['data_source_code'] ?? null) !== null) {
+            return 'Veri kaynağı: '.$payload['data_source_code'];
+        }
+
+        if (($payload['page'] ?? null) !== null || ($payload['path'] ?? null) !== null) {
+            return collect([$payload['page'] ?? null, $payload['path'] ?? null])->filter()->implode(' / ');
+        }
+
+        return $this->filtersSummary($payload);
     }
 }
