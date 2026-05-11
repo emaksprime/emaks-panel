@@ -53,12 +53,6 @@ function quantity(value) {
     }).format(numberValue(value));
 }
 
-function count(value) {
-    return new Intl.NumberFormat('tr-TR', {
-        maximumFractionDigits: 0,
-    }).format(numberValue(value));
-}
-
 function deliveryWeekLabel(value) {
     return value === 'TESLÄ°M TARÄ°HÄ° BELÄ°RSÄ°Z' ? 'TESLİM TARİHİ BELİRSİZ' : value;
 }
@@ -379,13 +373,21 @@ function approvedGroup(row) {
     return serial === 'B' || group.toLocaleLowerCase('tr').includes('bekleyen') ? 'pending' : 'approved';
 }
 
+function isConsignmentRow(row) {
+    const value = row?.konsinye_mi;
+
+    return value === true || value === 1 || value === '1' || String(value ?? '').toLocaleLowerCase('tr') === 'true';
+}
+
 function summaryForReceived(approvedRows, pendingRows) {
     const sum = (items, key) => items.reduce((total, row) => total + numberValue(row[key]), 0);
+    const approvedAmount = sum(approvedRows, 'kalan_tutar');
+    const consignmentAmount = sum(approvedRows.filter(isConsignmentRow), 'kalan_tutar');
 
     return [
-        { label: 'Onaylı Açık Sipariş Satırı', value: count(approvedRows.length) },
-        { label: 'Onaylı Sipariş Tutarı', value: money(sum(approvedRows, 'kalan_tutar')) },
-        { label: 'Onay Bekleyen Açık Sipariş Satırı', value: count(pendingRows.length) },
+        { label: 'Onaylı Sipariş Tutarı', value: money(approvedAmount) },
+        { label: 'Konsinye Hariç Onaylı Tutar', value: money(approvedAmount - consignmentAmount) },
+        { label: 'Konsinye Tutarı', value: money(consignmentAmount) },
         { label: 'Onay Bekleyen Sipariş Tutarı', value: money(sum(pendingRows, 'kalan_tutar')) },
     ];
 }
@@ -400,7 +402,7 @@ function summaryForGiven(rows, groups) {
     ];
 }
 
-function BrandComparisonStrip({ items }) {
+function BrandComparisonStrip({ items, showAmount = true }) {
     if (items.length === 0) {
         return null;
     }
@@ -410,9 +412,11 @@ function BrandComparisonStrip({ items }) {
             <div className="flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
                 <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Marka Karşılaştırması</p>
-                    <p className="mt-1 text-sm text-slate-500">Filtreli siparişlerde marka bazlı adet ve tutar dağılımı.</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                        {showAmount ? 'Filtreli siparişlerde marka bazlı adet ve tutar dağılımı.' : 'Filtreli siparişlerde marka bazlı adet dağılımı.'}
+                    </p>
                 </div>
-                <p className="text-xs font-semibold text-slate-400">Adet, tutar ve pay</p>
+                <p className="text-xs font-semibold text-slate-400">{showAmount ? 'Adet, tutar ve pay' : 'Adet ve pay'}</p>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
                 {items.map((item, index) => (
@@ -422,7 +426,7 @@ function BrandComparisonStrip({ items }) {
                             <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-blue-700 shadow-sm">%{item.percentage.toFixed(1)}</span>
                         </div>
                         <div className="mt-4 grid gap-2">
-                            <p className="text-2xl font-black tracking-tight text-slate-950">{money(item.amount)}</p>
+                            {showAmount && <p className="text-2xl font-black tracking-tight text-slate-950">{money(item.amount)}</p>}
                             <p className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-sm font-bold text-slate-600 shadow-sm">{quantity(item.quantity)} adet</p>
                         </div>
                         <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-white shadow-inner">
@@ -529,7 +533,10 @@ function ReceivedTable({ title, rows }) {
                             <tr key={`${textValue(row, ['sip_evrakno_seri'])}-${textValue(row, ['sip_evrakno_sira'])}-${index}`} className="align-top">
                                 <td className="px-4 py-3 font-semibold text-slate-700">{textValue(row, ['siparis_tarihi'], '-')}</td>
                                 <td className="break-words px-4 py-3 font-semibold text-slate-950">{textValue(row, ['cari_adi'], '-')}</td>
-                                <td className="break-words px-4 py-3 text-slate-700">{textValue(row, ['urun_adi'], '-')}</td>
+                                <td className="break-words px-4 py-3 text-slate-700">
+                                    <span className="block">{textValue(row, ['urun_adi'], '-')}</span>
+                                    <em className="mt-1 block text-xs text-slate-500">({textValue(row, ['montaj_durumu'], 'Montaj Hariç')})</em>
+                                </td>
                                 <td className="px-4 py-3 text-slate-600">{textValue(row, ['marka', 'brand_code'], '-')}</td>
                                 <td className="break-words px-4 py-3 text-slate-600">{textValue(row, ['sip_aciklama2'], '-')}</td>
                                 <td className="px-4 py-3 text-right font-semibold text-slate-900">{quantity(row.kalan_miktar)}</td>
@@ -549,6 +556,7 @@ function ReceivedTable({ title, rows }) {
                                 <p className="text-xs font-semibold text-slate-500">{textValue(row, ['siparis_tarihi'], '-')}</p>
                                 <h3 className="mt-1 break-words text-base font-bold text-slate-950">{textValue(row, ['cari_adi'], '-')}</h3>
                                 <p className="mt-2 break-words text-sm text-slate-700">{textValue(row, ['urun_adi'], '-')}</p>
+                                <em className="mt-1 block text-xs text-slate-500">({textValue(row, ['montaj_durumu'], 'Montaj Hariç')})</em>
                                 <p className="mt-1 text-xs font-semibold text-blue-700">{textValue(row, ['marka', 'brand_code'], '-')}</p>
                             </div>
                             <div className="text-right">
@@ -742,7 +750,7 @@ export default function OrdersDashboard({ page, mode }) {
                     {cards.map((card) => <KpiCard key={card.label} {...card} />)}
                 </section>
 
-                <BrandComparisonStrip items={brandComparisonItems} />
+                <BrandComparisonStrip items={brandComparisonItems} showAmount={mode !== 'verilen'} />
 
                 <OrdersPieChart
                     title={mode === 'verilen' ? 'Verilen Sipariş Ürün Dağılımı' : 'Onaylı Alınan Sipariş Ürün Dağılımı'}

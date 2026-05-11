@@ -170,6 +170,17 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('STRING_SPLIT(@ProductFilter', $alinan);
         $this->assertStringContainsString('brand_key', $alinan);
         $this->assertStringContainsString('marka', $alinan);
+        $this->assertStringContainsString('sto.sto_kategori_kodu', $alinan);
+        foreach (['A1', 'AS1', 'D1', 'G1', 'K1', 'KA1', 'M1', 'O1', 'OT1', 'YM1'] as $categoryCode) {
+            $this->assertStringContainsString("N'{$categoryCode}'", $alinan);
+        }
+        $this->assertStringContainsString('kategori_kodu', $alinan);
+        $this->assertStringContainsString('W-MONTAJ-1', $alinan);
+        $this->assertStringContainsString('montaj_sip.sip_evrakno_seri = sip.sip_evrakno_seri', $alinan);
+        $this->assertStringContainsString("sip_stok_kod, N''))) <> N'W-MONTAJ-1'", $alinan);
+        $this->assertStringContainsString('montaj_durumu', $alinan);
+        $this->assertStringContainsString('konsinye_mi', $alinan);
+        $this->assertStringContainsString('KONSINYE', $alinan);
         $this->assertStringContainsString('sip.sip_satici_kod', $alinan);
         $this->assertStringContainsString('AS temsilci_kodu', $alinan);
         $this->assertStringContainsString("AND LTRIM(RTRIM(ISNULL(sip.sip_satici_kod, N''))) = @RepCode", $alinan);
@@ -198,6 +209,9 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('@DeliveryWeek', $verilen);
         $this->assertStringContainsString('brand_key', $verilen);
         $this->assertStringContainsString('marka', $verilen);
+        $this->assertStringNotContainsString('W-MONTAJ-1', $verilen);
+        $this->assertStringNotContainsString('montaj_durumu', $verilen);
+        $this->assertStringNotContainsString('konsinye_mi', $verilen);
         $this->assertNotSame($alinan, $verilen);
 
         $this->assertSame(
@@ -244,8 +258,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString('BrandComparisonStrip', $dashboard);
         $this->assertStringContainsString('BrandFilter', $dashboard);
         $this->assertStringContainsString('DeliveryWeekFilter', $dashboard);
-        $this->assertStringContainsString('Onaylı Açık Sipariş Satırı', $dashboard);
-        $this->assertStringContainsString('Onay Bekleyen Açık Sipariş Satırı', $dashboard);
+        $this->assertStringNotContainsString('Onaylı Açık Sipariş Satırı', $dashboard);
+        $this->assertStringNotContainsString('Onay Bekleyen Açık Sipariş Satırı', $dashboard);
+        $this->assertStringContainsString('Konsinye Hariç Onaylı Tutar', $dashboard);
+        $this->assertStringContainsString('Konsinye Tutarı', $dashboard);
+        $this->assertStringContainsString('montaj_durumu', $dashboard);
+        $this->assertStringContainsString('Montaj Hariç', $dashboard);
+        $this->assertStringContainsString('showAmount={mode !==', $dashboard);
         $this->assertStringContainsString('brand_filter', $dashboard);
         $this->assertStringContainsString('product_filter', $dashboard);
         $this->assertStringContainsString('delivery_week', $dashboard);
