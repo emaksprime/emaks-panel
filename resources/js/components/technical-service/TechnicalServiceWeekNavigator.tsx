@@ -1,4 +1,4 @@
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
+import { CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import type { RefObject } from 'react'
 import { Button } from '@/components/ui/button'
 
@@ -34,6 +34,7 @@ type TechnicalServiceWeekNavigatorProps = {
   selectedDayLabel: string
   selectedDayCount: number
   selectedDayOverdueCount: number
+  hasActiveDayFilter: boolean
   weekDays: WeekDayItem[]
   summaryItems: SummaryItem[]
   isDatePickerOpen: boolean
@@ -66,6 +67,7 @@ export function TechnicalServiceWeekNavigator({
   selectedDayLabel,
   selectedDayCount,
   selectedDayOverdueCount,
+  hasActiveDayFilter,
   weekDays,
   summaryItems,
   isDatePickerOpen,
@@ -188,6 +190,11 @@ export function TechnicalServiceWeekNavigator({
           <p className="mt-1 text-sm font-semibold text-slate-950">{selectedDayLabel}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {hasActiveDayFilter ? (
+            <span className="inline-flex rounded-full bg-[#06143A] px-3 py-1.5 text-sm font-medium text-white">
+              Filtre aktif
+            </span>
+          ) : null}
           <span className="inline-flex rounded-full bg-white px-3 py-1.5 text-sm font-medium text-slate-700">
             {selectedDayCount} talep
           </span>
@@ -220,7 +227,12 @@ export function TechnicalServiceWeekNavigator({
                   <p className={['text-xs font-semibold uppercase tracking-[0.14em]', day.isSelected ? 'text-slate-200' : 'text-slate-500'].join(' ')}>{day.label}</p>
                   <p className={['mt-1 text-sm font-semibold', day.isSelected ? 'text-white' : 'text-slate-950'].join(' ')}>{day.shortDate}</p>
                 </div>
-                {day.overdueCount > 0 ? (
+                {day.isSelected ? (
+                  <span className="inline-flex rounded-full bg-white/15 px-2 py-1 text-[11px] font-semibold text-white">
+                    <Check className="mr-1 h-3.5 w-3.5" />
+                    Secili
+                  </span>
+                ) : day.overdueCount > 0 ? (
                   <span className={['inline-flex rounded-full px-2 py-1 text-[11px] font-semibold', day.isSelected ? 'bg-white/15 text-white' : 'bg-rose-50 text-rose-700'].join(' ')}>
                     {day.overdueCount} geciken
                   </span>

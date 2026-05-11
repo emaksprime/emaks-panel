@@ -892,6 +892,7 @@ function matchesNewWorkflowQueue(request: ServiceRequest, filter: WorkflowQueueK
 
 export function TechnicalServiceOperationCenter() {
   const [filters, setFilters] = useState<FilterState>(initialFilters)
+  const [selectedPlanDayKey, setSelectedPlanDayKey] = useState<string | null>(null)
   const [quickFilter, setQuickFilter] = useState<QuickFilterKey>('all_open')
   const [workflowFilter, setWorkflowFilter] = useState<WorkflowQueueKey | null>(null)
   const [requests, setRequests] = useState<ServiceRequest[]>([])
@@ -971,7 +972,7 @@ export function TechnicalServiceOperationCenter() {
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [workflowActionLoading, setWorkflowActionLoading] = useState<string | null>(null)
-  const [summaryData, setSummaryData] = useState<SummaryResponse | null>(null)
+  const [, setSummaryData] = useState<SummaryResponse | null>(null)
   const [operationsData, setOperationsData] = useState<OperationsDashboardResponse | null>(null)
   const [mikroMountCheck, setMikroMountCheck] = useState<MikroMountCheckResult | null>(null)
   const [mikroMountLoading, setMikroMountLoading] = useState(false)
@@ -1351,7 +1352,17 @@ export function TechnicalServiceOperationCenter() {
     })
   }, [filters.city, filters.onlyOpen, filters.priority, filters.serviceType, filters.technician, isOpenRequest, isUnassignedRequest, matchesSearchFilter, sortedRequests])
 
-  const kanbanFilteredRequests = baseKanbanRequests
+  const kanbanFilteredRequests = useMemo(() => {
+    if (selectedPlanDayKey === null) {
+      return baseKanbanRequests
+    }
+
+    return baseKanbanRequests.filter((request) => {
+      const scheduledDate = getRequestScheduledDate(request)
+
+      return scheduledDate !== null && toDateKey(scheduledDate) === selectedPlanDayKey
+    })
+  }, [baseKanbanRequests, selectedPlanDayKey])
 
   const kanbanSummary = useMemo(() => ({
     total: kanbanFilteredRequests.length,
@@ -1687,12 +1698,12 @@ export function TechnicalServiceOperationCenter() {
 
     return Array.from({ length: 7 }, (_, index) => {
       const date = addDays(weekStartDate, index)
-      const count = baseKanbanRequests.filter((request) => {
+      const count = sortedRequests.filter((request) => {
         const scheduled = getRequestScheduledDate(request)
 
         return scheduled !== null && isSameLocalDay(scheduled, date)
       }).length
-      const overdueCount = baseKanbanRequests.filter((request) => {
+      const overdueCount = sortedRequests.filter((request) => {
         const scheduled = getRequestScheduledDate(request)
 
         return scheduled !== null && isSameLocalDay(scheduled, date) && isOverdueRequest(request)
@@ -1707,10 +1718,10 @@ export function TechnicalServiceOperationCenter() {
         overdueCount,
         densityLabel: densityLabelForCount(count),
         isToday: isSameLocalDay(date, todayDate),
-        isSelected: isSameLocalDay(date, selectedDate),
+        isSelected: selectedPlanDayKey === toDateKey(date),
       }
     })
-  }, [baseKanbanRequests, isOverdueRequest, selectedDate, todayDate, weekStartDate])
+  }, [isOverdueRequest, selectedPlanDayKey, sortedRequests, todayDate, weekStartDate])
   const weeklyPlanSummary = useMemo(() => {
     let weekPlanned = 0
     let todayPlanned = 0
@@ -1718,7 +1729,7 @@ export function TechnicalServiceOperationCenter() {
     let unscheduled = 0
     let completedOrCancelled = 0
 
-    baseKanbanRequests.forEach((request) => {
+    sortedRequests.forEach((request) => {
       const scheduled = getRequestScheduledDate(request)
 
       if (scheduled === null) {
@@ -1743,10 +1754,10 @@ export function TechnicalServiceOperationCenter() {
     })
 
     return { weekPlanned, todayPlanned, overdue, unscheduled, completedOrCancelled }
-  }, [baseKanbanRequests, isOverdueRequest, todayDate, weekEndDate, weekStartDate])
+  }, [isOverdueRequest, sortedRequests, todayDate, weekEndDate, weekStartDate])
 
   const selectedPlanDaySummary = useMemo(() => {
-    const matchingRequests = baseKanbanRequests.filter((request) => {
+    const matchingRequests = sortedRequests.filter((request) => {
       const scheduled = getRequestScheduledDate(request)
 
       return scheduled !== null && isSameLocalDay(scheduled, selectedDate)
@@ -1756,7 +1767,7 @@ export function TechnicalServiceOperationCenter() {
       count: matchingRequests.length,
       overdueCount: matchingRequests.filter((request) => isOverdueRequest(request)).length,
     }
-  }, [baseKanbanRequests, isOverdueRequest, selectedDate])
+  }, [isOverdueRequest, selectedDate, sortedRequests])
 
   const selectedDateLabel = selectedDate.toLocaleDateString('tr-TR', {
     day: '2-digit',
@@ -1770,6 +1781,9 @@ export function TechnicalServiceOperationCenter() {
   })
   const selectedDayDescription = `${selectedDateLabel.replace(/^./, (character) => character.toLocaleUpperCase('tr-TR'))} operasyon görünümü`
   const selectedWeekLabel = `${weekStartDate.toLocaleDateString('tr-TR', { day: '2-digit', month: 'long' })} - ${addDays(weekStartDate, 6).toLocaleDateString('tr-TR', { day: '2-digit', month: 'long', year: 'numeric' })}`
+  const activePlanDayLabel = selectedPlanDayKey
+    ? selectedDate.toLocaleDateString('tr-TR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
+    : null
   const weekSummaryItems = [
     { label: 'Bu Hafta Planli', value: weeklyPlanSummary.weekPlanned, tone: 'blue' as const },
     { label: 'Bugun Planli', value: weeklyPlanSummary.todayPlanned, tone: 'emerald' as const },
@@ -2643,6 +2657,7 @@ export function TechnicalServiceOperationCenter() {
     const normalizedDate = startOfLocalDay(nextDate)
     setSelectedDate(normalizedDate)
     setWeekReferenceDate(normalizedDate)
+    setSelectedPlanDayKey((current) => current === key ? null : key)
   }, [])
 
   const openRequestDetail = useCallback((request: ServiceRequest) => {
@@ -2688,7 +2703,7 @@ export function TechnicalServiceOperationCenter() {
                   { label: 'Açık İş', value: String(kanbanSummary.open) },
                   { label: 'Atanmış', value: String(kanbanSummary.assigned) },
                   { label: 'Geciken', value: String(kanbanSummary.overdue) },
-                  { label: 'Toplam', value: String(summaryData?.total_requests ?? kanbanSummary.total) },
+                  { label: 'Toplam', value: String(kanbanSummary.total) },
                 ].map((item) => (
                   <div key={item.label} className="rounded-[20px] border border-slate-200 bg-slate-50 px-4 py-3">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{item.label}</p>
@@ -2864,6 +2879,7 @@ export function TechnicalServiceOperationCenter() {
         selectedDayLabel={selectedDateLabel}
         selectedDayCount={selectedPlanDaySummary.count}
         selectedDayOverdueCount={selectedPlanDaySummary.overdueCount}
+        hasActiveDayFilter={selectedPlanDayKey !== null}
         weekDays={weeklyDayCounts}
         summaryItems={weekSummaryItems}
         isDatePickerOpen={isDatePickerOpen}
@@ -2875,12 +2891,14 @@ export function TechnicalServiceOperationCenter() {
           const nextDate = addDays(weekReferenceDate, -7)
           setWeekReferenceDate(nextDate)
           setSelectedDate(startOfLocalDay(nextDate))
+          setSelectedPlanDayKey(null)
         }}
         onToday={() => {
           const now = startOfLocalDay(new Date())
           setWeekReferenceDate(now)
           setSelectedDate(now)
           setCalendarMonth(startOfMonth(now))
+          setSelectedPlanDayKey(null)
           setIsDatePickerOpen(false)
         }}
         onToggleDatePicker={() => {
@@ -2898,6 +2916,7 @@ export function TechnicalServiceOperationCenter() {
           setSelectedDate(normalizedDate)
           setWeekReferenceDate(normalizedDate)
           setCalendarMonth(startOfMonth(day))
+          setSelectedPlanDayKey(null)
           setIsDatePickerOpen(false)
         }}
         onSelectDay={handleSelectNavigatorDay}
@@ -2906,8 +2925,26 @@ export function TechnicalServiceOperationCenter() {
           const nextDate = addDays(weekReferenceDate, 7)
           setWeekReferenceDate(nextDate)
           setSelectedDate(startOfLocalDay(nextDate))
+          setSelectedPlanDayKey(null)
         }}
       />
+
+      {selectedPlanDayKey !== null && activePlanDayLabel ? (
+        <section className="rounded-[20px] border border-blue-200 bg-blue-50/80 px-5 py-3 shadow-sm sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium text-blue-900">
+              Tarih filtresi: {activePlanDayLabel}
+            </p>
+            <button
+              type="button"
+              onClick={() => setSelectedPlanDayKey(null)}
+              className="inline-flex items-center rounded-full border border-blue-200 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 transition hover:bg-blue-100"
+            >
+              Kaldir
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-sm sm:px-6 sm:py-6">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,1fr))]">
