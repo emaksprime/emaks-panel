@@ -1801,7 +1801,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertIsArray($bulent);
         $this->assertSame('Bülent Sağlam', $bulent['label']);
-        $this->assertSame('0024', $bulent['repCode']);
+        $this->assertSame('0035', $bulent['repCode']);
         $this->assertSame('temsilci', $bulent['salesView']);
         $this->assertFalse((bool) $bulent['allowAll']);
         $this->assertNull($bulent['navigateTo'] ?? null);
@@ -1832,14 +1832,14 @@ class PanelModuleDataUiHotfixTest extends TestCase
 
         $this->assertSame('sales_main_dashboard', $payload['queryMeta']['dataSource']);
         $this->assertSame('bulent_saglam', $payload['scope']['key']);
-        $this->assertSame('0024', $payload['scope']['effectiveRepresentativeCode']);
+        $this->assertSame('0035', $payload['scope']['effectiveRepresentativeCode']);
 
         Http::assertSent(function ($request): bool {
             $payload = json_decode($request->body(), true) ?: [];
 
             return ($payload['source_code'] ?? null) === 'sales_main_dashboard'
                 && ($payload['scope_key'] ?? null) === 'bulent_saglam'
-            && ($payload['rep_code'] ?? null) === '0024';
+            && ($payload['rep_code'] ?? null) === '0035';
         });
     }
 
@@ -1854,6 +1854,13 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertNotContains('all', $keys);
         $this->assertNotContains('umit', $keys);
         $this->assertNotContains('bulent_saglam', $keys);
+
+        $bulent = User::factory()->create(['role_code' => 'sales', 'temsilci_kodu' => '0035']);
+        $keys = collect($service->config($bulent, 'sales_main')['managementScopes'])->pluck('key')->all();
+
+        $this->assertContains('bulent_saglam', $keys);
+        $this->assertNotContains('salih', $keys);
+        $this->assertNotContains('all', $keys);
 
         UserAccess::query()->create([
             'user_id' => $salih->id,

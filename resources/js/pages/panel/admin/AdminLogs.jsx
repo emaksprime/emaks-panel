@@ -9,6 +9,8 @@ export default function AdminLogs() {
         apiRequest('/api/admin/logs').then(setData);
     }, []);
 
+    const displayUser = (log) => log.user_name || log.full_name || log.username || (log.user_id ? `Kullanıcı #${log.user_id}` : 'Sistem');
+
     return (
         <AdminFrame title="Sistem Kayıtları">
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -25,7 +27,12 @@ export default function AdminLogs() {
                         {data.logs.map((log) => (
                             <tr key={log.id} className="border-t border-slate-100">
                                 <td className="px-4 py-3 text-slate-500">{log.created_at}</td>
-                                <td className="px-4 py-3">{log.user_id ?? '-'}</td>
+                                <td className="px-4 py-3">
+                                    <p className="font-semibold text-slate-900">{displayUser(log)}</p>
+                                    {log.username && log.username !== displayUser(log) && (
+                                        <p className="text-xs text-slate-500">{log.username}</p>
+                                    )}
+                                </td>
                                 <td className="px-4 py-3 font-semibold text-slate-950">{log.action}</td>
                                 <td className="px-4 py-3 font-mono text-xs text-slate-500">{JSON.stringify(log.payload ?? {})}</td>
                             </tr>

@@ -466,6 +466,7 @@ class SalesMainPageService
         return match ($repCode) {
             '0003' => 'sales_rep_umit_yildiz',
             '0024' => 'sales_rep_salih_cakir',
+            '0035' => 'sales_rep_bulent_saglam',
             default => null,
         };
     }
@@ -481,7 +482,7 @@ class SalesMainPageService
         return $scopes->push([
             'key' => 'bulent_saglam',
             'label' => 'Bülent Sağlam',
-            'repCode' => '0024',
+            'repCode' => '0035',
             'allowAll' => false,
             'salesView' => 'temsilci',
             'note' => 'Bülent Sağlam temsilci kapsamı',
