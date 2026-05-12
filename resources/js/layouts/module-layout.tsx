@@ -1,5 +1,6 @@
 import { Link, usePage } from '@inertiajs/react';
-import { ChevronRight, ChevronsUpDown } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsUpDown } from 'lucide-react';
+import { useRef } from 'react';
 import AppLogo from '@/components/app-logo';
 import {
     DropdownMenu,
@@ -61,6 +62,12 @@ const moduleItems = [
         match: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
         tone: 'amber',
     },
+    {
+        label: 'Destek',
+        candidates: ['/support', '/support/keypad-guide', '/support/activation'],
+        match: ['/support', '/support/keypad-guide', '/support/activation'],
+        tone: 'rose',
+    },
 ];
 
 function selectModuleHref(candidates: string[], visibleHrefs: Set<string>) {
@@ -92,14 +99,22 @@ const moduleToneClasses = {
         active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
         idle: 'border-amber-100 bg-amber-50 text-amber-900 hover:border-amber-200 hover:bg-amber-100',
     },
+    rose: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-rose-100 bg-rose-50 text-rose-800 hover:border-rose-200 hover:bg-rose-100',
+    },
 };
 
 export default function ModuleLayout({ children }: { children: React.ReactNode }) {
     const { auth, panelNavigation, page } = usePage<SharedPageProps & { page?: { routePath?: string } }>().props;
     const routePath = page?.routePath ?? (typeof window !== 'undefined' ? window.location.pathname : '/dashboard');
+    const moduleNavRef = useRef<HTMLElement | null>(null);
     const visibleHrefs = new Set(
         panelNavigation.groups.flatMap((group) => group.items.map((item) => item.href)),
     );
+    const scrollModules = (direction: -1 | 1) => {
+        moduleNavRef.current?.scrollBy({ left: direction * 240, behavior: 'smooth' });
+    };
 
     return (
         <div className="min-h-screen bg-slate-100">
@@ -111,8 +126,23 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                         </Link>
                     </div>
 
-                    <div className="relative min-w-0 max-w-full justify-self-start">
-                        <nav className="flex w-max max-w-full min-w-0 gap-2 overflow-x-auto rounded-full border border-slate-200/80 bg-white/80 p-1 pr-10 shadow-inner shadow-slate-100 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden">
+                    <div className="relative w-full min-w-0 max-w-full justify-self-stretch">
+                        <span
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-y-1 left-0 z-10 w-10 rounded-l-full bg-gradient-to-r from-white/95 via-white/80 to-transparent"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => scrollModules(-1)}
+                            aria-label="Modülleri sola kaydır"
+                            className="absolute left-1 top-1/2 z-20 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
+                        >
+                            <ChevronLeft className="size-4" />
+                        </button>
+                        <nav
+                            ref={moduleNavRef}
+                            className="flex w-max max-w-full min-w-0 gap-2 overflow-x-auto scroll-smooth rounded-full border border-slate-200/80 bg-white/80 py-1 pl-10 pr-10 shadow-inner shadow-slate-100 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden"
+                        >
                             {moduleItems
                                 .map((item) => ({
                                     ...item,
@@ -137,9 +167,18 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                                     );
                                 })}
                         </nav>
-                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center rounded-r-full bg-gradient-to-l from-white via-white/95 to-transparent pl-8 pr-2 text-slate-400">
+                        <span
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-y-1 right-0 z-10 w-10 rounded-r-full bg-gradient-to-l from-white/95 via-white/80 to-transparent"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => scrollModules(1)}
+                            aria-label="Modülleri sağa kaydır"
+                            className="absolute right-1 top-1/2 z-20 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
+                        >
                             <ChevronRight className="size-4" />
-                        </div>
+                        </button>
                     </div>
 
                     {auth.user && (
