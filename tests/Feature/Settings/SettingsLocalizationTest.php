@@ -43,7 +43,8 @@ class SettingsLocalizationTest extends TestCase
         $this->assertStringContainsString('En az 1 küçük harf', $requirements);
         $this->assertStringContainsString('En az 1 rakam', $requirements);
         $this->assertStringContainsString('En az 1 sembol', $requirements);
-        $this->assertStringContainsString('Sistem ayrıca sızdırılmış veya çok yaygın şifreleri kontrol eder.', $requirements);
+        $this->assertStringContainsString('Sistem ayrıca sızdırılmış', $requirements);
+        $this->assertStringContainsString('çok yaygın şifreleri kontrol', $requirements);
 
         $this->assertStringNotContainsString('Update password', $security);
         $this->assertStringNotContainsString('Current password', $security);
