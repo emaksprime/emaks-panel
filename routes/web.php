@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
+use App\Http\Controllers\SupportController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -129,6 +130,15 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
 
     Route::get('dashboard', [PanelPageController::class, 'dashboard'])->name('dashboard');
     Route::get('orders', [PanelPageController::class, 'orders'])->name('orders.redirect');
+    Route::get('support', [SupportController::class, 'index'])
+        ->middleware('panel.access:support')
+        ->name('support.index');
+    Route::get('support/keypad-guide', [SupportController::class, 'keypadGuide'])
+        ->middleware(['panel.access:support', 'panel.access:support_keypad_guide'])
+        ->name('support.keypad-guide');
+    Route::get('support/activation', [SupportController::class, 'activation'])
+        ->middleware(['panel.access:support', 'panel.access:support_activation_query'])
+        ->name('support.activation');
 
     Route::get('technical-service/serial-query', fn () => Inertia::render('panel/technical-service-serial-query', [
         'page' => [

@@ -322,6 +322,7 @@ class AdminController extends Controller
             str_starts_with($code, 'stock') => 'Stok Yönetimi',
             str_starts_with($code, 'orders') => 'Sipariş Yönetimi',
             str_starts_with($code, 'technical_service') => 'Teknik Servis',
+            str_starts_with($code, 'support') => 'Destek',
             str_starts_with($code, 'cari') || str_starts_with($code, 'customer') || $code === 'customers' || str_starts_with($code, 'finance_cari') => 'Müşteri Yönetimi',
             str_starts_with($code, 'proforma') => 'Proforma',
             str_starts_with($code, 'admin') || $code === 'user_admin' || $code === 'dashboard' => 'Sistem Yönetimi',
