@@ -5,6 +5,7 @@ import SecurityController from '@/actions/App/Http/Controllers/Settings/Security
 import Heading from '@/components/heading';
 import InputError from '@/components/input-error';
 import PasswordInput from '@/components/password-input';
+import PasswordRequirements from '@/components/password-requirements';
 import TwoFactorRecoveryCodes from '@/components/two-factor-recovery-codes';
 import TwoFactorSetupModal from '@/components/two-factor-setup-modal';
 import { Button } from '@/components/ui/button';
@@ -39,6 +40,7 @@ export default function Security({
         errors,
     } = useTwoFactorAuth();
     const [showSetupModal, setShowSetupModal] = useState<boolean>(false);
+    const [passwordValue, setPasswordValue] = useState('');
     const prevTwoFactorEnabled = useRef(twoFactorEnabled);
 
     useEffect(() => {
@@ -51,15 +53,15 @@ export default function Security({
 
     return (
         <>
-            <Head title="Security settings" />
+            <Head title="Güvenlik Ayarları" />
 
-            <h1 className="sr-only">Security settings</h1>
+            <h1 className="sr-only">Güvenlik Ayarları</h1>
 
             <div className="space-y-6">
                 <Heading
                     variant="small"
-                    title="Update password"
-                    description="Ensure your account is using a long, random password to stay secure"
+                    title="Şifreyi Güncelle"
+                    description="Hesabınızı güvende tutmak için güçlü bir şifre kullanın."
                 />
 
                 <Form
@@ -82,13 +84,14 @@ export default function Security({
                             currentPasswordInput.current?.focus();
                         }
                     }}
+                    onSuccess={() => setPasswordValue('')}
                     className="space-y-6"
                 >
                     {({ errors, processing }) => (
                         <>
                             <div className="grid gap-2">
                                 <Label htmlFor="current_password">
-                                    Current password
+                                    Mevcut şifre
                                 </Label>
 
                                 <PasswordInput
@@ -97,14 +100,14 @@ export default function Security({
                                     name="current_password"
                                     className="mt-1 block w-full"
                                     autoComplete="current-password"
-                                    placeholder="Current password"
+                                    placeholder="Mevcut şifre"
                                 />
 
                                 <InputError message={errors.current_password} />
                             </div>
 
                             <div className="grid gap-2">
-                                <Label htmlFor="password">New password</Label>
+                                <Label htmlFor="password">Yeni şifre</Label>
 
                                 <PasswordInput
                                     id="password"
@@ -112,7 +115,14 @@ export default function Security({
                                     name="password"
                                     className="mt-1 block w-full"
                                     autoComplete="new-password"
-                                    placeholder="New password"
+                                    placeholder="Yeni şifre"
+                                    onChange={(event) =>
+                                        setPasswordValue(event.target.value)
+                                    }
+                                />
+
+                                <PasswordRequirements
+                                    password={passwordValue}
                                 />
 
                                 <InputError message={errors.password} />
@@ -120,7 +130,7 @@ export default function Security({
 
                             <div className="grid gap-2">
                                 <Label htmlFor="password_confirmation">
-                                    Confirm password
+                                    Yeni şifre tekrar
                                 </Label>
 
                                 <PasswordInput
@@ -128,7 +138,7 @@ export default function Security({
                                     name="password_confirmation"
                                     className="mt-1 block w-full"
                                     autoComplete="new-password"
-                                    placeholder="Confirm password"
+                                    placeholder="Yeni şifre tekrar"
                                 />
 
                                 <InputError
@@ -141,7 +151,7 @@ export default function Security({
                                     disabled={processing}
                                     data-test="update-password-button"
                                 >
-                                    Save password
+                                    Şifreyi kaydet
                                 </Button>
                             </div>
                         </>
@@ -153,15 +163,14 @@ export default function Security({
                 <div className="space-y-6">
                     <Heading
                         variant="small"
-                        title="Two-factor authentication"
-                        description="Manage your two-factor authentication settings"
+                        title="İki aşamalı doğrulama"
+                        description="İki aşamalı doğrulama ayarlarınızı yönetin"
                     />
                     {twoFactorEnabled ? (
                         <div className="flex flex-col items-start justify-start space-y-4">
                             <p className="text-sm text-muted-foreground">
-                                You will be prompted for a secure, random pin
-                                during login, which you can retrieve from the
-                                TOTP-supported application on your phone.
+                                Giriş sırasında telefonunuzdaki TOTP destekli
+                                uygulamadan alacağınız güvenli kod istenir.
                             </p>
 
                             <div className="relative inline">
@@ -172,7 +181,7 @@ export default function Security({
                                             type="submit"
                                             disabled={processing}
                                         >
-                                            Disable 2FA
+                                            İki aşamalı doğrulamayı kapat
                                         </Button>
                                     )}
                                 </Form>
@@ -187,10 +196,9 @@ export default function Security({
                     ) : (
                         <div className="flex flex-col items-start justify-start space-y-4">
                             <p className="text-sm text-muted-foreground">
-                                When you enable two-factor authentication, you
-                                will be prompted for a secure pin during login.
-                                This pin can be retrieved from a TOTP-supported
-                                application on your phone.
+                                İki aşamalı doğrulamayı açtığınızda giriş
+                                sırasında telefonunuzdaki doğrulama uygulaması
+                                üzerinden güvenli kod istenir.
                             </p>
 
                             <div>
@@ -199,7 +207,7 @@ export default function Security({
                                         onClick={() => setShowSetupModal(true)}
                                     >
                                         <ShieldCheck />
-                                        Continue setup
+                                        Kuruluma devam et
                                     </Button>
                                 ) : (
                                     <Form
@@ -213,7 +221,7 @@ export default function Security({
                                                 type="submit"
                                                 disabled={processing}
                                             >
-                                                Enable 2FA
+                                                İki aşamalı doğrulamayı aç
                                             </Button>
                                         )}
                                     </Form>
@@ -242,7 +250,7 @@ export default function Security({
 Security.layout = {
     breadcrumbs: [
         {
-            title: 'Security settings',
+            title: 'Güvenlik Ayarları',
             href: edit(),
         },
     ],

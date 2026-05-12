@@ -19,15 +19,15 @@ export default function Profile({
 
     return (
         <>
-            <Head title="Profile settings" />
+            <Head title="Profil Ayarları" />
 
-            <h1 className="sr-only">Profile settings</h1>
+            <h1 className="sr-only">Profil Ayarları</h1>
 
             <div className="space-y-6">
                 <Heading
                     variant="small"
-                    title="Profile information"
-                    description="Update your panel identity"
+                    title="Profil Bilgileri"
+                    description="Panel kimlik bilgilerinizi güncelleyin"
                 />
 
                 <Form
@@ -40,7 +40,7 @@ export default function Profile({
                     {({ processing, errors }) => (
                         <>
                             <div className="grid gap-2">
-                                <Label htmlFor="full_name">Full name</Label>
+                                <Label htmlFor="full_name">Ad Soyad</Label>
 
                                 <Input
                                     id="full_name"
@@ -49,7 +49,7 @@ export default function Profile({
                                     name="full_name"
                                     required
                                     autoComplete="name"
-                                    placeholder="Full name"
+                                    placeholder="Ad Soyad"
                                 />
 
                                 <InputError
@@ -59,7 +59,7 @@ export default function Profile({
                             </div>
 
                             <div className="grid gap-2">
-                                <Label htmlFor="username">Username</Label>
+                                <Label htmlFor="username">Kullanıcı adı</Label>
 
                                 <Input
                                     id="username"
@@ -69,7 +69,7 @@ export default function Profile({
                                     name="username"
                                     required
                                     autoComplete="username"
-                                    placeholder="Username"
+                                    placeholder="Kullanıcı adı"
                                 />
 
                                 <InputError
@@ -82,23 +82,23 @@ export default function Profile({
                                 auth.user.email_verified_at === null && (
                                     <div>
                                         <p className="-mt-4 text-sm text-muted-foreground">
-                                            Your email address is unverified.{' '}
+                                            E-posta adresiniz doğrulanmamış.{' '}
                                             <Link
                                                 href="/email/verification-notification"
                                                 method="post"
                                                 as="button"
                                                 className="text-foreground underline decoration-neutral-300 underline-offset-4 transition-colors duration-300 ease-out hover:decoration-current! dark:decoration-neutral-500"
                                             >
-                                                Click here to resend the
-                                                verification email.
+                                                Doğrulama e-postasını yeniden
+                                                göndermek için tıklayın.
                                             </Link>
                                         </p>
 
                                         {status ===
                                             'verification-link-sent' && (
                                             <div className="mt-2 text-sm font-medium text-green-600">
-                                                A new verification link has been
-                                                sent to your email address.
+                                                Yeni doğrulama bağlantısı
+                                                e-posta adresinize gönderildi.
                                             </div>
                                         )}
                                     </div>
@@ -109,7 +109,7 @@ export default function Profile({
                                     disabled={processing}
                                     data-test="update-profile-button"
                                 >
-                                    Save
+                                    Kaydet
                                 </Button>
                             </div>
                         </>
@@ -125,9 +125,8 @@ export default function Profile({
 Profile.layout = {
     breadcrumbs: [
         {
-            title: 'Profile settings',
+            title: 'Profil Ayarları',
             href: edit(),
         },
     ],
 };
-
