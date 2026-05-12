@@ -169,6 +169,7 @@ export function getServicePaymentInfo(
   travelKm?: number | null,
   persistedTravelFeeAmount?: number | null,
   persistedBillableKm?: number | null,
+  persistedTechnicianPaymentAmount?: number | null,
 ) {
   const base = serviceBaseAmount(serviceType)
   const travel = calculateTravelPreview(travelKm)
@@ -178,12 +179,16 @@ export function getServicePaymentInfo(
   const travelAmount = typeof persistedTravelFeeAmount === 'number' && Number.isFinite(persistedTravelFeeAmount)
     ? persistedTravelFeeAmount
     : travel.travelFeeAmount
+  const technicianBaseAmount = typeof persistedTechnicianPaymentAmount === 'number' && Number.isFinite(persistedTechnicianPaymentAmount)
+    ? persistedTechnicianPaymentAmount
+    : base.amount
 
-  if (base.amount !== null) {
+  if (base.amount !== null || technicianBaseAmount !== null) {
     return {
       serviceTypeLabel: base.serviceTypeLabel,
-      customerAmountLabel: `${formatCurrency(base.amount)} KDV dahil`,
-      technicianAmountLabel: formatCurrency(base.amount),
+      customerAmountLabel: base.amount === null ? 'Belirlenmedi' : `${formatCurrency(base.amount)} KDV dahil`,
+      customerAmount: base.amount,
+      technicianAmountLabel: technicianBaseAmount === null ? 'Belirlenmedi' : formatCurrency(technicianBaseAmount),
       roundTripKmLabel: travel.roundTripKm === null ? 'Yol km bilgisi girilmedi' : formatKm(travel.roundTripKm),
       freeKmLabel: formatKm(travel.freeKm),
       billableKmLabel: billableKm === null ? 'Yol km bilgisi girilmedi' : formatKm(billableKm),
@@ -191,15 +196,16 @@ export function getServicePaymentInfo(
         ? 'Yol km bilgisi girilmedi'
         : `${billableKm?.toLocaleString('tr-TR') ?? 0} km x 10 TL = ${formatCurrency(travelAmount)}`,
       totalTechnicianCostLabel: travelAmount === null
-        ? `${formatCurrency(base.amount)} + yol ücreti`
-        : formatCurrency(base.amount + travelAmount),
-      totalTechnicianCostAmount: travelAmount === null ? null : base.amount + travelAmount,
+        ? (technicianBaseAmount === null ? 'Belirlenmedi' : `${formatCurrency(technicianBaseAmount)} + yol ücreti`)
+        : (technicianBaseAmount === null ? 'Belirlenmedi' : formatCurrency(technicianBaseAmount + travelAmount)),
+      totalTechnicianCostAmount: travelAmount === null || technicianBaseAmount === null ? null : technicianBaseAmount + travelAmount,
     }
   }
 
   return {
     serviceTypeLabel: base.serviceTypeLabel,
     customerAmountLabel: 'Belirlenmedi',
+    customerAmount: null,
     technicianAmountLabel: 'Belirlenmedi',
     roundTripKmLabel: travel.roundTripKm === null ? 'Yol km bilgisi girilmedi' : formatKm(travel.roundTripKm),
     freeKmLabel: formatKm(travel.freeKm),

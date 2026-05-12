@@ -31,6 +31,7 @@ class TechnicalServiceAuthorizationTest extends TestCase
 
         $this->actingAs($user)->get('/technical-service')->assertOk();
         $this->actingAs($user)->get('/technical-service/dashboard')->assertForbidden();
+        $this->actingAs($user)->get('/technical-service/field')->assertForbidden();
         $this->actingAs($user)->get('/technical-service/serial-query')->assertForbidden();
         $this->actingAs($user)->get('/technical-service/technicians')->assertForbidden();
         $this->actingAs($user)->get('/technical-service/earnings')->assertForbidden();
@@ -47,6 +48,7 @@ class TechnicalServiceAuthorizationTest extends TestCase
 
         $this->actingAs($user)->get('/technical-service')->assertOk();
         $this->actingAs($user)->get('/technical-service/dashboard')->assertOk();
+        $this->actingAs($user)->get('/technical-service/field')->assertOk();
         $this->actingAs($user)->get('/technical-service/serial-query')->assertOk();
         $this->actingAs($user)->get('/technical-service/technicians')->assertOk();
 
@@ -59,6 +61,7 @@ class TechnicalServiceAuthorizationTest extends TestCase
         $user = $this->userWithAccess(['technical_service_dashboard']);
 
         $this->actingAs($user)->get('/technical-service/dashboard')->assertOk();
+        $this->actingAs($user)->get('/technical-service/field')->assertOk();
         $this->actingAs($user)->getJson('/api/technical-service/operations-dashboard')->assertOk();
 
         $this->actingAs($user)->get('/technical-service')->assertForbidden();
@@ -173,6 +176,7 @@ class TechnicalServiceAuthorizationTest extends TestCase
 
         $this->actingAs($admin)->get('/technical-service')->assertOk();
         $this->actingAs($admin)->get('/technical-service/dashboard')->assertOk();
+        $this->actingAs($admin)->get('/technical-service/field')->assertOk();
         $this->actingAs($admin)->get('/technical-service/serial-query')->assertOk();
         $this->actingAs($admin)->get('/technical-service/technicians')->assertOk();
         $this->actingAs($admin)->get('/technical-service/earnings')->assertOk();

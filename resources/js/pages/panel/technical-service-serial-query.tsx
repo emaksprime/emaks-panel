@@ -13,8 +13,31 @@ const formatDate = (value: string | null | undefined): string => {
   return formatTechnicalServiceDate(value)
 }
 
+const normalizeMountStatus = (value: string | null | undefined): string => {
+  return String(value ?? '')
+    .replaceAll('Montaj Hari\u00c3\u0192\u00c2\u00a7', 'Montaj Hariç')
+    .replaceAll('Montaj Hari\u00c3\u00a7', 'Montaj Hariç')
+    .replaceAll('Seri No Bulunamad\u00c4\u00b1', 'Seri No Bulunamadı')
+}
+
+const normalizeHistoryEventType = (value: string | null | undefined): string => {
+  return String(value ?? '')
+    .replaceAll('sat\u00c3\u201e\u00c2\u00b1\u00c3\u2026\u00c5\u00b8', 'satış')
+    .replaceAll('sat\u00c4\u00b1\u00c5\u0178', 'satış')
+}
+
+const normalizeWarrantyStatus = (value: string | null | undefined): string => {
+  return String(value ?? '')
+    .replaceAll('Garanti Ba\u00c3\u2026\u00c5\u00b8lamad\u00c3\u201e\u00c2\u00b1', 'Garanti Başlamadı')
+    .replaceAll('De\u00c3\u201e\u00c5\u00b8i\u00c3\u2026\u00c5\u00b8imle Kapand\u00c3\u201e\u00c2\u00b1', 'Değişimle Kapandı')
+    .replaceAll('De\u00c4\u0178i\u00c5\u0178imle Kapand\u00c4\u00b1', 'Değişimle Kapandı')
+    .replaceAll('Yeni SN\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2ye Devredildi', 'Yeni SN’ye Devredildi')
+    .replaceAll('Yeniden Sat\u00c3\u201e\u00c2\u00b1\u00c3\u2026\u00c5\u00b8 Bekliyor', 'Yeniden Satış Bekliyor')
+    .replaceAll('Yeniden Sat\u00c4\u00b1\u00c5\u0178 Bekliyor', 'Yeniden Satış Bekliyor')
+}
+
 const statusClassName = (decision: MikroMountCheckResult | null | undefined): string => {
-  switch (decision?.montaj_durumu) {
+  switch (normalizeMountStatus(decision?.montaj_durumu)) {
     case 'Montaj Dahil':
       return 'border-emerald-200 bg-emerald-50 text-emerald-700'
     case 'Montaj Sonradan Dahil':
@@ -31,7 +54,7 @@ const eventBadgeClassName = (event: MikroSerialHistoryEvent): string => {
     return 'border-emerald-200 bg-emerald-50 text-emerald-700'
   }
 
-  switch (event.event_type) {
+  switch (normalizeHistoryEventType(event.event_type)) {
     case 'satış':
       return 'border-blue-200 bg-blue-50 text-blue-700'
     case 'iade':
@@ -44,7 +67,7 @@ const eventBadgeClassName = (event: MikroSerialHistoryEvent): string => {
 }
 
 const warrantyStatusClassName = (status: WarrantySerialResponse['status'] | null | undefined): string => {
-  switch (status) {
+  switch (normalizeWarrantyStatus(status)) {
     case 'Garanti Aktif':
       return 'border-emerald-200 bg-emerald-50 text-emerald-700'
     case 'Garanti Başlamadı':
@@ -129,7 +152,7 @@ export default function TechnicalServiceSerialQuery() {
     <>
       <Head title="Seri No Sorgu" />
 
-      <div className="mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 md:px-6 lg:px-12">
+      <div className="w-full max-w-none space-y-6 px-4 py-6 md:px-6 xl:px-8 2xl:px-10">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <Heading
             title="Seri No Sorgu"
@@ -171,7 +194,7 @@ export default function TechnicalServiceSerialQuery() {
           <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className={statusClassName(decision)}>
-                {decision.found ? decision.montaj_durumu : 'Mikro’da seri no bulunamadı'}
+                {decision.found ? normalizeMountStatus(decision.montaj_durumu) : 'Mikro’da seri no bulunamadı'}
               </Badge>
               {decision.farkli_cari_uyarisi ? (
                 <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">
@@ -220,7 +243,7 @@ export default function TechnicalServiceSerialQuery() {
               </div>
               {warranty ? (
                 <Badge variant="outline" className={warrantyStatusClassName(warranty.status)}>
-                  {warranty.status}
+                  {normalizeWarrantyStatus(warranty.status)}
                 </Badge>
               ) : null}
             </div>
@@ -292,7 +315,7 @@ export default function TechnicalServiceSerialQuery() {
                         <span className="font-semibold text-slate-900">{formatDate(event.event_date)}</span>
                       </div>
                       <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                        {event.event_type}
+                        {normalizeHistoryEventType(event.event_type)}
                       </span>
                     </div>
 

@@ -22,6 +22,7 @@ class SupportDashboardTest extends TestCase
         $this->assertStringContainsString("Route::get('support', [SupportController::class, 'index'])", $routes);
         $this->assertStringContainsString("Route::get('support/keypad-guide', [SupportController::class, 'keypadGuide'])", $routes);
         $this->assertStringContainsString("Route::get('support/activation', [SupportController::class, 'activation'])", $routes);
+        $this->assertStringContainsString("Route::get('activation/search'", $routes);
         $this->assertStringContainsString("->middleware('panel.access:support')", $routes);
         $this->assertStringContainsString("->middleware(['panel.access:support', 'panel.access:support_keypad_guide'])", $routes);
         $this->assertStringContainsString("->middleware(['panel.access:support', 'panel.access:support_activation_query'])", $routes);
@@ -99,7 +100,9 @@ class SupportDashboardTest extends TestCase
         $this->assertStringContainsString('deviceAliasMatchers', $supportPage);
         $this->assertStringContainsString('applyFilterCascade', $supportPage);
         $this->assertStringContainsString("item.type === 'section'", $supportPage);
-        $this->assertStringContainsString('Aktivasyon Sorgu yakında aktif edilecek', $supportPage);
+        $this->assertStringContainsString('/api/support/activation/search', $supportPage);
+        $this->assertStringContainsString('Henüz aktarılmış aktivasyon kaydı yok', $supportPage);
+        $this->assertStringNotContainsString('/activation-code-search', $supportPage);
         $this->assertStringContainsString("candidates: ['/support', '/support/keypad-guide', '/support/activation']", $moduleLayout);
         $this->assertStringContainsString("match: ['/support', '/support/keypad-guide', '/support/activation']", $moduleLayout);
         $this->assertStringNotContainsString('Belirtilmemiş?', $supportPage);
@@ -109,14 +112,20 @@ class SupportDashboardTest extends TestCase
     {
         $controller = $this->read('app/Http/Controllers/SupportController.php');
         $service = $this->read('app/Services/SupportGuideService.php');
+        $activationService = $this->read('app/Services/SupportActivationCodeService.php');
         $model = $this->read('app/Models/SupportGuideEntry.php');
+        $activationModel = $this->read('app/Models/SupportActivationCode.php');
         $admin = $this->read('app/Http/Controllers/Api/AdminController.php');
 
         $this->assertStringContainsString("'keypadGuide' => \$this->access->userCanAccess(\$user, 'support_keypad_guide')", $controller);
         $this->assertStringContainsString("'activationQuery' => \$this->access->userCanAccess(\$user, 'support_activation_query')", $controller);
+        $this->assertStringContainsString('supportActivationSummary', $controller);
         $this->assertStringContainsString('activeGuideData', $service);
         $this->assertStringContainsString("->where('is_active', true)", $service);
+        $this->assertStringContainsString('class SupportActivationCodeService', $activationService);
+        $this->assertStringContainsString('public function search', $activationService);
         $this->assertStringContainsString("protected \$table = 'panel.support_guide_entries';", $model);
+        $this->assertStringContainsString("protected \$table = 'panel.support_activation_codes';", $activationModel);
         $this->assertStringContainsString("str_starts_with(\$code, 'support') => 'Destek'", $admin);
     }
 
