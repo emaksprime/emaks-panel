@@ -6,6 +6,7 @@ use App\Models\Page;
 use App\Services\AuditLogger;
 use App\Services\PanelAccessService;
 use App\Services\PanelNavigationService;
+use App\Services\SupportActivationCodeService;
 use App\Services\SupportGuideService;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -17,6 +18,7 @@ class SupportController extends Controller
         private readonly PanelAccessService $access,
         private readonly PanelNavigationService $navigation,
         private readonly SupportGuideService $guides,
+        private readonly SupportActivationCodeService $activationCodes,
         private readonly AuditLogger $auditLogger,
     ) {
     }
@@ -67,6 +69,9 @@ class SupportController extends Controller
             'supportGuideData' => $permissions['keypadGuide']
                 ? $this->guides->activeGuideData()
                 : ['sourceSheet' => 'Yahya Düzenleme', 'total' => 0, 'entries' => []],
+            'supportActivationSummary' => [
+                'total' => $permissions['activationQuery'] ? $this->activationCodes->activeCount() : 0,
+            ],
         ]);
     }
 

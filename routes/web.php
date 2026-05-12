@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\StockCriticalSettingController;
+use App\Http\Controllers\Api\SupportActivationCodeSearchController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
@@ -43,6 +44,12 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             ->middleware('panel.access:stock,stock_critical')
             ->name('api.stock.critical-settings.destroy');
 
+        Route::prefix('support')->group(function () {
+            Route::get('activation/search', SupportActivationCodeSearchController::class)
+                ->middleware(['panel.access:support', 'panel.access:support_activation_query'])
+                ->name('api.support.activation.search');
+        });
+
         Route::prefix('technical-service')->group(function () {
             Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])
                 ->middleware('panel.access:technical_service,technical_service_technicians')
@@ -77,6 +84,25 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/assign', [TechnicalServiceController::class, 'assign'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.assign');
+            Route::patch('requests/{technicalServiceRequest}/workflow', [TechnicalServiceController::class, 'updateWorkflow'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.workflow');
+            Route::patch('requests/{technicalServiceRequest}/schedule', [TechnicalServiceController::class, 'updateSchedule'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.schedule');
+            Route::patch('requests/{technicalServiceRequest}/technician', [TechnicalServiceController::class, 'updateTechnician'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.technician');
+            Route::post('requests/{technicalServiceRequest}/contact-log', [TechnicalServiceController::class, 'storeContactLog'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.contact-log');
+            Route::patch('requests/{technicalServiceRequest}/field/{fieldAction}', [TechnicalServiceController::class, 'updateFieldAction'])
+                ->where('fieldAction', 'start-travel|arrive|start-work|mark-incomplete|checklist|photos|customer-closure-approval|complete')
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.field-action');
+            Route::get('requests/{technicalServiceRequest}/audit-logs', [TechnicalServiceController::class, 'auditLogs'])
+                ->middleware('panel.access:technical_service')
+                ->name('api.technical-service.requests.audit-logs');
             Route::get('summary', [TechnicalServiceController::class, 'summary'])
                 ->middleware('panel.access:technical_service')
                 ->name('api.technical-service.summary');
@@ -163,6 +189,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:technical_service_dashboard')->name('technical-service.operations-dashboard');
+
+    Route::get('technical-service/field', fn () => Inertia::render('panel/technical-service-field', [
+        'page' => [
+            'title' => 'Usta Saha İşleri',
+            'slug' => 'technical_service_field',
+            'routePath' => '/technical-service/field',
+            'component' => 'panel/technical-service-field',
+            'layoutType' => 'module',
+            'description' => 'Atanmış saha işleri ve mobil iş akışı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:technical_service_dashboard')->name('technical-service.field');
 
     Route::get('technical-service/technicians', fn () => Inertia::render('panel/technical-service-technicians', [
         'page' => [

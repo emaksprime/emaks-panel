@@ -2,6 +2,8 @@ import { Head, Link } from '@inertiajs/react';
 import {
     AlertTriangle,
     BadgeCheck,
+    Copy,
+    ExternalLink,
     Info,
     Keyboard,
     LifeBuoy,
@@ -10,6 +12,7 @@ import {
     X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { apiRequest } from '@/lib/api';
 
 type ActiveTab = 'guide' | 'activation';
 
@@ -57,11 +60,74 @@ type SupportPermissions = {
     activationQuery: boolean;
 };
 
+type SupportActivationSummary = {
+    total: number;
+};
+
+type SupportActivationItem = {
+    id: number;
+    code: string;
+    stock_code: string | null;
+    stock_name: string | null;
+    serial_number: string | null;
+    serial_number_clean: string | null;
+    search_code: string | null;
+    activation_code: string | null;
+    activation_link: string | null;
+    metadata: Record<string, unknown>;
+};
+
+type SupportActivationSearchResponse = {
+    query: string;
+    normalized_query: string;
+    count: number;
+    total: number;
+    items: SupportActivationItem[];
+};
+
 type SupportPageProps = {
     supportActiveTab?: ActiveTab | null;
     supportGuideData?: SupportGuideData;
     supportPermissions?: SupportPermissions;
+    supportActivationSummary?: SupportActivationSummary;
 };
+
+async function copyTextToClipboard(value: string): Promise<boolean> {
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(value);
+
+            return true;
+        } catch {
+            // Fall through to the textarea fallback for restricted browser contexts.
+        }
+    }
+
+    if (typeof document === 'undefined' || !document.body) {
+        return false;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    textarea.style.opacity = '0';
+
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+
+    try {
+        return document.execCommand('copy');
+    } catch {
+        return false;
+    } finally {
+        textarea.remove();
+    }
+}
 
 const emptyFilters: Filters = {
     device: '',
@@ -434,16 +500,203 @@ function GuideCard({
     );
 }
 
-function ActivationPlaceholder() {
+function ActivationSearch({ totalRecords }: { totalRecords: number }) {
+    const [query, setQuery] = useState('');
+    const [result, setResult] = useState<SupportActivationSearchResponse | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [hasSearched, setHasSearched] = useState(false);
+    const [copiedId, setCopiedId] = useState<number | null>(null);
+    const [copyMessage, setCopyMessage] = useState<string | null>(null);
+
+    const runSearch = async () => {
+        const trimmedQuery = query.trim();
+
+        if (trimmedQuery.length < 2) {
+            setError('En az 2 karakter girin.');
+            setResult(null);
+            setHasSearched(false);
+
+            return;
+        }
+
+        setLoading(true);
+        setError(null);
+        setCopyMessage(null);
+        setHasSearched(true);
+        setCopiedId(null);
+
+        try {
+            const params = new URLSearchParams({ query: trimmedQuery });
+            const response = await apiRequest(`/api/support/activation/search?${params.toString()}`);
+
+            setResult(response as SupportActivationSearchResponse);
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : 'Aktivasyon sorgusu yapılamadı.');
+            setResult(null);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const copyActivationCode = async (item: SupportActivationItem) => {
+        const activationCode = item.activation_code?.trim();
+
+        if (!activationCode) {
+            return;
+        }
+
+        if (await copyTextToClipboard(activationCode)) {
+            setError(null);
+            setCopyMessage('Aktivasyon kodu kopyalandı.');
+            setCopiedId(item.id);
+            window.setTimeout(() => {
+                setCopiedId((current) => (current === item.id ? null : current));
+                setCopyMessage(null);
+            }, 1600);
+
+            return;
+        }
+
+        setCopyMessage(null);
+        setError('Aktivasyon kodu kopyalanamadı. Kodu manuel seçip kopyalayın.');
+    };
+
     return (
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex size-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                <BadgeCheck className="size-5" />
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="min-w-0">
+                    <div className="flex size-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
+                        <BadgeCheck className="size-5" />
+                    </div>
+                    <h2 className="mt-4 text-xl font-semibold text-slate-950">Aktivasyon Sorgu</h2>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                        Seri no, temiz seri no, arama kodu, aktivasyon kodu veya stok adı ile kayıt arayın.
+                    </p>
+                </div>
+                <span className="w-fit rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
+                    {totalRecords} kayıt
+                </span>
             </div>
-            <h2 className="mt-4 text-xl font-semibold text-slate-950">Aktivasyon Sorgu yakında aktif edilecek</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                Aktivasyon kodu kontrolü için gerçek veri kaynağı veya API bağlantısı bu fazda çalıştırılmaz. Alan hazır, bağlantı bilgisi netleşince devreye alınacak.
-            </p>
+
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                <label className="grid min-w-0 gap-1 text-sm font-semibold text-slate-700">
+                    <span>Arama</span>
+                    <span className="relative min-w-0">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                            type="search"
+                            value={query}
+                            onChange={(event) => setQuery(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                    void runSearch();
+                                }
+                            }}
+                            placeholder="Seri no, temiz seri no, arama kodu, aktivasyon kodu veya stok adı ara"
+                            className="h-11 w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm font-medium text-slate-800 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        />
+                    </span>
+                </label>
+                <button
+                    type="button"
+                    onClick={() => void runSearch()}
+                    disabled={loading}
+                    className="h-11 rounded-xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    {loading ? 'Aranıyor...' : 'Ara'}
+                </button>
+            </div>
+
+            {error && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                    {error}
+                </div>
+            )}
+
+            {copyMessage && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+                    {copyMessage}
+                </div>
+            )}
+
+            {totalRecords === 0 && !hasSearched && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+                    Henüz aktarılmış aktivasyon kaydı yok. Veri geldiğinde bu ekran aynı arama akışıyla sonuç gösterecek.
+                </div>
+            )}
+
+            {hasSearched && !loading && !error && (result?.items.length ?? 0) === 0 && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-600">
+                    Kayıt bulunamadı. Seri no, arama kodu, aktivasyon kodu veya stok adını farklı yazımla tekrar deneyin.
+                </div>
+            )}
+
+            {(result?.items.length ?? 0) > 0 && (
+                <div className="grid gap-3">
+                    {result?.items.map((item) => {
+                        const activationCode = item.activation_code?.trim() || null;
+                        const activationLink = item.activation_link?.trim() || null;
+
+                        return (
+                            <article key={item.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                                    <div className="min-w-0">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Aktivasyon kaydı</p>
+                                        <h3 className="mt-1 break-words text-base font-semibold text-slate-950">
+                                            {item.stock_name || item.serial_number || 'Stok adı belirtilmedi'}
+                                        </h3>
+                                        <p className="mt-1 break-words text-sm text-slate-600">{item.stock_code || 'Stok kodu yok'}</p>
+                                    </div>
+
+                                    {activationCode && (
+                                        <button
+                                            type="button"
+                                            onClick={() => void copyActivationCode(item)}
+                                            className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:border-blue-200 hover:text-blue-700"
+                                        >
+                                            <Copy className="mr-2 size-4" />
+                                            {copiedId === item.id ? 'Kopyalandı' : 'Kodu kopyala'}
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                                    {[
+                                        ['Seri No', item.serial_number || '-'],
+                                        ['Seri No Temiz', item.serial_number_clean || '-'],
+                                        ['Arama Kodu', item.search_code || '-'],
+                                        ['Aktivasyon Kodu', activationCode || 'Aktivasyon kodu alanı boş'],
+                                    ].map(([label, value]) => (
+                                        <div key={label} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">{label}</p>
+                                            <p className="mt-1 break-words text-sm font-medium text-slate-900">{value}</p>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {!activationCode && (
+                                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                                        Aktivasyon kodu alanı boş; arama kodu bu alanın yerine gösterilmedi.
+                                    </div>
+                                )}
+
+                                {activationLink && (
+                                    <a
+                                        href={activationLink}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex w-fit items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition hover:border-blue-200 hover:bg-blue-100"
+                                    >
+                                        Aktivasyon linkini aç
+                                        <ExternalLink className="size-4" />
+                                    </a>
+                                )}
+                            </article>
+                        );
+                    })}
+                </div>
+            )}
         </section>
     );
 }
@@ -466,8 +719,10 @@ export default function SupportPage({
     supportActiveTab = null,
     supportGuideData,
     supportPermissions,
+    supportActivationSummary,
 }: SupportPageProps) {
     const permissions = supportPermissions ?? { support: false, keypadGuide: false, activationQuery: false };
+    const activationSummary = supportActivationSummary ?? { total: 0 };
     const supportGuideEntries = supportGuideData?.entries ?? emptySupportGuideEntries;
     const activeTab = supportActiveTab && (
         (supportActiveTab === 'guide' && permissions.keypadGuide)
@@ -723,7 +978,7 @@ export default function SupportPage({
                         )}
                     </>
                 ) : (
-                    <ActivationPlaceholder />
+                    <ActivationSearch totalRecords={activationSummary.total} />
                 )}
             </main>
         </>
