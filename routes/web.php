@@ -33,6 +33,9 @@ Route::post('mount-request/{token}/payment', [PublicMountRequestController::clas
 Route::post('mount-request/{token}/multi-product', [PublicMountRequestController::class, 'chooseMultiProduct'])
     ->where('token', '[^/]+')
     ->name('mount-request.multi-product');
+Route::post('mount-request/{token}/submit', [PublicMountRequestController::class, 'submit'])
+    ->where('token', '[^/]+')
+    ->name('mount-request.submit');
 Route::get('mount-payment/fake/{payment}/approve', [PublicMountRequestController::class, 'approveFakePayment'])
     ->name('mount-payment.fake.approve');
 

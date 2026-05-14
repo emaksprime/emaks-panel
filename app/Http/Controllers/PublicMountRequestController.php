@@ -6,10 +6,12 @@ use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Services\TechnicalService\MountFlowDecisionService;
+use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\MountSessionEnrichmentService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 
 class PublicMountRequestController extends Controller
@@ -30,26 +32,7 @@ class PublicMountRequestController extends Controller
             ])->toResponse($request)->setStatusCode(404);
         }
 
-        $session = $this->sessionForLink($link);
-
-        if ((int) $session->check_attempt_count === 0) {
-            $context = $contextResolver->resolve($link->serial_number, [
-                'product_name' => $link->product_name,
-                'product_model' => $link->product_model,
-                'brand' => $link->brand,
-                'link_type' => $link->link_type,
-            ]);
-
-            $session = $enrichmentService->applyContext($session, [
-                'sale_mount_status' => $context['sale_mount_status'],
-                'product_name' => $context['product_name'] ?? $link->product_name,
-                'product_model' => $context['product_model'] ?? $link->product_model,
-                'brand' => $context['brand'] ?? $link->brand,
-                'activation_code' => $context['activation_code'],
-                'invoice_customer_type' => $context['invoice_customer_type'],
-                'resolver_payload' => $context['context_payload'],
-            ]);
-        }
+        $session = $this->prepareSession($link, $contextResolver, $enrichmentService);
 
         $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
         $session = $session->fresh(['qrLink', 'payments']);
@@ -71,6 +54,7 @@ class PublicMountRequestController extends Controller
                 'continue_label' => 'Forma Devam Et',
                 'create_payment_url' => route('mount-request.payment.create', ['token' => $token]),
                 'multi_product_url' => route('mount-request.multi-product', ['token' => $token]),
+                'submit_url' => route('mount-request.submit', ['token' => $token]),
             ],
             'payment' => $payment instanceof TechnicalServiceMountPayment ? [
                 'amount' => number_format((float) $payment->amount, 2, '.', ''),
@@ -79,6 +63,54 @@ class PublicMountRequestController extends Controller
                     ? route('mount-payment.fake.approve', ['payment' => $payment, 'token' => $token])
                     : null,
             ] : null,
+        ]);
+    }
+
+    public function submit(
+        Request $request,
+        string $token,
+        SerialProductContextResolver $contextResolver,
+        MountSessionEnrichmentService $enrichmentService,
+        MountFlowDecisionService $decisionService,
+        MountRequestSubmitService $submitService,
+    ) {
+        $link = TechnicalServiceQrLink::findActiveByToken($token);
+
+        if (! $link instanceof TechnicalServiceQrLink) {
+            return Inertia::render('public/mount-request-v2', [
+                'viewState' => 'invalid_link',
+                'message' => 'Montaj talep linki geçersiz veya süresi dolmuş.',
+            ])->toResponse($request)->setStatusCode(404);
+        }
+
+        $session = $this->prepareSession($link, $contextResolver, $enrichmentService);
+        $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
+        $session = $session->fresh(['qrLink', 'payments']);
+
+        $this->assertCanSubmit($session, $decision['decision']);
+
+        $payload = $this->validatedSubmitPayload($request);
+        $technicalServiceRequest = $submitService->submit($session, [
+            'customer_name' => trim($payload['first_name'].' '.$payload['last_name']),
+            'customer_phone' => $payload['customer_phone'],
+            'customer_city' => $payload['city'],
+            'customer_district' => $payload['district'],
+            'service_address' => $payload['address'],
+        ]);
+
+        return Inertia::render('public/mount-request-v2', [
+            'viewState' => 'submitted',
+            'message' => 'Montaj talebiniz alınmıştır.',
+            'submitted' => [
+                'mrn' => $technicalServiceRequest->mrn,
+            ],
+            'product' => [
+                'product_name' => $technicalServiceRequest->product_name,
+                'product_model' => $technicalServiceRequest->product_model,
+                'serial_number' => $technicalServiceRequest->serial_number,
+                'brand' => $session->context_payload['brand'] ?? $link->brand,
+            ],
+            'statusLabel' => $this->statusLabel($session),
         ]);
     }
 
@@ -161,6 +193,116 @@ class PublicMountRequestController extends Controller
         }
 
         return TechnicalServiceMountSession::startForLink($link)['session']->fresh();
+    }
+
+    private function prepareSession(
+        TechnicalServiceQrLink $link,
+        SerialProductContextResolver $contextResolver,
+        MountSessionEnrichmentService $enrichmentService,
+    ): TechnicalServiceMountSession {
+        $session = $this->sessionForLink($link);
+
+        if ((int) $session->check_attempt_count !== 0) {
+            return $session;
+        }
+
+        $context = $contextResolver->resolve($link->serial_number, [
+            'product_name' => $link->product_name,
+            'product_model' => $link->product_model,
+            'brand' => $link->brand,
+            'link_type' => $link->link_type,
+        ]);
+
+        return $enrichmentService->applyContext($session, [
+            'sale_mount_status' => $context['sale_mount_status'],
+            'product_name' => $context['product_name'] ?? $link->product_name,
+            'product_model' => $context['product_model'] ?? $link->product_model,
+            'brand' => $context['brand'] ?? $link->brand,
+            'activation_code' => $context['activation_code'],
+            'invoice_customer_type' => $context['invoice_customer_type'],
+            'resolver_payload' => $context['context_payload'],
+        ]);
+    }
+
+    private function assertCanSubmit(TechnicalServiceMountSession $session, string $decision): void
+    {
+        $allowedDecision = in_array($decision, [
+            MountFlowDecisionService::DECISION_SHOW_FORM,
+            MountFlowDecisionService::DECISION_SHOW_MULTI_PRODUCT_FORM_WITHOUT_PAYMENT,
+            MountFlowDecisionService::DECISION_SHOW_CHECK_FAILED_BUT_ALLOW_SUBMIT,
+        ], true);
+
+        $unpaidSingleProduct = $session->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC
+            && $session->mount_payment_status !== TechnicalServiceMountSession::PAYMENT_PAID
+            && $session->customer_entry_mode !== TechnicalServiceMountSession::ENTRY_MULTI_PRODUCT_WITHOUT_PAYMENT;
+
+        if (! $allowedDecision || $unpaidSingleProduct) {
+            throw ValidationException::withMessages([
+                'form' => 'Montaj ödemesi tamamlanmadan form gönderilemez.',
+            ]);
+        }
+    }
+
+    /**
+     * @return array{first_name:string,last_name:string,customer_phone:string,city:string,district:string,address:string}
+     */
+    private function validatedSubmitPayload(Request $request): array
+    {
+        $validated = $request->validate([
+            'first_name' => ['required', 'string', 'max:100'],
+            'last_name' => ['required', 'string', 'max:100'],
+            'phone' => ['required', 'string', 'max:40'],
+            'city' => ['required', 'string', 'max:100'],
+            'district' => ['required', 'string', 'max:100'],
+            'address' => ['required', 'string', 'max:1000'],
+            'installation_consent' => ['accepted'],
+            'kvkk_consent' => ['accepted'],
+        ], [
+            'first_name.required' => 'İsim zorunludur.',
+            'last_name.required' => 'Soyisim zorunludur.',
+            'phone.required' => 'Telefon numarası zorunludur.',
+            'city.required' => 'İl zorunludur.',
+            'district.required' => 'İlçe zorunludur.',
+            'address.required' => 'Adres zorunludur.',
+            'installation_consent.accepted' => 'Montaj şartlarını kabul etmelisiniz.',
+            'kvkk_consent.accepted' => 'KVKK / Aydınlatma ve Açık Rıza Onayı zorunludur.',
+        ]);
+
+        $phone = $this->normalizeTurkishPhone($validated['phone']);
+
+        if ($phone === null) {
+            throw ValidationException::withMessages([
+                'phone' => 'Telefon numarası +90 sonrası 10 hane olmalıdır.',
+            ]);
+        }
+
+        return [
+            'first_name' => trim((string) $validated['first_name']),
+            'last_name' => trim((string) $validated['last_name']),
+            'customer_phone' => $phone,
+            'city' => trim((string) $validated['city']),
+            'district' => trim((string) $validated['district']),
+            'address' => trim((string) $validated['address']),
+        ];
+    }
+
+    private function normalizeTurkishPhone(mixed $value): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $value) ?? '';
+
+        if (str_starts_with($digits, '90') && strlen($digits) === 12) {
+            $digits = substr($digits, 2);
+        }
+
+        if (str_starts_with($digits, '0') && strlen($digits) === 11) {
+            $digits = substr($digits, 1);
+        }
+
+        if (! preg_match('/^\d{10}$/', $digits)) {
+            return null;
+        }
+
+        return '+90'.$digits;
     }
 
     private function linkOrFail(string $token): TechnicalServiceQrLink
