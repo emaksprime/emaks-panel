@@ -3,6 +3,7 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServiceQrLink;
 use Throwable;
 
 class SerialProductContextResolver
@@ -15,7 +16,7 @@ class SerialProductContextResolver
 
     /**
      * @param array<string, mixed> $knownContext
-     * @return array{serial_number:string,product_name:?string,product_model:?string,brand:?string,activation_code:?string,sale_mount_status:string,invoice_customer_type:string,context_payload:array<string,mixed>}
+     * @return array{serial_number:string,product_name:?string,product_model:?string,brand:?string,activation_code:?string,sale_mount_status:string,invoice_customer_type:string,suggested_link_type:string,context_payload:array<string,mixed>}
      */
     public function resolve(string $serialNumber, array $knownContext = []): array
     {
@@ -26,6 +27,8 @@ class SerialProductContextResolver
         $brand = $this->nullableText($knownContext['brand'] ?? null);
         $stockCode = $this->nullableText($knownContext['stock_code'] ?? null);
         $saleMountStatus = $knownContext['sale_mount_status'] ?? TechnicalServiceMountSession::SALE_UNKNOWN;
+        $invoiceCustomerType = $this->nullableText($knownContext['invoice_customer_type'] ?? null) ?? 'unknown';
+        $suggestedLinkType = TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT;
         $payload = [
             'source' => 'known_context',
             'known_context' => $knownContext,
@@ -34,9 +37,13 @@ class SerialProductContextResolver
         try {
             $decision = $this->mikroSerialNumberService->checkInstallation($serialNumber);
             $saleMountStatus = $this->mapMikroMountStatus($decision['montaj_durumu'] ?? null);
-            $productName = $productName ?? $this->nullableText($decision['stok_adi'] ?? null);
-            $stockCode = $stockCode ?? $this->nullableText($decision['stok_kodu'] ?? null);
-            $brand = $brand ?? $this->deriveBrand($productName);
+            $productName = $productName ?? $this->firstText($decision, ['stok_adi', 'stock_name', 'Stok Adı', 'Stok Adi', 'product_name']);
+            $productModel = $productModel ?? $this->firstText($decision, ['model_adi', 'model_name', 'Model Adı', 'Model Adi', 'product_model']);
+            $stockCode = $stockCode ?? $this->firstText($decision, ['stok_kodu', 'stock_code', 'Stok Kodu']);
+            $brand = $brand
+                ?? $this->firstText($decision, ['marka_kodu', 'brand', 'Marka Kodu'])
+                ?? $this->deriveBrand($productName);
+            $suggestedLinkType = $this->suggestedLinkType($decision, $invoiceCustomerType);
             $payload = [
                 'source' => 'mikro_serial_check',
                 'mikro_decision' => $decision,
@@ -58,11 +65,13 @@ class SerialProductContextResolver
             'brand' => $brand ?? $this->deriveBrand($productName),
             'activation_code' => $activationCode,
             'sale_mount_status' => $saleMountStatus,
-            'invoice_customer_type' => $knownContext['invoice_customer_type'] ?? 'unknown',
+            'invoice_customer_type' => $invoiceCustomerType,
+            'suggested_link_type' => $suggestedLinkType,
             'context_payload' => [
                 ...$payload,
                 'stock_code' => $stockCode,
                 'activation_code' => $activationCode,
+                'suggested_link_type' => $suggestedLinkType,
             ],
         ];
     }
@@ -93,6 +102,46 @@ class SerialProductContextResolver
         }
 
         return null;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @param array<int, string> $keys
+     */
+    private function firstText(array $row, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            $value = $this->nullableText($row[$key] ?? null);
+
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $decision
+     */
+    private function suggestedLinkType(array $decision, string $invoiceCustomerType): string
+    {
+        if ($invoiceCustomerType !== 'direct_customer') {
+            return TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT;
+        }
+
+        $hasSafeDocumentContext = collect([
+            'fatura_seri',
+            'fatura_sira',
+            'irsaliye_seri',
+            'irsaliye_sira',
+            'siparis_seri',
+            'siparis_sira',
+        ])->contains(fn (string $key): bool => $this->nullableText($decision[$key] ?? null) !== null);
+
+        return $hasSafeDocumentContext
+            ? TechnicalServiceQrLink::TYPE_SOLD_PRODUCT
+            : TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT;
     }
 
     private function nullableText(mixed $value): ?string

@@ -156,6 +156,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {
             Route::get('overview', [\App\Http\Controllers\Api\AdminController::class, 'overview']);
+            Route::get('technical-service/serial-context', [TechnicalServiceQrLinkController::class, 'serialContext']);
             Route::post('technical-service/qr-links', [TechnicalServiceQrLinkController::class, 'store']);
             Route::get('users', [\App\Http\Controllers\Api\AdminController::class, 'users'])->middleware('panel.access:user_admin');
             Route::post('users', [\App\Http\Controllers\Api\AdminController::class, 'saveUser'])->middleware('panel.access:user_admin');

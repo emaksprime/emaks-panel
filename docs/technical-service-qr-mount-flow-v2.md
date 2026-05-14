@@ -37,6 +37,19 @@ Fatura yoksa fatura-seri bilgisi beklenmez.
 
 Satış/fatura bilgisi varsa seri üzerinden fatura-seri sorgusu yapılabilir.
 
+### 2.3 Admin QR/Link Üretimi
+
+- Admin QR/link üretirken kullanıcı sadece Seri No girer.
+- Ürün adı, model, marka, link tipi, aktivasyon kodu ve montaj durumu sistem tarafından seri bağlamından çözülür.
+- Çözülen alanlar read-only gösterilir.
+- Manuel düzeltme gerekiyorsa yalnızca yetkili admin için "Manuel düzeltme" advanced bölümü olabilir.
+- Varsayılan akışta ürün adı/model/marka/link tipi elle zorunlu değildir.
+- Link tipi otomatik sınıflandırılır:
+  - seri için satış/fatura hareketi bulunamıyorsa veya bağlam güvenli değilse: pre_sale_product
+  - seri için güvenli satış/fatura bağlamı varsa: sold_product
+  - admin test amaçlı açarsa: manual_test
+- Sorgu ürün/model/marka döndüremiyorsa link oluşturma kör şekilde devam etmemeli; admin'e "Seri bağlamı çözülemedi" diye net hata gösterilmelidir.
+
 ## 3. Ana State Alanları
 
 sale_mount_status ayrı alandır:

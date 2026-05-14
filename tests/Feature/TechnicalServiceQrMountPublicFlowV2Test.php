@@ -8,6 +8,7 @@ use App\Models\TechnicalServiceQrLink;
 use App\Models\User;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
@@ -15,16 +16,65 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_admin_authorized_user_can_create_pre_sale_qr_link(): void
+    public function test_admin_qr_link_screen_uses_serial_context_flow(): void
     {
+        $source = file_get_contents(resource_path('js/pages/panel/admin/technical-service-qr-links.tsx'));
+        $this->assertIsString($source);
+
+        foreach ([
+            'Seri No',
+            'Seri bağlamını çöz',
+            '/api/admin/technical-service/serial-context',
+            'QR Link Oluştur',
+            'Çözülen seri bağlamı',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $source);
+        }
+
+        $this->assertStringNotContainsString('value={form.product_name}', $source);
+        $this->assertStringNotContainsString('value={form.brand}', $source);
+        $this->assertStringNotContainsString('value={form.link_type}', $source);
+    }
+
+    public function test_admin_can_resolve_serial_context(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->getJson('/api/admin/technical-service/serial-context?serial_number=QR-V2-ADMIN-001')
+            ->assertOk()
+            ->assertJsonPath('context.serial_number', 'QR-V2-ADMIN-001')
+            ->assertJsonPath('context.product_name', 'Emaks Prime Test Kilit')
+            ->assertJsonPath('context.product_model', 'DDL720')
+            ->assertJsonPath('context.brand', 'EMAKS PRIME')
+            ->assertJsonPath('context.suggested_link_type', TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT);
+    }
+
+    public function test_context_must_resolve_before_link_creation(): void
+    {
+        $this->fakeContextWithoutProduct();
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson('/api/admin/technical-service/qr-links', ['serial_number' => 'QR-V2-MISSING-PRODUCT'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['serial_number']);
+
+        $this->assertDatabaseCount('technical_service_qr_links', 0);
+    }
+
+    public function test_admin_authorized_user_can_create_pre_sale_qr_link_from_resolved_serial_context(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         $user = User::factory()->create(['role_code' => 'admin']);
 
         $payload = [
             'serial_number' => 'QR-V2-ADMIN-001',
-            'product_name' => 'Emaks Prime Test Kilit',
-            'product_model' => 'DDL720',
-            'brand' => 'EMAKS PRIME',
-            'link_type' => TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'product_name' => 'Client Side Lie',
+            'product_model' => 'Wrong Model',
+            'brand' => 'Wrong Brand',
+            'link_type' => TechnicalServiceQrLink::TYPE_MANUAL_TEST,
         ];
 
         $response = $this->actingAs($user)
@@ -33,6 +83,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertJsonPath('link.serial_number', 'QR-V2-ADMIN-001')
             ->assertJsonPath('link.product_name', 'Emaks Prime Test Kilit')
             ->assertJsonPath('link.brand', 'EMAKS PRIME')
+            ->assertJsonPath('link.link_type', TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT)
             ->assertJsonPath('path', fn (string $path): bool => str_starts_with($path, '/mount-request/'));
 
         $token = $response->json('token');
@@ -41,6 +92,10 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertDatabaseHas('technical_service_qr_links', [
             'token_hash' => TechnicalServiceQrLink::hashToken($token),
             'serial_number' => 'QR-V2-ADMIN-001',
+            'product_name' => 'Emaks Prime Test Kilit',
+            'product_model' => 'DDL720',
+            'brand' => 'EMAKS PRIME',
+            'link_type' => TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
             'status' => TechnicalServiceQrLink::STATUS_ACTIVE,
         ]);
         $this->assertDatabaseMissing('technical_service_qr_links', [
@@ -76,6 +131,11 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->get('/mount-request/'.$token)->assertOk();
 
         $this->assertDatabaseCount('technical_service_mount_sessions', 1);
+    }
+
+    public function test_mount_payment_schema_has_v2_session_column(): void
+    {
+        $this->assertTrue(Schema::hasColumn('technical_service_mount_payments', 'technical_service_mount_session_id'));
     }
 
     public function test_montaj_dahil_context_shows_form_ready_screen(): void
@@ -195,14 +255,42 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 public function resolve(string $serialNumber, array $knownContext = []): array
                 {
                     return [
-                    'serial_number' => $serialNumber,
-                    'product_name' => $knownContext['product_name'] ?? 'Emaks Prime Test Kilit',
-                    'product_model' => $knownContext['product_model'] ?? 'DDL720',
-                    'brand' => $knownContext['brand'] ?? 'EMAKS PRIME',
-                    'activation_code' => null,
-                    'sale_mount_status' => $this->saleMountStatus,
-                    'invoice_customer_type' => 'unknown',
-                    'context_payload' => ['source' => 'test_fake_context'],
+                        'serial_number' => $serialNumber,
+                        'product_name' => $knownContext['product_name'] ?? 'Emaks Prime Test Kilit',
+                        'product_model' => $knownContext['product_model'] ?? 'DDL720',
+                        'brand' => $knownContext['brand'] ?? 'EMAKS PRIME',
+                        'activation_code' => null,
+                        'sale_mount_status' => $this->saleMountStatus,
+                        'invoice_customer_type' => 'unknown',
+                        'suggested_link_type' => TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+                        'context_payload' => ['source' => 'test_fake_context'],
+                    ];
+                }
+            },
+        );
+    }
+
+    private function fakeContextWithoutProduct(): void
+    {
+        $this->app->instance(
+            SerialProductContextResolver::class,
+            new class extends SerialProductContextResolver {
+                public function __construct()
+                {
+                }
+
+                public function resolve(string $serialNumber, array $knownContext = []): array
+                {
+                    return [
+                        'serial_number' => $serialNumber,
+                        'product_name' => null,
+                        'product_model' => null,
+                        'brand' => null,
+                        'activation_code' => null,
+                        'sale_mount_status' => TechnicalServiceMountSession::SALE_CHECK_FAILED,
+                        'invoice_customer_type' => 'unknown',
+                        'suggested_link_type' => TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+                        'context_payload' => ['source' => 'test_missing_product'],
                     ];
                 }
             },
