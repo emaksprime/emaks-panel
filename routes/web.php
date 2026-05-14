@@ -11,10 +11,12 @@ use App\Http\Controllers\Api\SupportActivationCodeSearchController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
+use App\Http\Controllers\Api\TechnicalServiceQrLinkController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
+use App\Http\Controllers\PublicMountRequestController;
 use App\Http\Controllers\SupportController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -22,6 +24,17 @@ use Inertia\Inertia;
 require __DIR__.'/settings.php';
 
 Route::get('/', HomeController::class)->name('home');
+Route::get('mount-request/{token}', [PublicMountRequestController::class, 'show'])
+    ->where('token', '[^/]+')
+    ->name('mount-request.show');
+Route::post('mount-request/{token}/payment', [PublicMountRequestController::class, 'createFakePayment'])
+    ->where('token', '[^/]+')
+    ->name('mount-request.payment.create');
+Route::post('mount-request/{token}/multi-product', [PublicMountRequestController::class, 'chooseMultiProduct'])
+    ->where('token', '[^/]+')
+    ->name('mount-request.multi-product');
+Route::get('mount-payment/fake/{payment}/approve', [PublicMountRequestController::class, 'approveFakePayment'])
+    ->name('mount-payment.fake.approve');
 
 Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::prefix('api')->group(function () {
@@ -140,6 +153,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {
             Route::get('overview', [\App\Http\Controllers\Api\AdminController::class, 'overview']);
+            Route::post('technical-service/qr-links', [TechnicalServiceQrLinkController::class, 'store']);
             Route::get('users', [\App\Http\Controllers\Api\AdminController::class, 'users'])->middleware('panel.access:user_admin');
             Route::post('users', [\App\Http\Controllers\Api\AdminController::class, 'saveUser'])->middleware('panel.access:user_admin');
             Route::post('users/{user}/clone', [\App\Http\Controllers\Api\AdminController::class, 'cloneUser'])->middleware('panel.access:user_admin');
@@ -156,6 +170,17 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
 
     Route::get('dashboard', [PanelPageController::class, 'dashboard'])->name('dashboard');
     Route::get('orders', [PanelPageController::class, 'orders'])->name('orders.redirect');
+    Route::get('admin/forms', fn () => Inertia::render('panel/admin/technical-service-qr-links', [
+        'page' => [
+            'title' => 'Teknik Servis QR Linkleri',
+            'slug' => 'admin_technical_service_qr_links',
+            'routePath' => '/admin/forms',
+            'component' => 'panel/admin/technical-service-qr-links',
+            'layoutType' => 'admin',
+            'description' => 'Teknik servis QR/link üretimi ve müşteri test akışı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:admin_panel')->name('admin.forms');
     Route::get('support', [SupportController::class, 'index'])
         ->middleware('panel.access:support')
         ->name('support.index');
