@@ -13,6 +13,12 @@ class TechnicalServiceRequest extends Model
     use HasFactory;
     use SoftDeletes;
 
+    public const STATUS_NEW = 'Yeni';
+    public const WORKFLOW_NEW_REQUEST = 'Yeni Talep';
+    public const SOURCE_QR_MOUNT_FORM = 'qr_mount_form';
+    public const PRIORITY_MEDIUM = 'Orta';
+    public const RISK_MEDIUM = 'Orta';
+
     protected $table = 'technical_service_requests';
 
     protected $fillable = [
@@ -155,5 +161,10 @@ class TechnicalServiceRequest extends Model
     public function technicianRecord(): BelongsTo
     {
         return $this->belongsTo(TechnicalServiceTechnician::class, 'technical_service_technician_id');
+    }
+
+    public function requestSerials(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceRequestSerial::class, 'technical_service_request_id');
     }
 }
