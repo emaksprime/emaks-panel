@@ -42,6 +42,14 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
             'KVKK / Aydınlatma ve Açık Rıza Onayı',
             'https://emaksprime.com/kvkk-on-bilgilendirme/',
             'target="_blank"',
+            'placeholder="5xxxxxxxxx"',
+            'maxLength={10}',
+            'inputMode="numeric"',
+            'pattern="[0-9]*"',
+            'normalizePhoneDigits(event.target.value)',
+            'return digits.slice(0, 10);',
+            'Talebiniz gönderiliyor...',
+            'Gönderiliyor...',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $source);
         }
@@ -205,6 +213,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $request = TechnicalServiceRequest::query()->firstOrFail();
         $response->assertInertia(fn (Assert $page) => $page
             ->where('submitted.mrn', $request->mrn));
+        $this->assertSame(TechnicalServiceMountSession::DECISION_SUBMITTED, TechnicalServiceMountSession::query()->firstOrFail()->decision_status);
     }
 
     private function submitForSaleMountStatus(string $saleMountStatus): TechnicalServiceRequest

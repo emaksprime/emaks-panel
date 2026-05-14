@@ -30,9 +30,9 @@ type CreatedLink = {
 };
 
 const linkTypeLabels: Record<string, string> = {
-    pre_sale_product: 'Satılmamış ürün',
+    pre_sale_product: 'Satılmamış ürün / ön baskı',
     sold_product: 'Satılmış ürün',
-    manual_test: 'Manuel test',
+    manual_test: 'Test linki',
 };
 
 const saleMountStatusLabels: Record<string, string> = {

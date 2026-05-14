@@ -38,12 +38,14 @@ class SerialProductContextResolver
             $decision = $this->mikroSerialNumberService->checkInstallation($serialNumber);
             $saleMountStatus = $this->mapMikroMountStatus($decision['montaj_durumu'] ?? null);
             $productName = $productName ?? $this->firstText($decision, ['stok_adi', 'stock_name', 'Stok Adı', 'Stok Adi', 'product_name']);
-            $productModel = $productModel ?? $this->firstText($decision, ['model_adi', 'model_name', 'Model Adı', 'Model Adi', 'product_model']);
+            $productModel = $productModel
+                ?? $this->firstText($decision, ['model_adi', 'model_name', 'Model Adı', 'Model Adi', 'product_model'])
+                ?? $this->deriveModel($productName);
             $stockCode = $stockCode ?? $this->firstText($decision, ['stok_kodu', 'stock_code', 'Stok Kodu']);
             $brand = $brand
                 ?? $this->firstText($decision, ['marka_kodu', 'brand', 'Marka Kodu'])
                 ?? $this->deriveBrand($productName);
-            $suggestedLinkType = $this->suggestedLinkType($decision, $invoiceCustomerType);
+            $suggestedLinkType = $this->suggestedLinkType($decision, $saleMountStatus);
             $payload = [
                 'source' => 'mikro_serial_check',
                 'mikro_decision' => $decision,
@@ -101,6 +103,58 @@ class SerialProductContextResolver
             return 'EMAKS PRIME';
         }
 
+        if (preg_match('/\bDDL[0-9A-Z-]*/u', $value)) {
+            return 'PHILIPS';
+        }
+
+        if (str_contains($value, 'GALAXY')) {
+            return 'EMAKS PRIME';
+        }
+
+        return null;
+    }
+
+    private function deriveModel(?string $productName): ?string
+    {
+        $value = trim((string) $productName);
+
+        if ($value === '') {
+            return null;
+        }
+
+        if (preg_match('/\b(DDL[0-9A-Z]+(?:-[0-9A-Z]+)*)\b/iu', $value, $matches)) {
+            return mb_strtoupper($matches[1], 'UTF-8');
+        }
+
+        if (preg_match('/\b(GALAXY\s*\d+)\b/iu', $value, $matches)) {
+            $model = preg_replace('/\s+/u', ' ', mb_strtoupper($matches[1], 'UTF-8')) ?? mb_strtoupper($matches[1], 'UTF-8');
+            $color = $this->firstColor($value);
+
+            return $color ? "{$model} - {$color}" : $model;
+        }
+
+        return null;
+    }
+
+    private function firstColor(string $value): ?string
+    {
+        $upper = mb_strtoupper($value, 'UTF-8');
+        $colors = [
+            'GRİ' => ['GRİ', 'GRI', 'GREY', 'GRAY'],
+            'SİYAH' => ['SİYAH', 'SIYAH', 'BLACK'],
+            'BEYAZ' => ['BEYAZ', 'WHITE'],
+            'ALTIN' => ['ALTIN', 'GOLD'],
+            'GÜMÜŞ' => ['GÜMÜŞ', 'GUMUS', 'SILVER'],
+        ];
+
+        foreach ($colors as $normalized => $needles) {
+            foreach ($needles as $needle) {
+                if (str_contains($upper, $needle)) {
+                    return $normalized;
+                }
+            }
+        }
+
         return null;
     }
 
@@ -124,15 +178,16 @@ class SerialProductContextResolver
     /**
      * @param array<string, mixed> $decision
      */
-    private function suggestedLinkType(array $decision, string $invoiceCustomerType): string
+    private function suggestedLinkType(array $decision, string $saleMountStatus): string
     {
-        if ($invoiceCustomerType !== 'direct_customer') {
+        if (($decision['found'] ?? true) === false || $saleMountStatus === TechnicalServiceMountSession::SALE_NOT_FOUND) {
             return TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT;
         }
 
         $hasSafeDocumentContext = collect([
             'fatura_seri',
             'fatura_sira',
+            'fatura_belge_no',
             'irsaliye_seri',
             'irsaliye_sira',
             'siparis_seri',

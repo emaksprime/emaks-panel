@@ -28,7 +28,7 @@ class SerialProductContextResolverTest extends TestCase
 
         $this->assertSame('UNITCONTEXT001', $context['serial_number']);
         $this->assertSame('PHILIPS DDL720 Akıllı Kilit', $context['product_name']);
-        $this->assertNull($context['product_model']);
+        $this->assertSame('DDL720', $context['product_model']);
         $this->assertSame('PHILIPS', $context['brand']);
         $this->assertSame('275023', $context['activation_code']);
         $this->assertSame(TechnicalServiceMountSession::SALE_MONTAJ_HARIC, $context['sale_mount_status']);
@@ -69,17 +69,59 @@ class SerialProductContextResolverTest extends TestCase
         $philips = $this->resolver([
             'found' => true,
             'montaj_durumu' => 'Montaj Dahil',
-            'stok_adi' => 'PHILIPS EasyKey',
+            'stok_adi' => 'DDL720-MVP-17HWSE - BAS ÇEK KİLİTLEME - GRİ / GREY',
         ])->resolve('UNITCONTEXT004');
 
         $emaks = $this->resolver([
             'found' => true,
             'montaj_durumu' => 'Montaj Dahil',
-            'stok_adi' => 'EMAKS PRIME Smart Lock',
+            'stok_adi' => 'GALAXY 20-AKILLI KAPI KİLİDİ-GRİ (70LİK KİLİT)',
         ])->resolve('UNITCONTEXT005');
 
         $this->assertSame('PHILIPS', $philips['brand']);
         $this->assertSame('EMAKS PRIME', $emaks['brand']);
+    }
+
+    public function test_safe_model_is_derived_from_product_name_when_model_column_is_missing(): void
+    {
+        $ddl = $this->resolver([
+            'found' => true,
+            'montaj_durumu' => 'Montaj Dahil',
+            'stok_adi' => 'DDL720-MVP-17HWSE - BAS ÇEK KİLİTLEME - GRİ / GREY',
+        ])->resolve('UNITCONTEXT008');
+
+        $galaxy = $this->resolver([
+            'found' => true,
+            'montaj_durumu' => 'Montaj Dahil',
+            'stok_adi' => 'GALAXY 20-AKILLI KAPI KİLİDİ-GRİ (70LİK KİLİT)',
+        ])->resolve('UNITCONTEXT009');
+
+        $this->assertSame('DDL720-MVP-17HWSE', $ddl['product_model']);
+        $this->assertSame('GALAXY 20 - GRİ', $galaxy['product_model']);
+    }
+
+    public function test_sold_product_link_type_depends_on_document_context_not_invoice_customer_type(): void
+    {
+        $context = $this->resolver([
+            'found' => true,
+            'montaj_durumu' => 'Montaj Hariç',
+            'stok_adi' => 'PHILIPS EasyKey',
+            'fatura_sira' => 'FTR-123',
+        ])->resolve('UNITCONTEXT010');
+
+        $this->assertSame('unknown', $context['invoice_customer_type']);
+        $this->assertSame(TechnicalServiceQrLink::TYPE_SOLD_PRODUCT, $context['suggested_link_type']);
+    }
+
+    public function test_not_found_context_stays_pre_sale_product(): void
+    {
+        $context = $this->resolver([
+            'found' => false,
+            'montaj_durumu' => 'Seri No Bulunamadı',
+            'stok_adi' => null,
+        ])->resolve('UNITCONTEXT011');
+
+        $this->assertSame(TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT, $context['suggested_link_type']);
     }
 
     public function test_brand_column_wins_when_available(): void

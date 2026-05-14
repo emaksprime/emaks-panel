@@ -27,6 +27,8 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             '/api/admin/technical-service/serial-context',
             'QR Link Oluştur',
             'Çözülen seri bağlamı',
+            'Satılmış ürün',
+            'Satılmamış ürün / ön baskı',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $source);
         }
@@ -49,6 +51,20 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertJsonPath('context.product_model', 'DDL720')
             ->assertJsonPath('context.brand', 'EMAKS PRIME')
             ->assertJsonPath('context.suggested_link_type', TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT);
+    }
+
+    public function test_admin_context_shows_sold_product_when_serial_has_document_context(): void
+    {
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            TechnicalServiceQrLink::TYPE_SOLD_PRODUCT,
+        );
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->getJson('/api/admin/technical-service/serial-context?serial_number=QR-V2-SOLD-001')
+            ->assertOk()
+            ->assertJsonPath('context.suggested_link_type', TechnicalServiceQrLink::TYPE_SOLD_PRODUCT);
     }
 
     public function test_context_must_resolve_before_link_creation(): void
@@ -151,6 +167,26 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ->where('statusLabel', 'Montaj dahil'));
     }
 
+    public function test_form_ready_public_page_does_not_show_mount_status_block(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)
+            ->assertOk()
+            ->assertDontSee('Montaj durumu', false);
+    }
+
+    public function test_payment_required_public_page_shows_payment_message(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)
+            ->assertOk()
+            ->assertSee('Bu ürün için montaj ödemesi gereklidir.', false);
+    }
+
     public function test_montaj_haric_unpaid_context_shows_payment_decision_screen(): void
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
@@ -243,12 +279,18 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         }
     }
 
-    private function fakeContext(string $saleMountStatus): void
+    private function fakeContext(
+        string $saleMountStatus,
+        string $suggestedLinkType = TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+    ): void
     {
         $this->app->instance(
             SerialProductContextResolver::class,
-            new class($saleMountStatus) extends SerialProductContextResolver {
-                public function __construct(private readonly string $saleMountStatus)
+            new class($saleMountStatus, $suggestedLinkType) extends SerialProductContextResolver {
+                public function __construct(
+                    private readonly string $saleMountStatus,
+                    private readonly string $suggestedLinkType,
+                )
                 {
                 }
 
@@ -262,7 +304,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                         'activation_code' => null,
                         'sale_mount_status' => $this->saleMountStatus,
                         'invoice_customer_type' => 'unknown',
-                        'suggested_link_type' => TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+                        'suggested_link_type' => $this->suggestedLinkType,
                         'context_payload' => ['source' => 'test_fake_context'],
                     ];
                 }

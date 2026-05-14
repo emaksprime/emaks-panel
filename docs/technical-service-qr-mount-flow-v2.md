@@ -49,6 +49,12 @@ Satış/fatura bilgisi varsa seri üzerinden fatura-seri sorgusu yapılabilir.
   - seri için güvenli satış/fatura bağlamı varsa: sold_product
   - admin test amaçlı açarsa: manual_test
 - Sorgu ürün/model/marka döndüremiyorsa link oluşturma kör şekilde devam etmemeli; admin'e "Seri bağlamı çözülemedi" diye net hata gösterilmelidir.
+- link_type, QR/link bağlamının satış/fatura varlığına göre sınıflandırılmasıdır.
+- customer_visible/customer_selectable ise müşteriye diğer ürünlerin gösterilip gösterilmeyeceğini belirler.
+- invoice_customer_type unknown veya dealer_or_partner olduğunda müşteriye fatura ürünleri gösterilmez.
+- Ancak seri için satış/fatura hareketi bulunduysa link_type sold_product olabilir.
+- pre_sale_product yalnızca satış/fatura hareketi bulunamayan veya kutu ön baskı linkidir.
+- Link tipi müşteri gizlilik politikasının yerine kullanılmaz.
 
 ## 3. Ana State Alanları
 

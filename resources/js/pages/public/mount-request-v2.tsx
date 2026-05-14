@@ -1,4 +1,5 @@
 import { Head, Link, useForm } from '@inertiajs/react';
+import { useState } from 'react';
 import type { FormEvent } from 'react';
 
 type Product = {
@@ -93,7 +94,7 @@ function normalizePhoneDigits(value: string): string {
         digits = digits.slice(1);
     }
 
-    return digits;
+    return digits.slice(0, 10);
 }
 
 export default function MountRequestV2({
@@ -109,6 +110,8 @@ export default function MountRequestV2({
     const paymentRequired = viewState === 'payment_required';
     const submittedSuccessfully = viewState === 'submitted';
     const formReady = viewState === 'form_ready' || viewState === 'check_pending' || viewState === 'multi_product_ready';
+    const [submitStatus, setSubmitStatus] = useState('');
+    const [submitError, setSubmitError] = useState('');
     const form = useForm<CustomerForm>({
         first_name: '',
         last_name: '',
@@ -126,7 +129,7 @@ export default function MountRequestV2({
         event.preventDefault();
 
         if (!submitUrl) {
-            form.setError('first_name', 'Form gönderim adresi hazırlanamadı.');
+            setSubmitError('Form gönderim adresi hazırlanamadı.');
 
             return;
         }
@@ -134,17 +137,30 @@ export default function MountRequestV2({
         const normalizedPhone = normalizePhoneDigits(form.data.phone);
 
         if (normalizedPhone.length !== 10) {
+            setSubmitError(PHONE_ERROR);
             form.setError('phone', PHONE_ERROR);
 
             return;
         }
 
+        setSubmitError('');
         form.clearErrors('phone');
         form.transform((data) => ({
             ...data,
             phone: normalizedPhone,
         })).post(submitUrl, {
             preserveScroll: true,
+            onStart: () => {
+                setSubmitError('');
+                setSubmitStatus('Talebiniz gönderiliyor...');
+            },
+            onError: (errors) => {
+                const firstError = Object.values(errors)[0];
+                setSubmitError(typeof firstError === 'string' ? firstError : 'Form gönderilemedi. Lütfen alanları kontrol edin.');
+            },
+            onFinish: () => {
+                setSubmitStatus('');
+            },
         });
     };
 
@@ -189,15 +205,14 @@ export default function MountRequestV2({
                                 <Detail label="Marka" value={product?.brand} />
                             </div>
 
-                            <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">
-                                    Montaj durumu
-                                </p>
-                                <p className="mt-1 text-lg font-semibold text-blue-950">{statusLabel}</p>
-                            </div>
-
                             {paymentRequired && (
                                 <div className="grid gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                    <div>
+                                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-amber-700">
+                                            Montaj durumu
+                                        </p>
+                                        <p className="mt-1 text-lg font-semibold text-amber-950">{statusLabel}</p>
+                                    </div>
                                     <p className="text-sm font-semibold text-amber-900">
                                         Bu ürün için montaj ödemesi gereklidir.
                                     </p>
@@ -247,9 +262,15 @@ export default function MountRequestV2({
                                         </p>
                                     )}
 
-                                    {form.errors.form && (
+                                    {(submitError || form.errors.form) && (
                                         <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
-                                            {form.errors.form}
+                                            {submitError || form.errors.form}
+                                        </p>
+                                    )}
+
+                                    {submitStatus && (
+                                        <p className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-800">
+                                            {submitStatus}
                                         </p>
                                     )}
 
@@ -288,14 +309,17 @@ export default function MountRequestV2({
                                             <input
                                                 type="tel"
                                                 value={form.data.phone}
-                                                onChange={(event) => form.setData('phone', event.target.value)}
-                                                placeholder="5372081655"
+                                                onChange={(event) => form.setData('phone', normalizePhoneDigits(event.target.value))}
+                                                placeholder="5xxxxxxxxx"
+                                                inputMode="numeric"
+                                                pattern="[0-9]*"
+                                                maxLength={10}
                                                 className="w-full rounded-r-lg border-0 bg-transparent px-3 py-2 text-sm text-slate-950 focus:outline-none focus:ring-0"
                                                 required
                                             />
                                         </div>
                                         <p className="mt-1 text-xs font-medium text-slate-500">
-                                            +90 sonrası 10 hane girin. Başında 0 yazarsanız sistem otomatik düzeltir.
+                                            +90 sonrası 10 hane girin.
                                         </p>
                                         <FieldError message={form.errors.phone} />
                                     </label>
@@ -381,7 +405,7 @@ export default function MountRequestV2({
                                         disabled={form.processing}
                                         className="w-fit rounded-lg bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
                                     >
-                                        {form.processing ? 'Gönderiliyor' : 'Montaj Talebini Gönder'}
+                                        {form.processing ? 'Gönderiliyor...' : 'Montaj Talebini Gönder'}
                                     </button>
                                 </form>
                             )}
