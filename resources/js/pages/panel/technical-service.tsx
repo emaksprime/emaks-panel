@@ -1533,6 +1533,21 @@ export function TechnicalServiceOperationCenter() {
       recommended: insight.id === recommendedId,
     }))
   }, [assignmentReferenceRequests, modalRequest?.serviceType, technicianMatches])
+  const visibleTechnicianAssignmentInsights = useMemo(() => {
+    const visible = technicianAssignmentInsights.slice(0, 4)
+
+    if (!assignTechnicianOption || assignTechnicianOption === 'other') {
+      return visible
+    }
+
+    const selectedInsight = technicianAssignmentInsights.find((insight) => insight.id === assignTechnicianOption)
+
+    if (!selectedInsight || visible.some((insight) => insight.id === selectedInsight.id)) {
+      return visible
+    }
+
+    return [selectedInsight, ...visible]
+  }, [assignTechnicianOption, technicianAssignmentInsights])
   const assignmentScheduleSupport = useMemo(() => {
     const currentSchedule = modalRequest?.scheduledDate
       ? [
@@ -2234,6 +2249,8 @@ export function TechnicalServiceOperationCenter() {
     }
 
     const parsedTravelRoundTripKm = travelRoundTripKm.trim() === '' ? 0 : Number(travelRoundTripKm)
+    const submittedTechnicianOption = assignTechnicianOption
+    const submittedTravelRoundTripKm = String(parsedTravelRoundTripKm)
 
     if (!Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
       setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
@@ -2245,7 +2262,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignError(null)
 
     try {
-      await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
         method: 'POST',
         body: JSON.stringify({
           ...(isManualTechnician
@@ -2258,14 +2275,30 @@ export function TechnicalServiceOperationCenter() {
           note: assignNote || null,
         }),
       })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
       setAssignDialogOpen(false)
-      handleAssignReset()
-      setAssignTechnicianOption(assignTechnicianOption)
-      setTravelRoundTripKm(String(parsedTravelRoundTripKm))
-      await loadRequests()
+      setAssignOtherTechnician('')
+      setAssignNote('')
+      setAssignTechnicianOption(submittedTechnicianOption)
+      setTravelRoundTripKm(submittedTravelRoundTripKm)
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+
+      await loadRequests({ silent: true, preserveSelection: true })
       await loadSummary()
-      await loadRequestDetail(selectedId)
     } catch (caught) {
       setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
     } finally {
@@ -3753,7 +3786,7 @@ export function TechnicalServiceOperationCenter() {
                     invoiceSerialRecheckError={invoiceSerialRecheckError}
                     invoiceSerialActionInFlight={invoiceSerialActionLoading}
                     invoiceSerialActionError={invoiceSerialActionError}
-                    technicianSuggestions={technicianAssignmentInsights.slice(0, 4)}
+                    technicianSuggestions={visibleTechnicianAssignmentInsights}
                     scheduleSupport={assignmentScheduleSupport}
                     selectedTechnicianId={assignTechnicianOption || null}
                     routeQuoteLoading={routeQuoteLoading}

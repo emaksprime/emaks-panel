@@ -671,9 +671,11 @@ class TechnicalServiceWorkflowTest extends TestCase
     {
         $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
         $cardSource = file_get_contents(resource_path('js/components/technical-service/TechnicalServiceKanbanCard.tsx'));
+        $panelSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
 
         $this->assertIsString($detailsSource);
         $this->assertIsString($cardSource);
+        $this->assertIsString($panelSource);
 
         foreach ([
             'Operasyon ve Montaj Kontrolü',
@@ -713,6 +715,11 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Usta adresi var, koordinat eksik',
             'Usta adres bilgisi eksik',
             'Usta koordinat',
+            'Usta koordinatı eksik olduğu için Google Routes hesaplanamadı',
+            'assignmentSubmitDisabled',
+            'routeFeeEditorMessage',
+            'Servis onay durumu',
+            'Kabul / red',
             'Hakedi',
             'Maliyet',
             'Farkl',
@@ -731,6 +738,16 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertStringNotContainsString('Montaj / Servis Durumu', $detailsSource);
         $this->assertStringNotContainsString('Operasyon Kontrolü', $detailsSource);
+        $this->assertStringNotContainsString('Bayi/Proje - otomatik eklenemez', $detailsSource);
+        $this->assertStringNotContainsString('Müşteri tercihi', $detailsSource);
+
+        foreach ([
+            'visibleTechnicianAssignmentInsights',
+            'submittedTechnicianOption',
+            'loadRequests({ silent: true, preserveSelection: true })',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $panelSource);
+        }
 
         foreach ([
             'QR Montaj Formu',

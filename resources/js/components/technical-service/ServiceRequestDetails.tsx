@@ -695,6 +695,7 @@ export function ServiceRequestDetails({
   const [fieldCompletionOpen, setFieldCompletionOpen] = useState(false)
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
+  const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
   const [routeFeeNote, setRouteFeeNote] = useState('')
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
   const locationInfo = request.location ?? null
@@ -721,6 +722,11 @@ export function ServiceRequestDetails({
   ].filter((message): message is string => Boolean(message))
   const combinedAssignmentBlockerMessages = Array.from(new Set([...assignmentUiBlockerMessages, ...assignmentBlockerMessages]))
   const isAssignmentBlocked = combinedAssignmentBlockerMessages.length > 0
+  const assignmentSubmitDisabled = assignLoading
+    || !selectedTechnicianId
+    || isAssignmentBlocked
+    || !canSubmitAssign
+    || !onAssignSelectedTechnician
 
   const resolvedSaleMountLabel = saleAndPayment?.sale_mount_label ?? mikroMountCheck?.montaj_durumu ?? '-'
   const resolvedMountPaymentLabel = saleAndPayment?.mount_payment_label ?? mountPaymentLabel
@@ -1226,8 +1232,8 @@ export function ServiceRequestDetails({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => onAssign?.()}
-                disabled={isActionDisabled || isAssignmentBlocked}
+                onClick={() => void onAssignSelectedTechnician?.()}
+                disabled={assignmentSubmitDisabled}
                 title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
               >
                 {hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
@@ -1276,7 +1282,7 @@ export function ServiceRequestDetails({
                             {hasAddressInfo ? 'Usta adresi var' : 'Usta adres bilgisi eksik'}
                           </span>
                           <span className={['rounded-full px-2 py-1', hasCoordinates ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'].join(' ')}>
-                            {hasCoordinates ? 'Usta koordinatı var' : 'Usta adresi var, koordinat eksik'}
+                            {hasCoordinates ? 'Usta koordinatı var' : hasAddressInfo ? 'Usta adresi var, koordinat eksik' : 'Usta koordinatı eksik'}
                           </span>
                           <span className={['rounded-full px-2 py-1', technician.routeReady ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-700'].join(' ')} title={routeLocationMessage}>
                             {technician.routeReady ? 'Routes hazır' : 'Routes için koordinat eksik'}
@@ -1286,7 +1292,10 @@ export function ServiceRequestDetails({
                             type="button"
                             size="sm"
                             variant={selected ? 'secondary' : 'outline'}
-                            onClick={() => onTechnicianSelect?.(technician.id, technician.estimatedRoundTripKm ?? null)}
+                            onClick={() => {
+                              setRouteFeeEditorMessage(null)
+                              onTechnicianSelect?.(technician.id, technician.estimatedRoundTripKm ?? null)
+                            }}
                           >
                             {selected ? 'Seçildi' : 'Seç'}
                           </Button>
@@ -1326,7 +1335,23 @@ export function ServiceRequestDetails({
                     >
                       {routeQuoteLoading ? 'Hesaplanıyor...' : 'Yol ücreti hesapla'}
                     </Button>
-                    <Button type="button" size="sm" variant="outline" onClick={() => setRouteFeeEditorOpen(true)} className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (!selectedTechnician) {
+                          setRouteFeeEditorOpen(false)
+                          setRouteFeeEditorMessage('Önce usta seçin.')
+
+                          return
+                        }
+
+                        setRouteFeeEditorMessage(null)
+                        setRouteFeeEditorOpen(true)
+                      }}
+                      className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
+                    >
                       Yol ücreti / fiyat düzenle
                     </Button>
                   </div>
@@ -1334,6 +1359,11 @@ export function ServiceRequestDetails({
                 {routeQuoteError ? (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
                     {routeQuoteError}
+                  </div>
+                ) : null}
+                {routeFeeEditorMessage ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    {routeFeeEditorMessage}
                   </div>
                 ) : null}
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -1431,7 +1461,7 @@ export function ServiceRequestDetails({
               <Button
                 type="button"
                 onClick={() => void onAssignSelectedTechnician?.()}
-                disabled={assignLoading || !selectedTechnicianId || isAssignmentBlocked || !canSubmitAssign || !onAssignSelectedTechnician}
+                disabled={assignmentSubmitDisabled}
                 title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
               >
                 {assignLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
