@@ -3,13 +3,16 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceAuditLog;
+use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestUpload;
+use App\Models\TechnicalServiceRouteQuote;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceWorkflowService
@@ -455,6 +458,8 @@ class TechnicalServiceWorkflowService
      */
     public function updateTechnician(TechnicalServiceRequest $request, array $payload, ?Authenticatable $user = null): TechnicalServiceRequest
     {
+        $this->assertOperationControlsAllowAssignment($request);
+
         $old = $this->snapshot($request);
 
         $request->technical_service_technician_id = $payload['technical_service_technician_id'] ?? null;
@@ -714,6 +719,9 @@ class TechnicalServiceWorkflowService
         $request->loadMissing([
             'events' => fn ($query) => $query->orderBy('created_at'),
             'technicianRecord',
+            'requestSerials',
+            'uploads',
+            'latestRouteQuote',
         ]);
 
         $payload = $request->toArray();
@@ -735,6 +743,16 @@ class TechnicalServiceWorkflowService
         $payload['allowed_workflow_transitions'] = self::transitionMap()[$this->currentWorkflowStatus($request)] ?? [];
         $payload['latest_event'] = $request->events->last()?->title;
         $payload = array_merge($payload, $this->financialAliases($request));
+        $payload['qr_source'] = $this->qrSourcePayload($request);
+        $payload['product'] = $this->qrProductPayload($request);
+        $payload['sale_and_payment'] = $this->saleAndPaymentPayload($request);
+        $payload['documents'] = $this->documentPayload($request);
+        $payload['operation_control'] = $this->operationControlPayload($request);
+        $payload['assignment_blockers'] = $this->assignmentBlockers($request);
+        $payload['invoice_serials'] = $this->invoiceSerialsPayload($request);
+        $payload['location'] = $this->locationPayload($request);
+        $payload['door_photos'] = $this->doorPhotoPayload($request);
+        $payload['route_quote'] = $this->routeQuotePayload($request);
 
         if ($includeHistory) {
             if ($this->auditLogTableAvailable()) {
@@ -760,6 +778,24 @@ class TechnicalServiceWorkflowService
             throw ValidationException::withMessages([
                 'workflow_status' => "Geçersiz statü geçişi: {$from} -> {$to}",
             ]);
+        }
+    }
+
+    public function assertOperationControlsAllowAssignment(TechnicalServiceRequest $request): void
+    {
+        $operationControl = $this->operationControlPayload($request);
+        $errors = [];
+
+        if (($operationControl['payment_checked'] ?? 'unreviewed') !== 'yes') {
+            $errors['operation_control.payment_checked'] = 'Usta atanamaz. Önce ödeme kontrolünü tamamlayın.';
+        }
+
+        if (($operationControl['door_photos_checked'] ?? 'unreviewed') !== 'compatible') {
+            $errors['operation_control.door_photos_checked'] = 'Usta atanamaz. Önce kapı görsellerini uygun olarak kontrol edin.';
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
         }
     }
 
@@ -1056,12 +1092,392 @@ class TechnicalServiceWorkflowService
             'incomplete_reason',
             'requires_second_visit',
             'second_visit_reason',
+            'qr_link_id',
+            'mount_session_id',
+            'brand',
+            'stock_code',
+            'activation_code',
+            'current_serial_state',
+            'has_current_sale',
+            'sale_mount_status',
+            'mount_payment_status',
+            'mount_payment_label',
+            'mount_payment_provider',
+            'mount_payment_reference',
+            'mount_payment_paid_at',
+            'invoice_series',
+            'invoice_number',
+            'invoice_display_no',
+            'dispatch_series',
+            'dispatch_number',
+            'dispatch_display_no',
+            'order_series',
+            'order_number',
+            'order_display_no',
+            'invoice_customer_type',
+            'operation_control_payload',
+            'operation_control_checked_by_user_id',
+            'operation_control_checked_at',
             'cancelled_at',
             'cancellation_reason',
             'next_action',
             'sla_due_at',
             'sla_status',
         ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function qrSourcePayload(TechnicalServiceRequest $request): array
+    {
+        return [
+            'source_channel' => $request->source_channel,
+            'qr_link_id' => $request->qr_link_id,
+            'mount_session_id' => $request->mount_session_id,
+            'current_serial_state' => $request->current_serial_state,
+            'has_current_sale' => $request->has_current_sale,
+            'invoice_customer_type' => $request->invoice_customer_type,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function qrProductPayload(TechnicalServiceRequest $request): array
+    {
+        return [
+            'serial_number' => $request->serial_number,
+            'product_name' => $request->product_name,
+            'product_model' => $request->product_model,
+            'brand' => $request->brand,
+            'stock_code' => $request->stock_code,
+            'activation_code' => $request->activation_code,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function saleAndPaymentPayload(TechnicalServiceRequest $request): array
+    {
+        return [
+            'sale_mount_status' => $request->sale_mount_status,
+            'sale_mount_label' => $this->saleMountLabel($request->sale_mount_status),
+            'mount_payment_status' => $request->mount_payment_status,
+            'mount_payment_label' => $request->mount_payment_label ?? $this->mountPaymentLabel($request->mount_payment_status, $request->sale_mount_status),
+            'payment_reference' => $request->mount_payment_reference,
+            'payment_provider' => $request->mount_payment_provider,
+            'paid_at' => $this->dateTimeString($request->mount_payment_paid_at),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function documentPayload(TechnicalServiceRequest $request): array
+    {
+        return [
+            'invoice_series' => $request->invoice_series,
+            'invoice_number' => $request->invoice_number,
+            'invoice_display_no' => $request->invoice_display_no ?: '-',
+            'dispatch_series' => $request->dispatch_series,
+            'dispatch_number' => $request->dispatch_number,
+            'dispatch_display_no' => $request->dispatch_display_no ?: '-',
+            'order_series' => $request->order_series,
+            'order_number' => $request->order_number,
+            'order_display_no' => $request->order_display_no ?: '-',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function invoiceSerialsPayload(TechnicalServiceRequest $request): array
+    {
+        $rows = $request->requestSerials
+            ->map(fn ($serial): array => $this->requestSerialPayload($serial))
+            ->values();
+
+        $selected = $rows->filter(fn (array $row): bool => (bool) ($row['customer_selected'] ?? false)
+            || (bool) ($row['operation_added'] ?? false))->values();
+        $returned = $rows->filter(fn (array $row): bool => (bool) ($row['is_returned'] ?? false))->values();
+        $other = $rows
+            ->filter(fn (array $row): bool => ! (bool) ($row['customer_selected'] ?? false)
+                && ! (bool) ($row['operation_added'] ?? false)
+                && ! (bool) ($row['is_returned'] ?? false)
+                && (bool) ($row['customer_visible'] ?? false))
+            ->values();
+        $hidden = $rows
+            ->filter(fn (array $row): bool => ! (bool) ($row['customer_selected'] ?? false)
+                && ! (bool) ($row['operation_added'] ?? false)
+                && ! (bool) ($row['is_returned'] ?? false)
+                && ! (bool) ($row['customer_visible'] ?? false))
+            ->values();
+        $addedCount = $rows
+            ->filter(fn (array $row): bool => ! (bool) ($row['is_primary'] ?? false)
+                && ((bool) ($row['customer_selected'] ?? false) || (bool) ($row['operation_added'] ?? false)))
+            ->count();
+        $addableCount = $rows
+            ->filter(fn (array $row): bool => ! (bool) ($row['is_primary'] ?? false)
+                && ! (bool) ($row['is_returned'] ?? false)
+                && ! (bool) ($row['customer_selected'] ?? false)
+                && ! (bool) ($row['operation_added'] ?? false))
+            ->count();
+
+        return [
+            'selected_serials' => $selected->all(),
+            'other_serials' => $other->all(),
+            'hidden_serials' => $hidden->all(),
+            'returned_serials' => $returned->all(),
+            'all_invoice_serials' => $rows->all(),
+            'added_serial_count' => $addedCount,
+            'addable_serial_count' => $addableCount,
+            'returned_serial_count' => $returned->count(),
+            'has_returned' => $returned->isNotEmpty(),
+            'has_multi_product' => $rows->count() > 1
+                || $request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+            'check_error' => Arr::get($request->qr_context_payload ?? [], 'invoice_serials.check_error'),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function requestSerialPayload($serial): array
+    {
+        $source = is_array($serial->source_payload) ? $serial->source_payload : [];
+        $latestSaleRaw = $serial->getRawOriginal('is_current_latest_sale');
+        $latestSale = $latestSaleRaw === null ? null : (bool) $serial->is_current_latest_sale;
+
+        return [
+            'id' => $serial->id,
+            'serial_number' => $serial->serial_number,
+            'product_name' => $serial->product_name,
+            'product_model' => $serial->product_model,
+            'brand' => $serial->brand,
+            'stock_code' => $serial->stock_code,
+            'invoice_series' => $serial->invoice_series,
+            'invoice_number' => $serial->invoice_number,
+            'customer_selected' => (bool) $serial->customer_selected,
+            'customer_selectable' => (bool) ($serial->customer_selectable ?? false),
+            'customer_visible' => (bool) $serial->customer_visible,
+            'hidden_reason' => $serial->hidden_reason,
+            'hidden_reason_label' => $this->hiddenReasonLabel($serial->hidden_reason, $source),
+            'responsibility_code' => $source['responsibility_code'] ?? null,
+            'normalized_responsibility_code' => $source['normalized_responsibility_code'] ?? null,
+            'is_responsibility_blocked' => (bool) ($source['is_responsibility_blocked'] ?? false),
+            'operation_added' => (bool) ($serial->operation_added ?? false),
+            'operation_added_by' => $serial->operation_added_by,
+            'operation_added_at' => $serial->operation_added_at?->toISOString(),
+            'customer_phone' => $serial->customer_phone,
+            'linked_mrn' => $serial->linked_mrn,
+            'operation_note' => $serial->operation_note,
+            'is_primary' => (bool) $serial->is_primary,
+            'is_returned' => (bool) $serial->is_returned,
+            'return_note' => $serial->return_note,
+            'return_date' => $serial->return_date?->toDateString(),
+            'return_document_no' => $serial->return_document_no,
+            'is_current_latest_sale' => $latestSale,
+            'latest_sale_conflict' => (bool) ($source['latest_sale_conflict'] ?? false),
+            'operation_warning' => $source['operation_warning'] ?? null,
+            'warning_labels' => is_array($serial->warning_labels ?? null)
+                ? array_values($serial->warning_labels)
+                : (is_array($source['warning_labels'] ?? null) ? array_values($source['warning_labels']) : []),
+            'current_latest_sale_date' => $source['current_latest_sale_date'] ?? null,
+            'current_latest_sale_invoice_series' => $source['current_latest_sale_invoice_series'] ?? null,
+            'current_latest_sale_invoice_number' => $source['current_latest_sale_invoice_number'] ?? null,
+            'invoice_customer_type' => $serial->invoice_customer_type,
+            'color_status' => $serial->color_status ?: $this->serialColorStatus($serial),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $source
+     */
+    private function hiddenReasonLabel(?string $reason, array $source = []): string
+    {
+        if (in_array($reason, ['dealer_or_partner', 'responsibility_code_blocked'], true)) {
+            return 'Müşteriye gösterilmedi - sorumluluk kodu: '.$this->responsibilityCodeLabel($source);
+        }
+
+        return match ($reason) {
+            'returned' => 'İade gelen seri',
+            'dealer_or_partner' => 'Müşteriye gösterilmedi - bayi/proje',
+            'unknown_customer_type' => 'Müşteriye gösterilmedi',
+            'not_latest_sale' => 'Güncel son satış değil',
+            'not_selected' => 'Müşteri seçmedi',
+            default => 'Müşteriye gösterilmedi',
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $source
+     */
+    private function responsibilityCodeLabel(array $source): string
+    {
+        $code = trim((string) ($source['responsibility_code'] ?? $source['normalized_responsibility_code'] ?? ''));
+
+        return $code !== '' ? $code : 'Boş';
+    }
+
+    private function serialColorStatus($serial): string
+    {
+        if ((bool) $serial->is_returned) {
+            return 'red';
+        }
+
+        return (bool) $serial->customer_selected || (bool) ($serial->operation_added ?? false) ? 'green' : 'orange';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function operationControlPayload(TechnicalServiceRequest $request): array
+    {
+        $payload = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+
+        return array_replace([
+            'payment_checked' => 'unreviewed',
+            'address_checked' => 'unreviewed',
+            'door_photos_checked' => 'unreviewed',
+            'missing_info' => 'unreviewed',
+            'customer_call_required' => 'unreviewed',
+            'schedule_update_required' => 'unreviewed',
+            'note' => null,
+            'checked_by_user_id' => $request->operation_control_checked_by_user_id,
+            'checked_at' => $this->dateTimeString($request->operation_control_checked_at),
+        ], $payload, [
+            'checked_by_user_id' => $request->operation_control_checked_by_user_id,
+            'checked_at' => $this->dateTimeString($request->operation_control_checked_at),
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function locationPayload(TechnicalServiceRequest $request): array
+    {
+        return [
+            'latitude' => $request->location_latitude !== null ? (float) $request->location_latitude : null,
+            'longitude' => $request->location_longitude !== null ? (float) $request->location_longitude : null,
+            'place_id' => $request->location_place_id,
+            'formatted_address' => $request->location_formatted_address,
+            'map_url' => $request->location_map_url,
+            'building_no' => $request->building_no,
+            'apartment_no' => $request->apartment_no,
+            'door_no' => $request->door_no,
+            'floor_no' => $request->floor_no,
+            'site_name' => $request->site_name,
+            'shared' => filled($request->location_latitude) && filled($request->location_longitude),
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function doorPhotoPayload(TechnicalServiceRequest $request): array
+    {
+        return $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO)
+            ->map(function (TechnicalServiceRequestUpload $upload) use ($request): array {
+                $authenticatedUrl = route('api.technical-service.requests.uploads.show', [
+                    'technicalServiceRequest' => $request->id,
+                    'upload' => $upload->id,
+                ]);
+
+                return [
+                    'id' => $upload->id,
+                    'field_code' => $upload->field_code,
+                    'category' => $upload->category,
+                    'original_name' => $upload->original_name,
+                    'mime' => $upload->mime,
+                    'size' => $upload->size,
+                    'url' => $authenticatedUrl,
+                    'preview_url' => $authenticatedUrl,
+                    'download_url' => $authenticatedUrl,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array{payment_check_required:bool,door_photo_check_required:bool,messages:array<int,string>}
+     */
+    private function assignmentBlockers(TechnicalServiceRequest $request): array
+    {
+        $operationControl = $this->operationControlPayload($request);
+        $messages = [];
+        $paymentRequired = ($operationControl['payment_checked'] ?? 'unreviewed') !== 'yes';
+        $doorPhotoRequired = ($operationControl['door_photos_checked'] ?? 'unreviewed') !== 'compatible';
+
+        if ($paymentRequired) {
+            $messages[] = 'Usta atanamaz. Önce ödeme kontrolünü tamamlayın.';
+        }
+
+        if ($doorPhotoRequired) {
+            $messages[] = 'Usta atanamaz. Önce kapı görsellerini uygun olarak kontrol edin.';
+        }
+
+        return [
+            'payment_check_required' => $paymentRequired,
+            'door_photo_check_required' => $doorPhotoRequired,
+            'messages' => $messages,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function routeQuotePayload(TechnicalServiceRequest $request): ?array
+    {
+        $quote = $request->latestRouteQuote;
+
+        if (! $quote instanceof TechnicalServiceRouteQuote) {
+            return null;
+        }
+
+        return app(TechnicalServiceRouteCostService::class)->payload($quote);
+    }
+
+    private function saleMountLabel(?string $status): string
+    {
+        return match ($status) {
+            TechnicalServiceMountSession::SALE_MONTAJ_DAHIL,
+            TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL => 'Montaj dahil',
+            TechnicalServiceMountSession::SALE_MONTAJ_HARIC => 'Montaj Hariç',
+            TechnicalServiceMountSession::SALE_CHECK_FAILED => 'Kontrol bekliyor',
+            TechnicalServiceMountSession::SALE_NOT_FOUND => 'Seri bulunamadı',
+            default => '-',
+        };
+    }
+
+    private function mountPaymentLabel(?string $paymentStatus, ?string $saleMountStatus): string
+    {
+        return match ($paymentStatus) {
+            TechnicalServiceMountSession::PAYMENT_PAID => 'Montaj ödemesi alındı',
+            TechnicalServiceMountSession::PAYMENT_NOT_REQUIRED => 'Montaj dahil',
+            TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT => 'Çoklu ürün talebi - ödeme operasyon tarafından netleştirilecek',
+            TechnicalServiceMountSession::PAYMENT_PENDING => 'Montaj ödemesi bekleniyor',
+            default => in_array($saleMountStatus, [
+                TechnicalServiceMountSession::SALE_MONTAJ_DAHIL,
+                TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL,
+            ], true) ? 'Montaj dahil' : '-',
+        };
+    }
+
+    private function dateTimeString(mixed $value): ?string
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->toISOString();
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return (string) $value;
     }
 
     /**
@@ -1076,7 +1492,9 @@ class TechnicalServiceWorkflowService
             : ($travelRoundTripKm !== null ? max($travelRoundTripKm - 30, 0) : null);
         $travelFee = $request->travel_fee_amount !== null
             ? (float) $request->travel_fee_amount
-            : ($travelBillableKm !== null ? $travelBillableKm * 10 : null);
+            : ($travelBillableKm !== null && is_numeric(config('services.google.routes_fee_per_km'))
+                ? $travelBillableKm * (float) config('services.google.routes_fee_per_km')
+                : null);
         $technicianFee = $request->technician_payment_amount !== null
             ? (float) $request->technician_payment_amount
             : $customerAmount;

@@ -1,4 +1,4 @@
-import { CalendarDays, MapPin, MoreHorizontal, Package, Phone } from 'lucide-react'
+import { AlertTriangle, Boxes, CalendarDays, CheckCircle2, MapPin, MoreHorizontal, Package, Phone, QrCode } from 'lucide-react'
 import {
   getTechnicalServiceKanbanColumn,
   hasTechnicalServiceTechnician,
@@ -9,24 +9,46 @@ import type { ServiceRequest } from './types'
 import { formatTechnicalServiceDateTime, formatTechnicalServiceMrn, normalizeTechnicalServiceText } from './utils'
 
 type BadgeTone = 'neutral' | 'blue' | 'green' | 'amber' | 'rose' | 'purple'
-type RequestBadge = { label: string, tone: BadgeTone }
+type BadgeIcon = 'multi' | 'warning' | 'paid' | 'qr'
+type RequestBadge = { label: string, tone: BadgeTone, icon?: BadgeIcon, important?: boolean }
 
-const badgeClassName = 'inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold leading-none'
+const badgeClassName = 'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold leading-none'
+const importantBadgeClassName = 'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold leading-none shadow-sm'
 
 const badgeTone = (tone: BadgeTone) => {
   switch (tone) {
     case 'blue':
-      return `${badgeClassName} border-blue-100 bg-blue-50 text-blue-700`
+      return 'border-blue-200 bg-blue-100 text-blue-900'
     case 'green':
-      return `${badgeClassName} border-emerald-100 bg-emerald-50 text-emerald-700`
+      return 'border-emerald-200 bg-emerald-100 text-emerald-900'
     case 'amber':
-      return `${badgeClassName} border-amber-100 bg-amber-50 text-amber-800`
+      return 'border-orange-300 bg-orange-100 text-orange-950'
     case 'rose':
-      return `${badgeClassName} border-rose-100 bg-rose-50 text-rose-700`
+      return 'border-rose-300 bg-rose-100 text-rose-950'
     case 'purple':
-      return `${badgeClassName} border-violet-100 bg-violet-50 text-violet-700`
+      return 'border-violet-200 bg-violet-100 text-violet-900'
     default:
-      return `${badgeClassName} border-slate-200 bg-slate-50 text-slate-700`
+      return 'border-slate-200 bg-slate-50 text-slate-700'
+  }
+}
+
+const badgeClass = (badge: RequestBadge) => [
+  badge.important ? importantBadgeClassName : badgeClassName,
+  badgeTone(badge.tone),
+].join(' ')
+
+const BadgeIconMark = ({ icon }: { icon?: BadgeIcon }) => {
+  switch (icon) {
+    case 'multi':
+      return <Boxes className="h-3.5 w-3.5" />
+    case 'warning':
+      return <AlertTriangle className="h-3.5 w-3.5" />
+    case 'paid':
+      return <CheckCircle2 className="h-3.5 w-3.5" />
+    case 'qr':
+      return <QrCode className="h-3.5 w-3.5" />
+    default:
+      return null
   }
 }
 
@@ -137,6 +159,17 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
       badges.push(badge)
     }
   }
+  const qrSourceChannel = request.qrSource?.source_channel ?? request.channel
+  const mountPaymentStatus = request.saleAndPayment?.mount_payment_status
+  const mountPaymentLabel = request.saleAndPayment?.mount_payment_label ?? ''
+  const currentSerialState = request.qrSource?.current_serial_state
+  const selectedInvoiceSerialCount = request.invoiceSerials?.selected_serials?.length ?? 0
+  const extraSelectedSerialCount = Math.max(0, selectedInvoiceSerialCount - 1)
+  const addedSerialCount = request.invoiceSerials?.added_serial_count ?? extraSelectedSerialCount
+  const addableSerialCount = request.invoiceSerials?.addable_serial_count ?? 0
+  const hiddenSerialCount = (request.invoiceSerials?.hidden_serials ?? []).length
+  const returnedSerialCount = request.invoiceSerials?.returned_serial_count ?? (request.invoiceSerials?.returned_serials ?? []).length
+  const routeQuote = request.routeQuote
 
   const hasTechnician = hasTechnicalServiceTechnician(request)
   const technicianApproved = isTechnicalServiceTechnicianApproved(request)
@@ -164,6 +197,48 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     'servis randevu degisikligi',
     'servis randevu değişikliği',
   ])
+
+  if (currentSerialState === 'in_stock_or_center' || request.saleAndPayment?.sale_mount_status === 'check_failed') {
+    addBadge({ label: 'Kontrol bekliyor', tone: 'amber', icon: 'warning', important: true })
+  }
+
+  if ((request.assignmentBlockers?.messages ?? []).length > 0) {
+    addBadge({ label: 'Atama engeli var', tone: 'rose', icon: 'warning', important: true })
+  }
+
+  if (routeQuote?.status === 'calculated') {
+    addBadge(routeQuote.travel_fee_required
+      ? { label: 'Yol ücreti onayı gerekli', tone: 'amber', icon: 'warning', important: true }
+      : { label: 'Yol ücreti yok', tone: 'green', icon: 'paid' })
+  } else if (routeQuote) {
+    addBadge({ label: 'Yol ücreti hesaplanamadı', tone: 'amber', icon: 'warning' })
+  }
+
+  if (mountPaymentStatus === 'skipped_multi_product' || request.invoiceSerials?.has_multi_product || extraSelectedSerialCount > 0) {
+    addBadge({ label: 'Çoklu ürün talebi', tone: 'amber', icon: 'multi', important: true })
+  }
+
+  if (addedSerialCount > 0) {
+    addBadge({ label: `Montaja eklenen: ${addedSerialCount}`, tone: 'green', icon: 'paid', important: true })
+  }
+
+  if (addableSerialCount > 0) {
+    addBadge({ label: `Eklenebilir seri: ${addableSerialCount}`, tone: 'amber', icon: 'multi', important: true })
+  }
+
+  if (returnedSerialCount > 0 || request.invoiceSerials?.has_returned) {
+    addBadge({ label: 'İade seri var', tone: 'rose', icon: 'warning', important: true })
+  } else if (hiddenSerialCount > 0) {
+    addBadge({ label: 'Gizli seri var', tone: 'amber', icon: 'warning', important: true })
+  }
+
+  if (mountPaymentStatus === 'paid' || mountPaymentLabel === 'Montaj ödemesi alındı') {
+    addBadge({ label: 'Montaj ödemesi alındı', tone: 'green', icon: 'paid', important: true })
+  }
+
+  if (qrSourceChannel === 'qr_mount_form') {
+    addBadge({ label: 'QR Montaj Formu', tone: 'blue', icon: 'qr' })
+  }
 
   if (hasTechnician) {
     addBadge({ label: 'Usta Atandı', tone: 'blue' })
@@ -255,7 +330,7 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     addBadge({ label: 'Servis Reddetti', tone: 'rose' })
   }
 
-  return badges.slice(0, 6)
+  return badges.slice(0, 8)
 }
 
 export function TechnicalServiceKanbanCard({
@@ -318,11 +393,12 @@ export function TechnicalServiceKanbanCard({
             <span className="rounded-full bg-[#06143A] px-2.5 py-1 text-[11px] font-semibold uppercase text-white">
               {request.serviceType}
             </span>
-            <span className={badgeTone(request.priority === 'Kritik' || request.priority === 'Yüksek' ? 'rose' : request.priority === 'Orta' ? 'amber' : 'neutral')}>
+            <span className={[badgeClassName, badgeTone(request.priority === 'Kritik' || request.priority === 'Yüksek' ? 'rose' : request.priority === 'Orta' ? 'amber' : 'neutral')].join(' ')}>
               {request.priority}
             </span>
             {badges.map((badge) => (
-              <span key={badge.label} className={badgeTone(badge.tone)}>
+              <span key={badge.label} className={badgeClass(badge)}>
+                <BadgeIconMark icon={badge.icon} />
                 {badge.label}
               </span>
             ))}
@@ -373,7 +449,7 @@ export function TechnicalServiceKanbanCard({
           <CalendarDays className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           <span className="truncate">{appointmentLabel}</span>
         </span>
-        <span className={badgeTone(request.priority === 'Kritik' ? 'rose' : request.priority === 'Yüksek' ? 'amber' : 'neutral')}>
+        <span className={[badgeClassName, badgeTone(request.priority === 'Kritik' ? 'rose' : request.priority === 'Yüksek' ? 'amber' : 'neutral')].join(' ')}>
           {request.priority}
         </span>
       </div>

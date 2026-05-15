@@ -1,9 +1,10 @@
 import { ChevronDown } from 'lucide-react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestInvoiceSerial, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
 const statusVariant = (status: ServiceRequest['status']) => {
@@ -43,13 +44,34 @@ type ServiceRequestDetailsProps = {
   onReopen?: () => void
   onPriorityChange?: (priority: ServicePriority) => void | Promise<void>
   onWorkflowAction?: (action: string) => void
+  onOperationControlChange?: (payload: Partial<NonNullable<ServiceRequest['operationControl']>>) => void | Promise<void>
+  onInvoiceSerialRecheck?: () => void | Promise<void>
+  onInvoiceSerialAdd?: (serialId: number | string) => void | Promise<void>
+  onInvoiceSerialRemove?: (serialId: number | string) => void | Promise<void>
+  onInvoiceSerialAddAll?: () => void | Promise<void>
   priorityUpdateInFlight?: boolean
   priorityUpdateError?: string | null
   workflowActionInFlight?: string | null
+  operationControlUpdateInFlight?: boolean
+  operationControlUpdateError?: string | null
+  invoiceSerialRecheckInFlight?: boolean
+  invoiceSerialRecheckError?: string | null
+  invoiceSerialActionInFlight?: string | null
+  invoiceSerialActionError?: string | null
   technicianSuggestions?: Array<{
     id: string
     name: string
     location: string
+    phone?: string | null
+    priority?: string | number | null
+    needsReview?: boolean
+    hasLocation?: boolean
+    hasAddressInfo?: boolean
+    hasCoordinates?: boolean
+    routeReady?: boolean
+    addressSummary?: string | null
+    locationCode?: string | null
+    routeLocationMessage?: string
     distanceKmLabel: string
     scheduledCount: number
     availableSlots: string[]
@@ -58,6 +80,7 @@ type ServiceRequestDetailsProps = {
     totalCostLabel: string
     costDeltaLabel: string
     recommended: boolean
+    estimatedRoundTripKm?: number | null
   }>
   scheduleSupport?: {
     scheduledLabel: string
@@ -65,6 +88,14 @@ type ServiceRequestDetailsProps = {
     customerContactLabel: string
     slotSuggestions: string[]
   } | null
+  selectedTechnicianId?: string | null
+  routeQuoteLoading?: boolean
+  routeQuoteError?: string | null
+  assignLoading?: boolean
+  canSubmitAssign?: boolean
+  onTechnicianSelect?: (technicianId: string, estimatedRoundTripKm?: number | null) => void
+  onRouteQuoteCalculate?: () => void | Promise<void>
+  onAssignSelectedTechnician?: () => void | Promise<void>
 }
 
 const eventTime = (timestamp: string): string => {
@@ -89,6 +120,48 @@ const dateTimeOrEmpty = (value: string | null | undefined, fallback: string): st
   hasText(value) ? formatTechnicalServiceDateTime(value, fallback) : fallback
 )
 
+const formatKmValue = (value: number | null | undefined): string => (
+  typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+    : '-'
+)
+
+const formatMoneyValue = (value: number | null | undefined): string => (
+  typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
+    : '-'
+)
+
+const routeQuoteMessage = (message: string | null | undefined): string => {
+  if (message === 'Usta konumu eksik.') {
+    return 'Usta konumu eksik. Yol ücreti hesaplanamadı.'
+  }
+
+  if (message === 'Müşteri konumu eksik.') {
+    return 'Müşteri konumu eksik. Yol ücreti hesaplanamadı.'
+  }
+
+  return displayOrEmpty(message, 'Yol ücreti hesaplanamadı')
+}
+
+const whatsappHrefForPhone = (phone: string | null | undefined): string => {
+  let digits = String(phone ?? '').replace(/\D/g, '')
+
+  if (digits.startsWith('00')) {
+    digits = digits.slice(2)
+  }
+
+  if (digits.startsWith('0')) {
+    digits = `90${digits.slice(1)}`
+  }
+
+  if (!digits.startsWith('90') && digits.length === 10) {
+    digits = `90${digits}`
+  }
+
+  return digits ? `https://wa.me/${digits}` : ''
+}
+
 const MiniMetric = ({
   label,
   value,
@@ -109,12 +182,20 @@ const DetailPanel = ({
   title,
   summary,
   children,
+  open,
+  onOpenChange,
 }: {
   title: string
   summary?: ReactNode
   children: ReactNode
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }) => (
-  <details className="group rounded-2xl border border-slate-200 bg-slate-50 p-4">
+  <details
+    className="group rounded-2xl border border-slate-200 bg-slate-50 p-4"
+    open={open}
+    onToggle={(event) => onOpenChange?.(event.currentTarget.open)}
+  >
     <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-left">
       <span className="min-w-0">
         <span className="block text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{title}</span>
@@ -128,15 +209,263 @@ const DetailPanel = ({
   </details>
 )
 
-const mountPaymentState = (result: MikroMountCheckResult | null | undefined): string => {
-  switch (result?.montaj_durumu) {
-    case 'Montaj Dahil':
-    case 'Montaj Sonradan Dahil':
-      return 'Alındı'
-    case 'Montaj Hariç':
-      return 'Alınmadı'
+type OperationControlTone = 'positive' | 'problem' | 'neutral'
+type OperationControlValue = 'yes' | 'no' | 'unreviewed' | 'compatible' | 'incompatible'
+
+const operationControlTone = (value: OperationControlValue, tone?: OperationControlTone) => {
+  switch (tone ?? value) {
+    case 'positive':
+    case 'yes':
+    case 'compatible':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    case 'problem':
+    case 'no':
+    case 'incompatible':
+      return 'border-rose-200 bg-rose-50 text-rose-700'
     default:
-      return 'Kontrol Edilemedi'
+      return 'border-slate-200 bg-slate-50 text-slate-600'
+  }
+}
+
+const OperationControlRow = ({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: OperationControlValue
+  options: Array<{ value: OperationControlValue, label: string, tone?: OperationControlTone }>
+  disabled: boolean
+  onChange: (value: OperationControlValue) => void
+}) => (
+  <div className="rounded-2xl border border-slate-200 bg-[#F8FAFD] p-3">
+    <p className="text-[11px] font-medium text-slate-500">{label}</p>
+    <div className="mt-2 flex flex-wrap gap-2">
+      {options.map((option) => {
+        const active = option.value === value
+
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            disabled={disabled}
+            className={[
+              'inline-flex h-8 items-center rounded-full border px-3 text-xs font-semibold transition disabled:cursor-wait disabled:opacity-60',
+              active ? operationControlTone(option.value, option.tone) : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
+            ].join(' ')}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+    </div>
+  </div>
+)
+
+const serialToneClass = (serial: ServiceRequestInvoiceSerial): string => {
+  switch (serial.color_status) {
+    case 'green':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-900'
+    case 'red':
+      return 'border-rose-200 bg-rose-50 text-rose-900'
+    default:
+      return 'border-amber-200 bg-amber-50 text-amber-950'
+  }
+}
+
+const serialToneLabel = (serial: ServiceRequestInvoiceSerial): string => {
+  if (serial.is_returned) {
+    return 'İade gelen seri'
+  }
+
+  if (serial.customer_selected) {
+    return 'Müşteri seçti / talep edilen'
+  }
+
+  if (serial.operation_added) {
+    return 'Montaja eklendi'
+  }
+
+  if (serial.hidden_reason === 'dealer_or_partner' || serial.hidden_reason === 'responsibility_code_blocked') {
+    return serial.hidden_reason_label && serial.hidden_reason_label.includes(':')
+      ? serial.hidden_reason_label
+      : `Müşteriye gösterilmedi - sorumluluk kodu: ${serialResponsibilityCodeLabel(serial)}`
+  }
+
+  return serial.hidden_reason_label || 'Montaja eklenmedi'
+}
+
+const serialResponsibilityCodeLabel = (serial: ServiceRequestInvoiceSerial): string => {
+  const code = String(serial.responsibility_code ?? serial.normalized_responsibility_code ?? '').trim()
+
+  return code !== '' ? code : 'Boş'
+}
+
+const currentLatestSaleLabel = (serial: ServiceRequestInvoiceSerial): string => {
+  if (serial.is_current_latest_sale === true) {
+    return 'Bu faturadaki güncel satış'
+  }
+
+  if (serial.is_current_latest_sale === false) {
+    return 'Bu fatura son satış değil'
+  }
+
+  return 'Son satış kontrolü doğrulanamadı'
+}
+
+const needsLatestSaleWarning = (serial: ServiceRequestInvoiceSerial): boolean => (
+  Boolean(serial.customer_selected || serial.is_primary) && serial.is_current_latest_sale === false
+)
+
+const InvoiceSerialRow = ({
+  serial,
+  onAdd,
+  onRemove,
+  actionInFlight,
+}: {
+  serial: ServiceRequestInvoiceSerial
+  onAdd?: (serialId: number | string) => void | Promise<void>
+  onRemove?: (serialId: number | string) => void | Promise<void>
+  actionInFlight?: string | null
+}) => (
+  <div className={['rounded-2xl border p-3 text-sm', serialToneClass(serial)].join(' ')}>
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div>
+        <p className="font-semibold">{displayOrEmpty(serial.serial_number, '-')}</p>
+        <p className="mt-1 text-xs opacity-80">{displayOrEmpty(serial.product_name, 'Ürün bilgisi yok')}</p>
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Badge variant={serial.is_returned ? 'destructive' : (serial.customer_selected || serial.operation_added) ? 'secondary' : 'warning'}>
+          {serialToneLabel(serial)}
+        </Badge>
+        {serial.is_returned ? (
+          <Button type="button" variant="outline" size="sm" disabled className="border-rose-200 bg-rose-50 text-rose-700">
+            İade - eklenemez
+          </Button>
+        ) : serial.is_primary ? (
+          <Button type="button" variant="outline" size="sm" disabled>
+            Ana seri - çıkarılamaz
+          </Button>
+        ) : serial.customer_selected || serial.operation_added ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!serial.id || actionInFlight === `remove:${serial.id}`}
+            onClick={() => serial.id ? void onRemove?.(serial.id) : undefined}
+          >
+            {actionInFlight === `remove:${serial.id}` ? 'Çıkarılıyor...' : 'Çıkar'}
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!serial.id || actionInFlight === `add:${serial.id}`}
+            onClick={() => serial.id ? void onAdd?.(serial.id) : undefined}
+            className="border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+          >
+            {actionInFlight === `add:${serial.id}` ? 'Ekleniyor...' : 'Montaja ekle'}
+          </Button>
+        )}
+      </div>
+    </div>
+    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      <MiniMetric label="Model" value={displayOrEmpty(serial.product_model, '-')} />
+      <MiniMetric label="Stok kodu" value={displayOrEmpty(serial.stock_code, '-')} />
+      <MiniMetric label="Durum etiketi" value={serialToneLabel(serial)} />
+      {serial.hidden_reason ? (
+        <MiniMetric
+          label="Müşteri görünürlüğü"
+          value={serial.hidden_reason === 'dealer_or_partner'
+            ? 'Müşteriye gösterilmedi - sorumluluk kodu'
+            : serial.hidden_reason_label || 'Müşteriye gösterilmedi'}
+        />
+      ) : null}
+      <MiniMetric label="MRN bağı" value={displayOrEmpty(serial.linked_mrn, '-')} hint={displayOrEmpty(serial.customer_phone, 'Telefon yok')} />
+      <MiniMetric
+        label="Son satış durumu"
+        value={currentLatestSaleLabel(serial)}
+        hint={serial.latest_sale_conflict
+          ? 'Son satış kontrolü çelişkili'
+          : needsLatestSaleWarning(serial)
+            ? 'Bu seri için son satış kontrolü tekrar doğrulanmalı.'
+            : undefined}
+      />
+      {serial.warning_labels?.length ? (
+        <div className="sm:col-span-2 flex flex-wrap gap-2">
+          {serial.warning_labels.map((warning) => (
+            <span key={warning} className="rounded-full border border-amber-300 bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-950">
+              {warning}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {serial.is_returned ? (
+        <>
+          <MiniMetric label="İade Notu" value={displayOrEmpty(serial.return_note, 'İade gelen seri')} />
+          <MiniMetric label="İade Tarihi" value={displayOrEmpty(serial.return_date, '-')} />
+          <MiniMetric label="İade Evrak No" value={displayOrEmpty(serial.return_document_no, '-')} />
+          <MiniMetric label="Müşteriye gösterilmedi" value="Evet" />
+        </>
+      ) : null}
+      {serial.operation_note ? (
+        <div className="sm:col-span-2 rounded-xl border border-slate-200 bg-white/70 p-3 text-xs font-semibold">
+          {serial.operation_note}
+        </div>
+      ) : null}
+    </div>
+  </div>
+)
+
+const InvoiceSerialSection = ({
+  title,
+  items,
+  onAdd,
+  onRemove,
+  actionInFlight,
+}: {
+  title: string
+  items?: ServiceRequestInvoiceSerial[]
+  onAdd?: (serialId: number | string) => void | Promise<void>
+  onRemove?: (serialId: number | string) => void | Promise<void>
+  actionInFlight?: string | null
+}) => {
+  if (!items || items.length === 0) {
+    return null
+  }
+
+  return (
+    <section className="grid gap-3">
+      <p className="text-sm font-semibold text-slate-900">{title}</p>
+      <div className="grid gap-3">
+        {items.map((serial, index) => (
+          <InvoiceSerialRow
+            key={`${serial.serial_number ?? 'serial'}-${index}`}
+            serial={serial}
+            onAdd={onAdd}
+            onRemove={onRemove}
+            actionInFlight={actionInFlight}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+const doorPhotoLabel = (fieldCode: string | null | undefined): string => {
+  switch (fieldCode) {
+    case 'door_front_photo':
+      return 'Kapı Ön Yüzü'
+    case 'door_side_photo':
+      return 'Kapı Yan Yüzü'
+    case 'door_back_photo':
+      return 'Kapı Arka Yüzü'
+    default:
+      return 'Kapı görseli'
   }
 }
 
@@ -306,6 +635,8 @@ export function ServiceRequestDetails({
   loading,
   error,
   mikroMountCheck,
+  mikroMountLoading = false,
+  mikroMountError = null,
   warranty = null,
   onAssign,
   onSchedule,
@@ -313,9 +644,30 @@ export function ServiceRequestDetails({
   onReopen,
   onPriorityChange,
   onWorkflowAction,
+  onOperationControlChange,
+  onInvoiceSerialRecheck,
+  onInvoiceSerialAdd,
+  onInvoiceSerialRemove,
+  onInvoiceSerialAddAll,
   priorityUpdateInFlight = false,
   priorityUpdateError = null,
   workflowActionInFlight = null,
+  operationControlUpdateInFlight = false,
+  operationControlUpdateError = null,
+  invoiceSerialRecheckInFlight = false,
+  invoiceSerialRecheckError = null,
+  invoiceSerialActionInFlight = null,
+  invoiceSerialActionError = null,
+  technicianSuggestions = [],
+  scheduleSupport = null,
+  selectedTechnicianId = null,
+  routeQuoteLoading = false,
+  routeQuoteError = null,
+  assignLoading = false,
+  canSubmitAssign = false,
+  onTechnicianSelect,
+  onRouteQuoteCalculate,
+  onAssignSelectedTechnician,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
     request.serviceType,
@@ -331,8 +683,72 @@ export function ServiceRequestDetails({
   const mountPaymentLabel = paymentInfo.customerAmountLabel && paymentInfo.customerAmountLabel !== 'Belirlenmedi'
     ? paymentInfo.customerAmountLabel
     : '-'
-  const phoneDigits = request.phone.replace(/[^\d+]/g, '')
-  const whatsappHref = phoneDigits ? `https://wa.me/${phoneDigits.replace(/^\+/, '')}` : ''
+  const productInfo = request.productInfo ?? null
+  const saleAndPayment = request.saleAndPayment ?? null
+  const documentInfo = request.documentInfo ?? null
+  const invoiceSerials = request.invoiceSerials ?? null
+  const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
+  const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? Boolean(invoiceSerials?.has_multi_product)
+  const setInvoiceSerialsOpen = (open: boolean) => {
+    setInvoiceSerialsOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
+  const [fieldCompletionOpen, setFieldCompletionOpen] = useState(false)
+  const [serialQueryOpen, setSerialQueryOpen] = useState(false)
+  const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
+  const [routeFeeNote, setRouteFeeNote] = useState('')
+  const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
+  const locationInfo = request.location ?? null
+  const doorPhotos = request.doorPhotos ?? []
+  const routeQuote = request.routeQuote ?? null
+  const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
+  const hasAssignmentChange = Boolean(selectedTechnicianId && selectedTechnicianId !== String(request.technicianId ?? ''))
+  const routeFeeEditorHasChanges = routeFeeNote.trim() !== ''
+  const hasMultiProductRequest = Boolean(invoiceSerials?.has_multi_product || (invoiceSerials?.selected_serials?.length ?? 0) > 1 || saleAndPayment?.mount_payment_status === 'skipped_multi_product')
+  const routeFeeNeedsApproval = routeQuote?.status === 'calculated' && routeQuote.travel_fee_required
+  const routeFeeStatusText = routeQuote?.status === 'calculated'
+    ? routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
+    : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
+  const routeRoundTripKm = typeof request.travelRoundTripKm === 'number' && Number.isFinite(request.travelRoundTripKm)
+    ? request.travelRoundTripKm
+    : typeof routeQuote?.distance_km === 'number' && Number.isFinite(routeQuote.distance_km)
+      ? routeQuote.distance_km * 2
+      : null
+  const operationControl = request.operationControl ?? {}
+  const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
+  const assignmentUiBlockerMessages = [
+    operationControl.payment_checked === 'yes' ? null : 'Önce ödeme kontrolünü tamamlayın.',
+    operationControl.door_photos_checked === 'compatible' ? null : 'Önce kapı görsellerini uygun olarak işaretleyin.',
+  ].filter((message): message is string => Boolean(message))
+  const combinedAssignmentBlockerMessages = Array.from(new Set([...assignmentUiBlockerMessages, ...assignmentBlockerMessages]))
+  const isAssignmentBlocked = combinedAssignmentBlockerMessages.length > 0
+
+  const resolvedSaleMountLabel = saleAndPayment?.sale_mount_label ?? mikroMountCheck?.montaj_durumu ?? '-'
+  const resolvedMountPaymentLabel = saleAndPayment?.mount_payment_label ?? mountPaymentLabel
+  const technicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
+    ? selectedTechnician.technicianAmountLabel
+    : paymentInfo.technicianAmountLabel && paymentInfo.technicianAmountLabel !== 'Belirlenmedi'
+      ? paymentInfo.technicianAmountLabel
+      : 'Hakediş ayarı eksik'
+  const travelCostLabel = routeQuote?.status === 'calculated'
+    ? routeQuote.fee_amount === null && routeQuote.travel_fee_required
+      ? 'Km başı ücret ayarı eksik'
+      : formatMoneyValue(routeQuote.fee_amount)
+    : 'Yol ücreti hesaplanamadı'
+  const totalTechnicianCostLabel = selectedTechnician?.totalCostLabel && selectedTechnician.totalCostLabel !== 'Belirlenmedi'
+    ? selectedTechnician.totalCostLabel
+    : paymentInfo.totalTechnicianCostLabel && paymentInfo.totalTechnicianCostLabel !== 'Belirlenmedi'
+      ? paymentInfo.totalTechnicianCostLabel
+      : 'Hakediş ayarı eksik'
+  const netProfitLabel = selectedTechnician?.costDeltaLabel && selectedTechnician.costDeltaLabel !== '-'
+    ? selectedTechnician.costDeltaLabel
+    : 'Hesaplanamadı'
+  const operationControlChange = <K extends keyof NonNullable<ServiceRequest['operationControl']>>(
+    key: K,
+    value: NonNullable<ServiceRequest['operationControl']>[K],
+  ) => {
+    void onOperationControlChange?.({ [key]: value } as Partial<NonNullable<ServiceRequest['operationControl']>>)
+  }
+  const whatsappHref = whatsappHrefForPhone(request.phone)
   const approvalState = technicianApprovalState(request, events)
   const sortedEvents = [...events].sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
   const workflowActions = Object.entries(request.allowedWorkflowActions ?? {})
@@ -378,6 +794,10 @@ export function ServiceRequestDetails({
   const slaTitle = `${slaStatusDescription(request.slaStatus)}. SLA hedefi: ${slaDueLabel}`
   const handleWorkflowAction = (action: string) => {
     if (action === 'assign_technician') {
+      if (isAssignmentBlocked) {
+        return
+      }
+
       onAssign?.()
 
       return
@@ -408,17 +828,39 @@ export function ServiceRequestDetails({
           </section>
         ) : null}
 
-        <section className="rounded-3xl border border-slate-200 bg-slate-950 p-4 text-white lg:p-5">
+        <section className="rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50 p-4 text-slate-950 shadow-sm lg:p-5">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Talep Referansı</p>
-              <p className="mt-1 text-lg font-semibold">{displayMrn ?? request.mrn}</p>
-              <p className="mt-1 text-xs text-slate-300">Seri No: {displayOrEmpty(request.serialNumber, '-')}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard?.writeText(displayMrn ?? request.mrn)}
+                  className="text-left text-xl font-bold text-slate-950 underline-offset-4 hover:underline"
+                  title="MRN kopyala"
+                >
+                  {displayMrn ?? request.mrn}
+                </button>
+                <Badge variant="outline">Kopyalanabilir</Badge>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSerialQueryOpen(true)}
+                className="mt-1 text-left text-xs font-semibold text-blue-700 underline-offset-4 hover:underline"
+              >
+                Seri No Sorgu: {displayOrEmpty(request.serialNumber, '-')}
+              </button>
             </div>
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Müşteri</p>
               <p className="mt-1 truncate text-lg font-semibold">{request.customer}</p>
-              <p className="mt-1 text-xs text-slate-300">{displayOrEmpty(request.phone, 'Bilgi yok')}</p>
+              {whatsappHref ? (
+                <a className="mt-1 block text-xs font-semibold text-blue-700 underline-offset-4 hover:underline" href={whatsappHref} target="_blank" rel="noreferrer">
+                  {displayOrEmpty(request.phone, 'Bilgi yok')}
+                </a>
+              ) : (
+                <p className="mt-1 text-xs text-slate-500">{displayOrEmpty(request.phone, 'Bilgi yok')}</p>
+              )}
             </div>
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Randevu</p>
@@ -431,16 +873,16 @@ export function ServiceRequestDetails({
               <p className="mt-1 text-xs text-slate-300">SLA: {currentSlaLabel} / {slaDueLabel}</p>
             </div>
           </div>
-          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-white/10 pt-3">
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-200/80 pt-3">
             <Badge variant={statusVariant(request.status)}>Durum: {currentStatusLabel}</Badge>
             {onPriorityChange ? (
               <label
-                className="inline-flex h-7 items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white"
+                className="inline-flex h-7 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700"
                 title="Öncelik düzenlenebilir"
               >
                 <span>Öncelik:</span>
                 <select
-                  className="cursor-pointer bg-transparent text-xs font-semibold text-white outline-none disabled:cursor-wait disabled:opacity-60 [&_option]:text-slate-900"
+                  className="cursor-pointer bg-transparent text-xs font-semibold text-slate-900 outline-none disabled:cursor-wait disabled:opacity-60"
                   value={request.priority}
                   onChange={(event) => {
                     void onPriorityChange(event.target.value as ServicePriority)
@@ -468,78 +910,544 @@ export function ServiceRequestDetails({
             >
               SLA: {currentSlaLabel}
             </span>
+            {(request.qrSource?.source_channel ?? request.channel) === 'qr_mount_form' ? <Badge variant="outline">QR Montaj Formu</Badge> : null}
+            {hasMultiProductRequest ? <Badge variant="warning">Çoklu ürün talebi</Badge> : null}
+            {routeFeeNeedsApproval ? <Badge variant="warning">Yol ücreti onayı gerekli</Badge> : null}
           </div>
           {priorityUpdateError ? (
-            <p className="mt-2 text-xs font-medium text-rose-200">{priorityUpdateError}</p>
+            <p className="mt-2 text-xs font-medium text-rose-700">{priorityUpdateError}</p>
           ) : null}
         </section>
 
+        {serialQueryOpen ? (
+          <section className="grid gap-3 rounded-3xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950 lg:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Seri No Sorgu</p>
+                <p className="mt-1 text-base font-semibold text-slate-950">{displayOrEmpty(productInfo?.serial_number ?? request.serialNumber, '-')}</p>
+                <p className="mt-1 text-xs text-blue-800">Sorgu bu talebin seri numarasıyla otomatik çalışır; operasyon modalından çıkmadan kontrol edilir.</p>
+              </div>
+              <Button type="button" variant="outline" onClick={() => setSerialQueryOpen(false)} className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100">
+                Kapat
+              </Button>
+            </div>
+            {mikroMountLoading ? (
+              <div className="rounded-2xl border border-blue-200 bg-white p-3 font-semibold text-blue-800">
+                Seri bilgisi kontrol ediliyor...
+              </div>
+            ) : mikroMountError ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 font-semibold text-amber-900">
+                {mikroMountError}
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <MiniMetric label="Ürün" value={displayOrEmpty(productInfo?.product_name ?? request.product, '-')} />
+                <MiniMetric label="Model" value={displayOrEmpty(productInfo?.product_model ?? request.model, '-')} />
+                <MiniMetric label="Satış montaj durumu" value={resolvedSaleMountLabel} />
+                <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
+              </div>
+            )}
+          </section>
+        ) : null}
+
         <section className="grid gap-3 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Adres / Ürün</p>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_1.8fr_1.2fr_1.2fr]">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <MiniMetric label="İl / İlçe" value={displayOrEmpty([request.city, request.district].filter(Boolean).join(' / '), 'Bilgi yok')} />
             <MiniMetric label="Adres" value={displayOrEmpty(request.address, 'Bilgi yok')} />
-            <MiniMetric label="Ürün" value={displayOrEmpty(request.product, 'Bilgi yok')} />
-            <MiniMetric label="Model" value={displayOrEmpty(request.model, 'Bilgi yok')} />
+            <MiniMetric label="Ürün" value={displayOrEmpty(productInfo?.product_name ?? request.product, 'Bilgi yok')} />
+            <MiniMetric label="Model" value={displayOrEmpty(productInfo?.product_model ?? request.model, '-')} />
+            <MiniMetric label="Seri No" value={displayOrEmpty(productInfo?.serial_number ?? request.serialNumber, '-')} />
+            <MiniMetric label="Marka" value={displayOrEmpty(productInfo?.brand, '-')} />
+            <MiniMetric label="Stok Kodu" value={displayOrEmpty(productInfo?.stock_code, '-')} />
+            <MiniMetric label="Aktivasyon Kodu" value={displayOrEmpty(productInfo?.activation_code, '-')} />
+            <MiniMetric label="Fatura No" value={displayOrEmpty(documentInfo?.invoice_display_no, '-')} />
+            <MiniMetric label="İrsaliye No" value={displayOrEmpty(documentInfo?.dispatch_display_no, '-')} />
+            <MiniMetric label="Sipariş No" value={displayOrEmpty(documentInfo?.order_display_no, '-')} />
+            {locationInfo?.shared ? (
+              <MiniMetric
+                label="Konum paylaşıldı"
+                value={locationInfo.map_url ? (
+                  <a className="text-blue-700 underline-offset-4 hover:underline" href={locationInfo.map_url} target="_blank" rel="noreferrer">
+                    Haritada aç
+                  </a>
+                ) : 'Evet'}
+                hint={displayOrEmpty(locationInfo.formatted_address, 'Konum adresi yok')}
+              />
+            ) : null}
+            <MiniMetric label="Bina / Daire / Kapı / Kat" value={[
+              locationInfo?.building_no,
+              locationInfo?.apartment_no,
+              locationInfo?.door_no,
+              locationInfo?.floor_no,
+            ].filter(Boolean).join(' / ') || '-'} />
           </div>
         </section>
 
-        <div className="grid gap-5 xl:grid-cols-2">
-          <section className="order-2 grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
+        <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Operasyon ve Montaj Kontrolü</p>
+              <p className="mt-1 text-sm text-slate-600">Atama öncesi ödeme, adres, kapı görseli, randevu ve montaj durumu tek yerden kontrol edilir.</p>
+            </div>
+            {routeQuote ? (
+              <Badge variant={routeFeeNeedsApproval ? 'warning' : routeQuote.status === 'calculated' ? 'positive' : 'outline'}>
+                {routeFeeStatusText}
+              </Badge>
+            ) : null}
+          </div>
+
+          <div className="grid gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p className="font-semibold text-slate-800">Kapı görselleri</p>
+                <p className="mt-1 text-xs text-slate-500">Usta ataması için kapı görselleri uygun olarak işaretlenmelidir.</p>
+              </div>
+              <Badge variant={operationControl.door_photos_checked === 'compatible' ? 'positive' : operationControl.door_photos_checked === 'incompatible' ? 'destructive' : 'outline'}>
+                {operationControl.door_photos_checked === 'compatible' ? 'Uyumlu' : operationControl.door_photos_checked === 'incompatible' ? 'Uyumsuz' : 'Kontrol edilmedi'}
+              </Badge>
+            </div>
+            {doorPhotos.length === 0 ? (
+              <p>Henüz kapı fotoğrafı yüklenmedi.</p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {doorPhotos.map((photo) => {
+                  const previewUrl = photo.preview_url ?? photo.download_url ?? photo.url ?? ''
+
+                  return (
+                    <a
+                      key={String(photo.id ?? photo.field_code)}
+                      href={photo.download_url ?? photo.url ?? '#'}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-800 hover:border-blue-300 hover:text-blue-700"
+                    >
+                      <div className="relative mb-2 grid aspect-[4/3] w-full place-items-center overflow-hidden rounded-lg bg-slate-100 text-[11px] text-slate-500">
+                        <span>Görüntü açılamadı</span>
+                        {previewUrl ? (
+                          <img
+                            src={previewUrl}
+                            alt={doorPhotoLabel(photo.field_code)}
+                            className="absolute inset-0 h-full w-full object-cover"
+                            onError={(event) => {
+                              event.currentTarget.classList.add('hidden')
+                            }}
+                          />
+                        ) : null}
+                      </div>
+                      <span className="block">{doorPhotoLabel(photo.field_code)}</span>
+                      <span className="mt-1 block truncate font-medium text-slate-500 group-hover:text-blue-600" title={displayOrEmpty(photo.original_name, 'Görüntüle')}>
+                        {displayOrEmpty(photo.original_name, 'Görüntüle')}
+                      </span>
+                    </a>
+                  )
+                })}
+              </div>
+            )}
+            <OperationControlRow
+              label="Kapı görselleri bakıldı mı?"
+              value={operationControl.door_photos_checked ?? 'unreviewed'}
+              options={[
+                { value: 'compatible', label: 'Uyumlu', tone: 'positive' },
+                { value: 'incompatible', label: 'Uyumsuz', tone: 'problem' },
+                { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
+              ]}
+              disabled={operationControlUpdateInFlight}
+              onChange={(value) => operationControlChange('door_photos_checked', value as 'compatible' | 'incompatible' | 'unreviewed')}
+            />
+          </div>
+
+          {operationControlUpdateError ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+              {operationControlUpdateError}
+            </div>
+          ) : null}
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ödeme / Montaj Bloğu</p>
+                <p className="mt-1 text-sm text-slate-600">Ödeme bilgisi ve ödeme kontrolü aynı blokta takip edilir.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <MiniMetric label="Satış montaj durumu" value={resolvedSaleMountLabel} />
+                <MiniMetric
+                  label="Montaj ödeme durumu"
+                  value={resolvedMountPaymentLabel}
+                  hint={saleAndPayment?.mount_payment_status ?? undefined}
+                />
+                <MiniMetric label="Ödeme referansı" value={<span className="break-all" title={displayOrEmpty(saleAndPayment?.payment_reference, '-')}>{displayOrEmpty(saleAndPayment?.payment_reference, '-')}</span>} />
+                <MiniMetric label="Ödeme tarihi" value={dateTimeOrEmpty(saleAndPayment?.paid_at, '-')} />
+              </div>
+              <OperationControlRow
+                label="Ödeme kontrol edildi mi?"
+                value={operationControl.payment_checked ?? 'unreviewed'}
+                options={[
+                  { value: 'yes', label: 'Evet', tone: 'positive' },
+                  { value: 'no', label: 'Hayır', tone: 'problem' },
+                  { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
+                ]}
+                disabled={operationControlUpdateInFlight}
+                onChange={(value) => operationControlChange('payment_checked', value as 'yes' | 'no' | 'unreviewed')}
+              />
+            </section>
+
+            <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Adres Kontrol Bloğu</p>
+                <p className="mt-1 text-sm text-slate-600">Adres bilgisi ve adres kontrolü birlikte değerlendirilir.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <MiniMetric label="İl / İlçe" value={displayOrEmpty([request.city, request.district].filter(Boolean).join(' / '), '-')} />
+                <MiniMetric label="Adres" value={displayOrEmpty(request.address, '-')} />
+                {locationInfo?.shared ? (
+                  <MiniMetric
+                    label="Konum / Haritada aç"
+                    value={locationInfo.map_url ? (
+                      <a className="text-blue-700 underline-offset-4 hover:underline" href={locationInfo.map_url} target="_blank" rel="noreferrer">
+                        Haritada aç
+                      </a>
+                    ) : 'Konum paylaşıldı'}
+                    hint={displayOrEmpty(locationInfo.formatted_address, 'Konum adresi yok')}
+                  />
+                ) : null}
+              </div>
+              <OperationControlRow
+                label="Adres kontrol edildi mi?"
+                value={operationControl.address_checked ?? 'unreviewed'}
+                options={[
+                  { value: 'yes', label: 'Evet', tone: 'positive' },
+                  { value: 'no', label: 'Hayır', tone: 'problem' },
+                  { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
+                ]}
+                disabled={operationControlUpdateInFlight}
+                onChange={(value) => operationControlChange('address_checked', value as 'yes' | 'no' | 'unreviewed')}
+              />
+            </section>
+
+            <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Randevu Kontrol Bloğu</p>
+                  <p className="mt-1 text-sm text-slate-600">Randevu tarihi ve servis aşamasıyla birlikte kontrol edilir.</p>
+                </div>
+                <Button type="button" variant="outline" onClick={() => onSchedule?.()} disabled={isActionDisabled}>
+                  Randevu Planla
+                </Button>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <MiniMetric label="Randevu tarihi" value={scheduledDateLabel} hint={scheduledTimeLabel} />
+                <MiniMetric label="Servis aşaması" value={currentStatusLabel} />
+              </div>
+              <OperationControlRow
+                label="Randevu tarihi güncellenecek mi?"
+                value={operationControl.schedule_update_required ?? 'unreviewed'}
+                options={[
+                  { value: 'no', label: 'Hayır', tone: 'positive' },
+                  { value: 'yes', label: 'Evet', tone: 'problem' },
+                  { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
+                ]}
+                disabled={operationControlUpdateInFlight}
+                onChange={(value) => operationControlChange('schedule_update_required', value as 'yes' | 'no' | 'unreviewed')}
+              />
+            </section>
+
+            <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ek Operasyon Kontrolleri</p>
+                <p className="mt-1 text-sm text-slate-600">Eksik bilgi ve müşteri arama kararları aynı alanda tutulur.</p>
+              </div>
+              <OperationControlRow
+                label="Eksik bilgi var mı?"
+                value={operationControl.missing_info ?? 'unreviewed'}
+                options={[
+                  { value: 'no', label: 'Yok', tone: 'positive' },
+                  { value: 'yes', label: 'Var', tone: 'problem' },
+                  { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
+                ]}
+                disabled={operationControlUpdateInFlight}
+                onChange={(value) => operationControlChange('missing_info', value as 'yes' | 'no' | 'unreviewed')}
+              />
+              <OperationControlRow
+                label="Müşteri aranacak mı?"
+                value={operationControl.customer_call_required ?? 'unreviewed'}
+                options={[
+                  { value: 'no', label: 'Hayır', tone: 'positive' },
+                  { value: 'yes', label: 'Evet', tone: 'problem' },
+                  { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
+                ]}
+                disabled={operationControlUpdateInFlight}
+                onChange={(value) => operationControlChange('customer_call_required', value as 'yes' | 'no' | 'unreviewed')}
+              />
+            </section>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <Badge variant={statusVariant(request.status)}>Durum: {currentStatusLabel}</Badge>
+            <Badge variant="outline">Öncelik: {currentPriorityLabel}</Badge>
+            <span className={['inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')} title={slaTitle}>
+              SLA: {currentSlaLabel}
+            </span>
+            {routeQuote?.status === 'calculated' ? (
+              <Badge variant={routeQuote.travel_fee_required ? 'warning' : 'positive'}>
+                {routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'}
+              </Badge>
+            ) : routeQuote ? (
+              <Badge variant="warning">Yol ücreti hesaplanamadı</Badge>
+            ) : null}
+            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
+              Mevcut etiketler: {currentPriorityLabel} / {currentSlaLabel}
+            </span>
+            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
+              Kapı uygunluk durumu: {operationControl.door_photos_checked === 'compatible' ? 'Uyumlu' : operationControl.door_photos_checked === 'incompatible' ? 'Uyumsuz' : 'Kontrol edilmedi'}
+            </span>
+          </div>
+
+          {combinedAssignmentBlockerMessages.length > 0 ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <p className="font-semibold">Usta atama engelleri</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {combinedAssignmentBlockerMessages.map((message) => (
+                  <span key={message} className="rounded-full border border-amber-200 bg-white px-2.5 py-1 text-xs font-semibold text-amber-950">
+                    {message}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Montaj / Servis Durumu</p>
-                <p className="mt-1 text-sm text-slate-600">Montaj ödemesi, kapı uygunluğu, randevu ve servis aşaması.</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Usta / Çilingir Atama</p>
+                <p className="mt-1 text-sm text-slate-600">Usta seçimi, yol ücreti durumu, onay ve servis bilgileri.</p>
               </div>
-              <Button type="button" variant="outline" onClick={() => onSchedule?.()} disabled={isActionDisabled}>
-                Randevu Planla
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onAssign?.()}
+                disabled={isActionDisabled || isAssignmentBlocked}
+                title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+              >
+                {hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <MiniMetric label="Montaj durumu" value={mikroMountCheck?.montaj_durumu ?? 'Kontrol edilmedi'} />
-              <MiniMetric label="Ödeme durumu" value={mountPaymentState(mikroMountCheck)} hint={mountPaymentLabel} />
-              <MiniMetric label="Kapı uygunluk durumu" value={displayOrEmpty(request.missingInfoReason, 'Kontrol edilmedi')} />
-              <MiniMetric label="Randevu tarihi" value={scheduledDateLabel} hint={scheduledTimeLabel} />
-              <MiniMetric label="Servis aşaması" value={currentStatusLabel} />
-              <MiniMetric label="Mevcut etiketler" value={`${currentPriorityLabel} / ${currentSlaLabel}`} />
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={statusVariant(request.status)}>Durum: {currentStatusLabel}</Badge>
-              <Badge variant="outline">Öncelik: {currentPriorityLabel}</Badge>
-              <span className={['inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')} title={slaTitle}>
-                SLA: {currentSlaLabel}
-              </span>
-            </div>
-          </section>
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+              <div className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-slate-900">Şehir içi uygun ustalar</p>
+                  <Badge variant="outline">{technicianSuggestions.length > 0 ? `${technicianSuggestions.length} öneri` : 'Öneri yok'}</Badge>
+                </div>
+                {technicianSuggestions.length > 0 ? (
+                  <div className="grid gap-2">
+                    {technicianSuggestions.map((technician) => {
+                      const selected = selectedTechnicianId === technician.id
+                      const hasAddressInfo = technician.hasAddressInfo ?? Boolean(technician.addressSummary || technician.locationCode || technician.location)
+                      const hasCoordinates = technician.hasCoordinates ?? technician.hasLocation ?? false
+                      const routeLocationMessage = technician.routeLocationMessage ?? (hasCoordinates
+                        ? 'Routes hesabı için koordinat var.'
+                        : hasAddressInfo
+                          ? 'Usta adresi var, koordinat eksik.'
+                          : 'Usta adres bilgisi eksik.')
 
-          <section className="order-1 grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Operasyon Kontrolü</p>
-              <p className="mt-1 text-sm text-slate-600">Atama öncesi kontrol edilmesi gereken operasyon maddeleri.</p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <MiniMetric label="Ödeme kontrol edildi mi?" value={mountPaymentState(mikroMountCheck)} />
-              <MiniMetric label="Adres kontrol edildi mi?" value={hasText(request.address) ? 'Kontrol edilecek' : 'Eksik bilgi var'} />
-              <MiniMetric label="Kapı görselleri yeterli mi?" value={(request.beforePhotoCount ?? 0) + (request.generalPhotoCount ?? 0) > 0 ? 'Kontrol edilecek' : 'Yüklenmedi'} hint={photoCompletionLabel} />
-              <MiniMetric label="Eksik bilgi var mı?" value={displayOrEmpty(request.missingInfoReason, 'Yok')} />
-              <MiniMetric label="Müşteri aranacak mı?" value={displayOrEmpty(request.customerContactStatus, 'Kontrol edilmedi')} hint={dateTimeOrEmpty(request.customerCallbackAt, 'Geri arama tarihi yok')} />
-              <MiniMetric label="Randevu tarihi güncellenecek mi?" value={request.rescheduleRequested || request.requiresReschedule ? 'Evet' : 'Kontrol edilmedi'} hint={displayOrEmpty(request.rescheduleReason, 'Bilgi yok')} />
-            </div>
-          </section>
-
-          <section className="order-3 grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Servis / Usta</p>
-                <p className="mt-1 text-sm text-slate-600">Atanan servis, onay durumu ve servis talepleri.</p>
+                      return (
+                      <div key={technician.id} className={[
+                        'grid gap-2 rounded-xl border bg-white p-3 text-sm transition md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
+                        selected ? 'border-blue-300 ring-2 ring-blue-100' : 'border-slate-200',
+                      ].join(' ')}>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate font-semibold text-slate-950">{technician.name}</span>
+                            {technician.recommended ? <Badge variant="positive">Önerilen</Badge> : null}
+                            {selected ? <Badge variant="secondary">Seçildi</Badge> : null}
+                            {technician.needsReview ? <Badge variant="warning">Kontrol gerekli</Badge> : null}
+                          </div>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {[technician.phone, technician.location, technician.distanceKmLabel].filter(Boolean).join(' · ')}
+                          </p>
+                          <p className="mt-1 truncate text-xs text-slate-500" title={technician.addressSummary ?? undefined}>
+                            {displayOrEmpty(technician.addressSummary ?? technician.locationCode ?? '', 'Adres bilgisi yok')}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 md:justify-end">
+                          <span className="rounded-full bg-slate-100 px-2 py-1">Öncelik: {displayOrEmpty(String(technician.priority ?? ''), '-')}</span>
+                          <span className={['rounded-full px-2 py-1', hasAddressInfo ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'].join(' ')}>
+                            {hasAddressInfo ? 'Usta adresi var' : 'Usta adres bilgisi eksik'}
+                          </span>
+                          <span className={['rounded-full px-2 py-1', hasCoordinates ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'].join(' ')}>
+                            {hasCoordinates ? 'Usta koordinatı var' : 'Usta adresi var, koordinat eksik'}
+                          </span>
+                          <span className={['rounded-full px-2 py-1', technician.routeReady ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-700'].join(' ')} title={routeLocationMessage}>
+                            {technician.routeReady ? 'Routes hazır' : 'Routes için koordinat eksik'}
+                          </span>
+                          <span className="rounded-full bg-slate-100 px-2 py-1">İş: {technician.scheduledCount}</span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={selected ? 'secondary' : 'outline'}
+                            onClick={() => onTechnicianSelect?.(technician.id, technician.estimatedRoundTripKm ?? null)}
+                          >
+                            {selected ? 'Seçildi' : 'Seç'}
+                          </Button>
+                        </div>
+                      </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                    <p className="font-semibold">Bu taleple aynı şehirde aktif usta bulunamadı.</p>
+                    <p className="mt-1">Diğer / Yakın İlleri Göster ile farklı şehirlerdeki ustaları kontrol edin.</p>
+                    <Button type="button" variant="outline" className="mt-3 border-amber-200 bg-white text-amber-900 hover:bg-amber-100" onClick={() => onAssign?.()}>
+                      Diğer / Yakın İlleri Göster
+                    </Button>
+                  </div>
+                )}
+                {scheduleSupport ? (
+                  <div className="grid gap-2 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                    <span><strong className="text-slate-800">Kesin randevu:</strong> {scheduleSupport.scheduledLabel}</span>
+                  </div>
+                ) : null}
               </div>
-              <Button type="button" variant="outline" onClick={() => onAssign?.()} disabled={isActionDisabled}>
-                Servis Ata
+
+              <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold">Yol ücreti</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant={routeFeeNeedsApproval ? 'warning' : routeQuote?.status === 'calculated' ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void onRouteQuoteCalculate?.()}
+                      disabled={routeQuoteLoading || !selectedTechnicianId || !onRouteQuoteCalculate}
+                      className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
+                    >
+                      {routeQuoteLoading ? 'Hesaplanıyor...' : 'Yol ücreti hesapla'}
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setRouteFeeEditorOpen(true)} className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100">
+                      Yol ücreti / fiyat düzenle
+                    </Button>
+                  </div>
+                </div>
+                {routeQuoteError ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    {routeQuoteError}
+                  </div>
+                ) : null}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <MiniMetric label="Usta şehir/adres bilgisi" value={selectedTechnician ? (selectedTechnician.hasAddressInfo ? 'Var' : 'Usta adres bilgisi eksik') : 'Usta seçilmedi'} hint={selectedTechnician?.addressSummary ?? undefined} />
+                  <MiniMetric label="Usta koordinatı" value={selectedTechnician ? (selectedTechnician.hasCoordinates ? 'Var' : 'Eksik') : 'Usta seçilmedi'} />
+                  <MiniMetric label="Routes hesap durumu" value={selectedTechnician ? (selectedTechnician.routeReady ? 'Hesaplanabilir' : 'Usta koordinatı eksik olduğu için Google Routes hesaplanamadı') : 'Usta seçilmedi'} />
+                  <MiniMetric label="Müşteri konumu var mı?" value={locationInfo?.shared ? 'Var' : 'Yok'} />
+                  <MiniMetric label="Usta → müşteri mesafesi" value={formatKmValue(routeQuote?.distance_km)} hint={routeQuote?.duration_text ? `Tahmini süre: ${routeQuote.duration_text}` : undefined} />
+                  <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} />
+                  <MiniMetric label="30 km ücretsiz sınır" value={formatKmValue(routeQuote?.threshold_km ?? 30)} />
+                  <MiniMetric label="Ekstra km" value={formatKmValue(routeQuote?.extra_km)} />
+                  <MiniMetric
+                    label="Tahmini yol ücreti"
+                    value={routeQuote?.fee_amount === null && routeQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeQuote?.fee_amount)}
+                    hint={routeQuote ? routeQuoteMessage(routeQuote.message) : 'Yol ücreti hesaplanamadı'}
+                  />
+                </div>
+                {routeFeeEditorOpen ? (
+                  <div className="grid gap-3 rounded-2xl border border-blue-200 bg-white p-3 text-sm text-slate-700">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-slate-950">Yol ücreti / fiyat düzenle</p>
+                        <p className="mt-1 text-xs text-slate-500">Bu panel hesaplanan yol bilgisini operasyon notuyla birlikte gözden geçirmek içindir.</p>
+                      </div>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setRouteFeeEditorOpen(false)}>
+                        İptal
+                      </Button>
+                    </div>
+                    {!selectedTechnician ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                        Önce usta seçin.
+                      </div>
+                    ) : null}
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <MiniMetric label="Seçili usta" value={displayOrEmpty(selectedTechnician?.name ?? request.technician, '-')} />
+                      <MiniMetric label="Telefon" value={displayOrEmpty(selectedTechnician?.phone ?? request.technicianPhone, '-')} />
+                      <MiniMetric label="Şehir" value={displayOrEmpty(selectedTechnician?.location, '-')} />
+                      <MiniMetric label="Usta adı" value={displayOrEmpty(technicianSuggestions.find((technician) => technician.id === selectedTechnicianId)?.name ?? request.technician, '-')} />
+                      <MiniMetric label="Mesafe" value={formatKmValue(routeQuote?.distance_km)} />
+                      <MiniMetric label="Ekstra km" value={formatKmValue(routeQuote?.extra_km)} />
+                      <MiniMetric label="Yol ücreti" value={formatMoneyValue(routeQuote?.fee_amount)} />
+                    </div>
+                    <label className="grid gap-2 text-sm font-medium text-slate-700">
+                      Not
+                      <textarea
+                        value={routeFeeNote}
+                        onChange={(event) => setRouteFeeNote(event.target.value)}
+                        className="min-h-[84px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                        placeholder="Yol ücreti veya müşteri onayı için operasyon notu"
+                      />
+                    </label>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <Button type="button" variant="secondary" onClick={() => setRouteFeeEditorOpen(false)}>İptal</Button>
+                      <Button type="button" onClick={() => setRouteFeeEditorOpen(false)} disabled={!selectedTechnician || !routeFeeEditorHasChanges}>Kaydet</Button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-950">Hakediş / Maliyet Özeti</p>
+                <p className="mt-1 text-xs text-slate-500">Müşteri tahsilatı, usta hakedişi ve yol maliyeti tek yerde izlenir.</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <MiniMetric label="Müşteriden alınan montaj ücreti" value={mountPaymentLabel} />
+                <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
+                <MiniMetric label="Usta hakedişi / işçilik" value={technicianLaborCostLabel} />
+                <MiniMetric label="Yol ücreti" value={travelCostLabel} />
+                <MiniMetric label="Toplam usta maliyeti" value={totalTechnicianCostLabel} />
+                <MiniMetric label="Net fark / kâr" value={netProfitLabel} />
+              </div>
+            </div>
+            {combinedAssignmentBlockerMessages.length > 0 ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <p className="font-semibold">Atama için tamamlanması gerekenler</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {combinedAssignmentBlockerMessages.map((message) => (
+                    <li key={message}>{message}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              {hasAssignmentChange ? (
+                <Badge variant="warning">Atama değişikliği hazır</Badge>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onAssign?.()}
+              >
+                Gelişmiş atama ayarları
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void onAssignSelectedTechnician?.()}
+                disabled={assignLoading || !selectedTechnicianId || isAssignmentBlocked || !canSubmitAssign || !onAssignSelectedTechnician}
+                title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+              >
+                {assignLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <MiniMetric label="Atanan servis" value={hasAssignedTechnician ? displayOrEmpty(request.technician, 'Bilgi yok') : 'Atanmadı'} />
               <MiniMetric label="Servis telefonu" value={hasAssignedTechnician ? displayOrEmpty(request.technicianPhone, 'Bilgi yok') : 'Bilgi yok'} />
+              <MiniMetric label="Şehir" value={hasAssignedTechnician ? displayOrEmpty(selectedTechnician?.location, request.city || 'Bilgi yok') : 'Bilgi yok'} />
+              <MiniMetric label="Yol ücreti durumu" value={routeFeeStatusText} />
+              <MiniMetric label="Tahmini yol ücreti" value={travelCostLabel} />
+              {hasAssignedTechnician && approvalState.title.toLocaleLowerCase('tr-TR').includes('bek') ? (
+                <div className="sm:col-span-2">
+                  <Badge variant="warning">Usta onayı bekleniyor</Badge>
+                </div>
+              ) : null}
               {hasAssignedTechnician ? (
                 <>
                   <MiniMetric label="Servis onay durumu" value={approvalState.title} hint={approvalState.detail ?? undefined} />
@@ -582,16 +1490,81 @@ export function ServiceRequestDetails({
               <MiniMetric label="İptal nedeni" value={displayOrEmpty(request.cancellationReason, 'Bilgi yok')} />
             </div>
           </section>
-        </div>
+        <DetailPanel
+          title="Faturadaki diğer serileri gör"
+          summary={invoiceSerials?.check_error ? 'Fatura seri kontrolü bekliyor' : 'Talep edilen, gizlenen ve iade seri hareketleri'}
+          open={invoiceSerialsOpen}
+          onOpenChange={setInvoiceSerialsOpen}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-sm text-slate-600">Fatura seri sorgusu operasyon için yenilenebilir; müşteriye gizli satırlar gösterilmez.</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onInvoiceSerialAddAll?.()}
+                disabled={invoiceSerialActionInFlight === 'add-all' || !onInvoiceSerialAddAll || (invoiceSerials?.addable_serial_count ?? 0) === 0}
+                className="border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+              >
+                {invoiceSerialActionInFlight === 'add-all' ? 'Ekleniyor...' : 'Tüm uygun serileri montaja ekle'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onInvoiceSerialRecheck?.()}
+                disabled={invoiceSerialRecheckInFlight || !onInvoiceSerialRecheck}
+              >
+                {invoiceSerialRecheckInFlight ? 'Kontrol ediliyor...' : 'Tekrar kontrol et'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDifferentAddressInfoOpen((current) => !current)}
+              >
+                Farklı adres için yeni talep oluştur
+              </Button>
+            </div>
+          </div>
+          {differentAddressInfoOpen ? (
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm font-semibold text-blue-900">
+              Seçili seriler için farklı adres talebi sonraki fazda açılacak.
+            </div>
+          ) : null}
+          {invoiceSerialRecheckError ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">
+              {invoiceSerialRecheckError}
+            </div>
+          ) : null}
+          {invoiceSerialActionError ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">
+              {invoiceSerialActionError}
+            </div>
+          ) : null}
+          {invoiceSerials?.check_error ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">
+              Fatura seri kontrolü bekliyor. Tekrar kontrol et aksiyonu ile sorgu yenilenebilir.
+            </div>
+          ) : null}
+          <InvoiceSerialSection title="Talep edilen seriler" items={invoiceSerials?.selected_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="Aynı faturadaki diğer seriler" items={invoiceSerials?.other_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="Müşteriye gösterilmeyen seriler" items={invoiceSerials?.hidden_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="İade gelen seriler" items={invoiceSerials?.returned_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          {!(invoiceSerials?.all_invoice_serials?.length) && !invoiceSerials?.check_error ? (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
+              Fatura seri hareketi henüz kaydedilmedi.
+            </div>
+          ) : null}
+        </DetailPanel>
 
-        <DetailPanel title="Saha Tamamlama Belgeleri" summary="Fotoğraf, garanti kartı, usta açıklaması ve checklist">
+        <DetailPanel
+          title="Saha Tamamlama Belgeleri"
+          summary="Fotoğraf, garanti kartı, usta açıklaması ve checklist"
+          open={fieldCompletionOpen}
+          onOpenChange={setFieldCompletionOpen}
+        >
           <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:p-5">
             <div className="grid gap-3 sm:grid-cols-2">
               <MiniMetric label="Montaj fotoğrafları" value={photoCompletionLabel} hint="Öncesi / sonrası / genel" />
-              <MiniMetric
-                label="Kapı fotoğrafları"
-                value={(request.beforePhotoCount ?? 0) + (request.generalPhotoCount ?? 0) > 0 ? 'Yüklendi' : 'Yüklenmedi'}
-              />
               <MiniMetric label="Garanti kartı" value={documentStatusLabel} hint={warranty?.status ?? 'Kontrol edilmedi'} />
               <MiniMetric label="Usta açıklaması" value={displayOrEmpty(request.fieldCompletionNote, 'Bilgi yok')} />
               <MiniMetric label="Eksik / hatalı evrak" value={displayOrEmpty(request.completionBlockReason || request.incompleteReason, 'Yok')} />
@@ -675,10 +1648,10 @@ export function ServiceRequestDetails({
       </CardContent>
 
       <div
-        className="sticky bottom-0 z-10 mt-2 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur sm:px-6"
-        style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))' }}
+        className="sticky bottom-0 z-10 mt-2 flex justify-end bg-transparent px-2 py-2"
+        style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
-        <div className="grid gap-2 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center lg:justify-end">
+        <div className="grid max-w-full gap-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center lg:justify-end">
           {footerWorkflowActions.map(([actionKey, action]) => (
             <Button
               key={actionKey}
@@ -686,8 +1659,8 @@ export function ServiceRequestDetails({
               variant={actionKey === 'complete' ? 'default' : actionKey === 'cancel' ? 'destructive' : 'outline'}
               type="button"
               onClick={() => handleWorkflowAction(actionKey)}
-              disabled={isActionDisabled || workflowActionInFlight !== null}
-              title={isActionDisabled ? disabledTitle : undefined}
+              disabled={isActionDisabled || workflowActionInFlight !== null || (actionKey === 'assign_technician' && isAssignmentBlocked)}
+              title={isActionDisabled ? disabledTitle : actionKey === 'assign_technician' && isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
             >
               {workflowActionInFlight === actionKey ? 'İşleniyor...' : action.label}
             </Button>

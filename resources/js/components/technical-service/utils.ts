@@ -194,7 +194,7 @@ export function getServicePaymentInfo(
       billableKmLabel: billableKm === null ? 'Yol km bilgisi girilmedi' : formatKm(billableKm),
       travelAmountLabel: travelAmount === null
         ? 'Yol km bilgisi girilmedi'
-        : `${billableKm?.toLocaleString('tr-TR') ?? 0} km x 10 TL = ${formatCurrency(travelAmount)}`,
+        : `${billableKm?.toLocaleString('tr-TR') ?? 0} km ücretli yol = ${formatCurrency(travelAmount)}`,
       totalTechnicianCostLabel: travelAmount === null
         ? (technicianBaseAmount === null ? 'Belirlenmedi' : `${formatCurrency(technicianBaseAmount)} + yol ücreti`)
         : (technicianBaseAmount === null ? 'Belirlenmedi' : formatCurrency(technicianBaseAmount + travelAmount)),

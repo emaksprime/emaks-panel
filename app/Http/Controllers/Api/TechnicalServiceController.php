@@ -13,15 +13,22 @@ use App\Http\Requests\UpdateTechnicalServiceScheduleRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
 use App\Http\Requests\UpdateTechnicalServiceWorkflowRequest;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestSerial;
+use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MikroSerialNumberService;
+use App\Services\TechnicalService\MountRequestSubmitService;
+use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class TechnicalServiceController extends Controller
 {
@@ -291,6 +298,215 @@ class TechnicalServiceController extends Controller
         $technicalServiceRequest = $this->workflowService->updateTechnician($technicalServiceRequest, $payload, $request->user());
 
         return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
+    }
+
+    public function updateOperationControl(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        $validated = $request->validate([
+            'payment_checked' => ['nullable', 'string', 'in:yes,no,unreviewed'],
+            'address_checked' => ['nullable', 'string', 'in:yes,no,unreviewed'],
+            'door_photos_checked' => ['nullable', 'string', 'in:compatible,incompatible,unreviewed'],
+            'missing_info' => ['nullable', 'string', 'in:yes,no,unreviewed'],
+            'customer_call_required' => ['nullable', 'string', 'in:yes,no,unreviewed'],
+            'schedule_update_required' => ['nullable', 'string', 'in:yes,no,unreviewed'],
+            'note' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $payload = array_replace(
+            [
+                'payment_checked' => 'unreviewed',
+                'address_checked' => 'unreviewed',
+                'door_photos_checked' => 'unreviewed',
+                'missing_info' => 'unreviewed',
+                'customer_call_required' => 'unreviewed',
+                'schedule_update_required' => 'unreviewed',
+                'note' => null,
+            ],
+            is_array($technicalServiceRequest->operation_control_payload) ? $technicalServiceRequest->operation_control_payload : [],
+            $validated,
+        );
+
+        $technicalServiceRequest->forceFill([
+            'operation_control_payload' => $payload,
+            'operation_control_checked_by_user_id' => $request->user()?->id,
+            'operation_control_checked_at' => now(),
+        ])->save();
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
+    public function routeQuote(
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceTechnician $technician,
+        TechnicalServiceRouteCostService $routeCostService,
+    ): JsonResponse {
+        $quote = $routeCostService->quote($technicalServiceRequest, $technician);
+
+        return response()->json(array_merge($quote, [
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]));
+    }
+
+    public function recheckInvoiceSerials(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        MikroInvoiceSerialsService $invoiceSerialsService,
+        MountRequestSubmitService $submitService,
+    ): JsonResponse {
+        $context = is_array($technicalServiceRequest->qr_context_payload)
+            ? $technicalServiceRequest->qr_context_payload
+            : [];
+
+        try {
+            $result = $invoiceSerialsService->forSerial((string) $technicalServiceRequest->serial_number);
+            $selectedSerials = $technicalServiceRequest->requestSerials()
+                ->where('customer_selected', true)
+                ->pluck('serial_number')
+                ->filter()
+                ->values()
+                ->all();
+            $operationAddedSerials = $technicalServiceRequest->requestSerials()
+                ->where('operation_added', true)
+                ->pluck('serial_number')
+                ->filter()
+                ->values()
+                ->all();
+
+            $submitService->syncRequestSerials(
+                $technicalServiceRequest,
+                $result['all_invoice_serials'],
+                array_map('strval', $selectedSerials),
+                array_map('strval', $operationAddedSerials),
+                $request->user()?->id,
+            );
+
+            $context['invoice_serials'] = [
+                'all_invoice_serials' => $result['all_invoice_serials'],
+                'selectable_customer_serials' => $result['selectable_customer_serials'],
+                'returned_serials' => $result['returned_serials'],
+                'checked_at' => now()->toISOString(),
+                'check_error' => null,
+            ];
+        } catch (Throwable $exception) {
+            $context['invoice_serials'] = [
+                'all_invoice_serials' => [],
+                'selectable_customer_serials' => [],
+                'returned_serials' => [],
+                'checked_at' => now()->toISOString(),
+                'check_error' => $exception->getMessage(),
+            ];
+        }
+
+        $technicalServiceRequest->forceFill([
+            'qr_context_payload' => $context,
+        ])->save();
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
+    public function addInvoiceSerial(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceRequestSerial $serial,
+    ): JsonResponse {
+        abort_unless((int) $serial->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        if ((bool) $serial->is_returned) {
+            throw ValidationException::withMessages([
+                'serial' => 'İade seri montaja eklenemez.',
+            ]);
+        }
+
+        $serial->forceFill([
+            'operation_added' => true,
+            'operation_added_by' => $request->user()?->id,
+            'operation_added_at' => now(),
+            'customer_phone' => $technicalServiceRequest->customer_phone,
+            'linked_mrn' => $technicalServiceRequest->mrn,
+            'operation_note' => 'Operasyon tarafından montaja eklendi',
+            'color_status' => 'green',
+        ])->save();
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
+    public function removeInvoiceSerial(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceRequestSerial $serial,
+    ): JsonResponse {
+        abort_unless((int) $serial->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        if ((bool) $serial->is_primary) {
+            throw ValidationException::withMessages([
+                'serial' => 'Ana seri montaj talebinden çıkarılamaz.',
+            ]);
+        }
+
+        $serial->forceFill([
+            'customer_selected' => false,
+            'operation_added' => false,
+            'operation_added_by' => $request->user()?->id,
+            'operation_added_at' => null,
+            'customer_phone' => $technicalServiceRequest->customer_phone,
+            'linked_mrn' => $technicalServiceRequest->mrn,
+            'operation_note' => 'Operasyon tarafından çıkarıldı',
+            'color_status' => (bool) $serial->is_returned ? 'red' : 'orange',
+        ])->save();
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
+    public function addAllInvoiceSerials(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+    ): JsonResponse {
+        $technicalServiceRequest->requestSerials()
+            ->where('is_returned', false)
+            ->where('is_primary', false)
+            ->where('customer_selected', false)
+            ->where('operation_added', false)
+            ->get()
+            ->each(function (TechnicalServiceRequestSerial $serial) use ($request, $technicalServiceRequest): void {
+                $serial->forceFill([
+                    'operation_added' => true,
+                    'operation_added_by' => $request->user()?->id,
+                    'operation_added_at' => now(),
+                    'customer_phone' => $technicalServiceRequest->customer_phone,
+                    'linked_mrn' => $technicalServiceRequest->mrn,
+                    'operation_note' => 'Operasyon tarafından toplu montaja eklendi',
+                    'color_status' => 'green',
+                ])->save();
+            });
+
+        return response()->json([
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
+    public function showUpload(
+        TechnicalServiceRequest $technicalServiceRequest,
+        mixed $upload,
+    ) {
+        if (! $upload instanceof TechnicalServiceRequestUpload) {
+            $upload = TechnicalServiceRequestUpload::query()->findOrFail($upload);
+        }
+
+        abort_unless($upload->technical_service_request_id === $technicalServiceRequest->id, 404);
+        abort_unless(Storage::disk('public')->exists($upload->path), 404);
+
+        return response()->file(Storage::disk('public')->path($upload->path), [
+            'Content-Type' => $upload->mime ?: 'application/octet-stream',
+            'Content-Disposition' => 'inline; filename="'.$upload->original_name.'"',
+        ]);
     }
 
     public function storeContactLog(StoreTechnicalServiceContactLogRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
@@ -658,7 +874,8 @@ class TechnicalServiceController extends Controller
     {
         $roundTripKm = round(max($roundTripKm, 0), 2);
         $billableKm = round(max($roundTripKm - 30, 0), 2);
-        $travelFee = round($billableKm * 10, 2);
+        $feePerKm = config('services.google.routes_fee_per_km');
+        $travelFee = is_numeric($feePerKm) ? round($billableKm * (float) $feePerKm, 2) : null;
 
         return [
             'travel_round_trip_km' => $roundTripKm,

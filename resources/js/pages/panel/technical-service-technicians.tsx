@@ -121,6 +121,10 @@ export default function TechnicalServiceTechnicians() {
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [typeFilter, setTypeFilter] = useState('')
+  const [cityFilter, setCityFilter] = useState('')
+  const [activeFilter, setActiveFilter] = useState('')
+  const [needsReviewFilter, setNeedsReviewFilter] = useState('')
   const districtOptions = useMemo(() => getDistrictOptionsForProvince(form.city), [form.city])
   const hasDistrictFallback = form.district.trim() !== ''
     && !districtOptions.some((district) => district.normalizedName === normalizeTurkishLocation(form.district))
@@ -130,7 +134,25 @@ export default function TechnicalServiceTechnicians() {
     setError(null)
 
     try {
-      const response = await apiRequest('/api/technical-service/technicians')
+      const params = new URLSearchParams()
+
+      if (typeFilter) {
+        params.set('technician_type', typeFilter)
+      }
+
+      if (cityFilter) {
+        params.set('city', cityFilter)
+      }
+
+      if (activeFilter) {
+        params.set('active', activeFilter)
+      }
+
+      if (needsReviewFilter) {
+        params.set('needs_review', needsReviewFilter)
+      }
+
+      const response = await apiRequest(`/api/technical-service/technicians${params.toString() ? `?${params.toString()}` : ''}`)
       const items = Array.isArray(response.items) ? response.items : []
       setTechnicians(items.map((technician: ServiceTechnician) => ({
         ...technician,
@@ -141,7 +163,7 @@ export default function TechnicalServiceTechnicians() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [activeFilter, cityFilter, needsReviewFilter, typeFilter])
 
   useEffect(() => {
     void Promise.resolve().then(loadTechnicians)
@@ -156,13 +178,21 @@ export default function TechnicalServiceTechnicians() {
 
     return technicians.filter((technician) => [
       displayName(technician),
+      technician.display_name,
       technician.phone,
+      technician.phone_e164,
+      technician.phone_display,
       technician.city,
       technician.district,
       technician.address,
       technician.google_plus_code,
+      technician.location_code,
       technician.mikro_cari_kodu,
       technician.mikro_cari_adi,
+      technician.cari_code,
+      technician.cari_title,
+      technician.import_status,
+      technician.import_note,
     ].some((value) => String(value ?? '').toLocaleLowerCase('tr-TR').includes(normalizedSearch)))
   }, [search, technicians])
 
@@ -344,53 +374,174 @@ export default function TechnicalServiceTechnicians() {
             </div>
           </div>
 
+          <div className="grid gap-3 md:grid-cols-4">
+            <label className="grid gap-2 text-sm font-medium text-slate-700">
+              Tip
+              <select className={selectClassName} value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+                <option value="">Tümü</option>
+                <option value="locksmith">Çilingir</option>
+                <option value="technician">Teknisyen</option>
+              </select>
+            </label>
+            <label className="grid gap-2 text-sm font-medium text-slate-700">
+              Şehir
+              <select className={selectClassName} value={cityFilter} onChange={(event) => setCityFilter(event.target.value)}>
+                <option value="">Tümü</option>
+                {TURKEY_PROVINCES.map((province) => (
+                  <option key={province.name} value={province.name}>{province.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-2 text-sm font-medium text-slate-700">
+              Aktif
+              <select className={selectClassName} value={activeFilter} onChange={(event) => setActiveFilter(event.target.value)}>
+                <option value="">Tümü</option>
+                <option value="1">Aktif</option>
+                <option value="0">Pasif</option>
+              </select>
+            </label>
+            <label className="grid gap-2 text-sm font-medium text-slate-700">
+              Kontrol gerekli
+              <select className={selectClassName} value={needsReviewFilter} onChange={(event) => setNeedsReviewFilter(event.target.value)}>
+                <option value="">Tümü</option>
+                <option value="1">Kontrol gerekli</option>
+                <option value="0">Kontrol gerekmiyor</option>
+              </select>
+            </label>
+          </div>
+
           {error ? (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>
           ) : null}
 
-          <div className="overflow-x-auto rounded-2xl border border-slate-200">
-            <table className="min-w-[1100px] w-full divide-y divide-slate-200 text-sm">
+          {!loading && filteredTechnicians.length === 0 ? (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">Kayıt bulunamadı.</div>
+          ) : null}
+
+          {filteredTechnicians.length > 0 ? (
+            <div className="grid gap-3 xl:hidden">
+              {filteredTechnicians.map((technician) => (
+                <article key={technician.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="min-w-0 flex-1 truncate text-base font-semibold text-slate-950">{displayName(technician)}</h3>
+                      <span className={[
+                        'inline-flex rounded-full px-2.5 py-1 text-xs font-semibold',
+                        technician.technician_type === 'locksmith' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600',
+                      ].join(' ')}>
+                        {technician.technician_type === 'locksmith' ? 'Çilingir' : 'Teknisyen'}
+                      </span>
+                    </div>
+                    {technician.display_name ? <p className="mt-1 line-clamp-1 break-words text-sm text-slate-600">{technician.display_name}</p> : null}
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {technician.city ? <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">{technician.city}</span> : null}
+                    {technician.priority ? <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">Öncelik: {technician.priority}</span> : null}
+                    {technician.active ? (
+                      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">Aktif</span>
+                    ) : (
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">Pasif</span>
+                    )}
+                    {technician.needs_review ? <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">Kontrol gerekli</span> : null}
+                  </div>
+
+                  <div className="grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Telefon</p>
+                      <p className="truncate font-medium text-slate-900">{technician.phone_display || technician.phone_e164 || technician.phone || '-'}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Cari Kodu</p>
+                      <p className="truncate">{technician.cari_code || technician.mikro_cari_kodu || '-'}</p>
+                    </div>
+                    <div className="min-w-0 sm:col-span-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Cari Ünvan</p>
+                      <p className="line-clamp-2 break-words">{technician.cari_title || technician.mikro_cari_adi || '-'}</p>
+                    </div>
+                    <div className="min-w-0 sm:col-span-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Konum / Adres Kodu</p>
+                      <p className="line-clamp-2 break-words">{technician.location_code || technician.google_plus_code || '-'}</p>
+                    </div>
+                    {technician.import_note ? (
+                      <div className="min-w-0 sm:col-span-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Durum / Kontrol Notu</p>
+                        <p className="line-clamp-2 break-words">{technician.import_note}</p>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button type="button" variant="secondary" onClick={() => openEdit(technician)}>Düzenle</Button>
+                    {technician.active ? (
+                      <Button type="button" variant="destructive" onClick={() => void disableTechnician(technician)}>Pasifleştir</Button>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="hidden max-w-full overflow-x-auto rounded-2xl border border-slate-200 xl:block">
+            <table className="w-full table-fixed divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                 <tr>
-                  <th className="px-4 py-3">Usta</th>
-                  <th className="px-4 py-3">Telefon</th>
-                  <th className="px-4 py-3">Konum</th>
-                  <th className="px-4 py-3">Google / Başlangıç</th>
-                  <th className="px-4 py-3">Mikro Cari</th>
-                  <th className="px-4 py-3">Durum</th>
-                  <th className="px-4 py-3 text-right">İşlem</th>
+                  <th className="w-[18%] px-4 py-3">Ad Soyad / Cari ADI</th>
+                  <th className="w-[10%] px-4 py-3">Şehir / Öncelik</th>
+                  <th className="w-[12%] px-4 py-3">Telefon</th>
+                  <th className="w-[12%] px-4 py-3">Cari Kodu</th>
+                  <th className="w-[17%] px-4 py-3">Cari Ünvan</th>
+                  <th className="w-[15%] px-4 py-3">Konum / Adres Kodu</th>
+                  <th className="w-[10%] px-4 py-3">Aktif / Kontrol</th>
+                  <th className="w-[6%] px-4 py-3 text-right">İşlem</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredTechnicians.map((technician) => (
                   <tr key={technician.id}>
-                    <td className="px-4 py-3">
-                      <p className="font-semibold text-slate-950">{displayName(technician)}</p>
-                      {technician.note ? <p className="mt-1 text-xs text-slate-500">{technician.note}</p> : null}
+                    <td className="min-w-0 px-4 py-3">
+                      <p className="truncate font-semibold text-slate-950">{displayName(technician)}</p>
+                      {technician.display_name ? <p className="mt-1 line-clamp-1 break-words text-xs text-slate-500">{technician.display_name}</p> : null}
+                      {technician.note ? <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{technician.note}</p> : null}
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{technician.phone || '-'}</td>
-                    <td className="px-4 py-3 text-slate-700">
-                      <p>{[technician.city, technician.district].filter(Boolean).join(' / ') || '-'}</p>
-                      {technician.address ? <p className="mt-1 max-w-xs truncate text-xs text-slate-500">{technician.address}</p> : null}
-                    </td>
-                    <td className="max-w-md px-4 py-3 text-slate-700">
-                      <p>{technician.google_plus_code || '-'}</p>
-                      <p className="mt-1 text-xs text-slate-500">{technician.default_start_plus_code || technician.default_start_address || '-'}</p>
-                    </td>
-                    <td className="px-4 py-3 text-slate-700">
-                      <p>{technician.mikro_cari_kodu || '-'}</p>
-                      <p className="mt-1 text-xs text-slate-500">{technician.mikro_cari_adi || '-'}</p>
-                    </td>
-                    <td className="px-4 py-3">
+                    <td className="min-w-0 px-4 py-3">
                       <span className={[
                         'inline-flex rounded-full px-2.5 py-1 text-xs font-semibold',
-                        technician.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500',
+                        technician.technician_type === 'locksmith' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600',
                       ].join(' ')}>
-                        {technician.active ? 'Aktif' : 'Pasif'}
+                        {technician.technician_type === 'locksmith' ? 'Çilingir' : 'Teknisyen'}
                       </span>
+                      {technician.city ? <p className="mt-1 truncate text-xs font-semibold text-slate-700">{technician.city}</p> : null}
+                      {technician.priority ? <p className="mt-1 text-xs text-slate-500">Öncelik: {technician.priority}</p> : null}
+                    </td>
+                    <td className="min-w-0 px-4 py-3 text-slate-700">
+                      <p className="truncate">{technician.phone_display || technician.phone_e164 || technician.phone || '-'}</p>
+                    </td>
+                    <td className="min-w-0 px-4 py-3 text-slate-700">
+                      <p className="truncate">{technician.cari_code || technician.mikro_cari_kodu || '-'}</p>
+                    </td>
+                    <td className="min-w-0 px-4 py-3 text-slate-700">
+                      <p className="line-clamp-2 break-words">{technician.cari_title || technician.mikro_cari_adi || '-'}</p>
+                    </td>
+                    <td className="min-w-0 px-4 py-3 text-slate-700">
+                      <p className="line-clamp-2 break-words">{technician.location_code || technician.google_plus_code || '-'}</p>
+                      {technician.import_note ? <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{technician.import_note}</p> : null}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
+                      <div className="flex flex-wrap gap-1">
+                        <span className={[
+                          'inline-flex rounded-full px-2.5 py-1 text-xs font-semibold',
+                          technician.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500',
+                        ].join(' ')}>
+                          {technician.active ? 'Aktif' : 'Pasif'}
+                        </span>
+                        {technician.needs_review ? (
+                          <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">Kontrol gerekli</span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap justify-end gap-2">
                         <Button type="button" variant="secondary" onClick={() => openEdit(technician)}>Düzenle</Button>
                         {technician.active ? (
                           <Button type="button" variant="destructive" onClick={() => void disableTechnician(technician)}>Pasifleştir</Button>
@@ -401,7 +552,7 @@ export default function TechnicalServiceTechnicians() {
                 ))}
                 {!loading && filteredTechnicians.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan={7}>Kayıt bulunamadı.</td>
+                    <td className="px-4 py-8 text-center text-slate-500" colSpan={8}>Kayıt bulunamadı.</td>
                   </tr>
                 ) : null}
               </tbody>

@@ -175,6 +175,15 @@ type ApiTechnicalServiceRequest = {
     phone?: string | null
     mobilePhone?: string | null
   } | null
+  qr_source?: ServiceRequest['qrSource']
+  product?: ServiceRequest['productInfo'] | unknown
+  sale_and_payment?: ServiceRequest['saleAndPayment']
+  operation_control?: ServiceRequest['operationControl']
+  assignment_blockers?: ServiceRequest['assignmentBlockers']
+  invoice_serials?: ServiceRequest['invoiceSerials']
+  location?: ServiceRequest['location']
+  door_photos?: ServiceRequest['doorPhotos']
+  route_quote?: ServiceRequest['routeQuote']
   document?: unknown
   documents?: unknown
   photo?: unknown
@@ -445,6 +454,16 @@ type TechnicianAssignmentInsight = {
   id: string
   name: string
   location: string
+  phone?: string | null
+  priority?: string | number | null
+  needsReview?: boolean
+  hasLocation?: boolean
+  hasAddressInfo?: boolean
+  hasCoordinates?: boolean
+  routeReady?: boolean
+  addressSummary?: string | null
+  locationCode?: string | null
+  routeLocationMessage?: string
   distanceKmLabel: string
   scheduledCount: number
   availableSlots: string[]
@@ -454,6 +473,17 @@ type TechnicianAssignmentInsight = {
   costDeltaLabel: string
   recommended: boolean
   estimatedRoundTripKm: number | null
+}
+
+function technicianAddressSummary(technician: ServiceTechnician): string {
+  return [
+    technician.city,
+    technician.district,
+    technician.location_code,
+    technician.cari_address,
+    technician.cari_city_district_country,
+    technician.route_note,
+  ].filter((value): value is string => typeof value === 'string' && value.trim() !== '').join(' · ')
 }
 
 function technicianMatchInfo(technician: ServiceTechnician, request: ServiceRequest | null): TechnicianMatch {
@@ -516,6 +546,13 @@ function formatPreferredAppointmentLabel(request: ServiceRequest | null): string
 }
 
 function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
+  const qrProductInfo = typeof request.product === 'object' && request.product !== null
+    ? request.product as ServiceRequest['productInfo']
+    : null
+  const documentInfo = typeof request.documents === 'object' && request.documents !== null
+    ? request.documents as ServiceRequest['documentInfo']
+    : null
+
   return {
     id: String(request.id),
     mrn: request.mrn,
@@ -528,9 +565,9 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
       ?? '',
     city: request.customer_city,
     district: request.customer_district,
-    product: request.product_name,
-    model: request.product_model ?? '',
-    serialNumber: request.serial_number ?? '',
+    product: qrProductInfo?.product_name ?? request.product_name,
+    model: qrProductInfo?.product_model ?? request.product_model ?? '',
+    serialNumber: qrProductInfo?.serial_number ?? request.serial_number ?? '',
     serviceType: request.service_type,
     priority: request.priority,
     technicianId: request.technical_service_technician_id === null || request.technical_service_technician_id === undefined
@@ -632,6 +669,16 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     documents: request.documents,
     photo: request.photo,
     photos: request.photos,
+    qrSource: request.qr_source ?? null,
+    productInfo: qrProductInfo,
+    saleAndPayment: request.sale_and_payment ?? null,
+    documentInfo,
+    operationControl: request.operation_control ?? null,
+    assignmentBlockers: request.assignment_blockers ?? null,
+    invoiceSerials: request.invoice_serials ?? null,
+    location: request.location ?? null,
+    doorPhotos: request.door_photos ?? [],
+    routeQuote: request.route_quote ?? null,
   }
 }
 
@@ -672,6 +719,8 @@ export function TechnicalServiceOperationCenter() {
   const [assignNote, setAssignNote] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
+  const [routeQuoteLoading, setRouteQuoteLoading] = useState(false)
+  const [routeQuoteError, setRouteQuoteError] = useState<string | null>(null)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
@@ -725,6 +774,12 @@ export function TechnicalServiceOperationCenter() {
   const [priorityUpdateLoading, setPriorityUpdateLoading] = useState(false)
   const [priorityUpdateError, setPriorityUpdateError] = useState<string | null>(null)
   const [workflowActionLoading, setWorkflowActionLoading] = useState<string | null>(null)
+  const [operationControlUpdateLoading, setOperationControlUpdateLoading] = useState(false)
+  const [operationControlUpdateError, setOperationControlUpdateError] = useState<string | null>(null)
+  const [invoiceSerialRecheckLoading, setInvoiceSerialRecheckLoading] = useState(false)
+  const [invoiceSerialRecheckError, setInvoiceSerialRecheckError] = useState<string | null>(null)
+  const [invoiceSerialActionLoading, setInvoiceSerialActionLoading] = useState<string | null>(null)
+  const [invoiceSerialActionError, setInvoiceSerialActionError] = useState<string | null>(null)
   const [, setSummaryData] = useState<SummaryResponse | null>(null)
   const [mikroMountCheck, setMikroMountCheck] = useState<MikroMountCheckResult | null>(null)
   const [mikroMountLoading, setMikroMountLoading] = useState(false)
@@ -738,22 +793,40 @@ export function TechnicalServiceOperationCenter() {
   const selectedIdRef = useRef<string | null>(null)
   const detailRequestTokenRef = useRef(0)
   const serialLookupTokenRef = useRef(0)
+  const detailScrollRef = useRef<HTMLDivElement | null>(null)
+  const requestsRef = useRef<ServiceRequest[]>([])
+  const selectedListRequestRef = useRef<ServiceRequest | null>(null)
   const createDistrictOptions = useMemo(() => getDistrictOptionsForProvince(createForm.city), [createForm.city])
   const hasCreateDistrictFallback = createForm.district.trim() !== ''
     && !createDistrictOptions.some((district) => district.normalizedName === normalizeTurkishLocation(createForm.district))
 
-  const loadRequests = useCallback(async () => {
-    setLoading(true)
+  const loadRequests = useCallback(async (options: { silent?: boolean, preserveSelection?: boolean } = {}) => {
+    if (!options.silent) {
+      setLoading(true)
+    }
+
     setError(null)
 
     try {
       const response = await apiRequest('/api/technical-service/requests')
       const items = Array.isArray(response.items) ? response.items : []
-      setRequests(items.map(mapApiRequest))
+      const mappedItems = items.map(mapApiRequest)
+      setRequests(mappedItems)
+
+      if (options.preserveSelection && selectedIdRef.current) {
+        const selected = mappedItems.find((item) => item.id === selectedIdRef.current) ?? null
+
+        if (selected) {
+          setSelectedListRequest(selected)
+          setSelectedDetailRequest((current) => (current?.id === selected.id ? { ...selected, ...current } : current))
+        }
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Teknik servis talepleri alınamadı.')
     } finally {
-      setLoading(false)
+      if (!options.silent) {
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -788,14 +861,32 @@ export function TechnicalServiceOperationCenter() {
   }, [])
 
   useEffect(() => {
+    requestsRef.current = requests
+  }, [requests])
+
+  useEffect(() => {
+    selectedListRequestRef.current = selectedListRequest
+  }, [selectedListRequest])
+
+  useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
+
+  const preserveDetailScroll = useCallback((update: () => void) => {
+    const scrollTop = detailScrollRef.current?.scrollTop ?? 0
+    update()
+    window.requestAnimationFrame(() => {
+      if (detailScrollRef.current) {
+        detailScrollRef.current.scrollTop = scrollTop
+      }
+    })
+  }, [])
 
   const loadRequestDetail = useCallback(async (id: string) => {
     const requestId = String(id)
     const requestToken = detailRequestTokenRef.current + 1
     detailRequestTokenRef.current = requestToken
-    const expectedListRequest = selectedListRequest ?? requests.find((item) => item.id === requestId) ?? null
+    const expectedListRequest = selectedListRequestRef.current ?? requestsRef.current.find((item) => item.id === requestId) ?? null
     const isCurrentRequest = () => detailRequestTokenRef.current === requestToken && selectedIdRef.current === requestId
     setDetailLoading(true)
     setDetailError(null)
@@ -853,7 +944,7 @@ export function TechnicalServiceOperationCenter() {
         setDetailLoading(false)
       }
     }
-  }, [requests, selectedListRequest])
+  }, [])
 
   useEffect(() => {
     void Promise.resolve().then(loadSummary)
@@ -861,6 +952,26 @@ export function TechnicalServiceOperationCenter() {
 
   useEffect(() => {
     void Promise.resolve().then(loadRequests)
+  }, [loadRequests])
+
+  useEffect(() => {
+    const refreshVisibleRequests = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return
+      }
+
+      void loadRequests({ silent: true, preserveSelection: true })
+    }
+
+    const interval = window.setInterval(refreshVisibleRequests, 30000)
+    window.addEventListener('focus', refreshVisibleRequests)
+    document.addEventListener('visibilitychange', refreshVisibleRequests)
+
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshVisibleRequests)
+      document.removeEventListener('visibilitychange', refreshVisibleRequests)
+    }
   }, [loadRequests])
 
   useEffect(() => {
@@ -1084,6 +1195,7 @@ export function TechnicalServiceOperationCenter() {
   const selectedListDisplayMrn = selectedListRequest ? formatTechnicalServiceMrn(selectedListRequest) : null
   const selectedDetailDisplayMrn = selectedDetailRequest ? formatTechnicalServiceMrn(selectedDetailRequest) : null
   const modalDisplayMrn = selectedListDisplayMrn ?? selectedDetailDisplayMrn
+
   const handlePriorityChange = async (priority: ServicePriority) => {
     if (!selectedId || modalRequest?.priority === priority) {
       return
@@ -1100,13 +1212,15 @@ export function TechnicalServiceOperationCenter() {
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
       if (updatedRequest) {
-        setRequests((current) => current.map((request) => (
-          request.id === updatedRequest.id ? updatedRequest : request
-        )))
-        setSelectedListRequest((current) => (
-          current?.id === updatedRequest.id ? updatedRequest : current
-        ))
-        setSelectedDetailRequest(updatedRequest)
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
       } else {
         await loadRequestDetail(selectedId)
       }
@@ -1118,6 +1232,114 @@ export function TechnicalServiceOperationCenter() {
       setPriorityUpdateLoading(false)
     }
   }
+
+  const handleOperationControlChange = async (payload: Partial<NonNullable<ServiceRequest['operationControl']>>) => {
+    if (!selectedId) {
+      return
+    }
+
+    setOperationControlUpdateLoading(true)
+    setOperationControlUpdateError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/operation-control`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+    } catch (caught) {
+      setOperationControlUpdateError(caught instanceof Error ? caught.message : 'Operasyon kontrolü güncellenemedi.')
+    } finally {
+      setOperationControlUpdateLoading(false)
+    }
+  }
+
+  const handleInvoiceSerialRecheck = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    setInvoiceSerialRecheckLoading(true)
+    setInvoiceSerialRecheckError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/invoice-serials/recheck`, {
+        method: 'POST',
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+    } catch (caught) {
+      setInvoiceSerialRecheckError(caught instanceof Error ? caught.message : 'Fatura seri kontrolü yenilenemedi.')
+    } finally {
+      setInvoiceSerialRecheckLoading(false)
+    }
+  }
+
+  const handleInvoiceSerialAction = async (action: 'add' | 'remove' | 'add-all', serialId?: number | string) => {
+    if (!selectedId) {
+      return
+    }
+
+    const loadingKey = action === 'add-all' ? 'add-all' : `${action}:${serialId}`
+    setInvoiceSerialActionLoading(loadingKey)
+    setInvoiceSerialActionError(null)
+
+    try {
+      const path = action === 'add-all'
+        ? `/api/technical-service/requests/${selectedId}/invoice-serials/add-all`
+        : `/api/technical-service/requests/${selectedId}/invoice-serials/${serialId}/${action}`
+      const response = await apiRequest(path, {
+        method: action === 'remove' ? 'DELETE' : 'POST',
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+    } catch (caught) {
+      setInvoiceSerialActionError(caught instanceof Error ? caught.message : 'Fatura seri aksiyonu uygulanamadı.')
+    } finally {
+      setInvoiceSerialActionLoading(null)
+    }
+  }
+
   const openFieldDialog = useCallback((action: string, request: ServiceRequest | null) => {
     setFieldAction(action)
     setFieldNote('')
@@ -1160,15 +1382,24 @@ export function TechnicalServiceOperationCenter() {
   )
   const effectiveMountPaymentMissing = modalRequest?.serviceType === 'Montaj' && isMountPaymentMissing(mikroMountCheck)
   const mountPaymentAccepted = modalRequest?.serviceType === 'Montaj' && isMountPaymentAccepted(mikroMountCheck)
-  const effectiveAssignOverrideReady = !effectiveMountPaymentMissing || (assignOverrideWithoutPayment && assignOverrideReason.trim().length >= 5)
+  const assignmentBlockerMessages = modalRequest?.assignmentBlockers?.messages ?? []
+  const hasAssignmentBlockers = assignmentBlockerMessages.length > 0
+  const selectedAssignTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption) ?? null
+  const assignmentRouteQuote = modalRequest?.routeQuote ?? null
+  const assignmentRouteDistanceLabel = typeof assignmentRouteQuote?.distance_km === 'number'
+    ? `${assignmentRouteQuote.distance_km.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+    : '-'
+  const assignmentRouteExtraKmLabel = typeof assignmentRouteQuote?.extra_km === 'number'
+    ? `${assignmentRouteQuote.extra_km.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+    : '-'
+  const assignmentRouteFeeLabel = typeof assignmentRouteQuote?.fee_amount === 'number'
+    ? `${assignmentRouteQuote.fee_amount.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
+    : (assignmentRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : '-')
   const canSubmitAssign = Boolean(
     !assignLoading &&
     assignTechnicianOption &&
     (assignTechnicianOption !== 'other' || assignOtherTechnician.trim()) &&
-    travelRoundTripKm.trim() !== '' &&
-    Number.isFinite(Number(travelRoundTripKm)) &&
-    Number(travelRoundTripKm) >= 0 &&
-    effectiveAssignOverrideReady
+    !hasAssignmentBlockers
   )
   const technicianMatches = technicians
     .map((technician) => technicianMatchInfo(technician, modalRequest))
@@ -1210,6 +1441,10 @@ export function TechnicalServiceOperationCenter() {
   const technicianAssignmentInsights = useMemo<TechnicianAssignmentInsight[]>(() => {
     const insights = technicianMatches.map((match) => {
       const technicianName = technicianDisplayName(match.technician)
+      const hasTechnicianCoordinates = parseNullableNumber(match.technician.start_latitude ?? match.technician.latitude) !== null
+        && parseNullableNumber(match.technician.start_longitude ?? match.technician.longitude) !== null
+      const addressSummary = technicianAddressSummary(match.technician)
+      const hasAddressInfo = addressSummary.trim() !== ''
       const scheduledJobs = assignmentReferenceRequests.filter((request) => {
         const requestTechnicianId = request.technicianId ? String(request.technicianId) : null
         const requestTechnicianName = request.technician?.trim() ?? ''
@@ -1240,6 +1475,20 @@ export function TechnicalServiceOperationCenter() {
         id: match.technician.id,
         name: technicianName,
         location: [match.technician.city, match.technician.district].filter(Boolean).join(' / ') || 'Konum bilgisi yok',
+        phone: match.technician.phone_display ?? match.technician.phone_e164 ?? match.technician.phone ?? null,
+        priority: match.technician.priority ?? null,
+        needsReview: Boolean(match.technician.needs_review),
+        hasLocation: hasTechnicianCoordinates,
+        hasAddressInfo,
+        hasCoordinates: hasTechnicianCoordinates,
+        routeReady: hasTechnicianCoordinates,
+        addressSummary,
+        locationCode: match.technician.location_code ?? null,
+        routeLocationMessage: hasTechnicianCoordinates
+          ? 'Routes hesabı için koordinat var.'
+          : hasAddressInfo
+            ? 'Usta adresi var, koordinat eksik.'
+            : 'Usta adres bilgisi eksik.',
         distanceKmLabel: match.distanceKm !== null ? `Yaklaşık ${match.distanceKm.toLocaleString('tr-TR')} km` : 'Mesafe yok',
         scheduledCount: scheduledJobs.length,
         availableSlots,
@@ -1528,14 +1777,20 @@ export function TechnicalServiceOperationCenter() {
   }, [selectedDetailRequest?.serialNumber])
 
   const handleAssignReset = () => {
-    setAssignTechnicianOption('')
+    setAssignTechnicianOption(modalRequest?.technicianId ?? '')
     setAssignOtherTechnician('')
     setAssignNote('')
-    setTravelRoundTripKm('')
+    setTravelRoundTripKm(
+      typeof modalRequest?.travelRoundTripKm === 'number' && Number.isFinite(modalRequest.travelRoundTripKm)
+        ? String(modalRequest.travelRoundTripKm)
+        : '',
+    )
     setAssignOverrideWithoutPayment(false)
     setAssignOverrideReason('')
     setShowNearbyTechnicians(false)
     setAssignError(null)
+    setRouteQuoteError(null)
+    setRouteQuoteLoading(false)
   }
 
   const handleScheduleReset = () => {
@@ -1899,6 +2154,50 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleRouteQuoteCalculate = async () => {
+    if (!selectedId) {
+      return
+    }
+
+    if (!assignTechnicianOption || assignTechnicianOption === 'other' || !selectedAssignTechnicianRecord) {
+      setRouteQuoteError('Yol ücreti hesaplamak için kayıtlı bir usta seçin.')
+
+      return
+    }
+
+    setRouteQuoteLoading(true)
+    setRouteQuoteError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/technicians/${assignTechnicianOption}/route-quote`, {
+        method: 'POST',
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      }
+
+      if (typeof response.distance_km === 'number' && Number.isFinite(response.distance_km)) {
+        setTravelRoundTripKm(String(response.distance_km))
+      }
+
+      setRouteQuoteError(typeof response.message === 'string' ? response.message : null)
+    } catch (caught) {
+      setRouteQuoteError(caught instanceof Error ? caught.message : 'Yol ücreti hesaplanamadı.')
+    } finally {
+      setRouteQuoteLoading(false)
+    }
+  }
+
   const handleAssignSubmit = async () => {
     if (!selectedId) {
       return
@@ -1916,6 +2215,12 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    if (assignmentBlockerMessages.length > 0) {
+      setAssignError(assignmentBlockerMessages.join(' '))
+
+      return
+    }
+
     if (effectiveMountPaymentMissing && !assignOverrideWithoutPayment) {
       setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
 
@@ -1928,9 +2233,9 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
-    const parsedTravelRoundTripKm = Number(travelRoundTripKm)
+    const parsedTravelRoundTripKm = travelRoundTripKm.trim() === '' ? 0 : Number(travelRoundTripKm)
 
-    if (travelRoundTripKm.trim() === '' || !Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
+    if (!Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
       setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
 
       return
@@ -1956,6 +2261,8 @@ export function TechnicalServiceOperationCenter() {
 
       setAssignDialogOpen(false)
       handleAssignReset()
+      setAssignTechnicianOption(assignTechnicianOption)
+      setTravelRoundTripKm(String(parsedTravelRoundTripKm))
       await loadRequests()
       await loadSummary()
       await loadRequestDetail(selectedId)
@@ -2138,6 +2445,14 @@ export function TechnicalServiceOperationCenter() {
     setWarrantyLoading(false)
     setPriorityUpdateError(null)
     setPriorityUpdateLoading(false)
+    setAssignTechnicianOption(request.technicianId ?? '')
+    setTravelRoundTripKm(
+      typeof request.travelRoundTripKm === 'number' && Number.isFinite(request.travelRoundTripKm)
+        ? String(request.travelRoundTripKm)
+        : '',
+    )
+    setRouteQuoteError(null)
+    setShowNearbyTechnicians(false)
     setSelectedId(request.id)
     setIsDetailDialogOpen(true)
   }, [markRequestAsRead])
@@ -2458,7 +2773,7 @@ export function TechnicalServiceOperationCenter() {
               handleAssignReset()
             }
           }}>
-            <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
+            <DialogContent className="!w-[88vw] max-w-5xl max-h-[92vh] overflow-y-auto rounded-[28px]">
               <DialogClose asChild>
                 <button
                   type="button"
@@ -2468,7 +2783,7 @@ export function TechnicalServiceOperationCenter() {
                 </button>
               </DialogClose>
               <DialogHeader>
-                <DialogTitle>Usta Ata</DialogTitle>
+                <DialogTitle>Usta / Çilingir Atama</DialogTitle>
                 <DialogDescription>
                   {modalDisplayMrn ? `${modalDisplayMrn} için ${modalRequest?.customer} adına usta atayın.` : 'Seçili talep yok.'}
                 </DialogDescription>
@@ -2485,17 +2800,23 @@ export function TechnicalServiceOperationCenter() {
                 </div>
               ) : null}
 
+              {assignmentBlockerMessages.length > 0 ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="font-semibold">Usta ataması için operasyon kontrolü tamamlanmalı.</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {assignmentBlockerMessages.map((message) => (
+                      <li key={message}>{message}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
               <div className="grid gap-4 pt-2">
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3">
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Kesin Randevu</p>
                     <p className="mt-2 font-semibold text-slate-900">{assignmentScheduleSupport.scheduledLabel}</p>
                     <p className="mt-1 text-xs text-slate-500">Usta ataması bu plan üzerinden değerlendirilir.</p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Müşteri Tercihi</p>
-                    <p className="mt-2 font-semibold text-slate-900">{assignmentScheduleSupport.preferredLabel}</p>
-                    <p className="mt-1 text-xs text-slate-500">{assignmentScheduleSupport.customerContactLabel}</p>
                   </div>
                 </div>
 
@@ -2609,6 +2930,7 @@ export function TechnicalServiceOperationCenter() {
                             checked={assignTechnicianOption === match.technician.id}
                             onChange={() => {
                               setAssignTechnicianOption(match.technician.id)
+                              setRouteQuoteError(null)
                               setShowNearbyTechnicians(false)
 
                               if (travelRoundTripKm.trim() === '' && match.distanceKm !== null) {
@@ -2644,7 +2966,7 @@ export function TechnicalServiceOperationCenter() {
 
                               return (
                                 <span className="mt-2 block text-xs font-normal text-slate-600">
-                                  {[`${insight.scheduledCount} iş`, insight.availableSlots.length > 0 ? `Uygun: ${insight.availableSlots.slice(0, 2).join(' / ')}` : 'Boş slot görünmüyor', insight.costDeltaLabel].filter(Boolean).join(' · ')}
+                                  {[`${insight.scheduledCount} iş`, insight.availableSlots.length > 0 ? `Uygun: ${insight.availableSlots.slice(0, 2).join(' / ')}` : 'Boş slot görünmüyor'].filter(Boolean).join(' · ')}
                                 </span>
                               )
                             })()}
@@ -2665,6 +2987,7 @@ export function TechnicalServiceOperationCenter() {
                         checked={assignTechnicianOption === 'other'}
                         onChange={() => {
                           setAssignTechnicianOption('other')
+                          setRouteQuoteError(null)
                           setShowNearbyTechnicians(false)
                         }}
                         className="mr-3 h-4 w-4 accent-primary"
@@ -2708,6 +3031,57 @@ export function TechnicalServiceOperationCenter() {
                     placeholder="Örn. 42"
                   />
                 </label>
+
+                <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="font-semibold">Google Routes yol ücreti hesabı</p>
+                      <p className="mt-1 text-xs text-blue-800">30 km ücretsiz sınır gidiş-geliş mesafe üzerinden değerlendirilir.</p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleRouteQuoteCalculate}
+                      disabled={routeQuoteLoading || !assignTechnicianOption || assignTechnicianOption === 'other'}
+                      className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
+                    >
+                      {routeQuoteLoading ? 'Hesaplanıyor...' : 'Yol ücreti hesapla'}
+                    </Button>
+                  </div>
+                  {routeQuoteError ? (
+                    <div className={[
+                      'rounded-xl border px-3 py-2 text-xs font-semibold',
+                      assignmentRouteQuote?.status === 'calculated'
+                        ? assignmentRouteQuote.travel_fee_required ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                        : 'border-amber-200 bg-amber-50 text-amber-900',
+                    ].join(' ')}>
+                      {routeQuoteError}
+                    </div>
+                  ) : null}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-xl bg-white/80 p-3">
+                      <p className="text-xs font-semibold text-blue-700">Usta → müşteri mesafesi</p>
+                      <p className="mt-1 font-semibold text-slate-950">{assignmentRouteDistanceLabel}</p>
+                      {assignmentRouteQuote?.duration_text ? <p className="mt-1 text-xs text-slate-500">Tahmini süre: {assignmentRouteQuote.duration_text}</p> : null}
+                    </div>
+                    <div className="rounded-xl bg-white/80 p-3">
+                      <p className="text-xs font-semibold text-blue-700">Ekstra km</p>
+                      <p className="mt-1 font-semibold text-slate-950">{assignmentRouteExtraKmLabel}</p>
+                    </div>
+                    <div className="rounded-xl bg-white/80 p-3">
+                      <p className="text-xs font-semibold text-blue-700">Tahmini yol ücreti</p>
+                      <p className="mt-1 font-semibold text-slate-950">{assignmentRouteFeeLabel}</p>
+                    </div>
+                    <div className="rounded-xl bg-white/80 p-3">
+                      <p className="text-xs font-semibold text-blue-700">Durum</p>
+                      <p className="mt-1 font-semibold text-slate-950">
+                        {assignmentRouteQuote?.status === 'calculated'
+                          ? assignmentRouteQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
+                          : assignmentRouteQuote ? 'Yol ücreti hesaplanamadı' : 'Hesap bekliyor'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
 
                 <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
                   <div className="flex items-center justify-between gap-3">
@@ -2779,29 +3153,6 @@ export function TechnicalServiceOperationCenter() {
                 </div>
               ) : null}
 
-              {modalRequest?.customerPreferredDate || modalRequest?.customerPreferredTimeStart ? (
-                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-                  <p className="font-semibold">Müşteri Tercihi</p>
-                  <p className="mt-1">Tarih: {modalRequest.customerPreferredDate ?? '-'}</p>
-                  <p className="mt-1">Saat: {modalRequest.customerPreferredTimeStart ?? '-'}{modalRequest.customerPreferredTimeEnd ? ` - ${modalRequest.customerPreferredTimeEnd}` : ''}</p>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="mt-3"
-                    onClick={() => {
-                      setScheduleDate(modalRequest.customerPreferredDate ?? '')
-
-                      if (modalRequest.customerPreferredTimeStart) {
-                        const matchingSlot = APPOINTMENT_TIME_SLOTS.find((slot) => slot.start === modalRequest.customerPreferredTimeStart)
-                        setScheduleTimeSlot(matchingSlot?.value ?? '')
-                      }
-                    }}
-                  >
-                    Müşteri tercihini kullan
-                  </Button>
-                </div>
-              ) : null}
-
               <div className="grid gap-4 pt-2">
                 <label className="grid gap-2 text-sm font-medium text-slate-700">
                   Randevu tarihi
@@ -2828,7 +3179,7 @@ export function TechnicalServiceOperationCenter() {
                     value={scheduleNote}
                     onChange={(event) => setScheduleNote(event.target.value)}
                     className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                    placeholder="Müşteri tercihi ile fark varsa kısa açıklama ekleyin"
+                    placeholder="Randevu planı veya operasyon notu ekleyin"
                   />
                 </label>
               </div>
@@ -3364,7 +3715,7 @@ export function TechnicalServiceOperationCenter() {
                 </div>
               </DialogHeader>
 
-              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 md:px-6 md:py-5 xl:px-7">
+              <div ref={detailScrollRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 md:px-6 md:py-5 xl:px-7">
                 {detailLoading ? (
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
                     Detay yükleniyor...
@@ -3388,11 +3739,39 @@ export function TechnicalServiceOperationCenter() {
                     onReopen={() => setReopenDialogOpen(true)}
                     onPriorityChange={handlePriorityChange}
                     onWorkflowAction={handleWorkflowAction}
+                    onOperationControlChange={handleOperationControlChange}
+                    onInvoiceSerialRecheck={handleInvoiceSerialRecheck}
+                    onInvoiceSerialAdd={(serialId) => handleInvoiceSerialAction('add', serialId)}
+                    onInvoiceSerialRemove={(serialId) => handleInvoiceSerialAction('remove', serialId)}
+                    onInvoiceSerialAddAll={() => handleInvoiceSerialAction('add-all')}
                     priorityUpdateInFlight={priorityUpdateLoading}
                     priorityUpdateError={priorityUpdateError}
                     workflowActionInFlight={workflowActionLoading}
+                    operationControlUpdateInFlight={operationControlUpdateLoading}
+                    operationControlUpdateError={operationControlUpdateError}
+                    invoiceSerialRecheckInFlight={invoiceSerialRecheckLoading}
+                    invoiceSerialRecheckError={invoiceSerialRecheckError}
+                    invoiceSerialActionInFlight={invoiceSerialActionLoading}
+                    invoiceSerialActionError={invoiceSerialActionError}
                     technicianSuggestions={technicianAssignmentInsights.slice(0, 4)}
                     scheduleSupport={assignmentScheduleSupport}
+                    selectedTechnicianId={assignTechnicianOption || null}
+                    routeQuoteLoading={routeQuoteLoading}
+                    routeQuoteError={routeQuoteError}
+                    assignLoading={assignLoading}
+                    canSubmitAssign={canSubmitAssign}
+                    onTechnicianSelect={(technicianId, estimatedRoundTripKm) => {
+                      setAssignTechnicianOption(technicianId)
+                      setRouteQuoteError(null)
+
+                      if (typeof estimatedRoundTripKm === 'number' && Number.isFinite(estimatedRoundTripKm)) {
+                        setTravelRoundTripKm(String(estimatedRoundTripKm))
+                      } else if (technicianId !== (modalRequest?.technicianId ?? '')) {
+                        setTravelRoundTripKm('')
+                      }
+                    }}
+                    onRouteQuoteCalculate={handleRouteQuoteCalculate}
+                    onAssignSelectedTechnician={handleAssignSubmit}
                   />
                 ) : (
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">

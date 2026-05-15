@@ -9,6 +9,7 @@ use App\Http\Requests\UpdateTechnicalServiceTechnicianRequest;
 use App\Models\TechnicalServiceTechnician;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class TechnicalServiceTechnicianController extends Controller
@@ -34,32 +35,56 @@ class TechnicalServiceTechnicianController extends Controller
     {
         $filters = $request->validate([
             'active' => ['nullable', 'boolean'],
+            'needs_review' => ['nullable', 'boolean'],
+            'technician_type' => ['nullable', 'string', 'max:64'],
+            'city' => ['nullable', 'string', 'max:128'],
             'search' => ['nullable', 'string', 'max:255'],
         ]);
 
         $query = TechnicalServiceTechnician::query();
+        $likeOperator = DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
 
         if (array_key_exists('active', $filters)) {
             $query->where('active', $filters['active']);
         }
 
+        if (array_key_exists('needs_review', $filters)) {
+            $query->where('needs_review', $filters['needs_review']);
+        }
+
+        if (! empty($filters['technician_type'])) {
+            $query->where('technician_type', $filters['technician_type']);
+        }
+
+        if (! empty($filters['city'])) {
+            $query->where('city', $likeOperator, $filters['city']);
+        }
+
         if (! empty($filters['search'])) {
             $search = $filters['search'];
-            $query->where(function ($query) use ($search) {
-                $query->where('name', 'ilike', "%{$search}%")
-                    ->orWhere('first_name', 'ilike', "%{$search}%")
-                    ->orWhere('last_name', 'ilike', "%{$search}%")
-                    ->orWhere('phone', 'ilike', "%{$search}%")
-                    ->orWhere('city', 'ilike', "%{$search}%")
-                    ->orWhere('district', 'ilike', "%{$search}%")
-                    ->orWhere('mikro_cari_kodu', 'ilike', "%{$search}%")
-                    ->orWhere('mikro_cari_adi', 'ilike', "%{$search}%");
+            $query->where(function ($query) use ($likeOperator, $search) {
+                $query->where('name', $likeOperator, "%{$search}%")
+                    ->orWhere('first_name', $likeOperator, "%{$search}%")
+                    ->orWhere('last_name', $likeOperator, "%{$search}%")
+                    ->orWhere('phone', $likeOperator, "%{$search}%")
+                    ->orWhere('phone_e164', $likeOperator, "%{$search}%")
+                    ->orWhere('city', $likeOperator, "%{$search}%")
+                    ->orWhere('district', $likeOperator, "%{$search}%")
+                    ->orWhere('mikro_cari_kodu', $likeOperator, "%{$search}%")
+                    ->orWhere('mikro_cari_adi', $likeOperator, "%{$search}%")
+                    ->orWhere('cari_code', $likeOperator, "%{$search}%")
+                    ->orWhere('cari_title', $likeOperator, "%{$search}%")
+                    ->orWhere('location_code', $likeOperator, "%{$search}%");
             });
         }
 
         return response()->json([
             'items' => $query
                 ->orderByDesc('active')
+                ->orderBy('technician_type')
+                ->orderBy('city')
+                ->orderByRaw('priority is null')
+                ->orderBy('priority')
                 ->orderBy('name')
                 ->get(),
         ]);
@@ -281,6 +306,17 @@ class TechnicalServiceTechnicianController extends Controller
         $payload['first_name'] = $firstName;
         $payload['last_name'] = $lastName === '' ? null : $lastName;
         $payload['name'] = trim($firstName.' '.$lastName);
+        $payload['phone_e164'] = $payload['phone_e164'] ?? $payload['phone'] ?? $technician?->phone_e164;
+
+        if (($payload['source_key'] ?? null) === null && ($payload['phone_e164'] ?? null) !== null && ($payload['city'] ?? $technician?->city) !== null) {
+            $type = $payload['technician_type'] ?? $technician?->technician_type ?? 'technician';
+            $payload['source_key'] = $type.':'.$payload['phone_e164'].':'.Str::of((string) ($payload['city'] ?? $technician?->city))
+                ->ascii()
+                ->upper()
+                ->replaceMatches('/[^A-Z0-9]+/', ' ')
+                ->squish()
+                ->value();
+        }
 
         return $payload;
     }
