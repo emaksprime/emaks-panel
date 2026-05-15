@@ -201,7 +201,11 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
         $this->get('/mount-request/'.$token)
             ->assertOk()
-            ->assertSee('Bu ürün için montaj ödemesi gereklidir.', false);
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-request-v2')
+                ->where('viewState', 'payment_required')
+                ->where('message', 'Bu ürün için montaj ödemesi gereklidir.')
+                ->where('statusLabel', 'Montaj ödemesi gerekli'));
     }
 
     public function test_montaj_haric_unpaid_context_shows_payment_decision_screen(): void
