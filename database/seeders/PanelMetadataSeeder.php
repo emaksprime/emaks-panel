@@ -447,14 +447,14 @@ SQL,
             ['code' => 'customer_statement', 'name' => 'Müşteri Ekstre', 'description' => 'Müşteri ekstresi için kanonik n8n veri kaynağı.'],
             ['code' => 'proforma_list', 'name' => 'Proforma Liste', 'description' => 'Proforma liste için placeholder veri kaynağı.'],
             ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'description' => 'Proforma detay için placeholder veri kaynağı.'],
-            ['code' => 'accounting_finance_resmi_stok_kontrol', 'name' => 'Resmi Stok Kontrolü', 'description' => 'Resmi stok, fiili stok ve muhasebe kontrol farkları için kanonik n8n veri kaynağı.'],
+            ['code' => 'accounting_finance_resmi_stok_kontrol', 'name' => 'Resmi Stok Kontrolü', 'description' => 'Resmi stok, fiili stok ve muhasebe kontrol farkları için kanonik n8n veri kaynağı.', 'query_template' => $this->accountingFinanceResmiStokKontrolQuery()],
         ] as $index => $sourceDefinition) {
             DataSource::query()->updateOrCreate(
                 ['code' => $sourceDefinition['code']],
                 [
                     'name' => $sourceDefinition['name'],
                     'db_type' => 'n8n_json',
-                    'query_template' => '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.',
+                    'query_template' => $sourceDefinition['query_template'] ?? '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.',
                     'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
                     'connection_meta' => $n8nConnectionMeta,
                     'preview_payload' => [
@@ -556,7 +556,7 @@ SQL,
                     [
                         'can_view' => match ($role->code) {
                             'admin' => true,
-                            'manager' => true,
+                            'manager' => $resource->code !== 'accounting_finance_resmi_stok_kontrol',
                             'sales' => in_array($resource->code, [
                                 'dashboard',
                                 'sales_main',
@@ -680,5 +680,201 @@ SQL,
                 });
             }
         }
+    }
+
+    private function accountingFinanceResmiStokKontrolQuery(): string
+    {
+        return <<<'SQL'
+DECLARE @BasTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'{{date_from}}', N'')), CONVERT(date, GETDATE()));
+DECLARE @BitTar DATE = COALESCE(TRY_CONVERT(date, NULLIF(N'{{date_to}}', N'')), @BasTar);
+DECLARE @RaporTarihi DATE = @BitTar;
+
+;WITH stock_scope AS (
+    SELECT
+        sto.sto_kod,
+        LTRIM(RTRIM(ISNULL(sto.sto_isim, N''))) AS MikroStokAdi,
+        LTRIM(RTRIM(ISNULL(mdl.mdl_ismi, sto.sto_isim))) AS MikroModelAdi,
+        UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) AS kategori_kodu,
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) = N'M1' THEN N'Mekanik Kapı Kolu'
+            WHEN UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) = N'G1' THEN N'Güvenlik Kasası'
+            ELSE N'Akıllı Kilit'
+        END AS Kategori,
+        CASE
+            WHEN UPPER(CONCAT(ISNULL(sto.sto_kod, N''), N' ', ISNULL(sto.sto_isim, N''), N' ', ISNULL(mdl.mdl_ismi, N''))) LIKE N'%SMART PL%'
+              OR UPPER(CONCAT(ISNULL(sto.sto_kod, N''), N' ', ISNULL(sto.sto_isim, N''), N' ', ISNULL(mdl.mdl_ismi, N''))) LIKE N'%SMART-PL%'
+              OR UPPER(CONCAT(ISNULL(sto.sto_kod, N''), N' ', ISNULL(sto.sto_isim, N''), N' ', ISNULL(mdl.mdl_ismi, N''))) LIKE N'%SMARTPL%'
+            THEN 1 ELSE 0
+        END AS IsSmartPL,
+        CASE
+            WHEN UPPER(CONCAT(ISNULL(sto.sto_kod, N''), N' ', ISNULL(sto.sto_isim, N''), N' ', ISNULL(mdl.mdl_ismi, N''))) LIKE N'%SMART%'
+            THEN 1 ELSE 0
+        END AS IsSmart
+    FROM dbo.STOKLAR AS sto WITH (NOLOCK)
+    LEFT JOIN dbo.STOK_MODEL_TANIMLARI AS mdl WITH (NOLOCK)
+        ON mdl.mdl_kodu = sto.sto_model_kodu
+    WHERE
+        UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kategori_kodu, N'')))) IN (N'A1', N'AS1', N'D1', N'G1', N'K1', N'KA1', N'M1', N'O1', N'OT1', N'YM1')
+        AND UPPER(LTRIM(RTRIM(ISNULL(sto.sto_kod, N'')))) NOT LIKE N'W-%'
+),
+stock_movements AS (
+    SELECT
+        scope.sto_kod,
+        SUM(
+            CASE
+                WHEN LEFT(UPPER(LTRIM(RTRIM(ISNULL(sth.sth_evrakno_seri, N'')))), 1) = N'Q' THEN 0
+                ELSE
+                    CASE WHEN ISNULL(sth.sth_giris_depo_no, 0) > 0 AND ISNULL(sth.sth_giris_depo_no, 0) <> 6 THEN CAST(ISNULL(sth.sth_miktar, 0) AS decimal(18,2)) ELSE 0 END
+                    - CASE WHEN ISNULL(sth.sth_cikis_depo_no, 0) > 0 AND ISNULL(sth.sth_cikis_depo_no, 0) <> 6 THEN CAST(ISNULL(sth.sth_miktar, 0) AS decimal(18,2)) ELSE 0 END
+            END
+        ) AS BrutResmiStok,
+        SUM(
+            CASE WHEN ISNULL(sth.sth_giris_depo_no, 0) > 0 AND ISNULL(sth.sth_giris_depo_no, 0) <> 6 THEN CAST(ISNULL(sth.sth_miktar, 0) AS decimal(18,2)) ELSE 0 END
+            - CASE WHEN ISNULL(sth.sth_cikis_depo_no, 0) > 0 AND ISNULL(sth.sth_cikis_depo_no, 0) <> 6 THEN CAST(ISNULL(sth.sth_miktar, 0) AS decimal(18,2)) ELSE 0 END
+        ) AS MikroFiiliStokDepo6Haric
+    FROM stock_scope AS scope
+    LEFT JOIN dbo.STOK_HAREKETLERI AS sth WITH (NOLOCK)
+        ON sth.sth_stok_kod = scope.sto_kod
+        AND ISNULL(sth.sth_iptal, 0) = 0
+        AND CAST(sth.sth_tarih AS date) <= @RaporTarihi
+    GROUP BY scope.sto_kod
+),
+model_rows AS (
+    SELECT
+        scope.Kategori,
+        scope.MikroModelAdi,
+        scope.MikroStokAdi,
+        scope.IsSmart,
+        scope.IsSmartPL,
+        CAST(ISNULL(mov.BrutResmiStok, 0) AS decimal(18,2)) AS BrutResmiStok,
+        CAST(CASE WHEN (scope.IsSmart = 1 OR scope.IsSmartPL = 1) AND ISNULL(mov.BrutResmiStok, 0) > 0 THEN ISNULL(mov.BrutResmiStok, 0) ELSE 0 END AS decimal(18,2)) AS SmartMahsup,
+        CAST(ISNULL(mov.MikroFiiliStokDepo6Haric, 0) AS decimal(18,2)) AS MikroFiiliStokDepo6Haric
+    FROM stock_scope AS scope
+    LEFT JOIN stock_movements AS mov
+        ON mov.sto_kod = scope.sto_kod
+),
+calculated_rows AS (
+    SELECT
+        Kategori,
+        MikroModelAdi,
+        MikroStokAdi,
+        IsSmart,
+        IsSmartPL,
+        BrutResmiStok,
+        SmartMahsup,
+        CAST(BrutResmiStok - SmartMahsup AS decimal(18,2)) AS NetResmiStok,
+        MikroFiiliStokDepo6Haric,
+        CAST((BrutResmiStok - SmartMahsup) - MikroFiiliStokDepo6Haric AS decimal(18,2)) AS Fark
+    FROM model_rows
+    WHERE BrutResmiStok <> 0
+       OR SmartMahsup <> 0
+       OR MikroFiiliStokDepo6Haric <> 0
+),
+category_summary AS (
+    SELECT
+        Kategori,
+        CAST(SUM(BrutResmiStok) AS decimal(18,2)) AS BrutResmiStok,
+        CAST(SUM(SmartMahsup) AS decimal(18,2)) AS SmartMahsup,
+        CAST(SUM(NetResmiStok) AS decimal(18,2)) AS NetResmiStok,
+        CAST(SUM(MikroFiiliStokDepo6Haric) AS decimal(18,2)) AS MikroFiiliStokDepo6Haric,
+        CAST(SUM(CASE WHEN Fark > 0 THEN Fark ELSE 0 END) AS decimal(18,2)) AS SatisFaturasiKesilecekAdet,
+        CAST(SUM(CASE WHEN Fark < 0 THEN ABS(Fark) ELSE 0 END) AS decimal(18,2)) AS AlisGirisDuzeltmeAdedi
+    FROM calculated_rows
+    GROUP BY Kategori
+),
+summary_rows AS (
+    SELECT
+        N'summary' AS row_type,
+        CASE Kategori
+            WHEN N'Mekanik Kapı Kolu' THEN 10
+            WHEN N'Güvenlik Kasası' THEN 20
+            WHEN N'Akıllı Kilit' THEN 30
+            ELSE 40
+        END AS sort_order,
+        Kategori,
+        BrutResmiStok,
+        SmartMahsup,
+        NetResmiStok,
+        MikroFiiliStokDepo6Haric,
+        SatisFaturasiKesilecekAdet,
+        AlisGirisDuzeltmeAdedi,
+        CAST(SatisFaturasiKesilecekAdet - AlisGirisDuzeltmeAdedi AS decimal(18,2)) AS NetStokEtkisi
+    FROM category_summary
+
+    UNION ALL
+
+    SELECT
+        N'summary' AS row_type,
+        99 AS sort_order,
+        N'Toplam' AS Kategori,
+        CAST(SUM(BrutResmiStok) AS decimal(18,2)) AS BrutResmiStok,
+        CAST(SUM(SmartMahsup) AS decimal(18,2)) AS SmartMahsup,
+        CAST(SUM(NetResmiStok) AS decimal(18,2)) AS NetResmiStok,
+        CAST(SUM(MikroFiiliStokDepo6Haric) AS decimal(18,2)) AS MikroFiiliStokDepo6Haric,
+        CAST(SUM(SatisFaturasiKesilecekAdet) AS decimal(18,2)) AS SatisFaturasiKesilecekAdet,
+        CAST(SUM(AlisGirisDuzeltmeAdedi) AS decimal(18,2)) AS AlisGirisDuzeltmeAdedi,
+        CAST(SUM(SatisFaturasiKesilecekAdet - AlisGirisDuzeltmeAdedi) AS decimal(18,2)) AS NetStokEtkisi
+    FROM category_summary
+)
+SELECT
+    row_type,
+    Kategori,
+    BrutResmiStok,
+    SmartMahsup,
+    NetResmiStok,
+    MikroFiiliStokDepo6Haric,
+    SatisFaturasiKesilecekAdet,
+    AlisGirisDuzeltmeAdedi,
+    NetStokEtkisi,
+    CASE
+        WHEN NetStokEtkisi > 0 THEN N'Resmileştirilecek Adet'
+        WHEN AlisGirisDuzeltmeAdedi > 0 THEN N'Stoksuz satış (Smart gibi)'
+        WHEN SmartMahsup > 0 THEN N'Resmileşmiş adet'
+        ELSE N'Resmi ve Gerçek stok tutuyor.'
+    END AS NetAksiyon,
+    CAST(NULL AS nvarchar(255)) AS RaporModelAdi,
+    CAST(NULL AS nvarchar(255)) AS MikroModelAdi,
+    CAST(NULL AS nvarchar(255)) AS MikroStokAdi,
+    CAST(NULL AS bit) AS IsSmart,
+    CAST(NULL AS bit) AS IsSmartPL,
+    CAST(NULL AS decimal(18,2)) AS ResmiNetAdet,
+    CAST(NULL AS decimal(18,2)) AS FiiliAdet,
+    CAST(NULL AS decimal(18,2)) AS Fark,
+    CAST(NULL AS nvarchar(100)) AS Aksiyon
+FROM summary_rows
+
+UNION ALL
+
+SELECT
+    N'detail' AS row_type,
+    Kategori,
+    CAST(NULL AS decimal(18,2)) AS BrutResmiStok,
+    SmartMahsup,
+    CAST(NULL AS decimal(18,2)) AS NetResmiStok,
+    CAST(NULL AS decimal(18,2)) AS MikroFiiliStokDepo6Haric,
+    CASE WHEN Fark > 0 THEN Fark ELSE 0 END AS SatisFaturasiKesilecekAdet,
+    CASE WHEN Fark < 0 THEN ABS(Fark) ELSE 0 END AS AlisGirisDuzeltmeAdedi,
+    Fark AS NetStokEtkisi,
+    CAST(NULL AS nvarchar(100)) AS NetAksiyon,
+    MikroModelAdi AS RaporModelAdi,
+    MikroModelAdi,
+    MikroStokAdi,
+    CAST(IsSmart AS bit) AS IsSmart,
+    CAST(IsSmartPL AS bit) AS IsSmartPL,
+    NetResmiStok AS ResmiNetAdet,
+    MikroFiiliStokDepo6Haric AS FiiliAdet,
+    Fark,
+    CASE
+        WHEN Fark > 0 THEN N'Resmileştirilecek Adet'
+        WHEN Fark < 0 THEN N'Stoksuz satış (Smart gibi)'
+        WHEN SmartMahsup > 0 THEN N'Resmileşmiş adet'
+        ELSE N'Resmi ve Gerçek stok tutuyor.'
+    END AS Aksiyon
+FROM calculated_rows
+ORDER BY
+    row_type DESC,
+    Kategori,
+    MikroModelAdi;
+SQL;
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\DataSource;
 use App\Models\RoleResourcePermission;
 use App\Models\User;
 use App\Models\UserAccess;
@@ -50,7 +51,7 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
 
     public function test_non_admin_roles_do_not_see_accounting_finance_by_default(): void
     {
-        foreach (['viewer', 'sales', 'stock', 'orders', 'technical', 'customer', 'proforma'] as $roleCode) {
+        foreach (['manager', 'viewer', 'sales', 'stock', 'orders', 'technical', 'customer', 'proforma'] as $roleCode) {
             $user = User::factory()->create(['role_code' => $roleCode]);
 
             $this->assertFalse(app(PanelAccessService::class)->userCanAccess($user, self::RESOURCE_CODE));
@@ -144,6 +145,7 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
         $frontend = file_get_contents(resource_path('js/pages/panel/accounting-finance/resmi-stok-kontrol.tsx')) ?: '';
 
         $this->assertStringContainsString('/api/data/${dataSourceCode}', $frontend);
+        $this->assertStringContainsString("const dataSourceCode = '".self::RESOURCE_CODE."';", $frontend);
 
         foreach ($this->forbiddenEndpointFragments() as $forbiddenFragment) {
             $this->assertStringNotContainsString($forbiddenFragment, $frontend);
@@ -159,6 +161,7 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
             ->all();
 
         $this->assertContains('admin', $defaultVisibleRoles);
+        $this->assertNotContains('manager', $defaultVisibleRoles);
         $this->assertNotContains('viewer', $defaultVisibleRoles);
         $this->assertNotContains('sales', $defaultVisibleRoles);
         $this->assertNotContains('stock', $defaultVisibleRoles);
@@ -166,6 +169,21 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
         $this->assertNotContains('technical', $defaultVisibleRoles);
         $this->assertNotContains('customer', $defaultVisibleRoles);
         $this->assertNotContains('proforma', $defaultVisibleRoles);
+    }
+
+    public function test_datasource_query_template_is_real_read_only_mssql_query(): void
+    {
+        $source = DataSource::query()->where('code', self::RESOURCE_CODE)->firstOrFail();
+        $query = trim((string) $source->query_template);
+
+        $this->assertNotSame('', $query);
+        $this->assertStringNotContainsString('Canlı SQL bu aşamada eklenmedi', $query);
+        $this->assertStringContainsString('{{date_from}}', $query);
+        $this->assertStringContainsString('{{date_to}}', $query);
+        $this->assertMatchesRegularExpression('/\b(SELECT|WITH|DECLARE)\b/i', $query);
+        $this->assertMatchesRegularExpression('/\bSTOK_HAREKETLERI\b/i', $query);
+        $this->assertMatchesRegularExpression('/\bSTOKLAR\b/i', $query);
+        $this->assertDoesNotMatchRegularExpression('/\b(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|EXEC)\b/i', $query);
     }
 
     /**
