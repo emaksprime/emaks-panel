@@ -712,7 +712,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Bu fatura son satış değil',
             'Son satış kontrolü doğrulanamadı',
             'Son satış kontrolü çelişkili',
-            'Usta adresi var, koordinat eksik',
+            'Usta adres/Plus Code var, gerçek koordinat eksik',
             'Usta adres bilgisi eksik',
             'Usta koordinat',
             'Usta koordinatı eksik olduğu için Google Routes hesaplanamadı',

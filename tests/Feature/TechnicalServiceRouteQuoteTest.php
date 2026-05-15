@@ -145,15 +145,92 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('request.route_quote.message', '30 km üstü yol ücreti gerekli.');
     }
 
+    public function test_technician_api_returns_coordinate_and_address_fields_for_route_ui(): void
+    {
+        $user = $this->adminUser();
+        TechnicalServiceTechnician::query()->create([
+            'name' => 'Koordinatli Usta',
+            'phone' => '+905555555551',
+            'city' => 'Istanbul',
+            'address' => 'Test adres',
+            'location_code' => '8G7C+X5 Istanbul',
+            'latitude' => '38.4237340',
+            'longitude' => '27.1428260',
+            'active' => true,
+        ]);
+        TechnicalServiceTechnician::query()->create([
+            'name' => 'Baslangic Koordinatli Usta',
+            'phone' => '+905555555552',
+            'city' => 'Izmir',
+            'default_start_plus_code' => '8G7C+X5 Izmir',
+            'start_latitude' => '39.1234560',
+            'start_longitude' => '28.1234560',
+            'active' => true,
+        ]);
+        TechnicalServiceTechnician::query()->create([
+            'name' => 'Plus Code Usta',
+            'phone' => '+905555555553',
+            'city' => 'Mugla',
+            'location_code' => '394F+84 Bodrum, Mugla',
+            'google_plus_code' => '394F+84 Bodrum, Mugla',
+            'active' => true,
+        ]);
+
+        $items = $this->actingAs($user)
+            ->getJson('/api/technical-service/technicians?active=1')
+            ->assertOk()
+            ->json('items');
+
+        $byName = collect($items)->keyBy('name');
+
+        $this->assertSame('38.4237340', $byName['Koordinatli Usta']['latitude']);
+        $this->assertSame('27.1428260', $byName['Koordinatli Usta']['longitude']);
+        $this->assertSame('39.1234560', $byName['Baslangic Koordinatli Usta']['start_latitude']);
+        $this->assertSame('28.1234560', $byName['Baslangic Koordinatli Usta']['start_longitude']);
+        $this->assertSame('394F+84 Bodrum, Mugla', $byName['Plus Code Usta']['google_plus_code']);
+        $this->assertNull($byName['Plus Code Usta']['latitude']);
+        $this->assertNull($byName['Plus Code Usta']['longitude']);
+    }
+
     public function test_frontend_contains_route_quote_and_travel_fee_labels(): void
     {
         $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
         $cardSource = file_get_contents(resource_path('js/components/technical-service/TechnicalServiceKanbanCard.tsx'));
+        $techniciansSource = file_get_contents(resource_path('js/pages/panel/technical-service-technicians.tsx'));
 
         $this->assertIsString($detailsSource);
         $this->assertIsString($pageSource);
         $this->assertIsString($cardSource);
+        $this->assertIsString($techniciansSource);
+
+        foreach ([
+            'Gerçek koordinat var',
+            'Gerçek koordinat eksik',
+            'Usta adres/Plus Code var, gerçek koordinat eksik.',
+            'Google Routes sonucu yok.',
+            'Routes hesaplanmadan ekstra km hesaplanmaz.',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $detailsSource);
+        }
+
+        foreach ([
+            'validCoordinatePair',
+            'technicianCoordinatePair',
+            'Yaklaşık şehir/adres mesafesi',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $pageSource);
+        }
+
+        foreach ([
+            'hasRealCoordinates',
+            'Gerçek koordinat var',
+            'Gerçek koordinat yok',
+            'Plus Code var',
+            'Adres var',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $techniciansSource);
+        }
 
         foreach ([
             'Operasyon ve Montaj Kontrolü',

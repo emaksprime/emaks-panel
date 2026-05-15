@@ -108,6 +108,45 @@ const nullableNumber = (value: string) => {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+const parseCoordinateValue = (value: number | string | null | undefined) => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim())
+
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const hasRealCoordinates = (technician: ServiceTechnician) => {
+  const primaryLatitude = parseCoordinateValue(technician.latitude)
+  const primaryLongitude = parseCoordinateValue(technician.longitude)
+  const startLatitude = parseCoordinateValue(technician.start_latitude)
+  const startLongitude = parseCoordinateValue(technician.start_longitude)
+  const latitude = primaryLatitude ?? startLatitude
+  const longitude = primaryLongitude ?? startLongitude
+
+  if (latitude === null || longitude === null) {
+    return false
+  }
+
+  return !(latitude === 0 && longitude === 0) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
+}
+
+const hasPlusCodeInfo = (technician: ServiceTechnician) => [
+  technician.location_code,
+  technician.google_plus_code,
+  technician.default_start_plus_code,
+].some((value) => typeof value === 'string' && value.trim() !== '')
+
+const hasAddressInfo = (technician: ServiceTechnician) => [
+  technician.address,
+  technician.default_start_address,
+  technician.google_formatted_address,
+  technician.cari_address,
+  technician.cari_city_district_country,
+].some((value) => typeof value === 'string' && value.trim() !== '')
+
 export default function TechnicalServiceTechnicians() {
   const [technicians, setTechnicians] = useState<ServiceTechnician[]>([])
   const [loading, setLoading] = useState(true)
@@ -462,6 +501,16 @@ export default function TechnicalServiceTechnicians() {
                     <div className="min-w-0 sm:col-span-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Konum / Adres Kodu</p>
                       <p className="line-clamp-2 break-words">{technician.location_code || technician.google_plus_code || '-'}</p>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        <span className={[
+                          'inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold',
+                          hasRealCoordinates(technician) ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700',
+                        ].join(' ')}>
+                          {hasRealCoordinates(technician) ? 'Gerçek koordinat var' : 'Gerçek koordinat yok'}
+                        </span>
+                        {hasPlusCodeInfo(technician) ? <span className="inline-flex rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">Plus Code var</span> : null}
+                        {hasAddressInfo(technician) ? <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">Adres var</span> : null}
+                      </div>
                     </div>
                     {technician.import_note ? (
                       <div className="min-w-0 sm:col-span-2">
@@ -525,6 +574,16 @@ export default function TechnicalServiceTechnicians() {
                     </td>
                     <td className="min-w-0 px-4 py-3 text-slate-700">
                       <p className="line-clamp-2 break-words">{technician.location_code || technician.google_plus_code || '-'}</p>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        <span className={[
+                          'inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold',
+                          hasRealCoordinates(technician) ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700',
+                        ].join(' ')}>
+                          {hasRealCoordinates(technician) ? 'Gerçek koordinat var' : 'Gerçek koordinat yok'}
+                        </span>
+                        {hasPlusCodeInfo(technician) ? <span className="inline-flex rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">Plus Code var</span> : null}
+                        {hasAddressInfo(technician) ? <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">Adres var</span> : null}
+                      </div>
                       {technician.import_note ? <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{technician.import_note}</p> : null}
                     </td>
                     <td className="px-4 py-3">

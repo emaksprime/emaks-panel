@@ -323,9 +323,32 @@ function parseNullableNumber(value: number | string | null | undefined): number 
     return null
   }
 
-  const parsed = typeof value === 'number' ? value : Number(value)
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim())
 
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function validCoordinatePair(
+  latitude: number | string | null | undefined,
+  longitude: number | string | null | undefined,
+): { latitude: number, longitude: number } | null {
+  const parsedLatitude = parseNullableNumber(latitude)
+  const parsedLongitude = parseNullableNumber(longitude)
+
+  if (parsedLatitude === null || parsedLongitude === null) {
+    return null
+  }
+
+  if ((parsedLatitude === 0 && parsedLongitude === 0) || Math.abs(parsedLatitude) > 90 || Math.abs(parsedLongitude) > 180) {
+    return null
+  }
+
+  return { latitude: parsedLatitude, longitude: parsedLongitude }
+}
+
+function technicianCoordinatePair(technician: ServiceTechnician): { latitude: number, longitude: number } | null {
+  return validCoordinatePair(technician.latitude, technician.longitude)
+    ?? validCoordinatePair(technician.start_latitude, technician.start_longitude)
 }
 
 function technicianDisplayName(technician: ServiceTechnician): string {
@@ -447,6 +470,7 @@ type TechnicianMatch = {
   badge: 'Aynı ilçe' | 'Aynı il' | 'Yakın il / diğer'
   rank: number
   distanceKm: number | null
+  distanceSource: 'coordinates' | 'province' | null
   sameCity: boolean
 }
 
@@ -459,6 +483,7 @@ type TechnicianAssignmentInsight = {
   needsReview?: boolean
   hasLocation?: boolean
   hasAddressInfo?: boolean
+  hasPlusCodeInfo?: boolean
   hasCoordinates?: boolean
   routeReady?: boolean
   addressSummary?: string | null
@@ -479,7 +504,12 @@ function technicianAddressSummary(technician: ServiceTechnician): string {
   return [
     technician.city,
     technician.district,
+    technician.address,
     technician.location_code,
+    technician.google_plus_code,
+    technician.google_formatted_address,
+    technician.default_start_address,
+    technician.default_start_plus_code,
     technician.cari_address,
     technician.cari_city_district_country,
     technician.route_note,
@@ -493,23 +523,26 @@ function technicianMatchInfo(technician: ServiceTechnician, request: ServiceRequ
   const requestDistrict = normalizeLocationText(request?.district)
   const technicianProvince = findProvinceByName(technician.city)
   const requestProvince = findProvinceByName(request?.city)
-  const technicianLat = parseNullableNumber(technician.start_latitude ?? technician.latitude) ?? technicianProvince?.latitude ?? null
-  const technicianLng = parseNullableNumber(technician.start_longitude ?? technician.longitude) ?? technicianProvince?.longitude ?? null
-  const requestLat = requestProvince?.latitude ?? null
-  const requestLng = requestProvince?.longitude ?? null
+  const technicianCoordinates = technicianCoordinatePair(technician)
+  const requestCoordinates = validCoordinatePair(request?.location?.latitude, request?.location?.longitude)
+  const technicianLat = technicianCoordinates?.latitude ?? technicianProvince?.latitude ?? null
+  const technicianLng = technicianCoordinates?.longitude ?? technicianProvince?.longitude ?? null
+  const requestLat = requestCoordinates?.latitude ?? requestProvince?.latitude ?? null
+  const requestLng = requestCoordinates?.longitude ?? requestProvince?.longitude ?? null
   const sameCity = technicianCity !== '' && technicianCity === requestCity
   const sameDistrict = sameCity && technicianDistrict !== '' && technicianDistrict === requestDistrict
   const distanceKm = haversineKm(technicianLat, technicianLng, requestLat, requestLng)
+  const distanceSource = distanceKm === null ? null : technicianCoordinates && requestCoordinates ? 'coordinates' : 'province'
 
   if (sameDistrict) {
-    return { technician, badge: 'Aynı ilçe', rank: 0, distanceKm, sameCity }
+    return { technician, badge: 'Aynı ilçe', rank: 0, distanceKm, distanceSource, sameCity }
   }
 
   if (sameCity) {
-    return { technician, badge: 'Aynı il', rank: 1, distanceKm, sameCity }
+    return { technician, badge: 'Aynı il', rank: 1, distanceKm, distanceSource, sameCity }
   }
 
-  return { technician, badge: 'Yakın il / diğer', rank: 2, distanceKm, sameCity }
+  return { technician, badge: 'Yakın il / diğer', rank: 2, distanceKm, distanceSource, sameCity }
 }
 
 function resolveAppointmentSlotValue(
@@ -1439,12 +1472,16 @@ export function TechnicalServiceOperationCenter() {
     })
   }, [assignmentReferenceDateKey, requests])
   const technicianAssignmentInsights = useMemo<TechnicianAssignmentInsight[]>(() => {
-    const insights = technicianMatches.map((match) => {
+  const insights = technicianMatches.map((match) => {
       const technicianName = technicianDisplayName(match.technician)
-      const hasTechnicianCoordinates = parseNullableNumber(match.technician.start_latitude ?? match.technician.latitude) !== null
-        && parseNullableNumber(match.technician.start_longitude ?? match.technician.longitude) !== null
+      const hasTechnicianCoordinates = technicianCoordinatePair(match.technician) !== null
       const addressSummary = technicianAddressSummary(match.technician)
       const hasAddressInfo = addressSummary.trim() !== ''
+      const hasPlusCodeInfo = [
+        match.technician.location_code,
+        match.technician.google_plus_code,
+        match.technician.default_start_plus_code,
+      ].some((value) => typeof value === 'string' && value.trim() !== '')
       const scheduledJobs = assignmentReferenceRequests.filter((request) => {
         const requestTechnicianId = request.technicianId ? String(request.technicianId) : null
         const requestTechnicianName = request.technician?.trim() ?? ''
@@ -1480,16 +1517,19 @@ export function TechnicalServiceOperationCenter() {
         needsReview: Boolean(match.technician.needs_review),
         hasLocation: hasTechnicianCoordinates,
         hasAddressInfo,
+        hasPlusCodeInfo,
         hasCoordinates: hasTechnicianCoordinates,
         routeReady: hasTechnicianCoordinates,
         addressSummary,
         locationCode: match.technician.location_code ?? null,
         routeLocationMessage: hasTechnicianCoordinates
           ? 'Routes hesabı için koordinat var.'
-          : hasAddressInfo
-            ? 'Usta adresi var, koordinat eksik.'
+          : hasPlusCodeInfo || hasAddressInfo
+            ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Google Routes için lat/lng gerekli.'
             : 'Usta adres bilgisi eksik.',
-        distanceKmLabel: match.distanceKm !== null ? `Yaklaşık ${match.distanceKm.toLocaleString('tr-TR')} km` : 'Mesafe yok',
+        distanceKmLabel: match.distanceKm !== null
+          ? `Yaklaşık şehir/adres mesafesi ${match.distanceKm.toLocaleString('tr-TR')} km`
+          : 'Mesafe yok',
         scheduledCount: scheduledJobs.length,
         availableSlots,
         technicianAmountLabel: paymentPreview.technicianAmountLabel,
