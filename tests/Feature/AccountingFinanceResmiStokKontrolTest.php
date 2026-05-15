@@ -7,6 +7,7 @@ use App\Models\RoleResourcePermission;
 use App\Models\User;
 use App\Models\UserAccess;
 use App\Services\PanelAccessService;
+use Database\Seeders\PanelKnownWorkflowDataSourcesSeeder;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -27,6 +28,7 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
 
         $this->withoutVite();
         $this->seed(PanelMetadataSeeder::class);
+        $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
     }
 
     public function test_admin_can_see_accounting_finance_resmi_stok_kontrol_by_default(): void
@@ -176,11 +178,17 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
         $source = DataSource::query()->where('code', self::RESOURCE_CODE)->firstOrFail();
         $query = trim((string) $source->query_template);
 
+        $this->assertSame(['date_from', 'date_to', 'bypass_cache'], $source->allowed_params);
         $this->assertNotSame('', $query);
         $this->assertStringNotContainsString('Canlı SQL bu aşamada eklenmedi', $query);
-        $this->assertStringContainsString('{{date_from}}', $query);
-        $this->assertStringContainsString('{{date_to}}', $query);
+        $this->assertMatchesRegularExpression('/(\[\[date_to\]\]|\{\{date_to\}\})/', $query);
         $this->assertMatchesRegularExpression('/\b(SELECT|WITH|DECLARE)\b/i', $query);
+        $this->assertStringContainsString('DECLARE @RaporTarihi', $query);
+        $this->assertStringContainsString('Devir2024', $query);
+        $this->assertStringContainsString('KesinStokRaw', $query);
+        $this->assertStringContainsString('FinalRows', $query);
+        $this->assertStringNotContainsString('stock_scope', $query);
+        $this->assertStringNotContainsString('DECLARE @BasTar', $query);
         $this->assertMatchesRegularExpression('/\bSTOK_HAREKETLERI\b/i', $query);
         $this->assertMatchesRegularExpression('/\bSTOKLAR\b/i', $query);
         $this->assertDoesNotMatchRegularExpression('/\b(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|EXEC)\b/i', $query);

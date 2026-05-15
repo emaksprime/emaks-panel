@@ -214,6 +214,15 @@ SQL_SALES_CUSTOMER_SEARCH,
         );
 
         $this->upsert(
+            'accounting_finance_resmi_stok_kontrol',
+            'Resmi Stok Kontrolü',
+            $this->accountingFinanceResmiStokKontrolPreviewTemplate(),
+            ['date_from', 'date_to', 'bypass_cache'],
+            'Muhasebe / Finans resmi stok, fiili stok ve kontrol farkları raporu n8n gateway üzerinden okunur.',
+            'accounting_finance_resmi_stok_kontrol.sql'
+        );
+
+        $this->upsert(
             'stock_dashboard',
             'Stok Dashboard',
             <<<'SQL_STOCK'
@@ -1896,6 +1905,565 @@ FROM (
 LEFT JOIN CARI_HESAPLAR AS cari ON cari.cari_kod = x.cari_kodu
 ORDER BY event_date DESC, event_type ASC
 SQL_TECH_SERIAL_HISTORY;
+    }
+
+    private function accountingFinanceResmiStokKontrolPreviewTemplate(): string
+    {
+        return <<<'SQL_ACCOUNTING_FINANCE_RESMI_STOK_KONTROL'
+DECLARE @RaporTarihi date = COALESCE(TRY_CONVERT(date, NULLIF(N'[[date_to]]', N'')), CONVERT(date, '2026-03-31'));
+DECLARE @HareketBaslangic date = CONVERT(date, '2025-01-01');
+
+;WITH Devir2024 AS (
+    SELECT
+        v.RaporModelAdi,
+        v.Kategori,
+        CAST(v.Devir2024Adet AS decimal(18,2)) AS Devir2024Adet,
+        CAST(v.IsSmart AS bit) AS IsSmart,
+        CAST(v.IsSmartPL AS bit) AS IsSmartPL
+    FROM (VALUES
+        (N'5100 - 5HBKS', N'AKILLI KİLİT', -6, 0, 0),
+        (N'5100 - 6HBS', N'AKILLI KİLİT', 11, 0, 0),
+        (N'9300-5HBGS', N'AKILLI KİLİT', 42, 0, 0),
+        (N'ALPHA-5HB', N'AKILLI KİLİT', 170, 0, 0),
+        (N'ALPHA-V-5HWS', N'AKILLI KİLİT', 5, 0, 0),
+        (N'ALPHA-VP-5HWS', N'AKILLI KİLİT', 43, 0, 0),
+        (N'DDL303-VP-5HWS', N'AKILLI KİLİT', 725, 0, 0),
+        (N'DDL603E-5HWS', N'AKILLI KİLİT', 139, 0, 0),
+        (N'DDL608-5HWS', N'AKILLI KİLİT', 16, 0, 0),
+        (N'DDL702-1HWS', N'AKILLI KİLİT', 37, 0, 0),
+        (N'DDL702-8HWS', N'AKILLI KİLİT', 6, 0, 0),
+        (N'DDL702E-5HWS', N'AKILLI KİLİT', 6, 0, 0),
+        (N'DDL709-FVP-7HWS', N'AKILLI KİLİT', 25, 0, 0),
+        (N'DV001', N'AKILLI KİLİT', 4, 0, 0),
+        (N'DW6280', N'AKILLI KİLİT', 46, 0, 0),
+        (N'DW6280-TUYA APP', N'AKILLI KİLİT', 29, 0, 0),
+        (N'E22', N'AKILLI KİLİT', 35, 0, 0),
+        (N'E35', N'AKILLI KİLİT', 403, 0, 0),
+        (N'E50', N'AKILLI KİLİT', 85, 0, 0),
+        (N'E55', N'AKILLI KİLİT', 69, 0, 0),
+        (N'EH-1034', N'AKILLI KİLİT', 55, 0, 0),
+        (N'EH-1284', N'AKILLI KİLİT', 56, 0, 0),
+        (N'EH-1424', N'AKILLI KİLİT', 11, 0, 0),
+        (N'G10', N'AKILLI KİLİT', 39, 0, 0),
+        (N'G20 PRO', N'AKILLI KİLİT', 26, 0, 0),
+        (N'G30', N'AKILLI KİLİT', 5, 0, 0),
+        (N'G35', N'AKILLI KİLİT', 20, 0, 0),
+        (N'GALAXY 10', N'AKILLI KİLİT', 16, 0, 0),
+        (N'GALAXY 20', N'AKILLI KİLİT', 135, 0, 0),
+        (N'GALAXY 30', N'AKILLI KİLİT', 154, 0, 0),
+        (N'H1080', N'AKILLI KİLİT', 98, 0, 0),
+        (N'RETİNA 10', N'AKILLI KİLİT', 22, 0, 0),
+        (N'RETİNA 20', N'AKILLI KİLİT', 44, 0, 0),
+        (N'RETİNA 30', N'AKILLI KİLİT', 40, 0, 0),
+        (N'VİVA 10 PRO', N'AKILLI KİLİT', 36, 0, 0),
+        (N'SMART', N'AKILLI KİLİT', -79, 1, 0)
+    ) AS v(RaporModelAdi, Kategori, Devir2024Adet, IsSmart, IsSmartPL)
+),
+KesinStokRaw AS (
+    SELECT
+        N'SMART' AS RaporModelAdi,
+        N'AKILLI KİLİT' AS Kategori,
+        CAST(1 AS bit) AS IsSmart,
+        CAST(0 AS bit) AS IsSmartPL,
+        sto.sto_kod,
+        sto.sto_isim,
+        sto.sto_marka_kodu
+    FROM STOKLAR sto WITH (NOLOCK)
+    WHERE sto.sto_kod = N'M153.007.000.000.00001'
+
+    UNION ALL
+
+    SELECT
+        N'SMART PL',
+        N'MEKANİK KAPI KOLU',
+        CAST(0 AS bit),
+        CAST(1 AS bit),
+        sto.sto_kod,
+        sto.sto_isim,
+        sto.sto_marka_kodu
+    FROM STOKLAR sto WITH (NOLOCK)
+    WHERE sto.sto_kod = N'M153.007.000.001.00001'
+
+    UNION ALL
+
+    SELECT
+        CASE
+            WHEN sto.sto_kod LIKE N'EE.MKK.001.01.%' THEN N'PL40'
+            WHEN sto.sto_kod LIKE N'EE.MKK.001.02.%' THEN N'PL41'
+            ELSE N'DİĞER MEKANİK KAPI KOLU'
+        END,
+        N'MEKANİK KAPI KOLU',
+        CAST(0 AS bit),
+        CAST(0 AS bit),
+        sto.sto_kod,
+        sto.sto_isim,
+        sto.sto_marka_kodu
+    FROM STOKLAR sto WITH (NOLOCK)
+    WHERE
+        (
+            sto.sto_kod LIKE N'EE.MKK.001.01.%'
+            OR sto.sto_kod LIKE N'EE.MKK.001.02.%'
+        )
+        AND UPPER(ISNULL(sto.sto_marka_kodu, N'')) COLLATE Turkish_CI_AI IN
+            (N'EMAKS PRIME', N'EMAKSPRIME', N'EMAKS')
+
+    UNION ALL
+
+    SELECT
+        CASE
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX001%1M4%' THEN N'SBX001-1M4 MİNİ BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%202%5C0%' THEN N'SBX202-5C0 ORTA BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%202%6C0%' THEN N'SBX202-6C0 BÜYÜK BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%301%5PC%' THEN N'SBX301-5PC ORTA BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%501%5C0%' THEN N'SBX501-5C0 ORTA BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%501%7C0%' THEN N'SBX501-7C0 BÜYÜK BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%602%5CU%' THEN N'SBX602-5CU ORTA BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%602%6CU%' THEN N'SBX602-6CU BÜYÜK BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%602%8CU%' THEN N'SBX602-8CU'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%602%AC%' THEN N'SBX602-ACU'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%701%4B0%' THEN N'SBX701-4B0 KÜÇÜK BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%701%8B0%' THEN N'SBX701-8B0 BÜYÜK BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%SBX%702%CBX%' THEN N'SBX702-CBX BÜYÜK BOY'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%VALIS%6BU%' THEN N'VALIS-6BU'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%VALIS%8BU%' THEN N'VALIS-8BU'
+            WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%VALIS%PRO%' THEN N'VALIS-PRO'
+            ELSE N'DİĞER GÜVENLİK KASASI'
+        END,
+        N'GÜVENLİK KASASI',
+        CAST(0 AS bit),
+        CAST(0 AS bit),
+        sto.sto_kod,
+        sto.sto_isim,
+        sto.sto_marka_kodu
+    FROM STOKLAR sto WITH (NOLOCK)
+    WHERE
+        (
+            sto.sto_kod LIKE N'EP.SBX.%'
+            OR sto.sto_kod LIKE N'EE.SBX.%'
+        )
+        AND UPPER(ISNULL(sto.sto_marka_kodu, N'')) COLLATE Turkish_CI_AI IN
+            (N'PHILIPS', N'EMAKS PRIME', N'EMAKSPRIME', N'EMAKS')
+
+    UNION ALL
+
+    SELECT
+    CASE
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%5100%5HBKS%' THEN N'5100 - 5HBKS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%5100%6HBS%' THEN N'5100 - 6HBS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%9300%5HBGS%' THEN N'9300-5HBGS'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%ALPHA%VP%5HWS%' THEN N'ALPHA-VP-5HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%ALPHA%V%5HWS%' THEN N'ALPHA-V-5HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%ALPHA%5HB%' THEN N'ALPHA-5HB'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL230X%' THEN N'DDL230X'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL303%VP%5HWS%' THEN N'DDL303-VP-5HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL505%5HBS%' THEN N'DDL505-5HBS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL603E%5HWS%' THEN N'DDL603E-5HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL608%5HWS%' THEN N'DDL608-5HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL610%5HBS%' THEN N'DDL610-5HBS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL615%' THEN N'DDL615-5HWS'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL702%FVP%' THEN N'DDL702-FVP-17HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL702E%' THEN N'DDL702E-5HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL702%8HWS%' THEN N'DDL702-8HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL702%1HWS%' THEN N'DDL702-1HWS'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL709%FVP%7HWS%' THEN N'DDL709-FVP-7HWS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL720%FVP%' THEN N'DDL720-FVP-17HWSE'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL720%MVP%' THEN N'DDL720-MVP-17HWSE'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL801%5HBS%' THEN N'DDL801-5HBS'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DDL902%MFVP%' THEN N'DDL902-MFVP-11HWS'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DV001%' THEN N'DV001'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DW6280%TUYA%' THEN N'DW6280-TUYA APP'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%DW6280%' THEN N'DW6280'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E10%' THEN N'E10'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E22%' THEN N'E22'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E24%' THEN N'E24'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E35 PRO%' THEN N'E35 PRO'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E35%' THEN N'E35'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E50%' THEN N'E50'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E55%' THEN N'E55'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E60%KISA%' THEN N'E60 - KISA'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%E60%UZUN%' THEN N'E60 - UZUN'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%EH%1034%' THEN N'EH-1034'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%EH%1084%' THEN N'EH-1084'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%EH%1284%' THEN N'EH-1284'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%EH%1424%' THEN N'EH-1424'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%G10%' THEN N'G10'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%G20 PRO%' THEN N'G20 PRO'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%G30%' THEN N'G30'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%G35%' THEN N'G35'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%G40%' THEN N'G40'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%GALAXY%10%ULTRA%' THEN N'GALAXY 10 ULTRA'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%GALAXY%10%' THEN N'GALAXY 10'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%GALAXY%20%ULTRA%' THEN N'GALAXY 20 ULTRA'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%GALAXY%20%' THEN N'GALAXY 20'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%GALAXY%30%ULTRA%' THEN N'GALAXY 30 ULTRA'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%GALAXY%30%' THEN N'GALAXY 30'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%H1080%' THEN N'H1080'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%H1081F%' THEN N'H1081F'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%H1180%' THEN N'H1180'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%H1480%' THEN N'H1480'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%H1680%TUYA%' THEN N'H1680 TUYA APP'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%H1680%' THEN N'H1680'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETINA%10%' OR UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETİNA%10%' THEN N'RETİNA 10'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETINA%20%' OR UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETİNA%20%' THEN N'RETİNA 20'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETINA%30%ULTRA%' OR UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETİNA%30%ULTRA%' THEN N'RETİNA 30 ULTRA'
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETINA%30%' OR UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%RETİNA%30%' THEN N'RETİNA 30'
+
+        WHEN UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%VIVA%10%PRO%' OR UPPER(sto.sto_kod + N' ' + sto.sto_isim) COLLATE Turkish_CI_AI LIKE N'%VİVA%10%PRO%' THEN N'VİVA 10 PRO'
+
+        ELSE N'DİĞER AKILLI KİLİT'
+    END,
+    N'AKILLI KİLİT',
+    CAST(0 AS bit),
+    CAST(0 AS bit),
+    sto.sto_kod,
+    sto.sto_isim,
+    sto.sto_marka_kodu
+FROM STOKLAR sto WITH (NOLOCK)
+WHERE
+    (
+        UPPER(ISNULL(sto.sto_marka_kodu, N'')) COLLATE Turkish_CI_AI IN
+            (N'PHILIPS', N'EMAKS PRIME', N'EMAKSPRIME', N'EMAKS')
+        OR sto.sto_kod LIKE N'HTN.EKK.006.0002.%'
+    )
+    AND (
+        sto.sto_kod LIKE N'EP.BCK.%'
+        OR sto.sto_kod LIKE N'EP.EKK.%'
+        OR sto.sto_kod LIKE N'EE.BCK.%'
+        OR sto.sto_kod LIKE N'EE.EKK.%'
+        OR sto.sto_kod LIKE N'EE.YMK.%'
+        OR sto.sto_kod LIKE N'EE.MAK.%'
+        OR sto.sto_kod LIKE N'EE.ACS.%'
+        OR sto.sto_kod LIKE N'EP.ACS.%'
+        OR sto.sto_kod LIKE N'EP.YMK.004.%'
+        OR sto.sto_kod LIKE N'HTN.EKK.006.0002.%'
+    )
+    AND sto.sto_kod NOT LIKE N'%.STD.%'
+    AND sto.sto_kod NOT LIKE N'%STD%'
+    AND sto.sto_kod NOT LIKE N'EP.YDP.%'
+    AND sto.sto_kod NOT LIKE N'EE.YDP.%'
+    AND sto.sto_kod NOT LIKE N'EP.KDA.%'
+    AND sto.sto_kod <> N'W-MONTAJ-1'
+    AND sto.sto_kod NOT LIKE N'EE.AOC.%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%MONTAJ%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%HİZMET%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%HIZMET%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%AKILLI KART%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%ANAKART%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%BATARYA KAPAĞI%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%VİDA%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%VIDA%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%PLAKA%'
+    AND UPPER(ISNULL(sto.sto_isim, N'')) COLLATE Turkish_CI_AI NOT LIKE N'%KAPAK%'
+),
+KesinStokRanked AS (
+    SELECT
+        raw.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY raw.sto_kod
+            ORDER BY
+                CASE
+                    WHEN raw.IsSmart = 1 OR raw.IsSmartPL = 1 THEN 1
+                    WHEN raw.Kategori = N'MEKANİK KAPI KOLU' THEN 2
+                    WHEN raw.Kategori = N'GÜVENLİK KASASI' THEN 3
+                    WHEN raw.Kategori = N'AKILLI KİLİT' THEN 4
+                    ELSE 9
+                END,
+                raw.RaporModelAdi
+        ) AS rn
+    FROM KesinStokRaw raw
+),
+KesinStok AS (
+    SELECT
+        RaporModelAdi,
+        Kategori,
+        IsSmart,
+        IsSmartPL,
+        sto_kod,
+        sto_isim,
+        sto_marka_kodu
+    FROM KesinStokRanked
+    WHERE rn = 1
+),
+Resmi2025Sonrasi AS (
+    SELECT
+        ks.RaporModelAdi,
+        ks.Kategori,
+        ks.IsSmart,
+        ks.IsSmartPL,
+        SUM(
+            CASE
+                WHEN UPPER(LTRIM(RTRIM(ISNULL(sth.sth_evrakno_seri, N'')))) COLLATE Turkish_CI_AI = N'Q'
+                    THEN 0
+                WHEN sth.sth_tip = 0
+                    THEN ABS(ISNULL(sth.sth_miktar, 0))
+                WHEN sth.sth_tip = 1
+                    THEN -ABS(ISNULL(sth.sth_miktar, 0))
+                ELSE 0
+            END
+        ) AS ResmiNetAdet
+    FROM STOK_HAREKETLERI sth WITH (NOLOCK)
+    INNER JOIN KesinStok ks ON ks.sto_kod = sth.sth_stok_kod
+    WHERE
+        sth.sth_tarih >= @HareketBaslangic
+        AND sth.sth_tarih < DATEADD(DAY, 1, @RaporTarihi)
+    GROUP BY
+        ks.RaporModelAdi,
+        ks.Kategori,
+        ks.IsSmart,
+        ks.IsSmartPL
+),
+ResmiModel AS (
+    SELECT
+        RaporModelAdi,
+        Kategori,
+        IsSmart,
+        IsSmartPL,
+        SUM(ResmiNetAdet) AS ResmiNetAdet
+    FROM (
+        SELECT
+            RaporModelAdi,
+            Kategori,
+            IsSmart,
+            IsSmartPL,
+            Devir2024Adet AS ResmiNetAdet
+        FROM Devir2024
+
+        UNION ALL
+
+        SELECT
+            RaporModelAdi,
+            Kategori,
+            IsSmart,
+            IsSmartPL,
+            ResmiNetAdet
+        FROM Resmi2025Sonrasi
+    ) x
+    GROUP BY
+        RaporModelAdi,
+        Kategori,
+        IsSmart,
+        IsSmartPL
+),
+FiiliModel AS (
+    SELECT
+        ks.RaporModelAdi,
+        ks.Kategori,
+        ks.IsSmart,
+        ks.IsSmartPL,
+        SUM(
+            CASE
+                WHEN ks.IsSmart = 1 OR ks.IsSmartPL = 1
+                    THEN 0
+                ELSE
+                    ISNULL(dbo.fn_DepodakiMiktar(ks.sto_kod, 0, @RaporTarihi), 0)
+                    - ISNULL(dbo.fn_DepodakiMiktar(ks.sto_kod, 6, @RaporTarihi), 0)
+            END
+        ) AS FiiliAdet
+    FROM KesinStok ks
+    GROUP BY
+        ks.RaporModelAdi,
+        ks.Kategori,
+        ks.IsSmart,
+        ks.IsSmartPL
+),
+ModelFinal AS (
+    SELECT
+        COALESCE(r.RaporModelAdi, f.RaporModelAdi) AS RaporModelAdi,
+        COALESCE(r.Kategori, f.Kategori) AS Kategori,
+        ISNULL(r.IsSmart, ISNULL(f.IsSmart, 0)) AS IsSmart,
+        ISNULL(r.IsSmartPL, ISNULL(f.IsSmartPL, 0)) AS IsSmartPL,
+        ISNULL(r.ResmiNetAdet, 0) AS ResmiNetAdet,
+        CASE
+            WHEN ISNULL(r.IsSmart, ISNULL(f.IsSmart, 0)) = 1
+              OR ISNULL(r.IsSmartPL, ISNULL(f.IsSmartPL, 0)) = 1
+                THEN 0
+            ELSE ISNULL(f.FiiliAdet, 0)
+        END AS FiiliAdet
+    FROM ResmiModel r
+    FULL OUTER JOIN FiiliModel f
+        ON f.RaporModelAdi = r.RaporModelAdi
+        AND f.Kategori = r.Kategori
+        AND f.IsSmart = r.IsSmart
+        AND f.IsSmartPL = r.IsSmartPL
+),
+KategoriOzet AS (
+    SELECT
+        Kategori,
+        SUM(CASE WHEN IsSmart = 0 AND IsSmartPL = 0 THEN ResmiNetAdet ELSE 0 END) AS BrutResmiStok,
+        CASE
+            WHEN SUM(CASE WHEN IsSmart = 1 OR IsSmartPL = 1 THEN ResmiNetAdet ELSE 0 END) < 0
+            THEN ABS(SUM(CASE WHEN IsSmart = 1 OR IsSmartPL = 1 THEN ResmiNetAdet ELSE 0 END))
+            ELSE 0
+        END AS SmartMahsupAdedi,
+        SUM(CASE WHEN IsSmart = 0 AND IsSmartPL = 0 THEN FiiliAdet ELSE 0 END) AS FiiliStok,
+        SUM(
+            CASE
+                WHEN IsSmart = 0 AND IsSmartPL = 0
+                     AND ResmiNetAdet - FiiliAdet > 0
+                    THEN ResmiNetAdet - FiiliAdet
+                ELSE 0
+            END
+        ) AS BrutPozitifFark,
+        SUM(
+            CASE
+                WHEN IsSmart = 0 AND IsSmartPL = 0
+                     AND ResmiNetAdet - FiiliAdet < 0
+                    THEN ABS(ResmiNetAdet - FiiliAdet)
+                ELSE 0
+            END
+        ) AS GirisDuzeltmeAdedi
+    FROM ModelFinal
+    GROUP BY Kategori
+),
+Final AS (
+    SELECT
+        Kategori,
+        BrutResmiStok,
+        SmartMahsupAdedi,
+        BrutResmiStok - SmartMahsupAdedi AS NetResmiStok,
+        FiiliStok,
+        BrutPozitifFark,
+        GirisDuzeltmeAdedi,
+        CASE
+            WHEN BrutPozitifFark - SmartMahsupAdedi > 0
+                THEN BrutPozitifFark - SmartMahsupAdedi
+            ELSE 0
+        END AS KesilecekFaturaAdedi
+    FROM KategoriOzet
+),
+FinalRows AS (
+    SELECT
+        1 AS SortNo,
+        CASE
+            WHEN Kategori = N'MEKANİK KAPI KOLU' THEN 1
+            WHEN Kategori = N'GÜVENLİK KASASI' THEN 2
+            WHEN Kategori = N'AKILLI KİLİT' THEN 3
+            ELSE 9
+        END AS SortNo2,
+        N'summary' AS row_type,
+        Kategori,
+        CAST(BrutResmiStok AS decimal(18,2)) AS BrutResmiStok,
+        CAST(SmartMahsupAdedi AS decimal(18,2)) AS SmartMahsup,
+        CAST(NetResmiStok AS decimal(18,2)) AS NetResmiStok,
+        CAST(FiiliStok AS decimal(18,2)) AS MikroFiiliStokDepo6Haric,
+        CAST(KesilecekFaturaAdedi AS decimal(18,2)) AS SatisFaturasiKesilecekAdet,
+        CAST(GirisDuzeltmeAdedi AS decimal(18,2)) AS AlisGirisDuzeltmeAdedi,
+        CAST(KesilecekFaturaAdedi - GirisDuzeltmeAdedi AS decimal(18,2)) AS NetStokEtkisi,
+        CASE
+            WHEN KesilecekFaturaAdedi > 0 AND GirisDuzeltmeAdedi > 0
+                THEN N'Satış faturası kes + giriş/kod düzeltme kontrolü'
+            WHEN KesilecekFaturaAdedi > 0
+                THEN N'Satış faturası / resmi çıkış'
+            WHEN GirisDuzeltmeAdedi > 0
+                THEN N'Alış faturası / giriş düzelt'
+            ELSE N'Uyumlu'
+        END AS NetAksiyon,
+        CAST(NULL AS nvarchar(255)) AS RaporModelAdi,
+        CAST(NULL AS bit) AS IsSmart,
+        CAST(NULL AS bit) AS IsSmartPL,
+        CAST(NULL AS decimal(18,2)) AS ResmiNetAdet,
+        CAST(NULL AS decimal(18,2)) AS FiiliAdet,
+        CAST(NULL AS decimal(18,2)) AS Fark,
+        CAST(NULL AS nvarchar(120)) AS Aksiyon
+    FROM Final
+
+    UNION ALL
+
+    SELECT
+        1 AS SortNo,
+        4 AS SortNo2,
+        N'summary',
+        N'Toplam',
+        CAST(SUM(BrutResmiStok) AS decimal(18,2)),
+        CAST(SUM(SmartMahsupAdedi) AS decimal(18,2)),
+        CAST(SUM(NetResmiStok) AS decimal(18,2)),
+        CAST(SUM(FiiliStok) AS decimal(18,2)),
+        CAST(SUM(KesilecekFaturaAdedi) AS decimal(18,2)),
+        CAST(SUM(GirisDuzeltmeAdedi) AS decimal(18,2)),
+        CAST(SUM(KesilecekFaturaAdedi - GirisDuzeltmeAdedi) AS decimal(18,2)),
+        N'Genel toplam',
+        CAST(NULL AS nvarchar(255)),
+        CAST(NULL AS bit),
+        CAST(NULL AS bit),
+        CAST(NULL AS decimal(18,2)),
+        CAST(NULL AS decimal(18,2)),
+        CAST(NULL AS decimal(18,2)),
+        CAST(NULL AS nvarchar(120))
+    FROM Final
+
+    UNION ALL
+
+    SELECT
+        2 AS SortNo,
+        CASE
+            WHEN Kategori = N'MEKANİK KAPI KOLU' THEN 1
+            WHEN Kategori = N'GÜVENLİK KASASI' THEN 2
+            WHEN Kategori = N'AKILLI KİLİT' THEN 3
+            ELSE 9
+        END AS SortNo2,
+        N'detail' AS row_type,
+        Kategori,
+        CAST(NULL AS decimal(18,2)) AS BrutResmiStok,
+        CAST(NULL AS decimal(18,2)) AS SmartMahsup,
+        CAST(NULL AS decimal(18,2)) AS NetResmiStok,
+        CAST(NULL AS decimal(18,2)) AS MikroFiiliStokDepo6Haric,
+        CAST(NULL AS decimal(18,2)) AS SatisFaturasiKesilecekAdet,
+        CAST(NULL AS decimal(18,2)) AS AlisGirisDuzeltmeAdedi,
+        CAST(NULL AS decimal(18,2)) AS NetStokEtkisi,
+        CAST(NULL AS nvarchar(120)) AS NetAksiyon,
+        RaporModelAdi,
+        CAST(IsSmart AS bit) AS IsSmart,
+        CAST(IsSmartPL AS bit) AS IsSmartPL,
+        CAST(ResmiNetAdet AS decimal(18,2)) AS ResmiNetAdet,
+        CAST(FiiliAdet AS decimal(18,2)) AS FiiliAdet,
+        CAST(ResmiNetAdet - FiiliAdet AS decimal(18,2)) AS Fark,
+        CASE
+            WHEN IsSmart = 1 OR IsSmartPL = 1 THEN N'Sanal mahsup'
+            WHEN ResmiNetAdet - FiiliAdet > 0 THEN N'Satış faturası / resmi çıkış'
+            WHEN ResmiNetAdet - FiiliAdet < 0 THEN N'Alış / giriş / kod düzeltme'
+            ELSE N'Uyumlu'
+        END AS Aksiyon
+    FROM ModelFinal
+    WHERE
+        ISNULL(ResmiNetAdet, 0) <> 0
+        OR ISNULL(FiiliAdet, 0) <> 0
+)
+SELECT
+    row_type,
+    Kategori,
+    BrutResmiStok,
+    SmartMahsup,
+    NetResmiStok,
+    MikroFiiliStokDepo6Haric,
+    SatisFaturasiKesilecekAdet,
+    AlisGirisDuzeltmeAdedi,
+    NetStokEtkisi,
+    NetAksiyon,
+    RaporModelAdi,
+    IsSmart,
+    IsSmartPL,
+    ResmiNetAdet,
+    FiiliAdet,
+    Fark,
+    Aksiyon
+FROM FinalRows
+ORDER BY
+    SortNo,
+    SortNo2,
+    Kategori,
+    RaporModelAdi;
+SQL_ACCOUNTING_FINANCE_RESMI_STOK_KONTROL;
     }
 
     private function upsert(
