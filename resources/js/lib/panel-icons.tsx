@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import {
     Boxes,
+    Calculator,
     ChartColumnIncreasing,
     Database,
     FolderKanban,
@@ -18,6 +19,7 @@ import {
 
 const iconMap: Record<string, LucideIcon> = {
     boxes: Boxes,
+    calculator: Calculator,
     'chart-column': ChartColumnIncreasing,
     database: Database,
     'folder-kanban': FolderKanban,
