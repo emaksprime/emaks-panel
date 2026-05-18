@@ -7,6 +7,7 @@ use App\Services\TechnicalService\TechnicalServiceGeocodingService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -168,5 +169,162 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
 
         $this->assertSame(1, $exit);
         $this->assertStringContainsString('Google geocoding key tanımlı değil.', Artisan::output());
+    }
+    public function test_coordinate_export_excludes_review_and_suspicious_duplicate_coordinates(): void
+    {
+        $good = TechnicalServiceTechnician::query()->create([
+            'name' => 'Export Good',
+            'phone' => '+905555555551',
+            'phone_e164' => '+905555555551',
+            'city' => 'Istanbul',
+            'source_key' => 'locksmith:+905555555551:ISTANBUL',
+            'latitude' => '41.0082376',
+            'longitude' => '28.9783589',
+            'start_latitude' => '41.0082376',
+            'start_longitude' => '28.9783589',
+            'location_source' => 'google_geocode',
+            'route_note' => 'Geocoded from google_plus_code; formatted: Istanbul, Turkiye; at 2026-05-18 10:00:00',
+            'needs_review' => false,
+            'active' => true,
+        ]);
+        TechnicalServiceTechnician::query()->create([
+            'name' => 'Review Export',
+            'phone' => '+905555555552',
+            'phone_e164' => '+905555555552',
+            'city' => 'Ankara',
+            'source_key' => 'locksmith:+905555555552:ANKARA',
+            'latitude' => '39.9333650',
+            'longitude' => '32.8597420',
+            'needs_review' => true,
+            'active' => true,
+        ]);
+
+        foreach (['Ankara', 'Izmir', 'Mugla'] as $index => $city) {
+            TechnicalServiceTechnician::query()->create([
+                'name' => 'Duplicate '.$index,
+                'phone' => '+90555555556'.$index,
+                'phone_e164' => '+90555555556'.$index,
+                'city' => $city,
+                'source_key' => 'duplicate-'.$index,
+                'latitude' => '38.9637450',
+                'longitude' => '35.2433220',
+                'active' => true,
+            ]);
+        }
+
+        $outputPath = storage_path('framework/testing/technical_service_technician_coordinates.json');
+        if (is_file($outputPath)) {
+            unlink($outputPath);
+        }
+
+        $exit = Artisan::call('technical-service:export-technician-coordinates', [
+            '--output' => $outputPath,
+        ]);
+
+        $this->assertSame(0, $exit, Artisan::output());
+        $this->assertFileExists($outputPath);
+        $data = json_decode((string) file_get_contents($outputPath), true);
+
+        $this->assertIsArray($data);
+        $this->assertCount(1, $data['items']);
+        $this->assertSame($good->source_key, $data['items'][0]['source_key']);
+        $this->assertSame('google_plus_code', $data['items'][0]['geocode_quality']);
+        $this->assertArrayNotHasKey('phone', $data['items'][0]);
+        $this->assertNotContains('locksmith:+905555555552:ANKARA', array_column($data['items'], 'source_key'));
+        $this->assertNotContains('duplicate-0', array_column($data['items'], 'source_key'));
+    }
+
+    public function test_coordinate_seeder_updates_by_source_key_and_phone_city_without_name_only_match(): void
+    {
+        $sourceKeyTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Source Match',
+            'phone' => '+905555555551',
+            'phone_e164' => '+905555555551',
+            'city' => 'Istanbul',
+            'source_key' => 'locksmith:+905555555551:ISTANBUL',
+            'active' => true,
+        ]);
+        $phoneCityTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Phone City Match',
+            'phone' => '+905555555552',
+            'phone_e164' => '+905555555552',
+            'city' => 'Ankara',
+            'active' => true,
+        ]);
+        $nameOnlyTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Name Only Match',
+            'phone' => '+905555555553',
+            'phone_e164' => '+905555555553',
+            'city' => 'Izmir',
+            'active' => true,
+        ]);
+
+        $path = storage_path('framework/testing/coordinate-seed.json');
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, json_encode([
+            'items' => [
+                [
+                    'source_key' => $sourceKeyTechnician->source_key,
+                    'phone_e164' => '+900000000000',
+                    'city' => 'Wrong City',
+                    'name' => 'Source Match',
+                    'latitude' => 41.0082376,
+                    'longitude' => 28.9783589,
+                    'start_latitude' => 41.0082376,
+                    'start_longitude' => 28.9783589,
+                    'location_source' => 'google_geocode',
+                    'route_note' => 'Geocoded from google_plus_code; formatted: Istanbul, Turkiye',
+                    'needs_review' => false,
+                ],
+                [
+                    'source_key' => 'missing-source',
+                    'phone_e164' => $phoneCityTechnician->phone_e164,
+                    'city' => $phoneCityTechnician->city,
+                    'name' => 'Different Name',
+                    'latitude' => 39.933365,
+                    'longitude' => 32.859742,
+                    'location_source' => 'google_geocode',
+                    'route_note' => 'Geocoded from address; formatted: Ankara, Turkiye',
+                    'needs_review' => false,
+                ],
+                [
+                    'name' => $nameOnlyTechnician->name,
+                    'city' => $nameOnlyTechnician->city,
+                    'latitude' => 38.423734,
+                    'longitude' => 27.142826,
+                    'needs_review' => false,
+                ],
+                [
+                    'source_key' => 'review-source',
+                    'phone_e164' => '+905555555554',
+                    'city' => 'Bursa',
+                    'latitude' => 40.188528,
+                    'longitude' => 29.060964,
+                    'needs_review' => true,
+                ],
+            ],
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        config(['technical_service.technician_coordinate_seed_data_path' => $path]);
+
+        Artisan::call('db:seed', ['--class' => 'TechnicalServiceTechnicianCoordinateSeeder', '--force' => true]);
+        Artisan::call('db:seed', ['--class' => 'TechnicalServiceTechnicianCoordinateSeeder', '--force' => true]);
+
+        $sourceKeyTechnician->refresh();
+        $phoneCityTechnician->refresh();
+        $nameOnlyTechnician->refresh();
+
+        $this->assertSame('41.0082376', $sourceKeyTechnician->latitude);
+        $this->assertSame('28.9783589', $sourceKeyTechnician->longitude);
+        $this->assertSame('google_geocode', $sourceKeyTechnician->location_source);
+        $this->assertFalse($sourceKeyTechnician->needs_review);
+
+        $this->assertSame('39.9333650', $phoneCityTechnician->latitude);
+        $this->assertSame('32.8597420', $phoneCityTechnician->longitude);
+        $this->assertFalse($phoneCityTechnician->needs_review);
+
+        $this->assertNull($nameOnlyTechnician->latitude);
+        $this->assertNull($nameOnlyTechnician->longitude);
+        $this->assertSame(3, TechnicalServiceTechnician::query()->count());
     }
 }
