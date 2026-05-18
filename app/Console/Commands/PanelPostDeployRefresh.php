@@ -14,12 +14,18 @@ use Throwable;
 
 class PanelPostDeployRefresh extends Command
 {
-    protected $signature = 'panel:post-deploy-refresh';
+    protected $signature = 'panel:post-deploy-refresh {--source= : Refresh only one known datasource code.}';
 
     protected $description = 'Refresh panel datasource metadata and clear deploy caches without touching users or permissions.';
 
     public function handle(): int
     {
+        $sourceCode = trim((string) $this->option('source'));
+
+        if ($sourceCode !== '') {
+            return $this->handleSourceRefresh($sourceCode);
+        }
+
         $this->runStep('PanelDataSourcesSeeder', fn () => $this->call('db:seed', [
             '--class' => PanelDataSourcesSeeder::class,
             '--force' => true,
@@ -39,6 +45,23 @@ class PanelPostDeployRefresh extends Command
         $this->runStep('panel.data_source_cache truncate', fn () => $this->clearDataSourceCache());
 
         $this->info('Panel post-deploy refresh completed.');
+
+        return self::SUCCESS;
+    }
+
+    private function handleSourceRefresh(string $sourceCode): int
+    {
+        $this->runStep("PanelKnownWorkflowDataSourcesSeeder source [{$sourceCode}]", function () use ($sourceCode): void {
+            $refreshed = app(PanelKnownWorkflowDataSourcesSeeder::class)->refreshSource($sourceCode);
+
+            if (! $refreshed) {
+                throw new RuntimeException("Unsupported datasource source [{$sourceCode}].");
+            }
+        });
+
+        $this->runStep("panel.data_source_cache clear [{$sourceCode}]", fn () => $this->clearDataSourceCache($sourceCode));
+
+        $this->info("Panel datasource [{$sourceCode}] refresh completed.");
 
         return self::SUCCESS;
     }
@@ -67,10 +90,18 @@ class PanelPostDeployRefresh extends Command
         }
     }
 
-    private function clearDataSourceCache(): void
+    private function clearDataSourceCache(?string $sourceCode = null): void
     {
         if (! Schema::hasTable('panel.data_source_cache')) {
             $this->warn('panel.data_source_cache table does not exist; skipping cache truncate.');
+
+            return;
+        }
+
+        if ($sourceCode !== null) {
+            DB::table('panel.data_source_cache')
+                ->where('source_code', $sourceCode)
+                ->delete();
 
             return;
         }

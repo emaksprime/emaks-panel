@@ -191,15 +191,48 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
         $this->assertAccountingFinanceQueryTemplateIsCanonical();
     }
 
-    public function test_start_container_runs_post_deploy_refresh_after_panel_metadata_seed(): void
+    public function test_start_container_runs_source_scoped_post_deploy_refresh_after_panel_metadata_seed(): void
     {
         $script = file_get_contents(base_path('docker/start-container.sh')) ?: '';
+        $fullRefreshCommand = 'php artisan panel:post-deploy-refresh --no-interaction';
+        $scopedRefreshCommand = 'php artisan panel:post-deploy-refresh --source='.self::RESOURCE_CODE.' --no-interaction';
         $metadataSeedPosition = strpos($script, 'php artisan db:seed --class=PanelMetadataSeeder --force --no-interaction');
-        $postDeployRefreshPosition = strpos($script, 'php artisan panel:post-deploy-refresh --no-interaction');
+        $postDeployRefreshPosition = strpos($script, $scopedRefreshCommand);
 
         $this->assertNotFalse($metadataSeedPosition);
+        $this->assertStringNotContainsString($fullRefreshCommand, $script);
         $this->assertNotFalse($postDeployRefreshPosition);
         $this->assertGreaterThan($metadataSeedPosition, $postDeployRefreshPosition);
+    }
+
+    public function test_source_scoped_post_deploy_refresh_updates_only_accounting_finance_datasource(): void
+    {
+        $protectedSources = [
+            'sales_main_dashboard' => "SELECT N'sales-main-sentinel' AS value",
+            'stock_dashboard' => "SELECT N'stock-sentinel' AS value",
+            'orders_alinan' => "SELECT N'orders-alinan-sentinel' AS value",
+            'orders_verilen' => "SELECT N'orders-verilen-sentinel' AS value",
+        ];
+
+        foreach ($protectedSources as $code => $queryTemplate) {
+            DataSource::query()->where('code', $code)->firstOrFail()->forceFill([
+                'query_template' => $queryTemplate,
+                'allowed_params' => ['sentinel_param'],
+            ])->save();
+        }
+
+        $this->artisan('panel:post-deploy-refresh', [
+            '--source' => self::RESOURCE_CODE,
+        ])->assertExitCode(0);
+
+        $this->assertAccountingFinanceQueryTemplateIsCanonical();
+
+        foreach ($protectedSources as $code => $queryTemplate) {
+            $source = DataSource::query()->where('code', $code)->firstOrFail();
+
+            $this->assertSame($queryTemplate, $source->query_template);
+            $this->assertSame(['sentinel_param'], $source->allowed_params);
+        }
     }
 
     private function assertAccountingFinanceQueryTemplateIsCanonical(): void

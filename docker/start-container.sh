@@ -22,7 +22,7 @@ fi
 
 if [ "${RUN_PANEL_SEED:-true}" = "true" ]; then
     php artisan db:seed --class=PanelMetadataSeeder --force --no-interaction
-    php artisan panel:post-deploy-refresh --no-interaction
+    php artisan panel:post-deploy-refresh --source=accounting_finance_resmi_stok_kontrol --no-interaction
 fi
 
 php artisan config:cache

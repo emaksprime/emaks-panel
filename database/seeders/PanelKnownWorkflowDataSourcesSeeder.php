@@ -7,6 +7,8 @@ use Illuminate\Database\Seeder;
 
 class PanelKnownWorkflowDataSourcesSeeder extends Seeder
 {
+    private const ACCOUNTING_FINANCE_RESMI_STOK_KONTROL = 'accounting_finance_resmi_stok_kontrol';
+
     public function run(): void
     {
         $salesTemplate = (string) DataSource::query()
@@ -213,14 +215,7 @@ SQL_SALES_CUSTOMER_SEARCH,
             'MikroSerialNumberService.php'
         );
 
-        $this->upsert(
-            'accounting_finance_resmi_stok_kontrol',
-            'Resmi Stok Kontrolü',
-            $this->accountingFinanceResmiStokKontrolPreviewTemplate(),
-            ['date_from', 'date_to', 'bypass_cache'],
-            'Muhasebe / Finans resmi stok, fiili stok ve kontrol farkları raporu n8n gateway üzerinden okunur.',
-            'accounting_finance_resmi_stok_kontrol.sql'
-        );
+        $this->upsertAccountingFinanceResmiStokKontrol();
 
         $this->upsert(
             'stock_dashboard',
@@ -1514,6 +1509,17 @@ SQL_PROFORMA_DISCOUNT_DEFS,
         );
     }
 
+    public function refreshSource(string $sourceCode): bool
+    {
+        if ($sourceCode !== self::ACCOUNTING_FINANCE_RESMI_STOK_KONTROL) {
+            return false;
+        }
+
+        $this->upsertAccountingFinanceResmiStokKontrol();
+
+        return true;
+    }
+
     /**
      * @param  array<int, string>  $allowedParams
      */
@@ -2464,6 +2470,18 @@ ORDER BY
     Kategori,
     RaporModelAdi;
 SQL_ACCOUNTING_FINANCE_RESMI_STOK_KONTROL;
+    }
+
+    private function upsertAccountingFinanceResmiStokKontrol(): void
+    {
+        $this->upsert(
+            self::ACCOUNTING_FINANCE_RESMI_STOK_KONTROL,
+            'Resmi Stok Kontrolü',
+            $this->accountingFinanceResmiStokKontrolPreviewTemplate(),
+            ['date_from', 'date_to', 'bypass_cache'],
+            'Muhasebe / Finans resmi stok, fiili stok ve kontrol farkları raporu n8n gateway üzerinden okunur.',
+            'accounting_finance_resmi_stok_kontrol.sql'
+        );
     }
 
     private function upsert(
