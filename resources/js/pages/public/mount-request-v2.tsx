@@ -1,6 +1,6 @@
 import { Head, Link, useForm } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import {
     getDistrictOptionsForProvince,
     normalizeDistrictName,
@@ -154,6 +154,60 @@ function Detail({ label, value }: { label: string; value?: string | null }) {
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
             <p className="mt-1 text-base font-semibold text-slate-950">{value}</p>
         </div>
+    );
+}
+
+type FormSectionTone = 'product' | 'location' | 'customer' | 'address' | 'door' | 'serial' | 'slate'
+
+const formSectionToneClass = (tone: FormSectionTone = 'slate'): string => {
+    switch (tone) {
+        case 'product':
+            return 'border-blue-100 bg-blue-50/70';
+        case 'location':
+            return 'border-emerald-100 bg-emerald-50/80';
+        case 'customer':
+            return 'border-slate-200 bg-white';
+        case 'address':
+            return 'border-cyan-100 bg-cyan-50/70';
+        case 'door':
+            return 'border-amber-100 bg-amber-50/70';
+        case 'serial':
+            return 'border-violet-100 bg-violet-50/70';
+        default:
+            return 'border-slate-200 bg-slate-50';
+    }
+};
+
+function FormAccordionCard({
+    title,
+    summary,
+    tone = 'slate',
+    defaultOpen = true,
+    children,
+}: {
+    title: string;
+    summary?: ReactNode;
+    tone?: FormSectionTone;
+    defaultOpen?: boolean;
+    children: ReactNode;
+}) {
+    const [open, setOpen] = useState(defaultOpen);
+
+    return (
+        <section className={`rounded-2xl border p-4 shadow-sm transition-colors ${formSectionToneClass(tone)}`}>
+            <button
+                type="button"
+                onClick={() => setOpen((current) => !current)}
+                className="flex w-full items-start justify-between gap-3 text-left"
+            >
+                <span className="min-w-0">
+                    <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-slate-700 sm:text-base">{title}</span>
+                    {summary ? <span className="mt-1 block text-sm leading-5 text-slate-600">{summary}</span> : null}
+                </span>
+                <span className={`mt-0.5 text-base font-semibold text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`}>⌄</span>
+            </button>
+            {open ? <div className="mt-4 grid gap-3 motion-safe:transition-all">{children}</div> : null}
+        </section>
     );
 }
 
@@ -922,12 +976,19 @@ export default function MountRequestV2({
                         </div>
                     ) : (
                         <>
-                            <div className="grid gap-3 sm:grid-cols-2">
+                            <FormAccordionCard
+                                title="Ürün bilgisi"
+                                summary="Ürün, model, seri no ve marka bilgileri"
+                                tone="product"
+                                defaultOpen
+                            >
+                                <div className="grid gap-3 sm:grid-cols-2">
                                 <Detail label="Ürün adı" value={product?.product_name} />
                                 <Detail label="Model" value={product?.product_model} />
                                 <Detail label="Seri no" value={product?.serial_number} />
                                 <Detail label="Marka" value={product?.brand} />
-                            </div>
+                                </div>
+                            </FormAccordionCard>
 
                             {paymentRequired && (
                                 <div className="grid gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -1011,7 +1072,12 @@ export default function MountRequestV2({
                                         </p>
                                     )}
 
-                                    <div className="grid gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm">
+                                    <FormAccordionCard
+                                        title="Konumunu ekle"
+                                        summary="Konum paylaşırsan usta seçimi ve yol ücreti daha doğru hesaplanır."
+                                        tone="location"
+                                        defaultOpen
+                                    >
                                         <div className="flex flex-wrap items-center justify-between gap-3">
                                             <div>
                                                 <p className="text-sm font-semibold text-emerald-950">Konumunu ekle</p>
@@ -1048,8 +1114,14 @@ export default function MountRequestV2({
                                                 {locationStatus}
                                             </p>
                                         ) : null}
-                                    </div>
+                                    </FormAccordionCard>
 
+                                    <FormAccordionCard
+                                        title="İletişim bilgileri"
+                                        summary="Ad, soyad ve ulaşılabilir telefon"
+                                        tone="customer"
+                                        defaultOpen
+                                    >
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <label className="block text-sm font-semibold text-slate-800">
                                             İsim
@@ -1099,7 +1171,14 @@ export default function MountRequestV2({
                                         </p>
                                         <FieldError message={form.errors.phone} />
                                     </label>
+                                    </FormAccordionCard>
 
+                                    <FormAccordionCard
+                                        title="Adres bilgileri"
+                                        summary="İl, ilçe, açık adres ve kapı detayları"
+                                        tone="address"
+                                        defaultOpen
+                                    >
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <label className="block text-sm font-semibold text-slate-800">
                                             İl
@@ -1233,6 +1312,7 @@ export default function MountRequestV2({
                                             ))}
                                         </div>
                                     </div>
+                                    </FormAccordionCard>
 
                                     <input type="hidden" name="location_latitude" value={form.data.location_latitude} />
                                     <input type="hidden" name="location_longitude" value={form.data.location_longitude} />
@@ -1240,6 +1320,13 @@ export default function MountRequestV2({
                                     <input type="hidden" name="location_formatted_address" value={form.data.location_formatted_address} />
                                     <input type="hidden" name="location_map_url" value={form.data.location_map_url} />
 
+                                    {(allowMultiProductRequest || form.data.multiple_products) && (
+                                        <FormAccordionCard
+                                            title="Ek ürün / seri"
+                                            summary="Aynı faturadaki diğer ürünler için montaj seçimi"
+                                            tone="serial"
+                                            defaultOpen={form.data.multiple_products || viewState === 'multi_product_ready'}
+                                        >
                                     {allowMultiProductRequest && (
                                         <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-900">
                                             <input
@@ -1329,8 +1416,15 @@ export default function MountRequestV2({
                                             </div>
                                         </div>
                                     )}
+                                        </FormAccordionCard>
+                                    )}
 
-                                    <div className="grid gap-4 rounded-xl border border-slate-200 bg-white p-4">
+                                    <FormAccordionCard
+                                        title="Görseller"
+                                        summary="Kapı ön yüzü, yan yüzü ve arka yüzü fotoğrafları"
+                                        tone="door"
+                                        defaultOpen
+                                    >
                                         <div>
                                             <p className="text-sm font-semibold text-slate-900">Kapı fotoğrafları</p>
                                             <p className="mt-1 text-xs text-slate-500">Kapının ön, yan ve arka yüzünü ekleyin.</p>
@@ -1395,7 +1489,7 @@ export default function MountRequestV2({
                                                 );
                                             })}
                                         </div>
-                                    </div>
+                                    </FormAccordionCard>
 
                                     <label className="grid gap-2 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
                                         <span className="flex items-start gap-2 font-semibold text-slate-900">

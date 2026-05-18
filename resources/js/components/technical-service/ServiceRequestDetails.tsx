@@ -260,12 +260,45 @@ const MiniMetric = ({
   value: ReactNode
   hint?: ReactNode
 }) => (
-  <div className="min-w-0 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-3 lg:p-3.5">
-    <p className="text-[11px] font-medium text-slate-500">{label}</p>
-    <div className="mt-1 text-sm font-semibold text-slate-950 break-words">{value}</div>
-    {hint ? <div className="mt-1 text-xs leading-5 text-slate-500 break-words">{hint}</div> : null}
+  <div className="min-w-0 rounded-2xl border border-slate-200 bg-white/80 p-3.5 lg:p-4">
+    <p className="text-[13px] font-medium text-slate-500">{label}</p>
+    <div className="mt-1 text-[15px] font-semibold text-slate-950 break-words">{value}</div>
+    {hint ? <div className="mt-1 text-sm leading-5 text-slate-500 break-words">{hint}</div> : null}
   </div>
 )
+
+type DetailPanelTone = 'slate' | 'product' | 'customer' | 'door' | 'payment' | 'address' | 'schedule' | 'technician' | 'route' | 'earning' | 'serial' | 'history' | 'warning'
+
+const detailPanelToneClass = (tone: DetailPanelTone = 'slate'): string => {
+  switch (tone) {
+    case 'product':
+      return 'border-blue-100 bg-blue-50/70'
+    case 'customer':
+      return 'border-slate-200 bg-white'
+    case 'door':
+      return 'border-amber-100 bg-amber-50/70'
+    case 'payment':
+      return 'border-emerald-100 bg-emerald-50/70'
+    case 'address':
+      return 'border-cyan-100 bg-cyan-50/70'
+    case 'schedule':
+      return 'border-indigo-100 bg-indigo-50/70'
+    case 'technician':
+      return 'border-sky-100 bg-sky-50/70'
+    case 'route':
+      return 'border-blue-100 bg-blue-50/70'
+    case 'earning':
+      return 'border-teal-100 bg-teal-50/70'
+    case 'serial':
+      return 'border-violet-100 bg-violet-50/70'
+    case 'history':
+      return 'border-slate-200 bg-slate-50'
+    case 'warning':
+      return 'border-rose-100 bg-rose-50/80'
+    default:
+      return 'border-slate-200 bg-slate-50'
+  }
+}
 
 const DetailPanel = ({
   title,
@@ -273,26 +306,28 @@ const DetailPanel = ({
   children,
   open,
   onOpenChange,
+  tone = 'slate',
 }: {
   title: string
   summary?: ReactNode
   children: ReactNode
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  tone?: DetailPanelTone
 }) => (
   <details
-    className="group rounded-2xl border border-slate-200 bg-slate-50 p-4"
+    className={['group rounded-2xl border p-4 shadow-sm transition-colors', detailPanelToneClass(tone)].join(' ')}
     open={open}
     onToggle={(event) => onOpenChange?.(event.currentTarget.open)}
   >
     <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-left">
       <span className="min-w-0">
-        <span className="block text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{title}</span>
-        {summary ? <span className="mt-1 block text-sm text-slate-600">{summary}</span> : null}
+        <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-slate-700 sm:text-base">{title}</span>
+        {summary ? <span className="mt-1 block text-sm leading-5 text-slate-600">{summary}</span> : null}
       </span>
       <ChevronDown className="h-4 w-4 shrink-0 text-slate-500 transition-transform group-open:rotate-180" />
     </summary>
-    <div className="mt-4 grid gap-4">
+    <div className="mt-4 grid gap-4 motion-safe:transition-all">
       {children}
     </div>
   </details>
@@ -790,6 +825,26 @@ export function ServiceRequestDetails({
   const setInvoiceSerialsOpen = (open: boolean) => {
     setInvoiceSerialsOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const [productInfoOpenByRequest, setProductInfoOpenByRequest] = useState<Record<string, boolean>>({})
+  const productInfoOpen = productInfoOpenByRequest[request.id] ?? false
+  const setProductInfoOpen = (open: boolean) => {
+    setProductInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
+  const [customerInfoOpenByRequest, setCustomerInfoOpenByRequest] = useState<Record<string, boolean>>({})
+  const customerInfoOpen = customerInfoOpenByRequest[request.id] ?? false
+  const setCustomerInfoOpen = (open: boolean) => {
+    setCustomerInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
+  const [assignmentInfoOpenByRequest, setAssignmentInfoOpenByRequest] = useState<Record<string, boolean>>({})
+  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? true
+  const setAssignmentInfoOpen = (open: boolean) => {
+    setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
+  const [finalCheckOpenByRequest, setFinalCheckOpenByRequest] = useState<Record<string, boolean>>({})
+  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? false
+  const setFinalCheckOpen = (open: boolean) => {
+    setFinalCheckOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
   const [fieldCompletionOpen, setFieldCompletionOpen] = useState(false)
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
@@ -927,6 +982,11 @@ export function ServiceRequestDetails({
   const operationControl = request.operationControl ?? {}
   const paymentControlMissing = operationControl.payment_checked !== 'yes'
   const doorPhotoControlMissing = !operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed'
+  const [operationInfoOpenByRequest, setOperationInfoOpenByRequest] = useState<Record<string, boolean>>({})
+  const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? (doorPhotoControlMissing || paymentControlMissing)
+  const setOperationInfoOpen = (open: boolean) => {
+    setOperationInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
   const assignmentUiBlockerMessages = [
     operationControl.payment_checked === 'yes' ? null : 'Önce ödeme kontrolünü tamamlayın.',
@@ -1380,11 +1440,14 @@ export function ServiceRequestDetails({
           </section>
         ) : null}
 
-        <section className="grid gap-3 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Adres / Ürün</p>
+        <DetailPanel
+          title="Ürün / Seri Bilgisi"
+          summary="Ürün adı, model, marka, seri ve belge numaraları"
+          tone="product"
+          open={productInfoOpen}
+          onOpenChange={setProductInfoOpen}
+        >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <MiniMetric label="İl / İlçe" value={displayOrEmpty([request.city, request.district].filter(Boolean).join(' / '), 'Bilgi yok')} />
-            <MiniMetric label="Adres" value={displayOrEmpty(request.address, 'Bilgi yok')} />
             <MiniMetric label="Ürün" value={displayOrEmpty(productInfo?.product_name ?? request.product, 'Bilgi yok')} />
             <MiniMetric label="Model" value={displayOrEmpty(productInfo?.product_model ?? request.model, '-')} />
             <MiniMetric label="Seri No" value={displayOrEmpty(productInfo?.serial_number ?? request.serialNumber, '-')} />
@@ -1393,6 +1456,21 @@ export function ServiceRequestDetails({
             <MiniMetric label="Fatura No" value={displayOrEmpty(documentInfo?.invoice_display_no, '-')} />
             <MiniMetric label="İrsaliye No" value={displayOrEmpty(documentInfo?.dispatch_display_no, '-')} />
             <MiniMetric label="Sipariş No" value={displayOrEmpty(documentInfo?.order_display_no, '-')} />
+          </div>
+        </DetailPanel>
+
+        <DetailPanel
+          title="Müşteri Bilgisi"
+          summary="Müşteri, telefon, adres ve paylaşılan konum bilgileri"
+          tone="customer"
+          open={customerInfoOpen}
+          onOpenChange={setCustomerInfoOpen}
+        >
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <MiniMetric label="Müşteri" value={displayOrEmpty(request.customer, 'Bilgi yok')} />
+            <MiniMetric label="Telefon" value={displayOrEmpty(request.phone, 'Bilgi yok')} />
+            <MiniMetric label="İl / İlçe" value={displayOrEmpty([request.city, request.district].filter(Boolean).join(' / '), 'Bilgi yok')} />
+            <MiniMetric label="Adres" value={displayOrEmpty(request.address, 'Bilgi yok')} />
             {locationInfo?.shared ? (
               <MiniMetric
                 label="Konum paylaşıldı"
@@ -1411,14 +1489,16 @@ export function ServiceRequestDetails({
               locationInfo?.floor_no,
             ].filter(Boolean).join(' / ') || '-'} />
           </div>
-        </section>
+        </DetailPanel>
 
-        <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
+        <DetailPanel
+          title="Operasyon ve Montaj Kontrolü"
+          summary="Kapı fotoğrafları, ödeme, adres, randevu ve montaj durumu tek yerde"
+          tone={doorPhotoControlMissing || paymentControlMissing ? 'warning' : 'slate'}
+          open={operationInfoOpen}
+          onOpenChange={setOperationInfoOpen}
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Operasyon ve Montaj Kontrolü</p>
-              <p className="mt-1 text-sm text-slate-600">Atama öncesi ödeme, adres, kapı görseli, randevu ve montaj durumu tek yerden kontrol edilir.</p>
-            </div>
             {routeQuote ? (
               <Badge variant={routeFeeNeedsApproval ? 'warning' : hasActiveRouteQuote ? 'positive' : 'outline'}>
                 {routeFeeStatusText}
@@ -1626,14 +1706,19 @@ export function ServiceRequestDetails({
               </div>
             </div>
           ) : null}
-        </section>
+        </DetailPanel>
 
-        <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
+        <DetailPanel
+          title="Usta / Çilingir Atama"
+          summary="Usta seçimi, yol ücreti, hakediş ve servis bilgileri"
+          tone="technician"
+          open={assignmentInfoOpen}
+          onOpenChange={setAssignmentInfoOpen}
+        >
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Usta / Çilingir Atama</p>
-                <p className="mt-1 text-sm text-slate-600">Usta seçimi, yol ücreti durumu, onay ve servis bilgileri.</p>
-              </div>
+              <p className="max-w-3xl text-sm text-slate-600">
+                Seçili usta, yol ücreti ve atama aksiyonları aynı akışta takip edilir.
+              </p>
               <Button
                 type="button"
                 variant="outline"
@@ -2055,14 +2140,17 @@ export function ServiceRequestDetails({
                 </div>
               )}
             </div>
-          </section>
+          </DetailPanel>
 
-          <section className="order-4 grid gap-4 rounded-3xl border border-slate-200 bg-white p-4 lg:p-5">
+          <DetailPanel
+            title="İşlem Geçmişi / Notlar"
+            summary="Operasyon onayı, karar alanı, not ve yorum özeti"
+            tone="history"
+            open={finalCheckOpen}
+            onOpenChange={setFinalCheckOpen}
+          >
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Son Kontrol</p>
-                <p className="mt-1 text-sm text-slate-600">Operasyon onayı, karar alanı, not ve yorum özeti.</p>
-              </div>
+              <p className="text-sm text-slate-600">Son kontrol kararları ve operasyon notları burada özetlenir.</p>
               <Button
                 type="button"
                 variant="outline"
@@ -2081,10 +2169,11 @@ export function ServiceRequestDetails({
               <MiniMetric label="Bekleme nedeni" value={displayOrEmpty(request.pendingReason, 'Bilgi yok')} />
               <MiniMetric label="İptal nedeni" value={displayOrEmpty(request.cancellationReason, 'Bilgi yok')} />
             </div>
-          </section>
+          </DetailPanel>
         <DetailPanel
           title="Faturadaki diğer serileri gör"
           summary={invoiceSerials?.check_error ? 'Fatura seri kontrolü bekliyor' : 'Talep edilen, gizlenen ve iade seri hareketleri'}
+          tone="serial"
           open={invoiceSerialsOpen}
           onOpenChange={setInvoiceSerialsOpen}
         >
@@ -2151,6 +2240,7 @@ export function ServiceRequestDetails({
         <DetailPanel
           title="Saha Tamamlama Belgeleri"
           summary="Fotoğraf, garanti kartı, usta açıklaması ve checklist"
+          tone="door"
           open={fieldCompletionOpen}
           onOpenChange={setFieldCompletionOpen}
         >
@@ -2181,7 +2271,7 @@ export function ServiceRequestDetails({
           </section>
         </DetailPanel>
 
-        <DetailPanel title="İşlem Geçmişi" summary="Audit kayıtları ve durum akışı">
+        <DetailPanel title="İşlem Geçmişi" summary="Audit kayıtları ve durum akışı" tone="history">
           <section className="rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">İşlem Kayıtları</p>
             <div className="mt-4 space-y-3">
