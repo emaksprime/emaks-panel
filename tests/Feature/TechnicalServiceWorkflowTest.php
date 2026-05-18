@@ -715,7 +715,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Usta adres/Plus Code var, gerçek koordinat eksik',
             'Usta adres bilgisi eksik',
             'Usta koordinat',
-            'Usta koordinatı eksik olduğu için Google Routes hesaplanamadı',
+            'Usta koordinatı eksik olduğu için yol hesabı yapılamadı',
             'assignmentSubmitDisabled',
             'routeFeeEditorMessage',
             'Servis onay durumu',

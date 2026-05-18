@@ -778,11 +778,24 @@ export function ServiceRequestDetails({
   const hasMultiProductRequest = Boolean(invoiceSerials?.has_multi_product || (invoiceSerials?.selected_serials?.length ?? 0) > 1 || saleAndPayment?.mount_payment_status === 'skipped_multi_product')
   const hasCalculatedRouteQuote = routeQuote?.status === 'calculated' && routeQuoteMatchesSelectedTechnician
   const routeFeeNeedsApproval = hasCalculatedRouteQuote && routeQuote.travel_fee_required
+  const selectedTechnicianName = selectedTechnician?.name ?? request.technician ?? 'Seçili usta'
+  const hasSelectedTechnicianRouteAttempt = Boolean(routeQuote && routeQuoteMatchesSelectedTechnician)
+  const routeFeeStaleMessage = 'Seçili usta değişti. Yeni usta için yol ücreti tekrar hesaplanmalı.'
+  const routeFeeNotCalculatedMessage = `${selectedTechnicianName} için yol ücreti henüz hesaplanmadı.`
+  const routeFeeNotCalculatedHint = 'Yol ücretini hesaplamak için seçili usta ve müşteri konumu kullanılacak.'
+  const shouldShowRouteFeeNotCalculatedMessage = Boolean(
+    selectedTechnician && !hasSelectedTechnicianRouteAttempt && !routeQuoteStaleForSelectedTechnician,
+  )
+  const routeFeeCalculateButtonText = routeQuoteLoading
+    ? 'Hesaplanıyor...'
+    : selectedTechnician
+      ? 'Bu usta için yol ücretini hesapla'
+      : 'Yol ücretini hesapla'
   const routeFeeStatusText = routeQuoteStaleForSelectedTechnician
-    ? 'Bu usta için yol hesabı yapılmadı'
+    ? 'Yol ücreti tekrar hesaplanmalı'
     : hasCalculatedRouteQuote
-    ? routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
-    : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
+      ? routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
+      : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
   const routeRoundTripKm = hasCalculatedRouteQuote
     ? typeof routeQuote?.round_trip_distance_km === 'number' && Number.isFinite(routeQuote.round_trip_distance_km)
       ? routeQuote.round_trip_distance_km
@@ -1439,7 +1452,7 @@ export function ServiceRequestDetails({
                 {routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'}
               </Badge>
             ) : routeQuote ? (
-              <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Bu usta için yol hesabı yapılmadı' : 'Yol ücreti hesaplanamadı'}</Badge>
+              <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Yol ücreti tekrar hesaplanmalı' : 'Yol ücreti hesaplanamadı'}</Badge>
             ) : null}
             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
               Mevcut etiketler: {currentPriorityLabel} / {currentSlaLabel}
@@ -1502,9 +1515,9 @@ export function ServiceRequestDetails({
                       const routeLocationMessage = technician.routeLocationMessage ?? (hasCoordinates
                         ? technician.needsReview
                           ? 'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.'
-                          : 'Routes hesabı için koordinat var.'
+                          : 'Yol hesabı için koordinat var.'
                         : hasPlusCodeInfo || hasAddressInfo
-                          ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Google Routes için lat/lng gerekli.'
+                          ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Yol hesabı için lat/lng gerekli.'
                           : 'Usta adres bilgisi eksik.')
 
                       return (
@@ -1542,7 +1555,7 @@ export function ServiceRequestDetails({
                             {hasCoordinates ? 'Gerçek koordinat var' : hasPlusCodeInfo || hasAddressInfo ? 'Gerçek koordinat eksik' : 'Usta koordinatı eksik'}
                           </span>
                           <span className={['rounded-full px-2 py-1', technician.needsReview && hasCoordinates ? 'bg-amber-50 text-amber-800' : technician.routeReady ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-700'].join(' ')} title={routeLocationMessage}>
-                            {technician.routeReady ? 'Routes hazır' : 'Routes için koordinat eksik'}
+                            {technician.routeReady ? 'Yol hesabına hazır' : 'Yol hesabı için koordinat eksik'}
                           </span>
                           <span className="rounded-full bg-slate-100 px-2 py-1">İş: {technician.scheduledCount}</span>
                           <Button
@@ -1590,7 +1603,7 @@ export function ServiceRequestDetails({
                       disabled={routeQuoteLoading || !selectedTechnicianId || !onRouteQuoteCalculate}
                       className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
                     >
-                      {routeQuoteLoading ? 'Hesaplanıyor...' : 'Yol ücreti hesapla'}
+                      {routeFeeCalculateButtonText}
                     </Button>
                     <Button
                       type="button"
@@ -1620,42 +1633,45 @@ export function ServiceRequestDetails({
                 ) : null}
                 {routeQuoteStaleForSelectedTechnician ? (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
-                    Bu usta için yol hesabı yapılmadı. Seçili usta değiştiği için eski quote gösterilmiyor.
+                    {routeFeeStaleMessage}
+                  </div>
+                ) : null}
+                {shouldShowRouteFeeNotCalculatedMessage ? (
+                  <div className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs text-blue-950">
+                    <p className="font-semibold">{routeFeeNotCalculatedMessage}</p>
+                    <p className="mt-1 text-blue-800">{routeFeeNotCalculatedHint}</p>
                   </div>
                 ) : null}
                 <div className="grid gap-2 sm:grid-cols-2">
                   <MiniMetric label="Usta şehir/adres bilgisi" value={selectedTechnician ? (selectedTechnician.hasAddressInfo ? 'Var' : 'Usta adres bilgisi eksik') : 'Usta seçilmedi'} hint={selectedTechnician?.addressSummary ?? undefined} />
                   <MiniMetric label="Usta koordinatı" value={selectedTechnician ? (selectedTechnician.hasCoordinates ? 'Gerçek koordinat var' : 'Gerçek koordinat eksik') : 'Usta seçilmedi'} hint={selectedTechnician && !selectedTechnician.hasCoordinates && (selectedTechnician.hasPlusCodeInfo || selectedTechnician.hasAddressInfo) ? 'Usta adres/Plus Code var, gerçek koordinat eksik.' : undefined} />
-                  <MiniMetric label="Routes hesap durumu" value={selectedTechnician ? (selectedTechnician.routeReady ? 'Hesaplanabilir' : 'Usta koordinatı eksik olduğu için Google Routes hesaplanamadı') : 'Usta seçilmedi'} hint={selectedTechnician?.routeLocationMessage ?? undefined} />
+                  <MiniMetric label="Yol hesabı durumu" value={selectedTechnician ? (selectedTechnician.routeReady ? 'Hesaplanabilir' : 'Usta koordinatı eksik olduğu için yol hesabı yapılamadı') : 'Usta seçilmedi'} hint={selectedTechnician?.routeLocationMessage ?? undefined} />
                   {selectedTechnician?.needsReview && selectedTechnician.hasCoordinates ? (
                     <MiniMetric label="Koordinat kontrolü" value="Koordinat kontrol gerekli" hint="Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı." />
                   ) : null}
                   <MiniMetric label="Müşteri konumu var mı?" value={locationInfo?.shared ? 'Var' : 'Yok'} />
-                  <MiniMetric label="Tek yön Google Routes mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasCalculatedRouteQuote && routeQuote?.duration_text ? `Tahmini süre: ${routeQuote.duration_text}` : 'Google Routes hesaplanınca gösterilir.'} />
-                  <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasCalculatedRouteQuote ? undefined : 'Google Routes sonucu yok.'} />
+                  <MiniMetric label="Tek yön yol mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasCalculatedRouteQuote && routeQuote?.duration_text ? `Tahmini süre: ${routeQuote.duration_text}` : 'Yol hesabı yapılınca gösterilir.'} />
+                  <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasCalculatedRouteQuote ? undefined : 'Yol hesabı sonucu yok.'} />
                   <MiniMetric label="Ücretsiz sınır" value={formatKmValue(routeQuote?.threshold_km ?? 30)} />
-                  <MiniMetric label="Ücrete tabi km" value={formatKmValue(routeBillableKm)} hint={hasCalculatedRouteQuote ? undefined : 'Routes hesaplanmadan ücrete tabi km hesaplanmaz.'} />
+                  <MiniMetric label="Ücrete tabi km" value={formatKmValue(routeBillableKm)} hint={hasCalculatedRouteQuote ? undefined : 'Yol hesabı yapılmadan ücrete tabi km hesaplanmaz.'} />
                   <MiniMetric label="Km başı ücret" value={hasCalculatedRouteQuote ? routeFeePerKm === null ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeePerKm) : '-'} />
                   <MiniMetric
                     label="Tahmini yol ücreti"
                     value={hasCalculatedRouteQuote ? routeFeeAmount === null && routeQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
-                    hint={routeQuoteStaleForSelectedTechnician ? 'Bu usta için yol hesabı yapılmadı' : routeQuote ? routeQuoteMessage(routeQuote.message) : 'Yol ücreti hesaplanamadı'}
+                    hint={routeQuoteStaleForSelectedTechnician ? routeFeeStaleMessage : routeQuote ? routeQuoteMessage(routeQuote.message) : routeFeeNotCalculatedHint}
                   />
                 </div>
                 <div className="grid gap-2 rounded-2xl border border-blue-100 bg-white/70 p-3 text-xs text-blue-950 sm:grid-cols-2 lg:grid-cols-3">
                   <MiniMetric
-                    label="Usta koordinatı lat/lng"
-                    value={selectedTechnicianCoordinateLabel}
-                    hint={selectedTechnicianMapHref ? <a className="font-semibold text-blue-700 hover:underline" href={selectedTechnicianMapHref} target="_blank" rel="noreferrer">Haritada aç</a> : 'Gerçek koordinat yok'}
+                    label="Usta konumu"
+                    value={selectedTechnicianCoordinateLabel !== '-' ? 'Haritada açılabilir' : 'Konum yok'}
+                    hint={selectedTechnicianMapHref ? <a className="font-semibold text-blue-700 hover:underline" href={selectedTechnicianMapHref} target="_blank" rel="noreferrer">Usta konumunu haritada aç</a> : 'Gerçek koordinat yok'}
                   />
                   <MiniMetric
-                    label="Müşteri koordinatı lat/lng"
-                    value={customerCoordinateLabel}
-                    hint={customerMapHref ? <a className="font-semibold text-blue-700 hover:underline" href={customerMapHref} target="_blank" rel="noreferrer">Haritada aç</a> : 'Müşteri konumu yok'}
+                    label="Müşteri konumu"
+                    value={customerCoordinateLabel !== '-' ? 'Haritada açılabilir' : 'Konum yok'}
+                    hint={customerMapHref ? <a className="font-semibold text-blue-700 hover:underline" href={customerMapHref} target="_blank" rel="noreferrer">Müşteri konumunu haritada aç</a> : 'Müşteri konumu yok'}
                   />
-                  <MiniMetric label="route quote id" value={routeQuote?.id ?? '-'} />
-                  <MiniMetric label="quote technician_id" value={routeQuoteTechnicianIdString ?? '-'} />
-                  <MiniMetric label="selectedTechnicianId" value={selectedTechnicianIdString ?? '-'} />
                   <MiniMetric label="Usta adı" value={selectedTechnician?.name ?? '-'} />
                 </div>
                 {routeFeeEditorOpen ? (

@@ -1554,9 +1554,9 @@ export function TechnicalServiceOperationCenter() {
         routeLocationMessage: hasTechnicianCoordinates
           ? match.technician.needs_review === true
             ? 'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.'
-            : 'Routes hesabı için koordinat var.'
+            : 'Yol hesabı için koordinat var.'
           : hasPlusCodeInfo || hasAddressInfo
-            ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Google Routes için lat/lng gerekli.'
+            ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Yol hesabı için lat/lng gerekli.'
             : 'Usta adres bilgisi eksik.',
         distanceKmLabel: match.distanceKm !== null
           ? `Yaklaşık şehir/adres mesafesi ${match.distanceKm.toLocaleString('tr-TR')} km`
@@ -3191,7 +3191,7 @@ export function TechnicalServiceOperationCenter() {
                 <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <p className="font-semibold">Google Routes yol ücreti hesabı</p>
+                      <p className="font-semibold">Yol ücreti hesabı</p>
                       <p className="mt-1 text-xs text-blue-800">30 km ücretsiz sınır gidiş-geliş mesafe üzerinden değerlendirilir.</p>
                     </div>
                     <Button
@@ -3216,7 +3216,7 @@ export function TechnicalServiceOperationCenter() {
                   ) : null}
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div className="rounded-xl bg-white/80 p-3">
-                      <p className="text-xs font-semibold text-blue-700">Tek yön Google Routes mesafesi</p>
+                      <p className="text-xs font-semibold text-blue-700">Tek yön yol mesafesi</p>
                       <p className="mt-1 font-semibold text-slate-950">{assignmentRouteDistanceLabel}</p>
                       {assignmentRouteQuote?.duration_text ? <p className="mt-1 text-xs text-slate-500">Tahmini süre: {assignmentRouteQuote.duration_text}</p> : null}
                     </div>

@@ -344,16 +344,29 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Gerçek koordinat var',
             'Gerçek koordinat eksik',
             'Usta adres/Plus Code var, gerçek koordinat eksik.',
-            'Google Routes sonucu yok.',
-            'Routes hesaplanmadan ücrete tabi km hesaplanmaz.',
-            'Bu usta için yol hesabı yapılmadı',
-            'quote technician_id',
-            'selectedTechnicianId',
+            'Yol hesabı sonucu yok.',
+            'Yol hesabı yapılmadan ücrete tabi km hesaplanmaz.',
+            'Seçili usta değişti. Yeni usta için yol ücreti tekrar hesaplanmalı.',
+            'için yol ücreti henüz hesaplanmadı.',
+            'Yol ücretini hesaplamak için seçili usta ve müşteri konumu kullanılacak.',
+            'Bu usta için yol ücretini hesapla',
+            'Yol hesabı durumu',
             'Mesafe uyumsuzluğu - kontrol gerekli',
             'Koordinat kontrol gerekli',
             'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $detailsSource);
+        }
+
+        foreach ([
+            'route quote id',
+            'quote technician_id',
+            'label="selectedTechnicianId"',
+            'eski quote gösterilmiyor',
+            'Usta koordinatı lat/lng',
+            'Müşteri koordinatı lat/lng',
+        ] as $debugText) {
+            $this->assertStringNotContainsString($debugText, $detailsSource);
         }
 
         foreach ([
@@ -377,7 +390,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         foreach ([
             'Operasyon ve Montaj Kontrolü',
             'Usta / Çilingir Atama',
-            'Tek yön Google Routes mesafesi',
+            'Tek yön yol mesafesi',
             'Ücretsiz sınır',
             'Ücrete tabi km',
             'Km başı ücret',
@@ -404,8 +417,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
         foreach ([
             'Yol ücreti hesapla',
-            'Google Routes yol ücreti hesabı',
-            'Tek yön Google Routes mesafesi',
+            'Yol ücreti hesabı',
+            'Tek yön yol mesafesi',
             'Gidiş-geliş mesafe',
             'Ücrete tabi km',
             'Tahmini yol ücreti',
