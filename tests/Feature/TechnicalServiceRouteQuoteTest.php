@@ -389,6 +389,9 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'validCoordinatePair',
             'technicianCoordinatePair',
             'routeQuoteActiveForSelection',
+            'const responseStatus = typeof response.status',
+            "responseStatus !== 'calculated'",
+            'routeQuoteFailed',
             'Yaklaşık şehir/adres mesafesi',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);

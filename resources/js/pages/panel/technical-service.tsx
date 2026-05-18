@@ -2346,7 +2346,12 @@ export function TechnicalServiceOperationCenter() {
         setTravelRoundTripKm(String(responseRoundTripKm))
       }
 
-      setRouteQuoteError(typeof response.message === 'string' ? response.message : null)
+      const responseStatus = typeof response.status === 'string' ? response.status : null
+      const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
+
+      setRouteQuoteError(routeQuoteFailed
+        ? (typeof response.message === 'string' ? response.message : 'Yol ücreti hesaplanamadı.')
+        : null)
     } catch (caught) {
       setRouteQuoteError(caught instanceof Error ? caught.message : 'Yol ücreti hesaplanamadı.')
     } finally {
