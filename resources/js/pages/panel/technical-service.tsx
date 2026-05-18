@@ -809,6 +809,9 @@ export function TechnicalServiceOperationCenter() {
   const [routeQuoteError, setRouteQuoteError] = useState<string | null>(null)
   const [routeQuoteManualSaveLoading, setRouteQuoteManualSaveLoading] = useState(false)
   const [routeQuoteManualSaveError, setRouteQuoteManualSaveError] = useState<string | null>(null)
+  const routeQuoteAutoRequestSeq = useRef(0)
+  const routeQuoteLatestSelection = useRef({ requestId: '', technicianId: '' })
+  const routeQuoteLastAutoKey = useRef('')
   const [extraPaymentCreateLoading, setExtraPaymentCreateLoading] = useState(false)
   const [extraPaymentCreateError, setExtraPaymentCreateError] = useState<string | null>(null)
   const [technicianEarningMessageLoading, setTechnicianEarningMessageLoading] = useState(false)
@@ -1287,6 +1290,13 @@ export function TechnicalServiceOperationCenter() {
   const selectedListDisplayMrn = selectedListRequest ? formatTechnicalServiceMrn(selectedListRequest) : null
   const selectedDetailDisplayMrn = selectedDetailRequest ? formatTechnicalServiceMrn(selectedDetailRequest) : null
   const modalDisplayMrn = selectedListDisplayMrn ?? selectedDetailDisplayMrn
+
+  useEffect(() => {
+    routeQuoteLatestSelection.current = {
+      requestId: selectedId ?? '',
+      technicianId: assignTechnicianOption,
+    }
+  }, [assignTechnicianOption, selectedId])
 
   const handlePriorityChange = async (priority: ServicePriority) => {
     if (!selectedId || modalRequest?.priority === priority) {
@@ -2318,14 +2328,27 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
+    const submittedRequestId = selectedId
+    const submittedTechnicianId = assignTechnicianOption
+    const requestSeq = ++routeQuoteAutoRequestSeq.current
+
     setRouteQuoteLoading(true)
     setRouteQuoteError(null)
     setRouteQuoteManualSaveError(null)
 
     try {
-      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/technicians/${assignTechnicianOption}/route-quote`, {
+      const response = await apiRequest(`/api/technical-service/requests/${submittedRequestId}/technicians/${submittedTechnicianId}/route-quote`, {
         method: 'POST',
       })
+
+      if (
+        routeQuoteAutoRequestSeq.current !== requestSeq
+        || routeQuoteLatestSelection.current.requestId !== submittedRequestId
+        || routeQuoteLatestSelection.current.technicianId !== submittedTechnicianId
+      ) {
+        return
+      }
+
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
       if (!updatedRequest) {
@@ -2363,9 +2386,133 @@ export function TechnicalServiceOperationCenter() {
     } catch (caught) {
       setRouteQuoteError(caught instanceof Error ? caught.message : 'Yol ücreti hesaplanamadı.')
     } finally {
-      setRouteQuoteLoading(false)
+      if (routeQuoteAutoRequestSeq.current === requestSeq) {
+        setRouteQuoteLoading(false)
+      }
     }
   }
+
+  useEffect(() => {
+    if (
+      !selectedId
+      || !assignTechnicianOption
+      || assignTechnicianOption === 'other'
+      || !selectedAssignTechnicianRecord
+      || !modalRequest
+      || assignmentRouteQuote
+    ) {
+      return
+    }
+
+    const technicianCoordinates = technicianCoordinatePair(selectedAssignTechnicianRecord)
+    const requestCoordinates = validCoordinatePair(modalRequest.location?.latitude, modalRequest.location?.longitude)
+
+    if (!technicianCoordinates || !requestCoordinates) {
+      return
+    }
+
+    const autoKey = [
+      selectedId,
+      assignTechnicianOption,
+      technicianCoordinates.latitude,
+      technicianCoordinates.longitude,
+      requestCoordinates.latitude,
+      requestCoordinates.longitude,
+      modalRequest.routeFeeConfig?.fee_per_km ?? '',
+      modalRequest.routeFeeConfig?.threshold_km ?? '',
+    ].join('|')
+
+    if (routeQuoteLastAutoKey.current === autoKey) {
+      return
+    }
+
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      if (cancelled || routeQuoteLatestSelection.current.requestId !== selectedId || routeQuoteLatestSelection.current.technicianId !== assignTechnicianOption) {
+        return
+      }
+
+      routeQuoteLastAutoKey.current = autoKey
+      const submittedRequestId = selectedId
+      const submittedTechnicianId = assignTechnicianOption
+      const requestSeq = ++routeQuoteAutoRequestSeq.current
+
+      setRouteQuoteLoading(true)
+      setRouteQuoteError(null)
+      setRouteQuoteManualSaveError(null)
+
+      void apiRequest(`/api/technical-service/requests/${submittedRequestId}/technicians/${submittedTechnicianId}/route-quote`, {
+        method: 'POST',
+      })
+        .then((response) => {
+          if (
+            cancelled
+            || routeQuoteAutoRequestSeq.current !== requestSeq
+            || routeQuoteLatestSelection.current.requestId !== submittedRequestId
+            || routeQuoteLatestSelection.current.technicianId !== submittedTechnicianId
+          ) {
+            return
+          }
+
+          const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+          if (!updatedRequest) {
+            setRouteQuoteError('Yol ücreti hesaplandı ancak talep detayı güncellenemedi.')
+
+            return
+          }
+
+          preserveDetailScroll(() => {
+            setRequests((current) => current.map((request) => (
+              request.id === updatedRequest.id ? updatedRequest : request
+            )))
+            setSelectedListRequest((current) => (
+              current?.id === updatedRequest.id ? updatedRequest : current
+            ))
+            setSelectedDetailRequest(updatedRequest)
+          })
+
+          const responseRoundTripKm = typeof response.round_trip_distance_km === 'number' && Number.isFinite(response.round_trip_distance_km)
+            ? response.round_trip_distance_km
+            : typeof response.distance_km === 'number' && Number.isFinite(response.distance_km)
+              ? response.distance_km
+              : null
+
+          if (responseRoundTripKm !== null) {
+            setTravelRoundTripKm(String(responseRoundTripKm))
+          }
+
+          const responseStatus = typeof response.status === 'string' ? response.status : null
+          const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
+
+          setRouteQuoteError(routeQuoteFailed
+            ? (typeof response.message === 'string' ? response.message : 'Yol ücreti hesaplanamadı.')
+            : null)
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled && routeQuoteAutoRequestSeq.current === requestSeq) {
+            setRouteQuoteError(caught instanceof Error ? caught.message : 'Yol ücreti hesaplanamadı.')
+          }
+        })
+        .finally(() => {
+          if (!cancelled && routeQuoteAutoRequestSeq.current === requestSeq) {
+            setRouteQuoteLoading(false)
+          }
+        })
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    assignTechnicianOption,
+    assignmentRouteQuote,
+    modalRequest,
+    preserveDetailScroll,
+    selectedAssignTechnicianRecord,
+    selectedId,
+  ])
 
   const handleRouteQuoteManualSave = async (payload: ServiceRequestRouteQuoteManualPayload) => {
     if (!selectedId) {
@@ -3367,7 +3514,7 @@ export function TechnicalServiceOperationCenter() {
                       disabled={routeQuoteLoading || !assignTechnicianOption || assignTechnicianOption === 'other'}
                       className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
                     >
-                      {routeQuoteLoading ? 'Hesaplanıyor...' : 'Yol ücreti hesapla'}
+                      {routeQuoteLoading ? 'Hesaplanıyor...' : 'Yeniden hesapla'}
                     </Button>
                   </div>
                   {routeQuoteError ? (

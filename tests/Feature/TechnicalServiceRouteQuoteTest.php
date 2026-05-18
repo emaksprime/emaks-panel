@@ -595,16 +595,10 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertIsString($techniciansSource);
 
         foreach ([
-            'Gerçek koordinat var',
-            'Gerçek koordinat eksik',
-            'Usta adres/Plus Code var, gerçek koordinat eksik.',
-            'Yol hesabı sonucu yok.',
-            'Yol hesabı yapılmadan ücrete tabi km hesaplanmaz.',
-            'Seçili usta değişti. Yeni usta için yol ücreti tekrar hesaplanmalı.',
             'için yol ücreti henüz hesaplanmadı.',
             'Yol ücretini hesaplamak için seçili usta ve müşteri konumu kullanılacak.',
-            'Bu usta için yol ücretini hesapla',
-            'Yol hesabı durumu',
+            'Yol ücreti hesaplanıyor...',
+            'Yeniden hesapla',
             'routeQuoteActiveForSelectedTechnician',
             'activeRouteQuote',
             'Usta ↔ müşteri düz çizgi mesafesi',
@@ -615,18 +609,21 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Teknik detay',
             'Rota mesafesi düz çizgi mesafesine göre yüksek',
             'Montaj durumu',
-            'Km başı ücret (sabit ayar)',
+            'Km başı ücret',
             'Hesaplanmadı',
             "hasActiveRouteQuote ? numericInputValue(routeOneWayKm) : ''",
             "hasActiveRouteQuote ? numericInputValue(routeBillableKm) : '0'",
-            'Mesafe uyumsuzluğu - kontrol gerekli',
-            'Koordinat kontrol gerekli',
-            'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $detailsSource);
         }
 
         foreach ([
+            'Seçili usta değişti. Yeni usta için yol ücreti tekrar hesaplanmalı.',
+            'Bu usta için yol ücretini hesapla',
+            'Yol hesabı durumu',
+            'Mesafe uyumsuzluğu - kontrol gerekli',
+            'Koordinat kontrol gerekli',
+            'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.',
             'route quote id',
             'quote technician_id',
             'label="selectedTechnicianId"',
@@ -641,6 +638,11 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'validCoordinatePair',
             'technicianCoordinatePair',
             'routeQuoteActiveForSelection',
+            'routeQuoteAutoRequestSeq',
+            'routeQuoteLatestSelection',
+            'routeQuoteLastAutoKey',
+            'window.setTimeout(() =>',
+            'routeQuoteLatestSelection.current.technicianId !== submittedTechnicianId',
             'const responseStatus = typeof response.status',
             "responseStatus !== 'calculated'",
             'routeQuoteFailed',
@@ -667,7 +669,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Google Routes tek yön mesafesi',
             'Ücretsiz sınır',
             'Ücrete tabi km',
-            'Km başı ücret (sabit ayar)',
+            'Km başı ücret',
             'Yol ücreti hesaplanamadı',
             'Yol ücreti onayı gerekli',
             'Yol ücreti yok',
@@ -690,7 +692,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         }
 
         foreach ([
-            'Yol ücreti hesapla',
+            'Yeniden hesapla',
             'Yol ücreti hesabı',
             'Tek yön yol mesafesi',
             'Gidiş-geliş mesafe',

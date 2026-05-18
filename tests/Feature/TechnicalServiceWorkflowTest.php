@@ -966,10 +966,6 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Bu fatura son satış değil',
             'Son satış kontrolü doğrulanamadı',
             'Son satış kontrolü çelişkili',
-            'Usta adres/Plus Code var, gerçek koordinat eksik',
-            'Usta adres bilgisi eksik',
-            'Usta koordinat',
-            'Usta koordinatı eksik olduğu için yol hesabı yapılamadı',
             'assignmentSubmitDisabled',
             'routeFeeEditorMessage',
             'Servis onay durumu',
@@ -997,6 +993,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringNotContainsString('Stok kodu', $detailsSource);
         $this->assertStringNotContainsString('Bayi/Proje - otomatik eklenemez', $detailsSource);
         $this->assertStringNotContainsString('Müşteri tercihi', $detailsSource);
+        $this->assertStringNotContainsString('Usta adres/Plus Code var, gerçek koordinat eksik', $detailsSource);
+        $this->assertStringNotContainsString('Usta adres bilgisi eksik', $detailsSource);
+        $this->assertStringNotContainsString('Usta koordinatı eksik olduğu için yol hesabı yapılamadı', $detailsSource);
 
         foreach ([
             'visibleTechnicianAssignmentInsights',

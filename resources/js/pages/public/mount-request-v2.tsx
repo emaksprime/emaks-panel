@@ -318,6 +318,8 @@ export default function MountRequestV2({
     const [multiProductLoading, setMultiProductLoading] = useState(false);
     const [multiProductModalOpen, setMultiProductModalOpen] = useState(false);
     const [multiProductNotice, setMultiProductNotice] = useState('');
+    const [multiProductOperationOnlyCount, setMultiProductOperationOnlyCount] = useState(0);
+    const [multiProductTotalCount, setMultiProductTotalCount] = useState(0);
     const [locationModalOpen, setLocationModalOpen] = useState(false);
     const [locationStatus, setLocationStatus] = useState('');
     const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false);
@@ -694,6 +696,8 @@ export default function MountRequestV2({
                     const items = sourceItems.filter((item) => typeof item?.serial_number === 'string' && item.serial_number.trim() !== '');
                     const hasSelectableSerials = items.length > 0 || Boolean(payload.has_selectable_serials);
                     setMultiProductOptions(items);
+                    setMultiProductOperationOnlyCount(typeof payload.operation_only_count === 'number' ? payload.operation_only_count : 0);
+                    setMultiProductTotalCount(typeof payload.total_count === 'number' ? payload.total_count : 0);
                     setMultiProductModalOpen(hasSelectableSerials);
                     setMultiProductNotice(hasSelectableSerials ? '' : (payload.message || 'Ek ürün talebiniz operasyon ekibine iletilecek.'));
                 }
@@ -701,6 +705,8 @@ export default function MountRequestV2({
             .catch(() => {
                 if (!ignore) {
                     setMultiProductOptions([]);
+                    setMultiProductOperationOnlyCount(0);
+                    setMultiProductTotalCount(0);
                     setMultiProductModalOpen(false);
                     setMultiProductNotice('Ek ürün talebiniz operasyon ekibine iletilecek.');
                 }
@@ -1244,6 +1250,8 @@ export default function MountRequestV2({
 
                                                     if (!event.target.checked) {
                                                         setMultiProductOptions([]);
+                                                        setMultiProductOperationOnlyCount(0);
+                                                        setMultiProductTotalCount(0);
                                                         setMultiProductModalOpen(false);
                                                         setMultiProductNotice('');
                                                         form.setData('selected_invoice_serials', []);
@@ -1272,6 +1280,16 @@ export default function MountRequestV2({
 
                                     {form.data.multiple_products && multiProductOptions.length > 0 && !multiProductModalOpen && (
                                         <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4">
+                                            {multiProductTotalCount > 1 ? (
+                                                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
+                                                    <p>Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.</p>
+                                                    {multiProductOperationOnlyCount > multiProductOptions.length ? (
+                                                        <p className="mt-1 text-xs text-emerald-800">
+                                                            Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.
+                                                        </p>
+                                                    ) : null}
+                                                </div>
+                                            ) : null}
                                             <p className="text-sm font-semibold text-slate-900">
                                                 Bu adreste montajını istediğiniz diğer ürünleri seçin.
                                             </p>
@@ -1446,6 +1464,16 @@ export default function MountRequestV2({
                                     Kapat
                                 </button>
                             </div>
+                            {multiProductTotalCount > 1 ? (
+                                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
+                                    <p>Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.</p>
+                                    {multiProductOperationOnlyCount > multiProductOptions.length ? (
+                                        <p className="mt-1 text-xs text-emerald-800">
+                                            Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.
+                                        </p>
+                                    ) : null}
+                                </div>
+                            ) : null}
                             <div className="grid gap-2">
                                 {multiProductOptions.map((item) => {
                                     const serialNumber = item.serial_number ?? '';

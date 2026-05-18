@@ -541,6 +541,8 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertStringContainsString('items.length > 0 || Boolean(payload.has_selectable_serials)', $source);
         $this->assertStringContainsString('setMultiProductModalOpen(hasSelectableSerials)', $source);
         $this->assertStringContainsString('Bu adreste montaj istediğiniz diğer ürünleri seçin', $source);
+        $this->assertStringContainsString('Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.', $source);
+        $this->assertStringContainsString('Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.', $source);
         $this->assertStringContainsString('Ek ürün talebiniz operasyon ekibine iletilecek.', $source);
     }
 
