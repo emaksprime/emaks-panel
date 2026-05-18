@@ -53,28 +53,13 @@ const moduleItems = [
     {
         label: 'Müşteri Yönetimi',
         candidates: ['/cari', '/cari/balance'],
-        match: [
-            '/cari',
-            '/cari/balance',
-            '/cari/detail',
-            '/cari/document-detail',
-        ],
+        match: ['/cari', '/cari/balance', '/cari/detail', '/cari/document-detail'],
         tone: 'indigo',
     },
     {
         label: 'Proforma',
-        candidates: [
-            '/proforma',
-            '/proforma/create',
-            '/proforma/detail',
-            '/proforma/edit',
-        ],
-        match: [
-            '/proforma',
-            '/proforma/create',
-            '/proforma/detail',
-            '/proforma/edit',
-        ],
+        candidates: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
+        match: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
         tone: 'amber',
     },
     {
@@ -85,11 +70,7 @@ const moduleItems = [
     },
     {
         label: 'Destek',
-        candidates: [
-            '/support',
-            '/support/keypad-guide',
-            '/support/activation',
-        ],
+        candidates: ['/support', '/support/keypad-guide', '/support/activation'],
         match: ['/support', '/support/keypad-guide', '/support/activation'],
         tone: 'rose',
     },
@@ -134,30 +115,15 @@ const moduleToneClasses = {
     },
 };
 
-export default function ModuleLayout({
-    children,
-}: {
-    children: React.ReactNode;
-}) {
-    const { auth, panelNavigation, page } = usePage<
-        SharedPageProps & { page?: { routePath?: string } }
-    >().props;
-    const routePath =
-        page?.routePath ??
-        (typeof window !== 'undefined'
-            ? window.location.pathname
-            : '/dashboard');
+export default function ModuleLayout({ children }: { children: React.ReactNode }) {
+    const { auth, panelNavigation, page } = usePage<SharedPageProps & { page?: { routePath?: string } }>().props;
+    const routePath = page?.routePath ?? (typeof window !== 'undefined' ? window.location.pathname : '/dashboard');
     const moduleNavRef = useRef<HTMLElement | null>(null);
     const visibleHrefs = new Set(
-        panelNavigation.groups.flatMap((group) =>
-            group.items.map((item) => item.href),
-        ),
+        panelNavigation.groups.flatMap((group) => group.items.map((item) => item.href)),
     );
     const scrollModules = (direction: -1 | 1) => {
-        moduleNavRef.current?.scrollBy({
-            left: direction * 240,
-            behavior: 'smooth',
-        });
+        moduleNavRef.current?.scrollBy({ left: direction * 240, behavior: 'smooth' });
     };
 
     return (
@@ -165,15 +131,12 @@ export default function ModuleLayout({
             <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
                 <div className="mx-auto grid max-w-7xl gap-3 px-4 py-2.5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center xl:px-6">
                     <div className="flex min-w-0 items-center justify-center lg:justify-start">
-                        <Link
-                            href="/dashboard"
-                            className="flex min-w-[160px] shrink-0 items-center justify-center"
-                        >
+                        <Link href="/dashboard" className="flex min-w-[160px] shrink-0 items-center justify-center">
                             <AppLogo />
                         </Link>
                     </div>
 
-                    <div className="relative w-full max-w-full min-w-0 justify-self-stretch">
+                    <div className="relative w-full min-w-0 max-w-full justify-self-stretch">
                         <span
                             aria-hidden="true"
                             className="pointer-events-none absolute inset-y-1 left-0 z-10 w-10 rounded-l-full bg-gradient-to-r from-white/95 via-white/80 to-transparent"
@@ -182,30 +145,23 @@ export default function ModuleLayout({
                             type="button"
                             onClick={() => scrollModules(-1)}
                             aria-label="Modülleri sola kaydır"
-                            className="absolute top-1/2 left-1 z-20 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
+                            className="absolute left-1 top-1/2 z-20 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
                         >
                             <ChevronLeft className="size-4" />
                         </button>
                         <nav
                             ref={moduleNavRef}
-                            className="flex w-max max-w-full min-w-0 gap-2 overflow-x-auto scroll-smooth rounded-full border border-slate-200/80 bg-white/80 py-1 pr-10 pl-10 shadow-inner shadow-slate-100 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden"
+                            className="flex w-max max-w-full min-w-0 gap-2 overflow-x-auto scroll-smooth rounded-full border border-slate-200/80 bg-white/80 py-1 pl-10 pr-10 shadow-inner shadow-slate-100 [scrollbar-width:none] lg:justify-start [&::-webkit-scrollbar]:hidden"
                         >
                             {moduleItems
                                 .map((item) => ({
                                     ...item,
-                                    visibleHref: selectModuleHref(
-                                        item.candidates,
-                                        visibleHrefs,
-                                    ),
+                                    visibleHref: selectModuleHref(item.candidates, visibleHrefs),
                                 }))
                                 .filter((item) => item.visibleHref !== null)
                                 .map((item) => {
-                                    const active =
-                                        item.match.includes(routePath);
-                                    const tone =
-                                        moduleToneClasses[
-                                            item.tone as keyof typeof moduleToneClasses
-                                        ];
+                                    const active = item.match.includes(routePath);
+                                    const tone = moduleToneClasses[item.tone as keyof typeof moduleToneClasses];
 
                                     return (
                                         <Link
@@ -213,9 +169,7 @@ export default function ModuleLayout({
                                             href={item.visibleHref ?? '#'}
                                             className={[
                                                 'shrink-0 rounded-full border px-3 py-2 text-[0.82rem] font-semibold shadow-sm transition hover:-translate-y-0.5 xl:px-4 xl:text-sm',
-                                                active
-                                                    ? tone.active
-                                                    : tone.idle,
+                                                active ? tone.active : tone.idle,
                                             ].join(' ')}
                                         >
                                             {item.label}
@@ -231,7 +185,7 @@ export default function ModuleLayout({
                             type="button"
                             onClick={() => scrollModules(1)}
                             aria-label="Modülleri sağa kaydır"
-                            className="absolute top-1/2 right-1 z-20 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
+                            className="absolute right-1 top-1/2 z-20 flex size-8 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
                         >
                             <ChevronRight className="size-4" />
                         </button>
@@ -245,10 +199,7 @@ export default function ModuleLayout({
                                     <ChevronsUpDown className="ml-auto size-4" />
                                 </button>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent
-                                className="w-64 rounded-lg"
-                                align="end"
-                            >
+                            <DropdownMenuContent className="w-64 rounded-lg" align="end">
                                 <UserMenuContent user={auth.user} />
                             </DropdownMenuContent>
                         </DropdownMenu>
@@ -256,7 +207,9 @@ export default function ModuleLayout({
                 </div>
             </header>
 
-            <main className="mx-auto w-full max-w-7xl">{children}</main>
+            <main className="mx-auto w-full max-w-7xl">
+                {children}
+            </main>
         </div>
     );
 }

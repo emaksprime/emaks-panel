@@ -175,6 +175,35 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
 
     public function test_datasource_query_template_is_real_read_only_mssql_query(): void
     {
+        $this->assertAccountingFinanceQueryTemplateIsCanonical();
+    }
+
+    public function test_deploy_seed_order_preserves_accounting_finance_query_template(): void
+    {
+        $this->seed(PanelMetadataSeeder::class);
+        $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->assertAccountingFinanceQueryTemplateIsCanonical();
+
+        $this->seed(PanelMetadataSeeder::class);
+        $this->assertAccountingFinanceQueryTemplateIsCanonical();
+
+        $this->seed(PanelKnownWorkflowDataSourcesSeeder::class);
+        $this->assertAccountingFinanceQueryTemplateIsCanonical();
+    }
+
+    public function test_start_container_runs_post_deploy_refresh_after_panel_metadata_seed(): void
+    {
+        $script = file_get_contents(base_path('docker/start-container.sh')) ?: '';
+        $metadataSeedPosition = strpos($script, 'php artisan db:seed --class=PanelMetadataSeeder --force --no-interaction');
+        $postDeployRefreshPosition = strpos($script, 'php artisan panel:post-deploy-refresh --no-interaction');
+
+        $this->assertNotFalse($metadataSeedPosition);
+        $this->assertNotFalse($postDeployRefreshPosition);
+        $this->assertGreaterThan($metadataSeedPosition, $postDeployRefreshPosition);
+    }
+
+    private function assertAccountingFinanceQueryTemplateIsCanonical(): void
+    {
         $source = DataSource::query()->where('code', self::RESOURCE_CODE)->firstOrFail();
         $query = trim((string) $source->query_template);
 

@@ -351,6 +351,8 @@ SQL,
             ],
         );
 
+        $placeholderQueryTemplate = '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.';
+
         foreach ([
             [
                 'page_code' => 'stock',
@@ -449,13 +451,28 @@ SQL,
             ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'description' => 'Proforma detay için placeholder veri kaynağı.'],
             ['code' => 'accounting_finance_resmi_stok_kontrol', 'name' => 'Resmi Stok Kontrolü', 'description' => 'Resmi stok, fiili stok ve muhasebe kontrol farkları için kanonik n8n veri kaynağı.'],
         ] as $index => $sourceDefinition) {
+            $existingDataSource = DataSource::query()
+                ->where('code', $sourceDefinition['code'])
+                ->first();
+            $existingQueryTemplate = (string) ($existingDataSource?->query_template ?? '');
+            $existingHasRealQueryTemplate = $existingQueryTemplate !== ''
+                && ! str_contains($existingQueryTemplate, 'Canlı SQL bu aşamada eklenmedi');
+            $queryTemplate = $sourceDefinition['query_template'] ?? (
+                $existingHasRealQueryTemplate
+                    ? $existingQueryTemplate
+                    : $placeholderQueryTemplate
+            );
+            $allowedParams = $existingHasRealQueryTemplate && is_array($existingDataSource?->allowed_params)
+                ? $existingDataSource->allowed_params
+                : ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'];
+
             DataSource::query()->updateOrCreate(
                 ['code' => $sourceDefinition['code']],
                 [
                     'name' => $sourceDefinition['name'],
                     'db_type' => 'n8n_json',
-                    'query_template' => '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.',
-                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
+                    'query_template' => $queryTemplate,
+                    'allowed_params' => $allowedParams,
                     'connection_meta' => $n8nConnectionMeta,
                     'preview_payload' => [
                         'mode' => 'placeholder',
