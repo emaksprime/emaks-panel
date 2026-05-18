@@ -14,6 +14,7 @@ class TechnicalServiceMountPayment extends Model
 
     protected $fillable = [
         'technical_service_mount_session_id',
+        'technical_service_request_id',
         'provider',
         'provider_reference',
         'status',
@@ -33,5 +34,10 @@ class TechnicalServiceMountPayment extends Model
     public function session(): BelongsTo
     {
         return $this->belongsTo(TechnicalServiceMountSession::class, 'technical_service_mount_session_id');
+    }
+
+    public function technicalServiceRequest(): BelongsTo
+    {
+        return $this->belongsTo(TechnicalServiceRequest::class, 'technical_service_request_id');
     }
 }

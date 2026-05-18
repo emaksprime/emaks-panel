@@ -17,6 +17,7 @@ use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
+use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MikroSerialNumberService;
@@ -457,6 +458,7 @@ class TechnicalServiceController extends Controller
 
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $technicalServiceRequest->id,
             'provider' => 'fake',
             'provider_reference' => 'fake-extra-'.hash('sha256', $technicalServiceRequest->id.'|'.microtime(true)),
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
@@ -729,6 +731,27 @@ class TechnicalServiceController extends Controller
         $technician = isset($payload['technical_service_technician_id'])
             ? TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id'])
             : null;
+        $routeQuote = isset($payload['route_quote_id'])
+            ? TechnicalServiceRouteQuote::query()
+                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->whereKey((int) $payload['route_quote_id'])
+                ->first()
+            : null;
+
+        if (isset($payload['route_quote_id']) && ! $routeQuote instanceof TechnicalServiceRouteQuote) {
+            throw ValidationException::withMessages([
+                'route_quote_id' => 'Seçili yol ücreti hesabı bu talebe ait değil.',
+            ]);
+        }
+
+        if ($routeQuote instanceof TechnicalServiceRouteQuote
+            && $technician instanceof TechnicalServiceTechnician
+            && (int) $routeQuote->technician_id !== (int) $technician->id
+        ) {
+            throw ValidationException::withMessages([
+                'route_quote_id' => 'Seçili yol ücreti hesabı seçilen ustaya ait değil.',
+            ]);
+        }
 
         $technicianPayload = [
             'technical_service_technician_id' => $technician?->id,
@@ -744,12 +767,18 @@ class TechnicalServiceController extends Controller
             $request->user()
         );
 
-        if (isset($payload['travel_round_trip_km'])) {
+        if (! $routeQuote instanceof TechnicalServiceRouteQuote && isset($payload['travel_round_trip_km'])) {
             $technicalServiceRequest->fill($this->calculateTravelCosts((float) $payload['travel_round_trip_km']));
             $technicalServiceRequest->save();
         }
 
-        return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
+        $requestPayload = $this->workflowService->serialize($technicalServiceRequest->refresh(), true);
+
+        if ($routeQuote instanceof TechnicalServiceRouteQuote) {
+            $requestPayload['route_quote'] = app(TechnicalServiceRouteCostService::class)->payload($routeQuote->refresh());
+        }
+
+        return response()->json(['request' => $requestPayload]);
     }
 
     public function summary(): JsonResponse

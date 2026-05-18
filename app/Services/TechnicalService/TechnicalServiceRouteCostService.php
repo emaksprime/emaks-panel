@@ -383,16 +383,19 @@ class TechnicalServiceRouteCostService
     public function payload(TechnicalServiceRouteQuote $quote): array
     {
         $canonical = $this->canonicalDistances($quote);
+        $dirtyZeroDistance = $this->isDirtyZeroDistanceQuote($quote, $canonical);
         $currentFeePerKm = $this->feePerKm();
         $feePerKmMatchesCurrent = $canonical['fee_per_km'] !== null
             && $currentFeePerKm !== null
             && abs($canonical['fee_per_km'] - $currentFeePerKm) <= 0.001;
+        $status = $dirtyZeroDistance ? TechnicalServiceRouteQuote::STATUS_FAILED : $quote->status;
+        $feeAmount = $dirtyZeroDistance ? null : $canonical['fee_amount'];
 
         return [
-            'ok' => $quote->status === TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'ok' => $status === TechnicalServiceRouteQuote::STATUS_CALCULATED,
             'id' => $quote->id,
             'technician_id' => $quote->technician_id,
-            'status' => $quote->status,
+            'status' => $status,
             'origin_latitude' => $quote->origin_latitude !== null ? (float) $quote->origin_latitude : null,
             'origin_longitude' => $quote->origin_longitude !== null ? (float) $quote->origin_longitude : null,
             'destination_latitude' => $quote->destination_latitude !== null ? (float) $quote->destination_latitude : null,
@@ -407,18 +410,20 @@ class TechnicalServiceRouteCostService
             'billable_km' => $canonical['billable_km'],
             'extra_km' => $canonical['billable_km'],
             'straight_line_distance_km' => $this->quoteStraightLineKm($quote),
-            'suspicious_route' => (bool) data_get($quote->raw_payload, 'suspicious_route', false),
-            'travel_fee_required' => (bool) $quote->travel_fee_required,
+            'suspicious_route' => $dirtyZeroDistance || (bool) data_get($quote->raw_payload, 'suspicious_route', false),
+            'travel_fee_required' => $dirtyZeroDistance ? false : (bool) $quote->travel_fee_required,
             'fee_per_km' => $canonical['fee_per_km'],
             'current_fee_per_km' => $currentFeePerKm,
             'fee_per_km_matches_current' => $feePerKmMatchesCurrent,
-            'fee_amount' => $canonical['fee_amount'],
+            'fee_amount' => $feeAmount,
             'provider' => $quote->provider,
             'source' => $quote->provider,
             'manual_override' => (bool) data_get($quote->raw_payload, 'manual_override', false),
             'manual_note' => data_get($quote->raw_payload, 'manual_note'),
             'calculated_at' => $quote->calculated_at?->toISOString(),
-            'message' => $this->messageFor($quote),
+            'message' => $dirtyZeroDistance
+                ? 'Google Routes mesafe bilgisi döndürmedi. Konumlar kontrol edilmeli.'
+                : $this->messageFor($quote),
         ];
     }
 
@@ -504,11 +509,17 @@ class TechnicalServiceRouteCostService
         $billableKm = $roundTripKm !== null ? round(max($roundTripKm - $thresholdKm, 0), 2) : null;
         $feePerKm = $quote->fee_per_km !== null ? (float) $quote->fee_per_km : null;
         $manualOverride = (bool) data_get($quote->raw_payload, 'manual_override', false);
-        $feeAmount = $quote->fee_amount !== null
-            ? (float) $quote->fee_amount
-            : ($billableKm !== null && $billableKm <= 0
-                ? 0.0
-                : ($billableKm !== null && $feePerKm !== null && ! $manualOverride ? round($billableKm * $feePerKm, 2) : null));
+        if ($roundTripKm !== null && $roundTripKm <= 0) {
+            $feeAmount = 0.0;
+        } elseif ($quote->fee_amount !== null) {
+            $feeAmount = (float) $quote->fee_amount;
+        } elseif ($billableKm !== null && $billableKm <= 0) {
+            $feeAmount = 0.0;
+        } else {
+            $feeAmount = $billableKm !== null && $feePerKm !== null && ! $manualOverride
+                ? round($billableKm * $feePerKm, 2)
+                : null;
+        }
 
         return [
             'one_way_distance_km' => $oneWayKm,
@@ -542,6 +553,10 @@ class TechnicalServiceRouteCostService
 
         $canonical = $this->canonicalDistances($quote);
 
+        if ($this->isDirtyZeroDistanceQuote($quote, $canonical)) {
+            return false;
+        }
+
         if ($canonical['round_trip_distance_km'] === null || $canonical['billable_km'] === null) {
             return false;
         }
@@ -561,6 +576,10 @@ class TechnicalServiceRouteCostService
     {
         $canonical = $this->canonicalDistances($quote);
 
+        if ($this->isDirtyZeroDistanceQuote($quote, $canonical)) {
+            return;
+        }
+
         $request->forceFill([
             'travel_round_trip_km' => $canonical['round_trip_distance_km'],
             'travel_billable_km' => $canonical['billable_km'],
@@ -568,6 +587,21 @@ class TechnicalServiceRouteCostService
             'travel_calculation_source' => $quote->provider,
             'travel_calculated_at' => now(),
         ])->save();
+    }
+
+    /**
+     * @param array{one_way_distance_km:?float,round_trip_distance_km:?float,threshold_km:float,billable_km:?float,fee_per_km:?float,fee_amount:?float} $canonical
+     */
+    private function isDirtyZeroDistanceQuote(TechnicalServiceRouteQuote $quote, array $canonical): bool
+    {
+        $straightLineKm = $this->quoteStraightLineKm($quote);
+
+        return $quote->provider === TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES
+            && $quote->status === TechnicalServiceRouteQuote::STATUS_CALCULATED
+            && $canonical['one_way_distance_km'] !== null
+            && $canonical['one_way_distance_km'] <= 0.0
+            && $straightLineKm !== null
+            && $straightLineKm > self::SAME_LOCATION_GUARD_KM;
     }
 
     private function numericOrNull(mixed $value): ?float

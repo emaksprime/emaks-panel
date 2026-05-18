@@ -344,6 +344,52 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         Http::assertSentCount(0);
     }
 
+    public function test_dirty_zero_distance_quote_is_not_displayed_as_calculated_fee(): void
+    {
+        config([
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+
+        $request = $this->technicalServiceRequestWithLocation();
+        $technician = $this->technicianWithLocation([
+            'latitude' => 40.192,
+            'longitude' => 29.061,
+        ]);
+        $quote = TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician->id,
+            'origin_latitude' => $technician->latitude,
+            'origin_longitude' => $technician->longitude,
+            'destination_latitude' => $request->location_latitude,
+            'destination_longitude' => $request->location_longitude,
+            'distance_meters' => 0,
+            'distance_km' => 0,
+            'duration_seconds' => 0,
+            'threshold_km' => 30,
+            'extra_km' => 0,
+            'fee_per_km' => 10,
+            'fee_amount' => 10,
+            'travel_fee_required' => false,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'raw_payload' => [
+                'one_way_distance_meters' => 0,
+                'round_trip_distance_meters' => 0,
+                'straight_line_distance_km' => 120.28,
+            ],
+            'calculated_at' => now(),
+        ]);
+
+        $payload = app(TechnicalServiceRouteCostService::class)->payload($quote);
+
+        $this->assertFalse($payload['ok']);
+        $this->assertSame(TechnicalServiceRouteQuote::STATUS_FAILED, $payload['status']);
+        $this->assertSame(0.0, $payload['round_trip_distance_km']);
+        $this->assertNull($payload['fee_amount']);
+        $this->assertTrue($payload['suspicious_route']);
+        $this->assertSame('Google Routes mesafe bilgisi döndürmedi. Konumlar kontrol edilmeli.', $payload['message']);
+    }
+
     public function test_manual_route_quote_endpoint_recalculates_or_overrides_fee_without_closing_request_payload(): void
     {
         $user = $this->adminUser();
@@ -420,6 +466,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $payment = TechnicalServiceMountPayment::query()->firstOrFail();
 
         $this->assertSame($session->id, $payment->technical_service_mount_session_id);
+        $this->assertSame($request->id, $payment->technical_service_request_id);
         $this->assertSame('operation_extra_mount_fee', $payment->raw_payload['source']);
         $this->assertSame($request->id, $payment->raw_payload['technical_service_request_id']);
         $this->assertSame([$serial->id], $payment->raw_payload['selected_serial_ids']);
@@ -451,6 +498,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
             'provider' => 'fake',
             'provider_reference' => 'fake-extra-'.uniqid(),
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
@@ -458,7 +506,6 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'currency' => 'TRY',
             'raw_payload' => [
                 'source' => 'operation_extra_mount_fee',
-                'technical_service_request_id' => $request->id,
                 'mrn' => $request->mrn,
                 'selected_serial_ids' => [$serial->id],
                 'reason' => 'route_fee',

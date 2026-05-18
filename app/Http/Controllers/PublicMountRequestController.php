@@ -293,7 +293,7 @@ class PublicMountRequestController extends Controller
             return;
         }
 
-        $requestId = $payload['technical_service_request_id'] ?? null;
+        $requestId = $payment->technical_service_request_id ?? ($payload['technical_service_request_id'] ?? null);
 
         if (! is_numeric($requestId)) {
             return;

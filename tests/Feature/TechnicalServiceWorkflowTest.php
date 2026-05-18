@@ -145,6 +145,61 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('bekliyor', $request->technician_approval_status);
     }
 
+    public function test_assign_endpoint_allows_customer_confirmation_pending_request_to_wait_for_technician_approval(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Müşteri Onayı Ustası',
+            'phone' => '+905551111113',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Müşteri Onayı Bekleyen',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $quote = TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician->id,
+            'distance_meters' => 61330,
+            'distance_km' => 61.33,
+            'threshold_km' => 30,
+            'extra_km' => 31.33,
+            'fee_per_km' => 10,
+            'fee_amount' => 313.3,
+            'travel_fee_required' => true,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'raw_payload' => [
+                'one_way_distance_meters' => 30660,
+                'round_trip_distance_meters' => 61330,
+            ],
+            'calculated_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'route_quote_id' => $quote->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.technician_approval_status', 'bekliyor')
+            ->assertJsonPath('request.route_quote.id', $quote->id)
+            ->assertJsonPath('request.route_quote.fee_amount', 313.3);
+
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'technician_updated',
+            'title' => 'Usta bilgisi güncellendi',
+        ]);
+    }
+
     public function test_operation_control_patch_persists_and_unlocks_assignment(): void
     {
         $user = $this->adminUser();
@@ -244,7 +299,10 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.technician_name', $selectedTechnician->name)
             ->assertJsonPath('request.technician_phone', $selectedTechnician->phone)
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
-            ->assertJsonPath('request.technician_approval_status', 'bekliyor');
+            ->assertJsonPath('request.technician_approval_status', 'bekliyor')
+            ->assertJsonPath('request.route_quote.id', $quote->id)
+            ->assertJsonPath('request.route_quote.technician_id', $selectedTechnician->id)
+            ->assertJsonPath('request.route_quote.fee_amount', 150);
 
         $request->refresh();
 

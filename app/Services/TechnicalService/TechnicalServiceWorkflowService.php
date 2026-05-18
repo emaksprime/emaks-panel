@@ -106,7 +106,7 @@ class TechnicalServiceWorkflowService
             'Eksik Bilgi / Fotoğraf Bekleyen' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen'],
             'Müşteri Aranacak' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede'],
             'Müşteriye Ulaşılamadı' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede'],
-            'Müşteri Onayı Bekleyen' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayladı', 'Beklemede'],
+            'Müşteri Onayı Bekleyen' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayladı', 'Usta Onayı Bekleyen', 'Beklemede'],
             'Müşteri Onayladı' => ['Randevu Planlandı', 'Beklemede'],
             'Randevu Planlandı' => ['Yeni Talep', 'Usta Ataması Bekleyen', 'Usta Onayı Bekleyen', 'Beklemede', 'Tamamlandı'],
             'Usta Ataması Bekleyen' => ['Usta Onayı Bekleyen', 'Usta Tarih Revize Talebi', 'Beklemede'],
@@ -168,6 +168,7 @@ class TechnicalServiceWorkflowService
                 'customer_callback_scheduled' => 'Müşteriye Ulaşılamadı',
                 'customer_confirmation_pending' => 'Müşteri Onayı Bekleyen',
                 'customer_confirmed' => 'Müşteri Onayladı',
+                'assign_technician' => 'Usta Onayı Bekleyen',
                 'customer_rejected' => 'Beklemede',
                 'wrong_number' => 'Beklemede',
                 'customer_requested_cancel' => 'Beklemede',
@@ -1273,16 +1274,22 @@ class TechnicalServiceWorkflowService
             return null;
         }
 
-        $payment = TechnicalServiceMountPayment::query()
+        $payments = TechnicalServiceMountPayment::query()
             ->where('technical_service_mount_session_id', $request->mount_session_id)
             ->latest('id')
-            ->get()
-            ->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
-                $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+            ->get();
 
-                return ($payload['source'] ?? null) === 'operation_extra_mount_fee'
-                    && (int) ($payload['technical_service_request_id'] ?? 0) === (int) $request->id;
-            });
+        $payment = $payments->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
+            $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+            return (int) ($payment->technical_service_request_id ?? 0) === (int) $request->id
+                && ($payload['source'] ?? null) === 'operation_extra_mount_fee';
+        }) ?? $payments->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
+            $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+            return ($payload['source'] ?? null) === 'operation_extra_mount_fee'
+                && (int) ($payload['technical_service_request_id'] ?? 0) === (int) $request->id;
+        });
 
         if (! $payment instanceof TechnicalServiceMountPayment) {
             return null;
