@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
 const statusVariant = (status: ServiceRequest['status']) => {
@@ -99,11 +99,14 @@ type ServiceRequestDetailsProps = {
   routeQuoteError?: string | null
   routeQuoteManualSaveLoading?: boolean
   routeQuoteManualSaveError?: string | null
+  extraPaymentCreateLoading?: boolean
+  extraPaymentCreateError?: string | null
   assignLoading?: boolean
   canSubmitAssign?: boolean
   onTechnicianSelect?: (technicianId: string, estimatedRoundTripKm?: number | null) => void
   onRouteQuoteCalculate?: () => void | Promise<void>
   onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
+  onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
   onAssignSelectedTechnician?: () => void | Promise<void>
 }
 
@@ -460,6 +463,7 @@ const InvoiceSerialRow = ({
       <MiniMetric label="Model" value={displayOrEmpty(serial.product_model, '-')} />
       <MiniMetric label="Stok kodu" value={displayOrEmpty(serial.stock_code, '-')} />
       <MiniMetric label="Durum etiketi" value={serialToneLabel(serial)} />
+      <MiniMetric label="Montaj durumu" value={displayOrEmpty(serial.mount_status_label, serial.mount_payment_status === 'paid' ? 'Montaj Dahil' : '-')} />
       {serial.hidden_reason ? (
         <MiniMetric
           label="Müşteri görünürlüğü"
@@ -748,11 +752,14 @@ export function ServiceRequestDetails({
   routeQuoteError = null,
   routeQuoteManualSaveLoading = false,
   routeQuoteManualSaveError = null,
+  extraPaymentCreateLoading = false,
+  extraPaymentCreateError = null,
   assignLoading = false,
   canSubmitAssign = false,
   onTechnicianSelect,
   onRouteQuoteCalculate,
   onRouteQuoteManualSave,
+  onExtraMountPaymentCreate,
   onAssignSelectedTechnician,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
@@ -789,6 +796,7 @@ export function ServiceRequestDetails({
   const [routeFeePerKmInput, setRouteFeePerKmInput] = useState('')
   const [routeFeeBillableKmInput, setRouteFeeBillableKmInput] = useState('')
   const [routeFeeAmountInput, setRouteFeeAmountInput] = useState('')
+  const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
@@ -871,6 +879,18 @@ export function ServiceRequestDetails({
   const routeFeeAmount = hasActiveRouteQuote && typeof activeRouteQuote?.fee_amount === 'number' && Number.isFinite(activeRouteQuote.fee_amount)
     ? activeRouteQuote.fee_amount
     : null
+  const routeStraightLineKm = hasActiveRouteQuote && typeof activeRouteQuote?.straight_line_distance_km === 'number' && Number.isFinite(activeRouteQuote.straight_line_distance_km)
+    ? activeRouteQuote.straight_line_distance_km
+    : null
+  const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
+  const extraMountPayment = saleAndPayment?.extra_mount_payment ?? null
+  const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
+  const canCreateExtraPayment = Boolean(
+    selectedTechnician
+    && onExtraMountPaymentCreate
+    && extraPaymentAmount !== null
+    && extraPaymentAmount > 0,
+  )
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
     selectedTechnician?.latitude ?? selectedTechnician?.startLatitude,
     selectedTechnician?.longitude ?? selectedTechnician?.startLongitude,
@@ -889,6 +909,7 @@ export function ServiceRequestDetails({
     feePerKm: routeFeePerKmInput,
     billable: routeFeeBillableKmInput,
     amount: routeFeeAmountInput,
+    extraPayment: routeFeeExtraPaymentInput,
     manualAmountTouched: routeFeeManualAmountTouched,
     note: routeFeeNote.trim(),
   })
@@ -938,6 +959,7 @@ export function ServiceRequestDetails({
     feePerKm: string,
     billable: string,
     amount: string,
+    extraPayment: string,
     manualAmountTouched: boolean,
     note: string,
   ) => JSON.stringify({
@@ -947,6 +969,7 @@ export function ServiceRequestDetails({
     feePerKm,
     billable,
     amount,
+    extraPayment,
     manualAmountTouched,
     note: note.trim(),
   })
@@ -976,6 +999,7 @@ export function ServiceRequestDetails({
     const feePerKm = numericInputValue(routeFeePerKm)
     const billable = hasActiveRouteQuote ? numericInputValue(routeBillableKm) : '0'
     const amount = hasActiveRouteQuote ? numericInputValue(routeFeeAmount) : '0'
+    const extraPayment = hasActiveRouteQuote ? numericInputValue(routeFeeAmount) : '0'
     const manualTouched = Boolean(activeRouteQuote?.manual_override)
     const note = activeRouteQuote?.manual_note ?? ''
 
@@ -985,9 +1009,10 @@ export function ServiceRequestDetails({
     setRouteFeePerKmInput(feePerKm)
     setRouteFeeBillableKmInput(billable)
     setRouteFeeAmountInput(amount)
+    setRouteFeeExtraPaymentInput(extraPayment)
     setRouteFeeManualAmountTouched(manualTouched)
     setRouteFeeNote(note)
-    setRouteFeeEditorInitialSnapshot(routeFeeEditorSnapshot(oneWay, roundTrip, threshold, feePerKm, billable, amount, manualTouched, note))
+    setRouteFeeEditorInitialSnapshot(routeFeeEditorSnapshot(oneWay, roundTrip, threshold, feePerKm, billable, amount, extraPayment, manualTouched, note))
     setRouteFeeEditorMessage(null)
     setRouteFeeEditorOpen(true)
   }
@@ -1054,6 +1079,36 @@ export function ServiceRequestDetails({
     } catch {
       // Parent keeps the error message; keep this editor open so the operator can correct values.
     }
+  }
+  const handleExtraPaymentCreate = async () => {
+    if (!selectedTechnician || !onExtraMountPaymentCreate) {
+      setRouteFeeEditorMessage('Önce usta seçin.')
+
+      return
+    }
+
+    if (extraPaymentAmount === null || extraPaymentAmount <= 0) {
+      setRouteFeeEditorMessage('Ek ödeme tutarı 0 TL ise ödeme linki gerekmez.')
+
+      return
+    }
+
+    const selectedSerialIds = invoiceSerials?.selected_serials
+      ?.map((serial) => serial.id)
+      .filter((id): id is number | string => id !== null && id !== undefined) ?? []
+
+    const payload: ServiceRequestExtraMountPaymentPayload = {
+      route_quote_id: activeRouteQuote?.id ?? null,
+      technician_id: selectedTechnician.id,
+      selected_serial_ids: selectedSerialIds,
+      amount: extraPaymentAmount,
+      currency: 'TRY',
+      reason: 'route_fee',
+      note: routeFeeNote.trim() || null,
+    }
+
+    await onExtraMountPaymentCreate(payload)
+    setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
   }
   const operationControlChange = <K extends keyof NonNullable<ServiceRequest['operationControl']>>(
     key: K,
@@ -1687,6 +1742,11 @@ export function ServiceRequestDetails({
                     {routeQuoteManualSaveError}
                   </div>
                 ) : null}
+                {extraPaymentCreateError ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    {extraPaymentCreateError}
+                  </div>
+                ) : null}
                 {routeQuoteStaleForSelectedTechnician ? (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
                     {routeFeeStaleMessage}
@@ -1698,6 +1758,11 @@ export function ServiceRequestDetails({
                     <p className="mt-1 text-blue-800">{routeFeeNotCalculatedHint}</p>
                   </div>
                 ) : null}
+                {routeSuspicious ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    Rota mesafesi düz çizgi mesafesine göre yüksek. Konumlar kontrol edilmeli.
+                  </div>
+                ) : null}
                 <div className="grid gap-2 sm:grid-cols-2">
                   <MiniMetric label="Usta şehir/adres bilgisi" value={selectedTechnician ? (selectedTechnician.hasAddressInfo ? 'Var' : 'Usta adres bilgisi eksik') : 'Usta seçilmedi'} hint={selectedTechnician?.addressSummary ?? undefined} />
                   <MiniMetric label="Usta koordinatı" value={selectedTechnician ? (selectedTechnician.hasCoordinates ? 'Gerçek koordinat var' : 'Gerçek koordinat eksik') : 'Usta seçilmedi'} hint={selectedTechnician && !selectedTechnician.hasCoordinates && (selectedTechnician.hasPlusCodeInfo || selectedTechnician.hasAddressInfo) ? 'Usta adres/Plus Code var, gerçek koordinat eksik.' : undefined} />
@@ -1706,7 +1771,8 @@ export function ServiceRequestDetails({
                     <MiniMetric label="Koordinat kontrolü" value="Koordinat kontrol gerekli" hint="Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı." />
                   ) : null}
                   <MiniMetric label="Müşteri konumu var mı?" value={locationInfo?.shared ? 'Var' : 'Yok'} />
-                  <MiniMetric label="Tek yön yol mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasActiveRouteQuote && activeRouteQuote?.duration_text ? `Tahmini süre: ${activeRouteQuote.duration_text}` : 'Yol hesabı yapılınca gösterilir.'} />
+                  <MiniMetric label="Usta ↔ müşteri düz çizgi mesafesi" value={formatKmValue(routeStraightLineKm)} hint="Bu değer rota ücreti hesabında kullanılmaz." />
+                  <MiniMetric label="Google Routes tek yön mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasActiveRouteQuote && activeRouteQuote?.duration_text ? `Tahmini süre: ${activeRouteQuote.duration_text}` : 'Yol hesabı yapılınca gösterilir.'} />
                   <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasActiveRouteQuote ? undefined : 'Yol hesabı sonucu yok.'} />
                   <MiniMetric label="Ücretsiz sınır" value={formatKmValue(activeRouteQuote?.threshold_km ?? routeFeeConfigThresholdKm)} />
                   <MiniMetric label="Ücrete tabi km" value={formatKmValue(routeBillableKm)} hint={hasActiveRouteQuote ? undefined : 'Yol hesabı yapılmadan ücrete tabi km hesaplanmaz.'} />
@@ -1730,6 +1796,19 @@ export function ServiceRequestDetails({
                   />
                   <MiniMetric label="Usta adı" value={selectedTechnician?.name ?? '-'} />
                 </div>
+                {activeRouteQuote ? (
+                  <details className="rounded-2xl border border-blue-100 bg-white/70 p-3 text-xs text-blue-950">
+                    <summary className="cursor-pointer font-semibold text-blue-900">Teknik detay</summary>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      <MiniMetric label="Origin lat/lng" value={`${displayOrEmpty(String(activeRouteQuote.origin_latitude ?? ''), '-')}, ${displayOrEmpty(String(activeRouteQuote.origin_longitude ?? ''), '-')}`} />
+                      <MiniMetric label="Destination lat/lng" value={`${displayOrEmpty(String(activeRouteQuote.destination_latitude ?? ''), '-')}, ${displayOrEmpty(String(activeRouteQuote.destination_longitude ?? ''), '-')}`} />
+                      <MiniMetric label="Route quote id" value={displayOrEmpty(String(activeRouteQuote.id ?? ''), '-')} />
+                      <MiniMetric label="Selected technician id" value={displayOrEmpty(String(selectedTechnicianId ?? ''), '-')} />
+                      <MiniMetric label="Quote technician id" value={displayOrEmpty(String(activeRouteQuote.technician_id ?? ''), '-')} />
+                      <MiniMetric label="Route source" value={displayOrEmpty(activeRouteQuote.source ?? activeRouteQuote.provider, '-')} />
+                    </div>
+                  </details>
+                ) : null}
                 {routeFeeEditorOpen ? (
                   <div className="grid gap-3 rounded-2xl border border-blue-200 bg-white p-3 text-sm text-slate-700">
                     <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1776,6 +1855,10 @@ export function ServiceRequestDetails({
                         Yol ücreti tutarı
                         <Input type="number" min="0" step="0.01" value={routeFeeAmountInput} onChange={(event) => handleRouteFeeAmountChange(event.target.value)} />
                       </label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Müşteriden istenecek ek ödeme tutarı
+                        <Input type="number" min="0" step="0.01" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+                      </label>
                     </div>
                     <label className="grid gap-2 text-sm font-medium text-slate-700">
                       Not
@@ -1786,7 +1869,33 @@ export function ServiceRequestDetails({
                         placeholder="Yol ücreti veya müşteri onayı için operasyon notu"
                       />
                     </label>
+                    {extraMountPayment?.payment_url ? (
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+                        <p className="font-semibold">
+                          {extraMountPayment.status === 'paid' ? 'Ödeme onaylandı' : 'Ödeme linki oluşturuldu'}
+                        </p>
+                        <p className="mt-1 break-all">{extraMountPayment.payment_url}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}>
+                            Linki kopyala
+                          </Button>
+                          <Button asChild type="button" size="sm" variant="outline">
+                            <a href={`${whatsappHref || '#'}${whatsappHref ? `?text=${encodeURIComponent(`Ek montaj ödemeniz için link: ${extraMountPayment.payment_url}`)}` : ''}`} target="_blank" rel="noreferrer">
+                              WhatsApp ile gönder
+                            </a>
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="flex flex-wrap justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void handleExtraPaymentCreate()}
+                        disabled={!canCreateExtraPayment || extraPaymentCreateLoading}
+                      >
+                        {extraPaymentCreateLoading ? 'Link oluşturuluyor...' : 'Ödeme linki oluştur'}
+                      </Button>
                       <Button type="button" variant="secondary" onClick={() => setRouteFeeEditorOpen(false)}>İptal</Button>
                       <Button type="button" onClick={() => void handleRouteFeeManualSave()} disabled={!selectedTechnician || !routeFeeEditorHasChanges || routeQuoteManualSaveLoading || !onRouteQuoteManualSave}>
                         {routeQuoteManualSaveLoading ? 'Kaydediliyor...' : 'Kaydet'}

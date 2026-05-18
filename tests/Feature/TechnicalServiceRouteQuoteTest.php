@@ -3,6 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServiceQrLink;
+use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
@@ -56,6 +60,61 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame(145.8, $payload['extra_km']);
         $this->assertSame(10.0, $payload['fee_per_km']);
         $this->assertSame(1458.0, $payload['fee_amount']);
+    }
+
+    public function test_route_service_same_location_guard_returns_zero_fee_without_google_call(): void
+    {
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        Http::fake([
+            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        ]);
+
+        $request = $this->technicalServiceRequestWithLocation();
+        $technician = $this->technicianWithLocation([
+            'latitude' => $request->location_latitude,
+            'longitude' => $request->location_longitude,
+        ]);
+
+        $payload = app(TechnicalServiceRouteCostService::class)->quote($request, $technician);
+
+        $this->assertSame(TechnicalServiceRouteQuote::STATUS_CALCULATED, $payload['status']);
+        $this->assertSame(TechnicalServiceRouteQuote::PROVIDER_SAME_LOCATION_GUARD, $payload['source']);
+        $this->assertSame(0.0, $payload['one_way_distance_km']);
+        $this->assertSame(0.0, $payload['round_trip_distance_km']);
+        $this->assertSame(0.0, $payload['billable_km']);
+        $this->assertSame(0.0, $payload['fee_amount']);
+        $this->assertFalse($payload['travel_fee_required']);
+        $this->assertSame('Usta ve müşteri konumu aynı/çok yakın. Yol ücreti yok.', $payload['message']);
+        Http::assertSentCount(0);
+    }
+
+    public function test_route_service_marks_short_straight_line_high_route_as_suspicious(): void
+    {
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        Http::fake([
+            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForOneWayMeters(6000), 200),
+        ]);
+
+        $request = $this->technicalServiceRequestWithLocation();
+        $technician = $this->technicianWithLocation([
+            'latitude' => 41.0182376,
+            'longitude' => 28.9783589,
+        ]);
+
+        $payload = app(TechnicalServiceRouteCostService::class)->quote($request, $technician, true);
+
+        $this->assertSame(6.0, $payload['one_way_distance_km']);
+        $this->assertSame(12.0, $payload['round_trip_distance_km']);
+        $this->assertTrue($payload['suspicious_route']);
+        $this->assertGreaterThan(0.1, $payload['straight_line_distance_km']);
+        $this->assertLessThanOrEqual(2.0, $payload['straight_line_distance_km']);
+        $this->assertSame('Rota mesafesi düz çizgi mesafesine göre yüksek. Konumlar kontrol edilmeli.', $payload['message']);
     }
 
     public function test_route_service_keeps_fee_amount_null_when_fee_setting_is_missing(): void
@@ -330,6 +389,98 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('request.travel_fee_amount', '1500.00');
     }
 
+    public function test_extra_mount_fee_payment_link_creates_payment_for_mrn_and_serials(): void
+    {
+        $user = $this->adminUser();
+        [$request, $session, $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+        $quote = $this->createCachedQuote($request, $technician, 10.0, 150.0);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'route_quote_id' => $quote->id,
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 150,
+                'currency' => 'TRY',
+                'reason' => 'route_fee',
+                'note' => 'Ek yol ücreti',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('payment.amount', 150)
+            ->assertJsonPath('payment.currency', 'TRY')
+            ->assertJsonPath('request.id', $request->id)
+            ->assertJsonPath('request.sale_and_payment.mount_payment_status', TechnicalServiceMountSession::PAYMENT_PENDING)
+            ->assertJsonPath('request.sale_and_payment.extra_mount_payment.status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->assertJsonPath('request.invoice_serials.selected_serials.0.mount_payment_status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->assertJsonPath('request.invoice_serials.selected_serials.0.mount_status_label', 'Ek ödeme bekleniyor');
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->assertSame($session->id, $payment->technical_service_mount_session_id);
+        $this->assertSame('operation_extra_mount_fee', $payment->raw_payload['source']);
+        $this->assertSame($request->id, $payment->raw_payload['technical_service_request_id']);
+        $this->assertSame([$serial->id], $payment->raw_payload['selected_serial_ids']);
+        $this->assertNotEmpty($payment->payment_url);
+    }
+
+    public function test_extra_mount_fee_payment_rejects_zero_amount(): void
+    {
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 0,
+                'currency' => 'TRY',
+                'reason' => 'route_fee',
+            ])
+            ->assertJsonValidationErrors('amount');
+
+        $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
+    }
+
+    public function test_fake_approve_extra_mount_fee_marks_request_and_selected_serials_paid(): void
+    {
+        [$request, $session, $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-extra-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 150,
+            'currency' => 'TRY',
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'technical_service_request_id' => $request->id,
+                'mrn' => $request->mrn,
+                'selected_serial_ids' => [$serial->id],
+                'reason' => 'route_fee',
+                'note' => 'Ek yol ücreti',
+            ],
+        ]);
+
+        $this->get("/mount-payment/fake/{$payment->id}/approve")
+            ->assertRedirect('/');
+
+        $payment->refresh();
+        $request->refresh();
+        $serial->refresh();
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->status);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $request->mount_payment_status);
+        $this->assertSame(TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL, $request->sale_mount_status);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $serial->source_payload['mount_payment_status']);
+        $this->assertSame('Montaj Dahil', $serial->source_payload['mount_status_label']);
+        $this->assertTrue($serial->operation_added);
+        $this->assertSame('green', $serial->color_status);
+    }
+
     public function test_technician_api_returns_coordinate_and_address_fields_for_route_ui(): void
     {
         $user = $this->adminUser();
@@ -402,6 +553,14 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Yol hesabı durumu',
             'routeQuoteActiveForSelectedTechnician',
             'activeRouteQuote',
+            'Usta ↔ müşteri düz çizgi mesafesi',
+            'Google Routes tek yön mesafesi',
+            'Müşteriden istenecek ek ödeme tutarı',
+            'Ödeme linki oluştur',
+            'WhatsApp ile gönder',
+            'Teknik detay',
+            'Rota mesafesi düz çizgi mesafesine göre yüksek',
+            'Montaj durumu',
             'Km başı ücret (sabit ayar)',
             'Hesaplanmadı',
             "hasActiveRouteQuote ? numericInputValue(routeOneWayKm) : ''",
@@ -451,7 +610,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         foreach ([
             'Operasyon ve Montaj Kontrolü',
             'Usta / Çilingir Atama',
-            'Tek yön yol mesafesi',
+            'Google Routes tek yön mesafesi',
             'Ücretsiz sınır',
             'Ücrete tabi km',
             'Km başı ücret (sabit ayar)',
@@ -484,6 +643,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Ücrete tabi km',
             'Tahmini yol ücreti',
             'route-quote',
+            'payments/extra-mount-fee',
+            'handleExtraMountPaymentCreate',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);
         }
@@ -608,15 +769,60 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         ]);
     }
 
-    private function technicianWithLocation(): TechnicalServiceTechnician
+    /**
+     * @return array{0:TechnicalServiceRequest,1:TechnicalServiceMountSession,2:TechnicalServiceRequestSerial}
+     */
+    private function technicalServiceRequestWithSessionAndSerial(): array
     {
-        return TechnicalServiceTechnician::query()->create([
+        ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => 'SN-LINK-'.uniqid(),
+            'product_name' => 'Link Ürün',
+            'product_model' => 'Model 1',
+            'brand' => 'Emaks',
+        ]);
+        ['session' => $session] = TechnicalServiceMountSession::startForLink($link);
+        $request = $this->technicalServiceRequestWithLocation();
+        $request->forceFill([
+            'qr_link_id' => $link->id,
+            'mount_session_id' => $session->id,
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+            'mount_payment_label' => 'Çoklu ürün talebi - ödeme operasyon tarafından netleştirilecek',
+        ])->save();
+
+        $serial = TechnicalServiceRequestSerial::query()->create([
+            'technical_service_request_id' => $request->id,
+            'mrn' => $request->mrn,
+            'linked_mrn' => $request->mrn,
+            'customer_phone' => $request->customer_phone,
+            'serial_number' => 'SN-EXTRA-'.uniqid(),
+            'product_name' => 'Ek Ürün',
+            'customer_selected' => true,
+            'customer_selectable' => true,
+            'customer_visible' => true,
+            'operation_added' => true,
+            'is_primary' => false,
+            'is_returned' => false,
+            'color_status' => 'green',
+            'source_payload' => [],
+        ]);
+
+        return [$request->fresh(), $session, $serial];
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function technicianWithLocation(array $overrides = []): TechnicalServiceTechnician
+    {
+        return TechnicalServiceTechnician::query()->create(array_merge([
             'name' => 'Rota Usta',
             'phone' => '+905555555552',
             'city' => 'İstanbul',
             'active' => true,
             'latitude' => 41.025,
             'longitude' => 29.015,
-        ]);
+        ], $overrides));
     }
 }

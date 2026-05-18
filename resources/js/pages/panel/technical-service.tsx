@@ -21,6 +21,7 @@ import type {
   ServiceFilters as FilterState,
   ServicePriority,
   ServiceRequest,
+  ServiceRequestExtraMountPaymentPayload,
   ServiceRequestRouteQuote,
   ServiceRequestRouteQuoteManualPayload,
   ServiceTechnician,
@@ -811,6 +812,8 @@ export function TechnicalServiceOperationCenter() {
   const [routeQuoteError, setRouteQuoteError] = useState<string | null>(null)
   const [routeQuoteManualSaveLoading, setRouteQuoteManualSaveLoading] = useState(false)
   const [routeQuoteManualSaveError, setRouteQuoteManualSaveError] = useState<string | null>(null)
+  const [extraPaymentCreateLoading, setExtraPaymentCreateLoading] = useState(false)
+  const [extraPaymentCreateError, setExtraPaymentCreateError] = useState<string | null>(null)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
@@ -1939,6 +1942,7 @@ export function TechnicalServiceOperationCenter() {
     setShowNearbyTechnicians(false)
     setAssignError(null)
     setRouteQuoteError(null)
+    setExtraPaymentCreateError(null)
     setRouteQuoteLoading(false)
   }
 
@@ -2401,13 +2405,57 @@ export function TechnicalServiceOperationCenter() {
         setTravelRoundTripKm(String(responseRoundTripKm))
       }
 
-      setRouteQuoteError(typeof response.message === 'string' ? response.message : null)
+      const responseStatus = typeof response.status === 'string' ? response.status : null
+      const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
+
+      setRouteQuoteError(routeQuoteFailed
+        ? (typeof response.message === 'string' ? response.message : 'Yol ücreti kaydedilemedi.')
+        : null)
     } catch (caught) {
       setRouteQuoteManualSaveError(caught instanceof Error ? caught.message : 'Yol ücreti kaydedilemedi.')
 
       throw caught
     } finally {
       setRouteQuoteManualSaveLoading(false)
+    }
+  }
+
+  const handleExtraMountPaymentCreate = async (payload: ServiceRequestExtraMountPaymentPayload) => {
+    if (!selectedId) {
+      return
+    }
+
+    setExtraPaymentCreateLoading(true)
+    setExtraPaymentCreateError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/extra-mount-fee`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (!updatedRequest) {
+        setExtraPaymentCreateError('Ödeme linki oluşturuldu ancak talep detayı güncellenemedi.')
+
+        return
+      }
+
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+    } catch (caught) {
+      setExtraPaymentCreateError(caught instanceof Error ? caught.message : 'Ödeme linki oluşturulamadı.')
+
+      throw caught
+    } finally {
+      setExtraPaymentCreateLoading(false)
     }
   }
 
@@ -2680,6 +2728,7 @@ export function TechnicalServiceOperationCenter() {
     setTravelRoundTripKm('')
     setRouteQuoteError(null)
     setRouteQuoteManualSaveError(null)
+    setExtraPaymentCreateError(null)
     setShowNearbyTechnicians(false)
     setSelectedId(request.id)
     setIsDetailDialogOpen(true)
@@ -3998,10 +4047,14 @@ export function TechnicalServiceOperationCenter() {
                       setAssignTechnicianOption(technicianId)
                       setRouteQuoteError(null)
                       setRouteQuoteManualSaveError(null)
+                      setExtraPaymentCreateError(null)
                       setTravelRoundTripKm('')
                     }}
                     onRouteQuoteCalculate={handleRouteQuoteCalculate}
                     onRouteQuoteManualSave={handleRouteQuoteManualSave}
+                    onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
+                    extraPaymentCreateLoading={extraPaymentCreateLoading}
+                    extraPaymentCreateError={extraPaymentCreateError}
                     onAssignSelectedTechnician={handleAssignSubmit}
                   />
                 ) : (

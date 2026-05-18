@@ -3,6 +3,7 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceAuditLog;
+use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -1162,6 +1163,8 @@ class TechnicalServiceWorkflowService
      */
     private function saleAndPaymentPayload(TechnicalServiceRequest $request): array
     {
+        $extraPayment = $this->latestExtraMountPaymentPayload($request);
+
         return [
             'sale_mount_status' => $request->sale_mount_status,
             'sale_mount_label' => $this->saleMountLabel($request->sale_mount_status),
@@ -1170,6 +1173,50 @@ class TechnicalServiceWorkflowService
             'payment_reference' => $request->mount_payment_reference,
             'payment_provider' => $request->mount_payment_provider,
             'paid_at' => $this->dateTimeString($request->mount_payment_paid_at),
+            'extra_mount_payment' => $extraPayment,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function latestExtraMountPaymentPayload(TechnicalServiceRequest $request): ?array
+    {
+        if ($request->mount_session_id === null) {
+            return null;
+        }
+
+        $payment = TechnicalServiceMountPayment::query()
+            ->where('technical_service_mount_session_id', $request->mount_session_id)
+            ->latest('id')
+            ->get()
+            ->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
+                $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+                return ($payload['source'] ?? null) === 'operation_extra_mount_fee'
+                    && (int) ($payload['technical_service_request_id'] ?? 0) === (int) $request->id;
+            });
+
+        if (! $payment instanceof TechnicalServiceMountPayment) {
+            return null;
+        }
+
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+        return [
+            'id' => $payment->id,
+            'status' => $payment->status,
+            'amount' => (float) $payment->amount,
+            'currency' => $payment->currency,
+            'payment_url' => $payment->payment_url,
+            'provider' => $payment->provider,
+            'provider_reference' => $payment->provider_reference,
+            'paid_at' => $this->dateTimeString($payment->paid_at),
+            'reason' => $payload['reason'] ?? null,
+            'note' => $payload['note'] ?? null,
+            'selected_serial_ids' => is_array($payload['selected_serial_ids'] ?? null)
+                ? array_values($payload['selected_serial_ids'])
+                : [],
         ];
     }
 
@@ -1288,6 +1335,9 @@ class TechnicalServiceWorkflowService
             'current_latest_sale_date' => $source['current_latest_sale_date'] ?? null,
             'current_latest_sale_invoice_series' => $source['current_latest_sale_invoice_series'] ?? null,
             'current_latest_sale_invoice_number' => $source['current_latest_sale_invoice_number'] ?? null,
+            'mount_payment_status' => $source['mount_payment_status'] ?? $source['extra_mount_payment_status'] ?? null,
+            'mount_status_label' => $source['mount_status_label'] ?? null,
+            'extra_mount_payment_id' => $source['extra_mount_payment_id'] ?? null,
             'invoice_customer_type' => $serial->invoice_customer_type,
             'color_status' => $serial->color_status ?: $this->serialColorStatus($serial),
         ];

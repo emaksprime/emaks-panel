@@ -12,6 +12,7 @@ class TechnicalServiceRouteQuote extends Model
 
     public const PROVIDER_GOOGLE_ROUTES = 'google_routes';
     public const PROVIDER_MANUAL_OVERRIDE = 'manual_override';
+    public const PROVIDER_SAME_LOCATION_GUARD = 'same_location_guard';
 
     public const STATUS_CALCULATED = 'calculated';
     public const STATUS_FAILED = 'failed';

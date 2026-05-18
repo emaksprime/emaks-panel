@@ -13,6 +13,8 @@ use App\Http\Requests\UpdateTechnicalServiceScheduleRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
 use App\Http\Requests\UpdateTechnicalServiceWorkflowRequest;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
@@ -376,6 +378,108 @@ class TechnicalServiceController extends Controller
         return response()->json(array_merge($quote, [
             'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
         ]));
+    }
+
+    public function createExtraMountFeePayment(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        if (! app()->environment(['local', 'testing'])) {
+            throw ValidationException::withMessages([
+                'payment' => 'Ek ödeme linki için ödeme sağlayıcı entegrasyonu tanımlı değil.',
+            ]);
+        }
+
+        $validated = $request->validate([
+            'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
+            'technician_id' => ['required', 'integer', 'exists:technical_service_technicians,id'],
+            'selected_serial_ids' => ['nullable', 'array'],
+            'selected_serial_ids.*' => ['integer'],
+            'amount' => ['required', 'numeric', 'gt:0'],
+            'currency' => ['nullable', 'string', 'size:3'],
+            'reason' => ['nullable', 'string', 'in:route_fee,montage_difference,multi_product,manual_extra'],
+            'note' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        if ($technicalServiceRequest->mount_session_id === null) {
+            throw ValidationException::withMessages([
+                'payment' => 'Bu talep için ödeme oturumu bulunamadı.',
+            ]);
+        }
+
+        $session = TechnicalServiceMountSession::query()->findOrFail($technicalServiceRequest->mount_session_id);
+        $serialIds = collect($validated['selected_serial_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+        $validSerialIds = TechnicalServiceRequestSerial::query()
+            ->where('technical_service_request_id', $technicalServiceRequest->id)
+            ->whereIn('id', $serialIds)
+            ->pluck('id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->values();
+        $currency = strtoupper($validated['currency'] ?? 'TRY');
+
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-extra-'.hash('sha256', $technicalServiceRequest->id.'|'.microtime(true)),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => round((float) $validated['amount'], 2),
+            'currency' => $currency,
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'technical_service_request_id' => $technicalServiceRequest->id,
+                'mrn' => $technicalServiceRequest->mrn,
+                'route_quote_id' => $validated['route_quote_id'] ?? null,
+                'technician_id' => (int) $validated['technician_id'],
+                'selected_serial_ids' => $validSerialIds->all(),
+                'reason' => $validated['reason'] ?? 'route_fee',
+                'note' => $validated['note'] ?? null,
+            ],
+        ]);
+        $payment->forceFill([
+            'payment_url' => route('mount-payment.fake.approve', ['payment' => $payment]),
+        ])->save();
+
+        $technicalServiceRequest->forceFill([
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'mount_payment_label' => 'Ek ödeme bekleniyor',
+            'mount_payment_provider' => $payment->provider,
+            'mount_payment_reference' => $payment->provider_reference,
+        ])->save();
+
+        if ($validSerialIds->isNotEmpty()) {
+            TechnicalServiceRequestSerial::query()
+                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->whereIn('id', $validSerialIds)
+                ->get()
+                ->each(function (TechnicalServiceRequestSerial $serial) use ($payment): void {
+                    $sourcePayload = is_array($serial->source_payload) ? $serial->source_payload : [];
+                    $sourcePayload['extra_mount_payment_status'] = TechnicalServiceMountPayment::STATUS_PENDING;
+                    $sourcePayload['extra_mount_payment_id'] = $payment->id;
+                    $sourcePayload['mount_status_label'] = 'Ek ödeme bekleniyor';
+                    $serial->forceFill([
+                        'source_payload' => $sourcePayload,
+                        'operation_note' => trim((string) $serial->operation_note) !== ''
+                            ? $serial->operation_note.' | Ek ödeme linki oluşturuldu'
+                            : 'Ek ödeme linki oluşturuldu',
+                    ])->save();
+                });
+        }
+
+        $requestPayload = $this->workflowService->serialize($technicalServiceRequest->refresh(), true);
+
+        return response()->json([
+            'ok' => true,
+            'payment' => [
+                'id' => $payment->id,
+                'status' => $payment->status,
+                'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'payment_url' => $payment->payment_url,
+            ],
+            'request' => $requestPayload,
+        ], 201);
     }
 
     public function recheckInvoiceSerials(

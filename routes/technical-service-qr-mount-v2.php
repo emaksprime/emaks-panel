@@ -36,6 +36,9 @@ Route::middleware(['auth', 'panel.session'])
         Route::patch('requests/{technicalServiceRequest}/route-quote/manual', [TechnicalServiceController::class, 'manualRouteQuote'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.route-quote.manual');
+        Route::post('requests/{technicalServiceRequest}/payments/extra-mount-fee', [TechnicalServiceController::class, 'createExtraMountFeePayment'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.payments.extra-mount-fee');
         Route::patch('requests/{technicalServiceRequest}/operation-control', [TechnicalServiceController::class, 'updateOperationControl'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.operation-control');

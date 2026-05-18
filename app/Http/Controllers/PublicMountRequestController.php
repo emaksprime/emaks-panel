@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
+use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestSerial;
 use App\Services\TechnicalService\MountFlowDecisionService;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\MountSessionEnrichmentService;
@@ -272,6 +274,7 @@ class PublicMountRequestController extends Controller
             'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT,
             'decision_status' => TechnicalServiceMountSession::DECISION_FORM_OPEN,
         ])->save();
+        $this->applyExtraMountPaymentApproval($payment);
 
         $token = $request->query('token');
 
@@ -280,6 +283,73 @@ class PublicMountRequestController extends Controller
         }
 
         return redirect('/');
+    }
+
+    private function applyExtraMountPaymentApproval(TechnicalServiceMountPayment $payment): void
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+        if (($payload['source'] ?? null) !== 'operation_extra_mount_fee') {
+            return;
+        }
+
+        $requestId = $payload['technical_service_request_id'] ?? null;
+
+        if (! is_numeric($requestId)) {
+            return;
+        }
+
+        $technicalServiceRequest = TechnicalServiceRequest::query()->find((int) $requestId);
+
+        if (! $technicalServiceRequest instanceof TechnicalServiceRequest) {
+            return;
+        }
+
+        $technicalServiceRequest->forceFill([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_label' => 'Montaj ödemesi alındı',
+            'mount_payment_provider' => $payment->provider,
+            'mount_payment_reference' => $payment->provider_reference,
+            'mount_payment_paid_at' => $payment->paid_at ?? now(),
+        ])->save();
+
+        $serialIds = collect($payload['selected_serial_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->values();
+
+        $serialQuery = TechnicalServiceRequestSerial::query()
+            ->where('technical_service_request_id', $technicalServiceRequest->id);
+
+        if ($serialIds->isNotEmpty()) {
+            $serialQuery->whereIn('id', $serialIds);
+        } else {
+            $serialQuery->where(function ($query): void {
+                $query->where('customer_selected', true)
+                    ->orWhere('operation_added', true)
+                    ->orWhere('is_primary', true);
+            });
+        }
+
+        $serialQuery->get()->each(function (TechnicalServiceRequestSerial $serial) use ($payment): void {
+            $sourcePayload = is_array($serial->source_payload) ? $serial->source_payload : [];
+            $sourcePayload['extra_mount_payment_status'] = TechnicalServiceMountPayment::STATUS_PAID;
+            $sourcePayload['extra_mount_payment_id'] = $payment->id;
+            $sourcePayload['sale_mount_status'] = TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL;
+            $sourcePayload['mount_payment_status'] = TechnicalServiceMountSession::PAYMENT_PAID;
+            $sourcePayload['mount_status_label'] = 'Montaj Dahil';
+
+            $serial->forceFill([
+                'operation_added' => true,
+                'operation_added_at' => $serial->operation_added_at ?? now(),
+                'source_payload' => $sourcePayload,
+                'color_status' => 'green',
+                'operation_note' => trim((string) $serial->operation_note) !== ''
+                    ? $serial->operation_note.' | Ek ödeme onaylandı - Montaj Dahil'
+                    : 'Ek ödeme onaylandı - Montaj Dahil',
+            ])->save();
+        });
     }
 
     private function sessionForLink(TechnicalServiceQrLink $link): TechnicalServiceMountSession

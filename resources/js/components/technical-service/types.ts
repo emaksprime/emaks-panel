@@ -77,6 +77,21 @@ export type ServiceRequestSaleAndPayment = {
   payment_reference?: string | null
   payment_provider?: string | null
   paid_at?: string | null
+  extra_mount_payment?: ServiceRequestExtraMountPayment | null
+}
+
+export type ServiceRequestExtraMountPayment = {
+  id?: number | string | null
+  status?: string | null
+  amount?: number | null
+  currency?: string | null
+  payment_url?: string | null
+  provider?: string | null
+  provider_reference?: string | null
+  paid_at?: string | null
+  reason?: string | null
+  note?: string | null
+  selected_serial_ids?: Array<number | string>
 }
 
 export type ServiceRequestDocumentInfo = {
@@ -135,6 +150,9 @@ export type ServiceRequestInvoiceSerial = {
   latest_sale_conflict?: boolean
   operation_warning?: string | null
   warning_labels?: string[]
+  mount_payment_status?: string | null
+  mount_status_label?: string | null
+  extra_mount_payment_id?: number | string | null
   invoice_customer_type?: string | null
   color_status?: 'green' | 'orange' | 'red' | string | null
 }
@@ -200,6 +218,8 @@ export type ServiceRequestRouteQuote = {
   threshold_km?: number | null
   billable_km?: number | null
   extra_km?: number | null
+  straight_line_distance_km?: number | null
+  suspicious_route?: boolean
   travel_fee_required?: boolean
   fee_per_km?: number | null
   current_fee_per_km?: number | null
@@ -223,6 +243,16 @@ export type ServiceRequestRouteQuoteManualPayload = {
   fee_amount?: number | null
   manual_override?: boolean
   manual_note?: string | null
+}
+
+export type ServiceRequestExtraMountPaymentPayload = {
+  route_quote_id?: number | string | null
+  technician_id: number | string
+  selected_serial_ids?: Array<number | string>
+  amount: number
+  currency?: string
+  reason?: 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra'
+  note?: string | null
 }
 
 export type ServiceTechnician = {
