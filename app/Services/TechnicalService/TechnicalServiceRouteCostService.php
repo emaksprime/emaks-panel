@@ -153,6 +153,8 @@ class TechnicalServiceRouteCostService
                 'calculated_at' => now(),
             ]);
 
+            $this->syncRequestTravelSummary($request, $quote);
+
             return $this->payload($quote);
         } catch (Throwable) {
             return $this->storeSafeQuote(
@@ -166,6 +168,76 @@ class TechnicalServiceRouteCostService
         }
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     *
+     * @return array<string, mixed>
+     */
+    public function manualQuote(TechnicalServiceRequest $request, ?TechnicalServiceTechnician $technician, array $payload): array
+    {
+        $origin = $technician instanceof TechnicalServiceTechnician
+            ? $this->technicianCoordinates($technician)
+            : null;
+        $destination = $this->requestCoordinates($request);
+
+        $thresholdKm = $this->numericOrNull($payload['threshold_km'] ?? null) ?? self::THRESHOLD_KM;
+        $oneWayKm = $this->numericOrNull($payload['one_way_distance_km'] ?? null);
+        $roundTripKm = $this->numericOrNull($payload['round_trip_distance_km'] ?? null);
+
+        if ($roundTripKm === null && $oneWayKm !== null) {
+            $roundTripKm = round($oneWayKm * 2, 2);
+        }
+
+        if ($oneWayKm === null && $roundTripKm !== null) {
+            $oneWayKm = round($roundTripKm / 2, 2);
+        }
+
+        $roundTripKm = round(max($roundTripKm ?? 0.0, 0.0), 2);
+        $oneWayKm = round(max($oneWayKm ?? ($roundTripKm / 2), 0.0), 2);
+        $billableKm = round(max($roundTripKm - $thresholdKm, 0), 2);
+        $feePerKm = $this->numericOrNull($payload['fee_per_km'] ?? null) ?? $this->feePerKm();
+        $manualOverride = filter_var($payload['manual_override'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $manualFeeAmount = $this->numericOrNull($payload['fee_amount'] ?? null);
+        $feeAmount = $manualOverride && $manualFeeAmount !== null
+            ? round(max($manualFeeAmount, 0), 2)
+            : ($billableKm > 0
+                ? ($feePerKm !== null ? round($billableKm * $feePerKm, 2) : null)
+                : 0.0);
+
+        $manualNote = trim((string) ($payload['manual_note'] ?? ''));
+
+        $quote = TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician?->id,
+            'origin_latitude' => $origin['latitude'] ?? null,
+            'origin_longitude' => $origin['longitude'] ?? null,
+            'destination_latitude' => $destination['latitude'] ?? null,
+            'destination_longitude' => $destination['longitude'] ?? null,
+            'distance_meters' => (int) round($roundTripKm * 1000),
+            'distance_km' => $roundTripKm,
+            'duration_seconds' => null,
+            'threshold_km' => $thresholdKm,
+            'extra_km' => $billableKm,
+            'fee_per_km' => $feePerKm,
+            'fee_amount' => $feeAmount,
+            'travel_fee_required' => $billableKm > 0,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_MANUAL_OVERRIDE,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'raw_payload' => [
+                'manual_override' => $manualOverride,
+                'manual_note' => $manualNote !== '' ? $manualNote : null,
+                'one_way_distance_km' => $oneWayKm,
+                'round_trip_distance_km' => $roundTripKm,
+                'billable_km' => $billableKm,
+            ],
+            'calculated_at' => now(),
+        ]);
+
+        $this->syncRequestTravelSummary($request, $quote);
+
+        return $this->payload($quote);
+    }
+
     private function cachedQuote(
         TechnicalServiceRequest $request,
         TechnicalServiceTechnician $technician,
@@ -177,7 +249,8 @@ class TechnicalServiceRouteCostService
             ->where('status', TechnicalServiceRouteQuote::STATUS_CALCULATED)
             ->latest('calculated_at')
             ->get()
-            ->first(fn (TechnicalServiceRouteQuote $quote): bool => $this->coordinatesMatch($quote, $origin, $destination));
+            ->first(fn (TechnicalServiceRouteQuote $quote): bool => $this->coordinatesMatch($quote, $origin, $destination)
+                && $this->cachedQuoteIsUsable($quote));
     }
 
     /**
@@ -255,20 +328,30 @@ class TechnicalServiceRouteCostService
      */
     public function payload(TechnicalServiceRouteQuote $quote): array
     {
+        $canonical = $this->canonicalDistances($quote);
+
         return [
             'ok' => $quote->status === TechnicalServiceRouteQuote::STATUS_CALCULATED,
             'id' => $quote->id,
             'status' => $quote->status,
+            'one_way_distance_km' => $canonical['one_way_distance_km'],
+            'round_trip_distance_km' => $canonical['round_trip_distance_km'],
             'distance_km' => $quote->distance_km !== null ? (float) $quote->distance_km : null,
             'distance_meters' => $quote->distance_meters,
             'duration_seconds' => $quote->duration_seconds,
             'duration_text' => $this->durationText($quote->duration_seconds),
-            'threshold_km' => $quote->threshold_km !== null ? (float) $quote->threshold_km : self::THRESHOLD_KM,
-            'extra_km' => $quote->extra_km !== null ? (float) $quote->extra_km : 0.0,
+            'threshold_km' => $canonical['threshold_km'],
+            'billable_km' => $canonical['billable_km'],
+            'extra_km' => $canonical['billable_km'],
             'travel_fee_required' => (bool) $quote->travel_fee_required,
-            'fee_per_km' => $quote->fee_per_km !== null ? (float) $quote->fee_per_km : null,
-            'fee_amount' => $quote->fee_amount !== null ? (float) $quote->fee_amount : null,
+            'fee_per_km' => $canonical['fee_per_km'],
+            'fee_amount' => $canonical['fee_amount'],
             'provider' => $quote->provider,
+            'source' => $quote->provider === TechnicalServiceRouteQuote::PROVIDER_MANUAL_OVERRIDE
+                ? TechnicalServiceRouteQuote::PROVIDER_MANUAL_OVERRIDE
+                : TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'manual_override' => (bool) data_get($quote->raw_payload, 'manual_override', false),
+            'manual_note' => data_get($quote->raw_payload, 'manual_note'),
             'calculated_at' => $quote->calculated_at?->toISOString(),
             'message' => $this->messageFor($quote),
         ];
@@ -290,6 +373,100 @@ class TechnicalServiceRouteCostService
     private function feePerKm(): ?float
     {
         $value = config('services.google.routes_fee_per_km');
+
+        return is_numeric($value) ? round((float) $value, 2) : null;
+    }
+
+    /**
+     * @return array{one_way_distance_km:?float,round_trip_distance_km:?float,threshold_km:float,billable_km:?float,fee_per_km:?float,fee_amount:?float}
+     */
+    private function canonicalDistances(TechnicalServiceRouteQuote $quote): array
+    {
+        $thresholdKm = $quote->threshold_km !== null ? (float) $quote->threshold_km : self::THRESHOLD_KM;
+        $roundTripKm = $quote->distance_km !== null ? (float) $quote->distance_km : null;
+        $oneWayMeters = data_get($quote->raw_payload, 'one_way_distance_meters');
+        $oneWayKm = is_numeric($oneWayMeters)
+            ? round(((float) $oneWayMeters) / 1000, 2)
+            : ($roundTripKm !== null ? round($roundTripKm / 2, 2) : null);
+
+        if ($roundTripKm === null && $oneWayKm !== null) {
+            $roundTripKm = round($oneWayKm * 2, 2);
+        }
+
+        $billableKm = $roundTripKm !== null ? round(max($roundTripKm - $thresholdKm, 0), 2) : null;
+        $feePerKm = $quote->fee_per_km !== null ? (float) $quote->fee_per_km : null;
+        $manualOverride = (bool) data_get($quote->raw_payload, 'manual_override', false);
+        $feeAmount = $quote->fee_amount !== null
+            ? (float) $quote->fee_amount
+            : ($billableKm !== null && $billableKm <= 0
+                ? 0.0
+                : ($billableKm !== null && $feePerKm !== null && ! $manualOverride ? round($billableKm * $feePerKm, 2) : null));
+
+        return [
+            'one_way_distance_km' => $oneWayKm,
+            'round_trip_distance_km' => $roundTripKm,
+            'threshold_km' => $thresholdKm,
+            'billable_km' => $billableKm,
+            'fee_per_km' => $feePerKm,
+            'fee_amount' => $feeAmount,
+        ];
+    }
+
+    private function cachedQuoteIsUsable(TechnicalServiceRouteQuote $quote): bool
+    {
+        if ($quote->status !== TechnicalServiceRouteQuote::STATUS_CALCULATED) {
+            return false;
+        }
+
+        if ($quote->provider !== TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES) {
+            return false;
+        }
+
+        $currentFeePerKm = $this->feePerKm();
+
+        if ($quote->fee_per_km === null || $currentFeePerKm === null || abs(((float) $quote->fee_per_km) - $currentFeePerKm) > 0.001) {
+            return false;
+        }
+
+        if ($quote->threshold_km === null || abs(((float) $quote->threshold_km) - self::THRESHOLD_KM) > 0.001) {
+            return false;
+        }
+
+        $canonical = $this->canonicalDistances($quote);
+
+        if ($canonical['round_trip_distance_km'] === null || $canonical['billable_km'] === null) {
+            return false;
+        }
+
+        $expectedBillableKm = round(max($canonical['round_trip_distance_km'] - $canonical['threshold_km'], 0), 2);
+
+        if (abs($canonical['billable_km'] - $expectedBillableKm) > 0.01) {
+            return false;
+        }
+
+        $expectedFeeAmount = $expectedBillableKm > 0 ? round($expectedBillableKm * $currentFeePerKm, 2) : 0.0;
+
+        return $canonical['fee_amount'] !== null && abs($canonical['fee_amount'] - $expectedFeeAmount) <= 0.01;
+    }
+
+    private function syncRequestTravelSummary(TechnicalServiceRequest $request, TechnicalServiceRouteQuote $quote): void
+    {
+        $canonical = $this->canonicalDistances($quote);
+
+        $request->forceFill([
+            'travel_round_trip_km' => $canonical['round_trip_distance_km'],
+            'travel_billable_km' => $canonical['billable_km'],
+            'travel_fee_amount' => $canonical['fee_amount'],
+            'travel_calculation_source' => $quote->provider,
+            'travel_calculated_at' => now(),
+        ])->save();
+    }
+
+    private function numericOrNull(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
 
         return is_numeric($value) ? round((float) $value, 2) : null;
     }

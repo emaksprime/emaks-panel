@@ -21,6 +21,7 @@ import type {
   ServiceFilters as FilterState,
   ServicePriority,
   ServiceRequest,
+  ServiceRequestRouteQuoteManualPayload,
   ServiceTechnician,
   WarrantySerialResponse,
 } from '@/components/technical-service/types'
@@ -754,6 +755,8 @@ export function TechnicalServiceOperationCenter() {
   const [assignError, setAssignError] = useState<string | null>(null)
   const [routeQuoteLoading, setRouteQuoteLoading] = useState(false)
   const [routeQuoteError, setRouteQuoteError] = useState<string | null>(null)
+  const [routeQuoteManualSaveLoading, setRouteQuoteManualSaveLoading] = useState(false)
+  const [routeQuoteManualSaveError, setRouteQuoteManualSaveError] = useState<string | null>(null)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
@@ -1419,11 +1422,29 @@ export function TechnicalServiceOperationCenter() {
   const hasAssignmentBlockers = assignmentBlockerMessages.length > 0
   const selectedAssignTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption) ?? null
   const assignmentRouteQuote = modalRequest?.routeQuote ?? null
-  const assignmentRouteDistanceLabel = typeof assignmentRouteQuote?.distance_km === 'number'
-    ? `${assignmentRouteQuote.distance_km.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+  const assignmentRouteRoundTripKm = typeof assignmentRouteQuote?.round_trip_distance_km === 'number'
+    ? assignmentRouteQuote.round_trip_distance_km
+    : typeof assignmentRouteQuote?.distance_km === 'number'
+      ? assignmentRouteQuote.distance_km
+      : null
+  const assignmentRouteOneWayKm = typeof assignmentRouteQuote?.one_way_distance_km === 'number'
+    ? assignmentRouteQuote.one_way_distance_km
+    : typeof assignmentRouteRoundTripKm === 'number'
+      ? Math.round((assignmentRouteRoundTripKm / 2) * 100) / 100
+      : null
+  const assignmentRouteDistanceLabel = typeof assignmentRouteOneWayKm === 'number'
+    ? `${assignmentRouteOneWayKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
     : '-'
-  const assignmentRouteExtraKmLabel = typeof assignmentRouteQuote?.extra_km === 'number'
-    ? `${assignmentRouteQuote.extra_km.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+  const assignmentRouteRoundTripLabel = typeof assignmentRouteRoundTripKm === 'number'
+    ? `${assignmentRouteRoundTripKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+    : '-'
+  const assignmentRouteExtraKm = typeof assignmentRouteQuote?.billable_km === 'number'
+    ? assignmentRouteQuote.billable_km
+    : typeof assignmentRouteQuote?.extra_km === 'number'
+      ? assignmentRouteQuote.extra_km
+      : null
+  const assignmentRouteExtraKmLabel = typeof assignmentRouteExtraKm === 'number'
+    ? `${assignmentRouteExtraKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
     : '-'
   const assignmentRouteFeeLabel = typeof assignmentRouteQuote?.fee_amount === 'number'
     ? `${assignmentRouteQuote.fee_amount.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
@@ -1502,7 +1523,7 @@ export function TechnicalServiceOperationCenter() {
         : null
       const paymentPreview = getServicePaymentInfo(
         modalRequest?.serviceType,
-        estimatedRoundTripKm,
+        null,
       )
       const costDelta = paymentPreview.customerAmount !== null && paymentPreview.totalTechnicianCostAmount !== null
         ? paymentPreview.customerAmount - paymentPreview.totalTechnicianCostAmount
@@ -2222,6 +2243,7 @@ export function TechnicalServiceOperationCenter() {
 
     setRouteQuoteLoading(true)
     setRouteQuoteError(null)
+    setRouteQuoteManualSaveError(null)
 
     try {
       const response = await apiRequest(`/api/technical-service/requests/${selectedId}/technicians/${assignTechnicianOption}/route-quote`, {
@@ -2241,8 +2263,14 @@ export function TechnicalServiceOperationCenter() {
         })
       }
 
-      if (typeof response.distance_km === 'number' && Number.isFinite(response.distance_km)) {
-        setTravelRoundTripKm(String(response.distance_km))
+      const responseRoundTripKm = typeof response.round_trip_distance_km === 'number' && Number.isFinite(response.round_trip_distance_km)
+        ? response.round_trip_distance_km
+        : typeof response.distance_km === 'number' && Number.isFinite(response.distance_km)
+          ? response.distance_km
+          : null
+
+      if (responseRoundTripKm !== null) {
+        setTravelRoundTripKm(String(responseRoundTripKm))
       }
 
       setRouteQuoteError(typeof response.message === 'string' ? response.message : null)
@@ -2250,6 +2278,54 @@ export function TechnicalServiceOperationCenter() {
       setRouteQuoteError(caught instanceof Error ? caught.message : 'Yol ücreti hesaplanamadı.')
     } finally {
       setRouteQuoteLoading(false)
+    }
+  }
+
+  const handleRouteQuoteManualSave = async (payload: ServiceRequestRouteQuoteManualPayload) => {
+    if (!selectedId) {
+      return
+    }
+
+    setRouteQuoteManualSaveLoading(true)
+    setRouteQuoteManualSaveError(null)
+    setRouteQuoteError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/route-quote/manual`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      }
+
+      const responseRoundTripKm = typeof response.round_trip_distance_km === 'number' && Number.isFinite(response.round_trip_distance_km)
+        ? response.round_trip_distance_km
+        : typeof response.distance_km === 'number' && Number.isFinite(response.distance_km)
+          ? response.distance_km
+          : null
+
+      if (responseRoundTripKm !== null) {
+        setTravelRoundTripKm(String(responseRoundTripKm))
+      }
+
+      setRouteQuoteError(typeof response.message === 'string' ? response.message : null)
+    } catch (caught) {
+      setRouteQuoteManualSaveError(caught instanceof Error ? caught.message : 'Yol ücreti kaydedilemedi.')
+
+      throw caught
+    } finally {
+      setRouteQuoteManualSaveLoading(false)
     }
   }
 
@@ -2525,6 +2601,7 @@ export function TechnicalServiceOperationCenter() {
         : '',
     )
     setRouteQuoteError(null)
+    setRouteQuoteManualSaveError(null)
     setShowNearbyTechnicians(false)
     setSelectedId(request.id)
     setIsDetailDialogOpen(true)
@@ -3005,10 +3082,6 @@ export function TechnicalServiceOperationCenter() {
                               setAssignTechnicianOption(match.technician.id)
                               setRouteQuoteError(null)
                               setShowNearbyTechnicians(false)
-
-                              if (travelRoundTripKm.trim() === '' && match.distanceKm !== null) {
-                                setTravelRoundTripKm(String(Math.round(match.distanceKm * 2 * 10) / 10))
-                              }
                             }}
                             className="mt-1 h-4 w-4 accent-primary"
                           />
@@ -3133,12 +3206,16 @@ export function TechnicalServiceOperationCenter() {
                   ) : null}
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div className="rounded-xl bg-white/80 p-3">
-                      <p className="text-xs font-semibold text-blue-700">Usta → müşteri mesafesi</p>
+                      <p className="text-xs font-semibold text-blue-700">Tek yön Google Routes mesafesi</p>
                       <p className="mt-1 font-semibold text-slate-950">{assignmentRouteDistanceLabel}</p>
                       {assignmentRouteQuote?.duration_text ? <p className="mt-1 text-xs text-slate-500">Tahmini süre: {assignmentRouteQuote.duration_text}</p> : null}
                     </div>
                     <div className="rounded-xl bg-white/80 p-3">
-                      <p className="text-xs font-semibold text-blue-700">Ekstra km</p>
+                      <p className="text-xs font-semibold text-blue-700">Gidiş-geliş mesafe</p>
+                      <p className="mt-1 font-semibold text-slate-950">{assignmentRouteRoundTripLabel}</p>
+                    </div>
+                    <div className="rounded-xl bg-white/80 p-3">
+                      <p className="text-xs font-semibold text-blue-700">Ücrete tabi km</p>
                       <p className="mt-1 font-semibold text-slate-950">{assignmentRouteExtraKmLabel}</p>
                     </div>
                     <div className="rounded-xl bg-white/80 p-3">
@@ -3831,19 +3908,21 @@ export function TechnicalServiceOperationCenter() {
                     selectedTechnicianId={assignTechnicianOption || null}
                     routeQuoteLoading={routeQuoteLoading}
                     routeQuoteError={routeQuoteError}
+                    routeQuoteManualSaveLoading={routeQuoteManualSaveLoading}
+                    routeQuoteManualSaveError={routeQuoteManualSaveError}
                     assignLoading={assignLoading}
                     canSubmitAssign={canSubmitAssign}
-                    onTechnicianSelect={(technicianId, estimatedRoundTripKm) => {
+                    onTechnicianSelect={(technicianId) => {
                       setAssignTechnicianOption(technicianId)
                       setRouteQuoteError(null)
+                      setRouteQuoteManualSaveError(null)
 
-                      if (typeof estimatedRoundTripKm === 'number' && Number.isFinite(estimatedRoundTripKm)) {
-                        setTravelRoundTripKm(String(estimatedRoundTripKm))
-                      } else if (technicianId !== (modalRequest?.technicianId ?? '')) {
+                      if (technicianId !== (modalRequest?.technicianId ?? '')) {
                         setTravelRoundTripKm('')
                       }
                     }}
                     onRouteQuoteCalculate={handleRouteQuoteCalculate}
+                    onRouteQuoteManualSave={handleRouteQuoteManualSave}
                     onAssignSelectedTechnician={handleAssignSubmit}
                   />
                 ) : (

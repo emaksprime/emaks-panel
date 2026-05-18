@@ -33,6 +33,9 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('requests/{technicalServiceRequest}/technicians/{technician}/route-quote', [TechnicalServiceController::class, 'routeQuote'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.technicians.route-quote');
+        Route::patch('requests/{technicalServiceRequest}/route-quote/manual', [TechnicalServiceController::class, 'manualRouteQuote'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.route-quote.manual');
         Route::patch('requests/{technicalServiceRequest}/operation-control', [TechnicalServiceController::class, 'updateOperationControl'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.operation-control');

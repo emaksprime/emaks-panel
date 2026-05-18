@@ -11,6 +11,7 @@ class TechnicalServiceRouteQuote extends Model
     use HasFactory;
 
     public const PROVIDER_GOOGLE_ROUTES = 'google_routes';
+    public const PROVIDER_MANUAL_OVERRIDE = 'manual_override';
 
     public const STATUS_CALCULATED = 'calculated';
     public const STATUS_FAILED = 'failed';

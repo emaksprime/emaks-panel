@@ -179,18 +179,36 @@ export type ServiceRequestRouteQuote = {
   ok?: boolean
   id?: number | string | null
   status?: 'calculated' | 'failed' | 'missing_location' | 'missing_api_key' | string | null
+  one_way_distance_km?: number | null
+  round_trip_distance_km?: number | null
   distance_km?: number | null
   distance_meters?: number | null
   duration_seconds?: number | null
   duration_text?: string | null
   threshold_km?: number | null
+  billable_km?: number | null
   extra_km?: number | null
   travel_fee_required?: boolean
   fee_per_km?: number | null
   fee_amount?: number | null
   provider?: string | null
+  source?: 'google_routes' | 'manual_override' | string | null
+  manual_override?: boolean
+  manual_note?: string | null
   calculated_at?: string | null
   message?: string | null
+}
+
+export type ServiceRequestRouteQuoteManualPayload = {
+  technical_service_technician_id?: number | string | null
+  one_way_distance_km?: number | null
+  round_trip_distance_km?: number | null
+  threshold_km?: number | null
+  billable_km?: number | null
+  fee_per_km?: number | null
+  fee_amount?: number | null
+  manual_override?: boolean
+  manual_note?: string | null
 }
 
 export type ServiceTechnician = {

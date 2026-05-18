@@ -34,6 +34,30 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertQuoteForRoundTripKm(45, true, 15.0, 150.0);
     }
 
+    public function test_route_service_uses_google_one_way_distance_for_round_trip_billable_km_and_fee(): void
+    {
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        Http::fake([
+            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForOneWayMeters(87900), 200),
+        ]);
+
+        $payload = app(TechnicalServiceRouteCostService::class)->quote(
+            $this->technicalServiceRequestWithLocation(),
+            $this->technicianWithLocation(),
+        );
+
+        $this->assertSame(87.9, $payload['one_way_distance_km']);
+        $this->assertSame(175.8, $payload['round_trip_distance_km']);
+        $this->assertSame(30.0, $payload['threshold_km']);
+        $this->assertSame(145.8, $payload['billable_km']);
+        $this->assertSame(145.8, $payload['extra_km']);
+        $this->assertSame(10.0, $payload['fee_per_km']);
+        $this->assertSame(1458.0, $payload['fee_amount']);
+    }
+
     public function test_route_service_keeps_fee_amount_null_when_fee_setting_is_missing(): void
     {
         config([
@@ -50,6 +74,9 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         );
 
         $this->assertTrue($payload['travel_fee_required']);
+        $this->assertSame(22.5, $payload['one_way_distance_km']);
+        $this->assertSame(45.0, $payload['round_trip_distance_km']);
+        $this->assertSame(15.0, $payload['billable_km']);
         $this->assertSame(15.0, $payload['extra_km']);
         $this->assertNull($payload['fee_amount']);
         $this->assertSame('Yol ücreti hesaplanacak. Km başı ücret ayarı eksik.', $payload['message']);
@@ -105,6 +132,38 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_route_service_ignores_cached_quote_when_fee_setting_is_missing_or_changed(): void
+    {
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        Http::fake([
+            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        ]);
+
+        $requestWithNullFee = $this->technicalServiceRequestWithLocation();
+        $technicianWithNullFee = $this->technicianWithLocation();
+        $staleNullFeeQuote = $this->createCachedQuote($requestWithNullFee, $technicianWithNullFee, null, null);
+
+        $nullFeePayload = app(TechnicalServiceRouteCostService::class)->quote($requestWithNullFee, $technicianWithNullFee);
+
+        $this->assertNotSame($staleNullFeeQuote->id, $nullFeePayload['id']);
+        $this->assertSame(10.0, $nullFeePayload['fee_per_km']);
+        $this->assertSame(150.0, $nullFeePayload['fee_amount']);
+
+        $requestWithChangedFee = $this->technicalServiceRequestWithLocation();
+        $technicianWithChangedFee = $this->technicianWithLocation();
+        $staleChangedFeeQuote = $this->createCachedQuote($requestWithChangedFee, $technicianWithChangedFee, 8.0, 120.0);
+
+        $changedFeePayload = app(TechnicalServiceRouteCostService::class)->quote($requestWithChangedFee, $technicianWithChangedFee);
+
+        $this->assertNotSame($staleChangedFeeQuote->id, $changedFeePayload['id']);
+        $this->assertSame(10.0, $changedFeePayload['fee_per_km']);
+        $this->assertSame(150.0, $changedFeePayload['fee_amount']);
+        Http::assertSentCount(2);
+    }
+
     public function test_route_quote_endpoint_returns_safe_missing_location_response(): void
     {
         $user = $this->adminUser();
@@ -136,13 +195,65 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/route-quote")
             ->assertOk()
             ->assertJsonPath('status', TechnicalServiceRouteQuote::STATUS_CALCULATED)
+            ->assertJsonPath('one_way_distance_km', 22.5)
+            ->assertJsonPath('round_trip_distance_km', 45)
             ->assertJsonPath('distance_km', 45)
+            ->assertJsonPath('billable_km', 15)
             ->assertJsonPath('extra_km', 15)
             ->assertJsonPath('travel_fee_required', true)
+            ->assertJsonPath('fee_per_km', 10)
             ->assertJsonPath('fee_amount', 150)
             ->assertJsonPath('message', '30 km üstü yol ücreti gerekli.')
             ->assertJsonPath('request.route_quote.distance_km', 45)
+            ->assertJsonPath('request.route_quote.round_trip_distance_km', 45)
+            ->assertJsonPath('request.travel_round_trip_km', 45)
+            ->assertJsonPath('request.travel_billable_km', 15)
+            ->assertJsonPath('request.travel_fee_amount', '150.00')
             ->assertJsonPath('request.route_quote.message', '30 km üstü yol ücreti gerekli.');
+    }
+
+    public function test_manual_route_quote_endpoint_recalculates_or_overrides_fee_without_closing_request_payload(): void
+    {
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequestWithLocation();
+        $technician = $this->technicianWithLocation();
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/route-quote/manual", [
+                'technical_service_technician_id' => $technician->id,
+                'one_way_distance_km' => 87.9,
+                'threshold_km' => 30,
+                'fee_per_km' => 10,
+                'manual_note' => 'Operasyon düzeltmesi',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServiceRouteQuote::STATUS_CALCULATED)
+            ->assertJsonPath('source', TechnicalServiceRouteQuote::PROVIDER_MANUAL_OVERRIDE)
+            ->assertJsonPath('one_way_distance_km', 87.9)
+            ->assertJsonPath('round_trip_distance_km', 175.8)
+            ->assertJsonPath('billable_km', 145.8)
+            ->assertJsonPath('fee_per_km', 10)
+            ->assertJsonPath('fee_amount', 1458)
+            ->assertJsonPath('manual_override', false)
+            ->assertJsonPath('manual_note', 'Operasyon düzeltmesi')
+            ->assertJsonPath('request.route_quote.round_trip_distance_km', 175.8)
+            ->assertJsonPath('request.travel_round_trip_km', 175.8)
+            ->assertJsonPath('request.travel_billable_km', 145.8)
+            ->assertJsonPath('request.travel_fee_amount', '1458.00');
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/route-quote/manual", [
+                'technical_service_technician_id' => $technician->id,
+                'round_trip_distance_km' => 175.8,
+                'threshold_km' => 30,
+                'fee_per_km' => 10,
+                'fee_amount' => 1500,
+                'manual_override' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('manual_override', true)
+            ->assertJsonPath('fee_amount', 1500)
+            ->assertJsonPath('request.travel_fee_amount', '1500.00');
     }
 
     public function test_technician_api_returns_coordinate_and_address_fields_for_route_ui(): void
@@ -209,7 +320,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Gerçek koordinat eksik',
             'Usta adres/Plus Code var, gerçek koordinat eksik.',
             'Google Routes sonucu yok.',
-            'Routes hesaplanmadan ekstra km hesaplanmaz.',
+            'Routes hesaplanmadan ücrete tabi km hesaplanmaz.',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $detailsSource);
         }
@@ -235,7 +346,10 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         foreach ([
             'Operasyon ve Montaj Kontrolü',
             'Usta / Çilingir Atama',
-            '30 km ücretsiz sınır',
+            'Tek yön Google Routes mesafesi',
+            'Ücretsiz sınır',
+            'Ücrete tabi km',
+            'Km başı ücret',
             'Yol ücreti hesaplanamadı',
             'Yol ücreti onayı gerekli',
             'Yol ücreti yok',
@@ -245,6 +359,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Servis telefonu',
             'Faturadaki diğer serileri gör',
             'Yol ücreti / fiyat düzenle',
+            'Yol ücreti tutarı',
             'Seri No Sorgu',
             'Montaja ekle',
             'İade - eklenemez',
@@ -259,12 +374,17 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         foreach ([
             'Yol ücreti hesapla',
             'Google Routes yol ücreti hesabı',
-            'Usta → müşteri mesafesi',
+            'Tek yön Google Routes mesafesi',
+            'Gidiş-geliş mesafe',
+            'Ücrete tabi km',
             'Tahmini yol ücreti',
             'route-quote',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);
         }
+
+        $this->assertStringNotContainsString('Usta → müşteri mesafesi', $detailsSource);
+        $this->assertStringNotContainsString('Usta → müşteri mesafesi', $pageSource);
 
         foreach ([
             'Yol ücreti onayı gerekli',
@@ -284,8 +404,11 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         );
 
         $this->assertSame(TechnicalServiceRouteQuote::STATUS_CALCULATED, $payload['status']);
+        $this->assertSame(round($roundTripKm / 2, 2), $payload['one_way_distance_km']);
+        $this->assertSame(round($roundTripKm, 2), $payload['round_trip_distance_km']);
         $this->assertSame(round($roundTripKm, 2), $payload['distance_km']);
         $this->assertSame($feeRequired, $payload['travel_fee_required']);
+        $this->assertSame($extraKm, $payload['billable_km']);
         $this->assertSame($extraKm, $payload['extra_km']);
         $this->assertSame($feeAmount, $payload['fee_amount']);
     }
@@ -295,14 +418,53 @@ class TechnicalServiceRouteQuoteTest extends TestCase
      */
     private function googleRoutesResponseForRoundTripKm(float $roundTripKm): array
     {
+        return $this->googleRoutesResponseForOneWayMeters((int) round(($roundTripKm * 1000) / 2));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function googleRoutesResponseForOneWayMeters(int $oneWayMeters): array
+    {
         return [
             'routes' => [
                 [
-                    'distanceMeters' => (int) round(($roundTripKm * 1000) / 2),
+                    'distanceMeters' => $oneWayMeters,
                     'duration' => '1800s',
                 ],
             ],
         ];
+    }
+
+    private function createCachedQuote(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        ?float $feePerKm,
+        ?float $feeAmount,
+    ): TechnicalServiceRouteQuote {
+        return TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $technician->id,
+            'origin_latitude' => $technician->latitude,
+            'origin_longitude' => $technician->longitude,
+            'destination_latitude' => $request->location_latitude,
+            'destination_longitude' => $request->location_longitude,
+            'distance_meters' => 45000,
+            'distance_km' => 45,
+            'duration_seconds' => 1800,
+            'threshold_km' => 30,
+            'extra_km' => 15,
+            'fee_per_km' => $feePerKm,
+            'fee_amount' => $feeAmount,
+            'travel_fee_required' => true,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'raw_payload' => [
+                'one_way_distance_meters' => 22500,
+                'round_trip_distance_meters' => 45000,
+            ],
+            'calculated_at' => now()->subMinute(),
+        ]);
     }
 
     private function adminUser(): User

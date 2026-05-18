@@ -4,7 +4,8 @@ import type { ReactNode } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestInvoiceSerial, WarrantySerialResponse } from './types'
+import { Input } from '@/components/ui/input'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestInvoiceSerial, ServiceRequestRouteQuoteManualPayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
 const statusVariant = (status: ServiceRequest['status']) => {
@@ -92,10 +93,13 @@ type ServiceRequestDetailsProps = {
   selectedTechnicianId?: string | null
   routeQuoteLoading?: boolean
   routeQuoteError?: string | null
+  routeQuoteManualSaveLoading?: boolean
+  routeQuoteManualSaveError?: string | null
   assignLoading?: boolean
   canSubmitAssign?: boolean
   onTechnicianSelect?: (technicianId: string, estimatedRoundTripKm?: number | null) => void
   onRouteQuoteCalculate?: () => void | Promise<void>
+  onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
   onAssignSelectedTechnician?: () => void | Promise<void>
 }
 
@@ -132,6 +136,24 @@ const formatMoneyValue = (value: number | null | undefined): string => (
     ? `${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
     : '-'
 )
+
+const roundTwo = (value: number): number => Math.round(value * 100) / 100
+
+const numericInputValue = (value: number | null | undefined): string => (
+  typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+)
+
+const parseNumericInput = (value: string): number | null => {
+  const normalized = value.trim().replace(',', '.')
+
+  if (normalized === '') {
+    return null
+  }
+
+  const parsed = Number(normalized)
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
 
 const routeQuoteMessage = (message: string | null | undefined): string => {
   if (message === 'Usta konumu eksik.') {
@@ -664,10 +686,13 @@ export function ServiceRequestDetails({
   selectedTechnicianId = null,
   routeQuoteLoading = false,
   routeQuoteError = null,
+  routeQuoteManualSaveLoading = false,
+  routeQuoteManualSaveError = null,
   assignLoading = false,
   canSubmitAssign = false,
   onTechnicianSelect,
   onRouteQuoteCalculate,
+  onRouteQuoteManualSave,
   onAssignSelectedTechnician,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
@@ -698,13 +723,20 @@ export function ServiceRequestDetails({
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
   const [routeFeeNote, setRouteFeeNote] = useState('')
+  const [routeFeeOneWayKmInput, setRouteFeeOneWayKmInput] = useState('')
+  const [routeFeeRoundTripKmInput, setRouteFeeRoundTripKmInput] = useState('')
+  const [routeFeeThresholdKmInput, setRouteFeeThresholdKmInput] = useState('')
+  const [routeFeePerKmInput, setRouteFeePerKmInput] = useState('')
+  const [routeFeeBillableKmInput, setRouteFeeBillableKmInput] = useState('')
+  const [routeFeeAmountInput, setRouteFeeAmountInput] = useState('')
+  const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
+  const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
   const locationInfo = request.location ?? null
   const doorPhotos = request.doorPhotos ?? []
   const routeQuote = request.routeQuote ?? null
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
   const hasAssignmentChange = Boolean(selectedTechnicianId && selectedTechnicianId !== String(request.technicianId ?? ''))
-  const routeFeeEditorHasChanges = routeFeeNote.trim() !== ''
   const hasMultiProductRequest = Boolean(invoiceSerials?.has_multi_product || (invoiceSerials?.selected_serials?.length ?? 0) > 1 || saleAndPayment?.mount_payment_status === 'skipped_multi_product')
   const hasCalculatedRouteQuote = routeQuote?.status === 'calculated'
   const routeFeeNeedsApproval = routeQuote?.status === 'calculated' && routeQuote.travel_fee_required
@@ -712,14 +744,43 @@ export function ServiceRequestDetails({
     ? routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
     : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
   const routeRoundTripKm = hasCalculatedRouteQuote
-    ? typeof request.travelRoundTripKm === 'number' && Number.isFinite(request.travelRoundTripKm)
-      ? request.travelRoundTripKm
+    ? typeof routeQuote?.round_trip_distance_km === 'number' && Number.isFinite(routeQuote.round_trip_distance_km)
+      ? routeQuote.round_trip_distance_km
       : typeof routeQuote?.distance_km === 'number' && Number.isFinite(routeQuote.distance_km)
-        ? routeQuote.distance_km * 2
+        ? routeQuote.distance_km
         : null
     : null
-  const routeDistanceKm = hasCalculatedRouteQuote ? routeQuote?.distance_km : null
-  const routeExtraKm = hasCalculatedRouteQuote ? routeQuote?.extra_km : null
+  const routeOneWayKm = hasCalculatedRouteQuote
+    ? typeof routeQuote?.one_way_distance_km === 'number' && Number.isFinite(routeQuote.one_way_distance_km)
+      ? routeQuote.one_way_distance_km
+      : routeRoundTripKm !== null
+        ? roundTwo(routeRoundTripKm / 2)
+        : null
+    : null
+  const routeBillableKm = hasCalculatedRouteQuote
+    ? typeof routeQuote?.billable_km === 'number' && Number.isFinite(routeQuote.billable_km)
+      ? routeQuote.billable_km
+      : typeof routeQuote?.extra_km === 'number' && Number.isFinite(routeQuote.extra_km)
+        ? routeQuote.extra_km
+        : null
+    : null
+  const routeFeePerKm = hasCalculatedRouteQuote && typeof routeQuote?.fee_per_km === 'number' && Number.isFinite(routeQuote.fee_per_km)
+    ? routeQuote.fee_per_km
+    : null
+  const routeFeeAmount = hasCalculatedRouteQuote && typeof routeQuote?.fee_amount === 'number' && Number.isFinite(routeQuote.fee_amount)
+    ? routeQuote.fee_amount
+    : null
+  const routeFeeEditorCurrentSnapshot = JSON.stringify({
+    oneWay: routeFeeOneWayKmInput,
+    roundTrip: routeFeeRoundTripKmInput,
+    threshold: routeFeeThresholdKmInput,
+    feePerKm: routeFeePerKmInput,
+    billable: routeFeeBillableKmInput,
+    amount: routeFeeAmountInput,
+    manualAmountTouched: routeFeeManualAmountTouched,
+    note: routeFeeNote.trim(),
+  })
+  const routeFeeEditorHasChanges = routeFeeEditorInitialSnapshot !== '' && routeFeeEditorCurrentSnapshot !== routeFeeEditorInitialSnapshot
   const operationControl = request.operationControl ?? {}
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
   const assignmentUiBlockerMessages = [
@@ -741,19 +802,141 @@ export function ServiceRequestDetails({
     : paymentInfo.technicianAmountLabel && paymentInfo.technicianAmountLabel !== 'Belirlenmedi'
       ? paymentInfo.technicianAmountLabel
       : 'Hakediş ayarı eksik'
-  const travelCostLabel = routeQuote?.status === 'calculated'
-    ? routeQuote.fee_amount === null && routeQuote.travel_fee_required
+  const travelCostLabel = hasCalculatedRouteQuote
+    ? routeFeeAmount === null && routeQuote?.travel_fee_required
       ? 'Km başı ücret ayarı eksik'
-      : formatMoneyValue(routeQuote.fee_amount)
+      : formatMoneyValue(routeFeeAmount)
     : 'Yol ücreti hesaplanamadı'
-  const totalTechnicianCostLabel = selectedTechnician?.totalCostLabel && selectedTechnician.totalCostLabel !== 'Belirlenmedi'
-    ? selectedTechnician.totalCostLabel
-    : paymentInfo.totalTechnicianCostLabel && paymentInfo.totalTechnicianCostLabel !== 'Belirlenmedi'
-      ? paymentInfo.totalTechnicianCostLabel
-      : 'Hakediş ayarı eksik'
-  const netProfitLabel = selectedTechnician?.costDeltaLabel && selectedTechnician.costDeltaLabel !== '-'
-    ? selectedTechnician.costDeltaLabel
+  const totalTechnicianCostLabel = paymentInfo.totalTechnicianCostLabel && paymentInfo.totalTechnicianCostLabel !== 'Belirlenmedi'
+    ? paymentInfo.totalTechnicianCostLabel
+    : 'Hakediş ayarı eksik'
+  const netProfitLabel = paymentInfo.customerAmount !== null && paymentInfo.totalTechnicianCostAmount !== null
+    ? formatMoneyValue(paymentInfo.customerAmount - paymentInfo.totalTechnicianCostAmount)
     : 'Hesaplanamadı'
+  const routeFeeEditorSnapshot = (
+    oneWay: string,
+    roundTrip: string,
+    threshold: string,
+    feePerKm: string,
+    billable: string,
+    amount: string,
+    manualAmountTouched: boolean,
+    note: string,
+  ) => JSON.stringify({
+    oneWay,
+    roundTrip,
+    threshold,
+    feePerKm,
+    billable,
+    amount,
+    manualAmountTouched,
+    note: note.trim(),
+  })
+  const updateRouteFeeDerivedFields = (roundTripValue: string, thresholdValue: string, feePerKmValue: string, keepManualAmount: boolean) => {
+    const roundTrip = parseNumericInput(roundTripValue)
+    const threshold = parseNumericInput(thresholdValue) ?? 30
+    const feePerKm = parseNumericInput(feePerKmValue)
+    const billable = roundTrip === null ? null : roundTwo(Math.max(roundTrip - threshold, 0))
+
+    setRouteFeeBillableKmInput(numericInputValue(billable))
+
+    if (!keepManualAmount) {
+      setRouteFeeAmountInput(billable !== null && feePerKm !== null ? numericInputValue(roundTwo(billable * feePerKm)) : '')
+    }
+  }
+  const openRouteFeeEditor = () => {
+    if (!selectedTechnician) {
+      setRouteFeeEditorOpen(false)
+      setRouteFeeEditorMessage('Önce usta seçin.')
+
+      return
+    }
+
+    const oneWay = numericInputValue(routeOneWayKm)
+    const roundTrip = numericInputValue(routeRoundTripKm)
+    const threshold = numericInputValue(routeQuote?.threshold_km ?? 30)
+    const feePerKm = numericInputValue(routeFeePerKm)
+    const billable = numericInputValue(routeBillableKm)
+    const amount = numericInputValue(routeFeeAmount)
+    const manualTouched = Boolean(routeQuote?.manual_override)
+    const note = routeQuote?.manual_note ?? ''
+
+    setRouteFeeOneWayKmInput(oneWay)
+    setRouteFeeRoundTripKmInput(roundTrip)
+    setRouteFeeThresholdKmInput(threshold)
+    setRouteFeePerKmInput(feePerKm)
+    setRouteFeeBillableKmInput(billable)
+    setRouteFeeAmountInput(amount)
+    setRouteFeeManualAmountTouched(manualTouched)
+    setRouteFeeNote(note)
+    setRouteFeeEditorInitialSnapshot(routeFeeEditorSnapshot(oneWay, roundTrip, threshold, feePerKm, billable, amount, manualTouched, note))
+    setRouteFeeEditorMessage(null)
+    setRouteFeeEditorOpen(true)
+  }
+  const handleRouteFeeOneWayChange = (value: string) => {
+    const oneWay = parseNumericInput(value)
+    const roundTripValue = numericInputValue(oneWay === null ? null : roundTwo(oneWay * 2))
+
+    setRouteFeeOneWayKmInput(value)
+    setRouteFeeRoundTripKmInput(roundTripValue)
+    updateRouteFeeDerivedFields(roundTripValue, routeFeeThresholdKmInput, routeFeePerKmInput, routeFeeManualAmountTouched)
+  }
+  const handleRouteFeeRoundTripChange = (value: string) => {
+    const roundTrip = parseNumericInput(value)
+
+    setRouteFeeRoundTripKmInput(value)
+    setRouteFeeOneWayKmInput(numericInputValue(roundTrip === null ? null : roundTwo(roundTrip / 2)))
+    updateRouteFeeDerivedFields(value, routeFeeThresholdKmInput, routeFeePerKmInput, routeFeeManualAmountTouched)
+  }
+  const handleRouteFeeThresholdChange = (value: string) => {
+    setRouteFeeThresholdKmInput(value)
+    updateRouteFeeDerivedFields(routeFeeRoundTripKmInput, value, routeFeePerKmInput, routeFeeManualAmountTouched)
+  }
+  const handleRouteFeePerKmChange = (value: string) => {
+    setRouteFeePerKmInput(value)
+    updateRouteFeeDerivedFields(routeFeeRoundTripKmInput, routeFeeThresholdKmInput, value, routeFeeManualAmountTouched)
+  }
+  const handleRouteFeeBillableChange = (value: string) => {
+    const billable = parseNumericInput(value)
+    const feePerKm = parseNumericInput(routeFeePerKmInput)
+
+    setRouteFeeBillableKmInput(value)
+
+    if (!routeFeeManualAmountTouched) {
+      setRouteFeeAmountInput(billable !== null && feePerKm !== null ? numericInputValue(roundTwo(billable * feePerKm)) : '')
+    }
+  }
+  const handleRouteFeeAmountChange = (value: string) => {
+    setRouteFeeManualAmountTouched(true)
+    setRouteFeeAmountInput(value)
+  }
+  const handleRouteFeeManualSave = async () => {
+    if (!selectedTechnician || !onRouteQuoteManualSave) {
+      setRouteFeeEditorMessage('Önce usta seçin.')
+
+      return
+    }
+
+    const payload: ServiceRequestRouteQuoteManualPayload = {
+      technical_service_technician_id: selectedTechnician.id,
+      one_way_distance_km: parseNumericInput(routeFeeOneWayKmInput),
+      round_trip_distance_km: parseNumericInput(routeFeeRoundTripKmInput),
+      threshold_km: parseNumericInput(routeFeeThresholdKmInput),
+      billable_km: parseNumericInput(routeFeeBillableKmInput),
+      fee_per_km: parseNumericInput(routeFeePerKmInput),
+      fee_amount: parseNumericInput(routeFeeAmountInput),
+      manual_override: routeFeeManualAmountTouched,
+      manual_note: routeFeeNote.trim() || null,
+    }
+
+    try {
+      await onRouteQuoteManualSave(payload)
+      setRouteFeeEditorInitialSnapshot(routeFeeEditorCurrentSnapshot)
+      setRouteFeeEditorOpen(false)
+    } catch {
+      // Parent keeps the error message; keep this editor open so the operator can correct values.
+    }
+  }
   const operationControlChange = <K extends keyof NonNullable<ServiceRequest['operationControl']>>(
     key: K,
     value: NonNullable<ServiceRequest['operationControl']>[K],
@@ -1351,17 +1534,7 @@ export function ServiceRequestDetails({
                       type="button"
                       size="sm"
                       variant="outline"
-                      onClick={() => {
-                        if (!selectedTechnician) {
-                          setRouteFeeEditorOpen(false)
-                          setRouteFeeEditorMessage('Önce usta seçin.')
-
-                          return
-                        }
-
-                        setRouteFeeEditorMessage(null)
-                        setRouteFeeEditorOpen(true)
-                      }}
+                      onClick={openRouteFeeEditor}
                       className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
                     >
                       Yol ücreti / fiyat düzenle
@@ -1378,18 +1551,24 @@ export function ServiceRequestDetails({
                     {routeFeeEditorMessage}
                   </div>
                 ) : null}
+                {routeQuoteManualSaveError ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    {routeQuoteManualSaveError}
+                  </div>
+                ) : null}
                 <div className="grid gap-2 sm:grid-cols-2">
                   <MiniMetric label="Usta şehir/adres bilgisi" value={selectedTechnician ? (selectedTechnician.hasAddressInfo ? 'Var' : 'Usta adres bilgisi eksik') : 'Usta seçilmedi'} hint={selectedTechnician?.addressSummary ?? undefined} />
                   <MiniMetric label="Usta koordinatı" value={selectedTechnician ? (selectedTechnician.hasCoordinates ? 'Gerçek koordinat var' : 'Gerçek koordinat eksik') : 'Usta seçilmedi'} hint={selectedTechnician && !selectedTechnician.hasCoordinates && (selectedTechnician.hasPlusCodeInfo || selectedTechnician.hasAddressInfo) ? 'Usta adres/Plus Code var, gerçek koordinat eksik.' : undefined} />
                   <MiniMetric label="Routes hesap durumu" value={selectedTechnician ? (selectedTechnician.routeReady ? 'Hesaplanabilir' : 'Usta koordinatı eksik olduğu için Google Routes hesaplanamadı') : 'Usta seçilmedi'} hint={selectedTechnician?.routeLocationMessage ?? undefined} />
                   <MiniMetric label="Müşteri konumu var mı?" value={locationInfo?.shared ? 'Var' : 'Yok'} />
-                  <MiniMetric label="Usta → müşteri mesafesi" value={formatKmValue(routeDistanceKm)} hint={hasCalculatedRouteQuote && routeQuote?.duration_text ? `Tahmini süre: ${routeQuote.duration_text}` : 'Google Routes hesaplanınca gösterilir.'} />
+                  <MiniMetric label="Tek yön Google Routes mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasCalculatedRouteQuote && routeQuote?.duration_text ? `Tahmini süre: ${routeQuote.duration_text}` : 'Google Routes hesaplanınca gösterilir.'} />
                   <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasCalculatedRouteQuote ? undefined : 'Google Routes sonucu yok.'} />
-                  <MiniMetric label="30 km ücretsiz sınır" value={formatKmValue(routeQuote?.threshold_km ?? 30)} />
-                  <MiniMetric label="Ekstra km" value={formatKmValue(routeExtraKm)} hint={hasCalculatedRouteQuote ? undefined : 'Routes hesaplanmadan ekstra km hesaplanmaz.'} />
+                  <MiniMetric label="Ücretsiz sınır" value={formatKmValue(routeQuote?.threshold_km ?? 30)} />
+                  <MiniMetric label="Ücrete tabi km" value={formatKmValue(routeBillableKm)} hint={hasCalculatedRouteQuote ? undefined : 'Routes hesaplanmadan ücrete tabi km hesaplanmaz.'} />
+                  <MiniMetric label="Km başı ücret" value={hasCalculatedRouteQuote ? routeFeePerKm === null ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeePerKm) : '-'} />
                   <MiniMetric
                     label="Tahmini yol ücreti"
-                    value={hasCalculatedRouteQuote ? routeQuote?.fee_amount === null && routeQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeQuote?.fee_amount) : '-'}
+                    value={hasCalculatedRouteQuote ? routeFeeAmount === null && routeQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
                     hint={routeQuote ? routeQuoteMessage(routeQuote.message) : 'Yol ücreti hesaplanamadı'}
                   />
                 </div>
@@ -1413,10 +1592,32 @@ export function ServiceRequestDetails({
                       <MiniMetric label="Seçili usta" value={displayOrEmpty(selectedTechnician?.name ?? request.technician, '-')} />
                       <MiniMetric label="Telefon" value={displayOrEmpty(selectedTechnician?.phone ?? request.technicianPhone, '-')} />
                       <MiniMetric label="Şehir" value={displayOrEmpty(selectedTechnician?.location, '-')} />
-                      <MiniMetric label="Usta adı" value={displayOrEmpty(technicianSuggestions.find((technician) => technician.id === selectedTechnicianId)?.name ?? request.technician, '-')} />
-                      <MiniMetric label="Mesafe" value={formatKmValue(routeDistanceKm)} />
-                      <MiniMetric label="Ekstra km" value={formatKmValue(routeExtraKm)} />
-                      <MiniMetric label="Yol ücreti" value={hasCalculatedRouteQuote ? formatMoneyValue(routeQuote?.fee_amount) : '-'} />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Tek yön km
+                        <Input type="number" min="0" step="0.01" value={routeFeeOneWayKmInput} onChange={(event) => handleRouteFeeOneWayChange(event.target.value)} />
+                      </label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Gidiş-geliş km
+                        <Input type="number" min="0" step="0.01" value={routeFeeRoundTripKmInput} onChange={(event) => handleRouteFeeRoundTripChange(event.target.value)} />
+                      </label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Ücretsiz sınır km
+                        <Input type="number" min="0" step="0.01" value={routeFeeThresholdKmInput} onChange={(event) => handleRouteFeeThresholdChange(event.target.value)} />
+                      </label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Km başı ücret
+                        <Input type="number" min="0" step="0.01" value={routeFeePerKmInput} onChange={(event) => handleRouteFeePerKmChange(event.target.value)} />
+                      </label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Ücrete tabi km
+                        <Input type="number" min="0" step="0.01" value={routeFeeBillableKmInput} onChange={(event) => handleRouteFeeBillableChange(event.target.value)} />
+                      </label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Yol ücreti tutarı
+                        <Input type="number" min="0" step="0.01" value={routeFeeAmountInput} onChange={(event) => handleRouteFeeAmountChange(event.target.value)} />
+                      </label>
                     </div>
                     <label className="grid gap-2 text-sm font-medium text-slate-700">
                       Not
@@ -1429,7 +1630,9 @@ export function ServiceRequestDetails({
                     </label>
                     <div className="flex flex-wrap justify-end gap-2">
                       <Button type="button" variant="secondary" onClick={() => setRouteFeeEditorOpen(false)}>İptal</Button>
-                      <Button type="button" onClick={() => setRouteFeeEditorOpen(false)} disabled={!selectedTechnician || !routeFeeEditorHasChanges}>Kaydet</Button>
+                      <Button type="button" onClick={() => void handleRouteFeeManualSave()} disabled={!selectedTechnician || !routeFeeEditorHasChanges || routeQuoteManualSaveLoading || !onRouteQuoteManualSave}>
+                        {routeQuoteManualSaveLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                      </Button>
                     </div>
                   </div>
                 ) : null}

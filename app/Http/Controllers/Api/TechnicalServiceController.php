@@ -349,6 +349,33 @@ class TechnicalServiceController extends Controller
         ]));
     }
 
+    public function manualRouteQuote(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceRouteCostService $routeCostService,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'technical_service_technician_id' => ['required', 'integer', 'exists:technical_service_technicians,id'],
+            'one_way_distance_km' => ['nullable', 'numeric', 'min:0'],
+            'round_trip_distance_km' => ['nullable', 'numeric', 'min:0'],
+            'threshold_km' => ['nullable', 'numeric', 'min:0'],
+            'billable_km' => ['nullable', 'numeric', 'min:0'],
+            'extra_km' => ['nullable', 'numeric', 'min:0'],
+            'fee_per_km' => ['nullable', 'numeric', 'min:0'],
+            'fee_amount' => ['nullable', 'numeric', 'min:0'],
+            'manual_override' => ['nullable', 'boolean'],
+            'manual_note' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $technician = TechnicalServiceTechnician::query()->findOrFail((int) $validated['technical_service_technician_id']);
+
+        $quote = $routeCostService->manualQuote($technicalServiceRequest, $technician, $validated);
+
+        return response()->json(array_merge($quote, [
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]));
+    }
+
     public function recheckInvoiceSerials(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
