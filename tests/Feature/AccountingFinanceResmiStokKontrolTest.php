@@ -191,6 +191,24 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
         $this->assertAccountingFinanceQueryTemplateIsCanonical();
     }
 
+    public function test_known_workflow_seeder_refresh_source_is_available_and_scoped(): void
+    {
+        $seeder = new PanelKnownWorkflowDataSourcesSeeder;
+        $stockSource = DataSource::query()->where('code', 'stock_dashboard')->firstOrFail();
+        $stockQueryTemplate = $stockSource->query_template;
+        $stockAllowedParams = $stockSource->allowed_params;
+
+        $this->assertTrue(method_exists($seeder, 'refreshSource'));
+        $this->assertTrue($seeder->refreshSource(self::RESOURCE_CODE));
+        $this->assertAccountingFinanceQueryTemplateIsCanonical();
+
+        $this->assertFalse($seeder->refreshSource('stock_dashboard'));
+        $stockSource->refresh();
+
+        $this->assertSame($stockQueryTemplate, $stockSource->query_template);
+        $this->assertSame($stockAllowedParams, $stockSource->allowed_params);
+    }
+
     public function test_start_container_runs_source_scoped_post_deploy_refresh_after_panel_metadata_seed(): void
     {
         $script = file_get_contents(base_path('docker/start-container.sh')) ?: '';
@@ -233,6 +251,26 @@ class AccountingFinanceResmiStokKontrolTest extends TestCase
             $this->assertSame($queryTemplate, $source->query_template);
             $this->assertSame(['sentinel_param'], $source->allowed_params);
         }
+    }
+
+    public function test_source_scoped_post_deploy_refresh_rejects_unsupported_source(): void
+    {
+        $stockSource = DataSource::query()->where('code', 'stock_dashboard')->firstOrFail();
+        $stockQueryTemplate = $stockSource->query_template;
+
+        try {
+            $this->artisan('panel:post-deploy-refresh', [
+                '--source' => 'stock_dashboard',
+            ]);
+
+            $this->fail('Expected unsupported datasource source exception.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('Unsupported datasource source [stock_dashboard].', $exception->getMessage());
+        }
+
+        $stockSource->refresh();
+
+        $this->assertSame($stockQueryTemplate, $stockSource->query_template);
     }
 
     private function assertAccountingFinanceQueryTemplateIsCanonical(): void
