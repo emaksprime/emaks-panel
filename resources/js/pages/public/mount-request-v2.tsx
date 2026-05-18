@@ -5,6 +5,7 @@ import {
     getDistrictOptionsForProvince,
     normalizeDistrictName,
     normalizeProvinceName,
+    normalizeTurkishLocation,
     TURKEY_PROVINCES,
 } from '@/components/technical-service/turkey-locations';
 
@@ -320,6 +321,8 @@ export default function MountRequestV2({
     const [locationModalOpen, setLocationModalOpen] = useState(false);
     const [locationStatus, setLocationStatus] = useState('');
     const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false);
+    const [districtSearch, setDistrictSearch] = useState('');
+    const [districtDropdownOpen, setDistrictDropdownOpen] = useState(false);
     const [doorPhotoPreviews, setDoorPhotoPreviews] = useState<Partial<Record<DoorPhotoFieldCode, DoorPhotoPreview>>>({});
     const mapRef = useRef<HTMLDivElement | null>(null);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -356,8 +359,14 @@ export default function MountRequestV2({
         && !TURKEY_PROVINCES.some((province) => province.name === form.data.city);
     const districtHasFallback = form.data.district.trim() !== ''
         && !districtOptions.some((district) => district.name === form.data.district);
+    const districtSearchTerm = normalizeTurkishLocation(districtSearch);
+    const filteredDistrictOptions = districtSearchTerm
+        ? districtOptions.filter((district) => district.normalizedName.includes(districtSearchTerm))
+        : districtOptions;
 
     const handleCityChange = (value: string) => {
+        setDistrictSearch('');
+        setDistrictDropdownOpen(false);
         form.setData({
             ...form.data,
             city: normalizeCityForForm(value),
@@ -366,7 +375,11 @@ export default function MountRequestV2({
     };
 
     const handleDistrictChange = (value: string) => {
-        form.setData('district', normalizeDistrictForForm(form.data.city, value));
+        const district = normalizeDistrictForForm(form.data.city, value);
+
+        setDistrictSearch(district);
+        setDistrictDropdownOpen(false);
+        form.setData('district', district);
     };
 
     const applyLocationSelection = (payload: {
@@ -381,6 +394,7 @@ export default function MountRequestV2({
         const city = normalizeCityForForm(payload.city || form.data.city);
         const district = normalizeDistrictForForm(city, payload.district || form.data.district);
 
+        setDistrictSearch(district);
         form.setData({
             ...form.data,
             city,
@@ -552,6 +566,7 @@ export default function MountRequestV2({
 
         try {
             const parsed = JSON.parse(rawDraft) as Partial<CustomerForm>;
+            const restoredDistrict = typeof parsed.district === 'string' ? parsed.district : '';
 
             form.setData({
                 ...form.data,
@@ -559,7 +574,7 @@ export default function MountRequestV2({
                 last_name: typeof parsed.last_name === 'string' ? parsed.last_name : '',
                 phone: typeof parsed.phone === 'string' ? normalizePhoneDigits(parsed.phone) : '',
                 city: typeof parsed.city === 'string' ? parsed.city : '',
-                district: typeof parsed.district === 'string' ? parsed.district : '',
+                district: restoredDistrict,
                 address: typeof parsed.address === 'string' ? parsed.address : '',
                 location_latitude: typeof parsed.location_latitude === 'string' ? parsed.location_latitude : '',
                 location_longitude: typeof parsed.location_longitude === 'string' ? parsed.location_longitude : '',
@@ -581,7 +596,10 @@ export default function MountRequestV2({
                     ? parsed.selected_invoice_serials.filter((value): value is string => typeof value === 'string')
                     : [],
             });
-            queueMicrotask(() => setDraftRestored(true));
+            queueMicrotask(() => {
+                setDistrictSearch(restoredDistrict);
+                setDraftRestored(true);
+            });
         } catch {
             window.localStorage.removeItem(storageKey);
         }
@@ -1098,21 +1116,80 @@ export default function MountRequestV2({
 
                                         <label className="block text-sm font-semibold text-slate-800">
                                             İlçe
-                                            <select
-                                                value={form.data.district}
-                                                onChange={(event) => handleDistrictChange(event.target.value)}
-                                                disabled={!form.data.city}
-                                                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-                                                required
-                                            >
-                                                <option value="">{form.data.city ? 'İlçe seçin' : 'Önce il seçin'}</option>
-                                                {districtHasFallback ? <option value={form.data.district}>Mevcut değer: {form.data.district}</option> : null}
-                                                {districtOptions.map((district) => (
-                                                    <option key={district.normalizedName} value={district.name}>
-                                                        {district.name}
-                                                    </option>
-                                                ))}
-                                            </select>
+                                            <div className="relative mt-1">
+                                                <input
+                                                    type="search"
+                                                    value={districtSearch}
+                                                    onChange={(event) => {
+                                                        const value = event.target.value;
+
+                                                        setDistrictSearch(value);
+                                                        setDistrictDropdownOpen(Boolean(form.data.city));
+                                                        form.setData('district', value === '' ? '' : normalizeDistrictForForm(form.data.city, value));
+                                                    }}
+                                                    onFocus={() => setDistrictDropdownOpen(Boolean(form.data.city))}
+                                                    onBlur={() => window.setTimeout(() => setDistrictDropdownOpen(false), 120)}
+                                                    disabled={!form.data.city}
+                                                    placeholder={form.data.city ? 'İlçe ara' : 'Önce il seçin'}
+                                                    role="combobox"
+                                                    aria-expanded={districtDropdownOpen && Boolean(form.data.city)}
+                                                    aria-controls="district-options"
+                                                    aria-autocomplete="list"
+                                                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 pr-10 text-sm text-slate-950 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                                                    required
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onMouseDown={(event) => event.preventDefault()}
+                                                    onClick={() => setDistrictDropdownOpen((open) => (form.data.city ? !open : false))}
+                                                    disabled={!form.data.city}
+                                                    className="absolute inset-y-1 right-1 rounded-md px-2 text-xs font-semibold text-slate-500 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+                                                    aria-label="İlçe listesini aç"
+                                                >
+                                                    ⌄
+                                                </button>
+                                                {form.data.city && districtDropdownOpen ? (
+                                                    <div
+                                                        id="district-options"
+                                                        role="listbox"
+                                                        className="absolute z-20 mt-2 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-xl"
+                                                    >
+                                                        {districtHasFallback ? (
+                                                            <button
+                                                                type="button"
+                                                                role="option"
+                                                                aria-selected={form.data.district === districtSearch}
+                                                                onMouseDown={(event) => event.preventDefault()}
+                                                                onClick={() => handleDistrictChange(form.data.district)}
+                                                                className="block w-full px-3 py-2 text-left text-slate-700 transition hover:bg-blue-50"
+                                                            >
+                                                                Mevcut değer: {form.data.district}
+                                                            </button>
+                                                        ) : null}
+                                                        {filteredDistrictOptions.length > 0 ? filteredDistrictOptions.map((district) => (
+                                                            <button
+                                                                key={district.normalizedName}
+                                                                type="button"
+                                                                role="option"
+                                                                aria-selected={form.data.district === district.name}
+                                                                onMouseDown={(event) => event.preventDefault()}
+                                                                onClick={() => handleDistrictChange(district.name)}
+                                                                className={`block w-full px-3 py-2 text-left transition hover:bg-blue-50 ${
+                                                                    form.data.district === district.name
+                                                                        ? 'bg-blue-50 font-semibold text-blue-700'
+                                                                        : 'text-slate-700'
+                                                                }`}
+                                                            >
+                                                                {district.name}
+                                                            </button>
+                                                        )) : (
+                                                            <p className="px-3 py-2 text-sm text-slate-500">
+                                                                Sonuç bulunamadı.
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                ) : null}
+                                            </div>
                                             <FieldError message={form.errors.district} />
                                         </label>
                                     </div>
