@@ -24,6 +24,8 @@ return [
 
     'google' => [
         'routes_api_key' => env('GOOGLE_ROUTES_API_KEY'),
+        'geocoding_api_key' => env('GOOGLE_GEOCODING_API_KEY'),
+        'places_api_key' => env('GOOGLE_PLACES_API_KEY'),
         'routes_fee_per_km' => env('TECHNICAL_SERVICE_ROUTE_FEE_PER_KM', null),
     ],
 
