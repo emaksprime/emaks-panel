@@ -46,12 +46,13 @@ class DashboardTest extends TestCase
         $panelPage = file_get_contents(resource_path('js/pages/panel/page.tsx')) ?: '';
         $header = file_get_contents(resource_path('js/components/app-sidebar-header.tsx')) ?: '';
         $appLogo = file_get_contents(resource_path('js/components/app-logo.tsx')) ?: '';
+        $dashboard = preg_replace('/\s+/', ' ', $dashboard) ?: '';
 
         $this->assertStringContainsString('DashboardHome', $panelPage);
         $this->assertStringContainsString("matchesPage('dashboard', '/dashboard')", $panelPage);
         $this->assertStringContainsString('panelNavigation?.groups', $dashboard);
         $this->assertStringContainsString('visibleHrefs', $dashboard);
-        $this->assertStringContainsString('firstVisibleHref(card.candidates, visibleHrefs)', $dashboard);
+        $this->assertMatchesRegularExpression('/firstVisibleHref\(\s*card\.candidates,\s*visibleHrefs,?\s*\)/', $dashboard);
         $this->assertStringContainsString('.filter((card) => card.href !== null)', $dashboard);
         $this->assertStringContainsString('Hoş geldiniz', $dashboard);
         $this->assertStringContainsString('Operasyon ekranlarına buradan hızlıca ulaşabilirsiniz.', $dashboard);

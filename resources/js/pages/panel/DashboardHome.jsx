@@ -2,6 +2,7 @@ import { Head, Link, usePage } from '@inertiajs/react';
 import {
     ArrowRight,
     Boxes,
+    Calculator,
     ChartColumn,
     ClipboardList,
     ExternalLink,
@@ -59,6 +60,14 @@ const moduleCards = [
         candidates: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
         icon: FileText,
         tone: 'from-amber-600 to-orange-500',
+    },
+    {
+        title: 'Muhasebe / Finans',
+        description:
+            'Resmi stok, fiili stok ve muhasebe kontrol farklarını izleyin.',
+        candidates: ['/accounting-finance/resmi-stok-kontrol'],
+        icon: Calculator,
+        tone: 'from-teal-700 to-emerald-500',
     },
 ];
 

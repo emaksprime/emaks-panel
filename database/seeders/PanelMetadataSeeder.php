@@ -50,6 +50,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'stock_locks', 'name' => 'Kilit Stok Görünümü', 'type' => 'scope'],
             ['code' => 'stock_warehouse', 'name' => 'Depo / Raf Durumu', 'type' => 'page'],
             ['code' => 'finance_cari_durum', 'name' => 'Müşteri Durumu', 'type' => 'page'],
+            ['code' => 'accounting_finance_resmi_stok_kontrol', 'name' => 'Resmi Stok Kontrolü', 'type' => 'page'],
             ['code' => 'orders', 'name' => 'Sipariş Yönetimi', 'type' => 'page'],
             ['code' => 'orders_alinan', 'name' => 'Alınan Siparişler', 'type' => 'page'],
             ['code' => 'orders_verilen', 'name' => 'Verilen Siparişler', 'type' => 'page'],
@@ -118,6 +119,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'technical_service', 'name' => 'Teknik Servis', 'icon' => 'wrench', 'menu_order' => 45, 'active' => true],
             ['code' => 'cari', 'name' => 'Müşteri Yönetimi', 'icon' => 'wallet', 'menu_order' => 50, 'active' => true],
             ['code' => 'proforma', 'name' => 'Proforma', 'icon' => 'folder-kanban', 'menu_order' => 60, 'active' => true],
+            ['code' => 'accounting_finance', 'name' => 'Muhasebe / Finans', 'icon' => 'calculator', 'menu_order' => 65, 'active' => true],
             ['code' => 'administration', 'name' => 'Sistem Yönetimi', 'icon' => 'shield', 'menu_order' => 70, 'active' => true],
         ])->mapWithKeys(fn (array $group) => [
             $group['code'] => MenuGroup::query()->updateOrCreate(['code' => $group['code']], $group),
@@ -149,6 +151,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'proforma_create', 'name' => 'Proforma Oluştur', 'route' => '/proforma/create', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Yeni proforma taslakları için hazırlık ekranı.', 'resource_code' => 'proforma_create', 'page_order' => 91, 'active' => true],
             ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'route' => '/proforma/detail', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Proforma detay görüntüleme iskeleti.', 'resource_code' => 'proforma_detail', 'page_order' => 92, 'active' => true],
             ['code' => 'proforma_edit', 'name' => 'Proforma Düzenle', 'route' => '/proforma/edit', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Proforma düzenleme akışı için placeholder ekran.', 'resource_code' => 'proforma_edit', 'page_order' => 93, 'active' => true],
+            ['code' => 'accounting_finance_resmi_stok_kontrol', 'name' => 'Resmi Stok Kontrolü', 'route' => '/accounting-finance/resmi-stok-kontrol', 'component' => 'panel/accounting-finance/resmi-stok-kontrol', 'layout_type' => 'module', 'icon' => 'calculator', 'description' => 'Resmi stok, fiili stok ve muhasebe kontrol farklarını izleyin.', 'resource_code' => 'accounting_finance_resmi_stok_kontrol', 'page_order' => 95, 'active' => true],
             ['code' => 'finance_cari_durum', 'name' => 'Müşteri Durumu', 'route' => '/finance/cari-durum', 'component' => 'panel/page', 'layout_type' => 'admin', 'icon' => 'wallet', 'description' => 'Müşteri durumu ve finans yönetim görünümü', 'resource_code' => 'finance_cari_durum', 'page_order' => 100, 'active' => true],
             ['code' => 'admin_panel', 'name' => 'Yönetim Paneli', 'route' => '/admin', 'component' => 'panel/admin/index', 'layout_type' => 'admin', 'icon' => 'shield', 'description' => 'Panel yönetim merkezi', 'resource_code' => 'admin_panel', 'page_order' => 110, 'active' => true],
             ['code' => 'admin_users', 'name' => 'Kullanıcılar', 'route' => '/admin/users', 'component' => 'panel/admin/users', 'layout_type' => 'admin', 'icon' => 'users', 'description' => 'Kullanıcı, rol ve erişim yönetimi', 'resource_code' => 'user_admin', 'page_order' => 111, 'active' => true],
@@ -184,6 +187,7 @@ class PanelMetadataSeeder extends Seeder
             ['menu_group' => 'proforma', 'page' => 'proforma_create', 'label' => 'Proforma Oluştur', 'icon' => 'folder-kanban', 'sort_order' => 91],
             ['menu_group' => 'proforma', 'page' => 'proforma_detail', 'label' => 'Proforma Detay', 'icon' => 'folder-kanban', 'sort_order' => 92],
             ['menu_group' => 'proforma', 'page' => 'proforma_edit', 'label' => 'Proforma Düzenle', 'icon' => 'folder-kanban', 'sort_order' => 93],
+            ['menu_group' => 'accounting_finance', 'page' => 'accounting_finance_resmi_stok_kontrol', 'label' => 'Resmi Stok Kontrolü', 'icon' => 'calculator', 'sort_order' => 95],
             ['menu_group' => 'executive', 'page' => 'finance_cari_durum', 'label' => 'Müşteri Durumu', 'icon' => 'wallet', 'sort_order' => 100],
             ['menu_group' => 'administration', 'page' => 'admin_panel', 'label' => 'Yönetim Paneli', 'icon' => 'shield', 'sort_order' => 110],
             ['menu_group' => 'administration', 'page' => 'admin_users', 'label' => 'Kullanıcılar', 'icon' => 'users', 'sort_order' => 111],
@@ -347,6 +351,8 @@ SQL,
             ],
         );
 
+        $placeholderQueryTemplate = '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.';
+
         foreach ([
             [
                 'page_code' => 'stock',
@@ -443,14 +449,30 @@ SQL,
             ['code' => 'customer_statement', 'name' => 'Müşteri Ekstre', 'description' => 'Müşteri ekstresi için kanonik n8n veri kaynağı.'],
             ['code' => 'proforma_list', 'name' => 'Proforma Liste', 'description' => 'Proforma liste için placeholder veri kaynağı.'],
             ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'description' => 'Proforma detay için placeholder veri kaynağı.'],
+            ['code' => 'accounting_finance_resmi_stok_kontrol', 'name' => 'Resmi Stok Kontrolü', 'description' => 'Resmi stok, fiili stok ve muhasebe kontrol farkları için kanonik n8n veri kaynağı.'],
         ] as $index => $sourceDefinition) {
+            $existingDataSource = DataSource::query()
+                ->where('code', $sourceDefinition['code'])
+                ->first();
+            $existingQueryTemplate = (string) ($existingDataSource?->query_template ?? '');
+            $existingHasRealQueryTemplate = $existingQueryTemplate !== ''
+                && ! str_contains($existingQueryTemplate, 'Canlı SQL bu aşamada eklenmedi');
+            $queryTemplate = $sourceDefinition['query_template'] ?? (
+                $existingHasRealQueryTemplate
+                    ? $existingQueryTemplate
+                    : $placeholderQueryTemplate
+            );
+            $allowedParams = $existingHasRealQueryTemplate && is_array($existingDataSource?->allowed_params)
+                ? $existingDataSource->allowed_params
+                : ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'];
+
             DataSource::query()->updateOrCreate(
                 ['code' => $sourceDefinition['code']],
                 [
                     'name' => $sourceDefinition['name'],
                     'db_type' => 'n8n_json',
-                    'query_template' => '-- Canlı SQL bu aşamada eklenmedi. Query template panel.data_sources üzerinden yönetilecek.',
-                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code'],
+                    'query_template' => $queryTemplate,
+                    'allowed_params' => $allowedParams,
                     'connection_meta' => $n8nConnectionMeta,
                     'preview_payload' => [
                         'mode' => 'placeholder',
@@ -490,6 +512,9 @@ SQL,
                 ['label' => 'Proforma Detay', 'href' => '/proforma/detail'],
                 ['label' => 'Proforma Düzenle', 'href' => '/proforma/edit'],
             ],
+            'accounting_finance' => [
+                ['label' => 'Resmi Stok Kontrolü', 'href' => '/accounting-finance/resmi-stok-kontrol'],
+            ],
         ];
 
         foreach ([
@@ -509,6 +534,7 @@ SQL,
             'proforma_create' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_list'],
             'proforma_detail' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_detail'],
             'proforma_edit' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_detail'],
+            'accounting_finance_resmi_stok_kontrol' => ['eyebrow' => 'Muhasebe / Finans', 'tabs' => 'accounting_finance', 'datasource' => 'accounting_finance_resmi_stok_kontrol'],
         ] as $pageCode => $configDefinition) {
             PageConfig::query()->updateOrCreate(
                 ['page_code' => $pageCode],
@@ -547,7 +573,7 @@ SQL,
                     [
                         'can_view' => match ($role->code) {
                             'admin' => true,
-                            'manager' => true,
+                            'manager' => $resource->code !== 'accounting_finance_resmi_stok_kontrol',
                             'sales' => in_array($resource->code, [
                                 'dashboard',
                                 'sales_main',
