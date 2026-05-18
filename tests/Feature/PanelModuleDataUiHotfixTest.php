@@ -369,7 +369,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertTrue($onlineSource->active);
         $this->assertNotSame('', trim((string) $onlineSource->query_template));
         $this->assertSame(
-            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+            ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
             $onlineSource->allowed_params,
         );
         foreach (['120.01', '120.02', '120.03', '120.04', '120.05', '120.06', '120.07', '120.08', '120.09', '120.16'] as $groupCode) {
@@ -407,7 +407,7 @@ class PanelModuleDataUiHotfixTest extends TestCase
         $this->assertStringContainsString("@ScopeKey = N'online_perakende'", $query);
         $this->assertStringContainsString("@ScopeKey = N'bayi_proje'", $query);
         $this->assertStringContainsString("ISNULL(cari.cari_grup_kodu, N'') IN", $query);
-        $this->assertStringContainsString("cari.cari_grup_kodu NOT IN", $query);
+        $this->assertStringContainsString('cari.cari_grup_kodu NOT IN', $query);
         $this->assertStringContainsString('cari.cari_kod LIKE', $query);
         $this->assertStringContainsString('cari.cari_unvan1 LIKE', $query);
         $this->assertStringContainsString('grp.crg_isim', $query);

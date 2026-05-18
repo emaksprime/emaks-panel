@@ -20,7 +20,7 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
                 'sales_online_perakende_detail',
                 'Online / Perakende Detay',
                 $this->salesTemplateWithCustomerGroupScope($salesTemplate, true),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'SALES_ONLINE_PERAKENDE_DETAY_V1 kapsamı: online/perakende cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
                 'SALES_ONLINE_PERAKENDE_DETAY_V1.json'
             );
@@ -29,7 +29,7 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
                 'sales_bayi_proje_detail',
                 'Bayi / Proje Detay',
                 $this->salesTemplateWithCustomerGroupScope($salesTemplate, false),
-                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+                ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'SALES_BAYI_PROJE_DETAY_V1 kapsamı: online/perakende dışı cari grup kodları sales_main_dashboard kanonik sorgusuna filtre olarak uygulanır.',
                 'SALES_BAYI_PROJE_DETAY_V1.json'
             );
@@ -42,6 +42,8 @@ class PanelKnownWorkflowDataSourcesSeeder extends Seeder
 DECLARE @Search NVARCHAR(255) = N'[[search]]';
 DECLARE @RepCode NVARCHAR(50) = N'[[rep_code]]';
 DECLARE @ScopeKey NVARCHAR(80) = REPLACE(N'[[scope_key]]', N'-', N'_');
+DECLARE @allowed_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[allowed_cari_group_codes]]'));
+DECLARE @denied_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[denied_cari_group_codes]]'));
 DECLARE @date_from DATE = '[[date_from]]';
 DECLARE @date_to DATE = '[[date_to]]';
 DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
@@ -120,6 +122,24 @@ filtered AS
             )
         )
         AND (
+            NULLIF(@allowed_cari_group_codes, N'') IS NULL
+            OR ISNULL(cari.cari_grup_kodu, N'') IN
+            (
+                SELECT LTRIM(RTRIM(value))
+                FROM STRING_SPLIT(@allowed_cari_group_codes, N',')
+                WHERE LTRIM(RTRIM(value)) <> N''
+            )
+        )
+        AND (
+            NULLIF(@denied_cari_group_codes, N'') IS NULL
+            OR ISNULL(cari.cari_grup_kodu, N'') NOT IN
+            (
+                SELECT LTRIM(RTRIM(value))
+                FROM STRING_SPLIT(@denied_cari_group_codes, N',')
+                WHERE LTRIM(RTRIM(value)) <> N''
+            )
+        )
+        AND (
             @Search = N''
             OR cari.cari_kod LIKE N'%' + @Search + N'%'
             OR cari.cari_unvan1 LIKE N'%' + @Search + N'%'
@@ -183,7 +203,7 @@ ORDER BY
     cari_unvani ASC,
     cari_kodu ASC;
 SQL_SALES_CUSTOMER_SEARCH,
-            ['search', 'scope_key', 'date_from', 'date_to', 'grain', 'detail_type', 'rep_code', 'limit', 'bypass_cache'],
+            ['search', 'scope_key', 'date_from', 'date_to', 'grain', 'detail_type', 'rep_code', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'limit', 'bypass_cache'],
             'PrimeCRM SalesService.GetCustomerOptionsAsync arama mantığı aktif satış hareketi datasıyla sınırlandırılır.',
             'SalesService.cs'
         );

@@ -13,6 +13,8 @@ const blank = {
     force_password_change: false,
     access: [],
     denied_access: [],
+    allowed_cari_groups: '',
+    denied_cari_groups: '',
     strict_access: false,
 };
 
@@ -205,6 +207,8 @@ export default function AdminUsers() {
             password: '',
             access: user.access ?? [],
             denied_access: user.denied_access ?? [],
+            allowed_cari_groups: (user.allowed_cari_groups ?? []).join(','),
+            denied_cari_groups: (user.denied_cari_groups ?? []).join(','),
             strict_access: false,
         });
         setStatus({ type: 'idle', message: '' });
@@ -535,6 +539,33 @@ export default function AdminUsers() {
                                 type="checkbox"
                                 checked={form.force_password_change}
                                 onChange={(event) => setForm({ ...form, force_password_change: event.target.checked })}
+                            />
+                        </label>
+                    </div>
+
+                    <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <div>
+                            <p className="text-sm font-semibold text-slate-800">Cari Grup Kodu Yetkileri</p>
+                            <p className="text-xs text-slate-500">
+                                Virgülle ayırarak girin. Deny listesi allow listesinden öncelikli uygulanır.
+                            </p>
+                        </div>
+                        <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                            Allow listesi
+                            <input
+                                className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
+                                placeholder="120.11,120.12"
+                                value={form.allowed_cari_groups ?? ''}
+                                onChange={(event) => setForm({ ...form, allowed_cari_groups: event.target.value })}
+                            />
+                        </label>
+                        <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                            Deny listesi
+                            <input
+                                className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
+                                placeholder="120.11"
+                                value={form.denied_cari_groups ?? ''}
+                                onChange={(event) => setForm({ ...form, denied_cari_groups: event.target.value })}
                             />
                         </label>
                     </div>

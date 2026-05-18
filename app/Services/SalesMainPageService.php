@@ -6,7 +6,9 @@ use App\Models\DataSource;
 use App\Models\Page;
 use App\Models\PageConfig;
 use App\Models\User;
+use App\Models\UserCariGroupPermission;
 use Carbon\CarbonImmutable;
+use Carbon\WeekDay;
 use Illuminate\Support\Collection;
 
 class SalesMainPageService
@@ -16,8 +18,7 @@ class SalesMainPageService
         private readonly PanelDataSourceManager $dataSources,
         private readonly PanelAccessService $access,
         private readonly N8nPanelDataGateway $n8nGateway,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -78,7 +79,7 @@ class SalesMainPageService
         $source = $this->sourceForScope($scope) ?? $this->pageConfig()->dataSource ?? $this->source();
 
         $effectiveRepresentativeCode = $this->effectiveRepresentativeCode($user, $scope);
-        $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input);
+        $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input, $user);
 
         $this->compileTemplate($source, $whitelistedParameters);
 
@@ -92,7 +93,7 @@ class SalesMainPageService
 
             if ($fallbackSource !== null) {
                 $source = $fallbackSource;
-                $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input);
+                $whitelistedParameters = $this->whitelistedParameters($source, $filters, $effectiveRepresentativeCode, $input, $user);
                 $this->compileTemplate($source, $whitelistedParameters);
 
                 $rows = $this->usesN8nGateway($source)
@@ -337,7 +338,7 @@ class SalesMainPageService
      * @param  array<string, mixed>  $input
      * @return array<string, mixed>
      */
-    private function whitelistedParameters(DataSource $source, array $filters, ?string $effectiveRepresentativeCode, array $input): array
+    private function whitelistedParameters(DataSource $source, array $filters, ?string $effectiveRepresentativeCode, array $input, ?User $user): array
     {
         $parameters = [
             'date_from' => $filters['date_from'],
@@ -353,6 +354,13 @@ class SalesMainPageService
             'bypass_cache' => (bool) ($input['bypass_cache'] ?? false),
         ];
 
+        if ($user !== null) {
+            $parameters = [
+                ...$parameters,
+                ...$this->salesCariGroupFiltersFor($user),
+            ];
+        }
+
         if ($filters['detail_type'] === 'urun') {
             $parameters['brand_filter'] = $filters['brand_filter'];
             $parameters['category_filter'] = $filters['category_filter'];
@@ -360,6 +368,49 @@ class SalesMainPageService
         }
 
         return collect($parameters)->only(collect($source->allowed_params ?? []))->all();
+    }
+
+    /**
+     * @return array{allowed_cari_group_codes: string, denied_cari_group_codes: string}
+     */
+    private function salesCariGroupFiltersFor(User $user): array
+    {
+        $permissions = UserCariGroupPermission::query()
+            ->where('user_id', $user->id)
+            ->orderBy('cari_group_code')
+            ->get(['cari_group_code', 'mode']);
+
+        $denied = $this->safeCariGroupCodes(
+            $permissions
+                ->where('mode', UserCariGroupPermission::MODE_DENY)
+                ->pluck('cari_group_code')
+                ->all()
+        );
+        $allowed = array_values(array_diff($this->safeCariGroupCodes(
+            $permissions
+                ->where('mode', UserCariGroupPermission::MODE_ALLOW)
+                ->pluck('cari_group_code')
+                ->all()
+        ), $denied));
+
+        return [
+            'allowed_cari_group_codes' => implode(',', $allowed),
+            'denied_cari_group_codes' => implode(',', $denied),
+        ];
+    }
+
+    /**
+     * @param  iterable<int, mixed>  $codes
+     * @return array<int, string>
+     */
+    private function safeCariGroupCodes(iterable $codes): array
+    {
+        return collect($codes)
+            ->map(fn (mixed $code): string => trim((string) $code))
+            ->filter(fn (string $code): bool => $code !== '' && preg_match('/^[0-9A-Za-zÇĞİÖŞÜçğıöşü_.-]+$/u', $code) === 1)
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function gatewayProductFilter(string $value): string
@@ -591,7 +642,7 @@ class SalesMainPageService
             'day' => $today->format('Y-m-d'),
             'month' => ($isStart ? $today->startOfMonth() : $today)->format('Y-m-d'),
             'year' => ($isStart ? $today->startOfYear() : $today)->format('Y-m-d'),
-            default => ($isStart ? $today->startOfWeek(\Carbon\WeekDay::Monday) : $today)->format('Y-m-d'),
+            default => ($isStart ? $today->startOfWeek(WeekDay::Monday) : $today)->format('Y-m-d'),
         };
     }
 

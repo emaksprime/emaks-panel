@@ -29,6 +29,8 @@ DECLARE @date_to   DATE = '[[date_to]]';
 DECLARE @detail_type NVARCHAR(10) = N'[[detail_type]]';
 DECLARE @rep_code NVARCHAR(20) = N'[[rep_code]]';
 DECLARE @cari_filter NVARCHAR(MAX) = N'[[cari_filter]]';
+DECLARE @allowed_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[allowed_cari_group_codes]]'));
+DECLARE @denied_cari_group_codes NVARCHAR(MAX) = LTRIM(RTRIM(N'[[denied_cari_group_codes]]'));
 DECLARE @brand_filter NVARCHAR(50) = LOWER(REPLACE(LTRIM(RTRIM(N'[[brand_filter]]')), N'-', N'_'));
 DECLARE @category_filter NVARCHAR(50) = UPPER(LTRIM(RTRIM(N'[[category_filter]]')));
 DECLARE @product_filter NVARCHAR(255) = LTRIM(RTRIM(N'[[product_filter]]'));
@@ -223,6 +225,24 @@ WHERE
         OR UPPER(LTRIM(RTRIM(ISNULL(sto.sto_isim, N'')))) LIKE N'%' + UPPER(@product_filter) + N'%'
     )
     AND (@rep_code = N'' OR LTRIM(RTRIM(ISNULL(ch.cari_temsilci_kodu, N''))) = @rep_code)
+    AND (
+        NULLIF(@allowed_cari_group_codes, N'') IS NULL
+        OR ISNULL(ch.cari_grup_kodu, N'') IN
+        (
+            SELECT LTRIM(RTRIM(value))
+            FROM STRING_SPLIT(@allowed_cari_group_codes, N',')
+            WHERE LTRIM(RTRIM(value)) <> N''
+        )
+    )
+    AND (
+        NULLIF(@denied_cari_group_codes, N'') IS NULL
+        OR ISNULL(ch.cari_grup_kodu, N'') NOT IN
+        (
+            SELECT LTRIM(RTRIM(value))
+            FROM STRING_SPLIT(@denied_cari_group_codes, N',')
+            WHERE LTRIM(RTRIM(value)) <> N''
+        )
+    )
     AND (
         @cari_filter = N''
         OR (
@@ -504,7 +524,7 @@ BEGIN
     ORDER BY siralama_1 ASC, CASE satir_tipi WHEN N'GRUP' THEN 0 WHEN N'CARI' THEN 1 WHEN N'URUN' THEN 2 ELSE 3 END ASC, siralama_2 ASC;
 END
 SQL_SALES_MAIN_DASHBOARD,
-                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'cari_filter', 'customer_filter', 'allowed_cari_group_codes', 'denied_cari_group_codes', 'brand_filter', 'category_filter', 'product_filter', 'search', 'page', 'bypass_cache'],
                 'connection_meta' => $connectionMeta,
                 'preview_payload' => [],
                 'active' => true,

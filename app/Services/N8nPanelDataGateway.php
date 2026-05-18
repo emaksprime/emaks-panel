@@ -48,6 +48,8 @@ class N8nPanelDataGateway
             'rep_code' => $filters['rep_code'] ?? null,
             'cari_filter' => $filters['cari_filter'] ?? $filters['customer_filter'] ?? null,
             'customer_filter' => $filters['customer_filter'] ?? $filters['cari_filter'] ?? null,
+            'allowed_cari_group_codes' => $filters['allowed_cari_group_codes'] ?? null,
+            'denied_cari_group_codes' => $filters['denied_cari_group_codes'] ?? null,
             'search' => $filters['search'] ?? null,
             'serial_no' => $filters['serial_no'] ?? null,
             'limit' => $filters['limit'] ?? null,
