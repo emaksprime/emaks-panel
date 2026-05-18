@@ -29,6 +29,10 @@ return [
         'routes_fee_per_km' => env('TECHNICAL_SERVICE_ROUTE_FEE_PER_KM', null),
     ],
 
+    'technical_service' => [
+        'invoice_serials_mode' => env('TECHNICAL_SERVICE_INVOICE_SERIALS_MODE', 'disabled'),
+    ],
+
     'ses' => [
         'key' => env('AWS_ACCESS_KEY_ID'),
         'secret' => env('AWS_SECRET_ACCESS_KEY'),

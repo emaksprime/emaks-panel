@@ -216,6 +216,14 @@ Iade satırlar da müşteriye gösterilmez.
 PERAKENDE SATIŞ, ONLINE ve benzeri yasak listede olmayan sorumluluk kodları müşteriye gösterilebilir.
 Bu satırlar operasyonda her zaman görünür.
 
+Local fixture test modu:
+- Gerçek MSSQL/DataSource bağlantısı olmayan lokal geliştirme ortamlarında fatura seri akışı kapalı kalır.
+- Varsayılan mod `TECHNICAL_SERVICE_INVOICE_SERIALS_MODE=disabled` davranışıdır ve review_required sonucu üretir.
+- Lokal çoklu ürün/popup/OPS ekleme testi için `.env` içinde `TECHNICAL_SERVICE_INVOICE_SERIALS_MODE=fixture` kullanılabilir.
+- Fixture datası `database/data/technical_service_invoice_serials_fixture.json` dosyasındadır.
+- Fixture serileri: `TEST-SERIAL-001` ana seri, `TEST-SERIAL-002` müşteri seçebilir ikinci ürün, `TEST-SERIAL-003` iade, `TEST-SERIAL-004` BAYİ SATIŞ, `TEST-SERIAL-005` PROJE, `TEST-SERIAL-006` GR.
+- Fixture mode production default değildir; canlıda datasource review paketi onaylanmadan gerçek fatura seri akışı final kabul edilmez.
+
 
 
 ## 7. Bayi / Final Müşteri Tespiti

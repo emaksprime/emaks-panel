@@ -15,12 +15,44 @@ class MikroInvoiceSerialsService
         'GR',
     ];
 
+    public function __construct(
+        private readonly ?string $mode = null,
+        private readonly ?string $fixturePath = null,
+    ) {
+    }
+
     /**
      * @return array{rows:array<int,array<string,mixed>>,all_invoice_serials:array<int,array<string,mixed>>,selectable_customer_serials:array<int,array<string,mixed>>,returned_serials:array<int,array<string,mixed>>,meta:array<string,mixed>,request:array<string,mixed>}
      */
     public function forSerial(string $serialNo): array
     {
         $serialNo = trim($serialNo);
+
+        if ($this->invoiceSerialsMode() === 'fixture') {
+            $rows = $this->normalizeRows($this->fixtureRowsForSerial($serialNo), $serialNo);
+
+            return [
+                'rows' => $rows,
+                'all_invoice_serials' => $rows,
+                'selectable_customer_serials' => array_values(array_filter(
+                    $rows,
+                    fn (array $row): bool => (bool) ($row['customer_selectable'] ?? false),
+                )),
+                'returned_serials' => array_values(array_filter(
+                    $rows,
+                    fn (array $row): bool => (bool) ($row['is_returned'] ?? false),
+                )),
+                'meta' => [
+                    'status' => 'fixture',
+                    'message' => 'Fatura seri kontrolÃ¼ local fixture datasÄ±ndan okundu.',
+                    'fixture_path' => 'database/data/technical_service_invoice_serials_fixture.json',
+                ],
+                'request' => [
+                    'serial_no' => $serialNo,
+                ],
+            ];
+        }
+
         $rows = $this->normalizeRows([], $serialNo);
 
         return [
@@ -36,6 +68,67 @@ class MikroInvoiceSerialsService
                 'serial_no' => $serialNo,
             ],
         ];
+    }
+
+    private function invoiceSerialsMode(): string
+    {
+        $mode = strtolower(trim((string) (
+            $this->mode ?? config('services.technical_service.invoice_serials_mode', 'disabled')
+        )));
+
+        return in_array($mode, ['disabled', 'fixture'], true) ? $mode : 'disabled';
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function fixtureRowsForSerial(string $serialNo): array
+    {
+        $path = $this->fixturePath ?? database_path('data/technical_service_invoice_serials_fixture.json');
+
+        if (! is_file($path)) {
+            return [];
+        }
+
+        $payload = json_decode((string) file_get_contents($path), true);
+
+        if (! is_array($payload)) {
+            return [];
+        }
+
+        $groups = $payload['invoice_groups'] ?? [];
+        if (! is_array($groups)) {
+            return [];
+        }
+
+        foreach ($groups as $group) {
+            if (! is_array($group)) {
+                continue;
+            }
+
+            $rows = $group['rows'] ?? [];
+            if (! is_array($rows)) {
+                continue;
+            }
+
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+
+                $fixtureSerial = $this->firstText($row, [
+                    'Faturadaki Seri No',
+                    'faturadaki_seri_no',
+                    'serial_number',
+                ]);
+
+                if ($this->sameSerial($fixtureSerial, $serialNo)) {
+                    return array_values(array_filter($rows, 'is_array'));
+                }
+            }
+        }
+
+        return [];
     }
 
     /**

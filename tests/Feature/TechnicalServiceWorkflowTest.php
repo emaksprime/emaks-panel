@@ -9,6 +9,7 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
+use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -858,6 +859,65 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertTrue($emptyResponsibility->refresh()->operation_added);
         $this->assertTrue($bulkDealer->refresh()->operation_added);
         $this->assertFalse($returned->refresh()->operation_added);
+    }
+
+    public function test_fixture_invoice_serials_allow_ops_to_add_blocked_non_returned_rows_but_not_returned_rows(): void
+    {
+        config(['services.technical_service.invoice_serials_mode' => 'fixture']);
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'serial_number' => 'TEST-SERIAL-001',
+            'customer_phone' => '+905551112233',
+        ]);
+        $result = app(MikroInvoiceSerialsService::class)->forSerial('TEST-SERIAL-001');
+
+        app(MountRequestSubmitService::class)->syncRequestSerials(
+            $request,
+            $result['all_invoice_serials'],
+            ['TEST-SERIAL-001'],
+        );
+
+        $returned = $request->requestSerials()->where('serial_number', 'TEST-SERIAL-003')->firstOrFail();
+        $dealer = $request->requestSerials()->where('serial_number', 'TEST-SERIAL-004')->firstOrFail();
+        $project = $request->requestSerials()->where('serial_number', 'TEST-SERIAL-005')->firstOrFail();
+        $gr = $request->requestSerials()->where('serial_number', 'TEST-SERIAL-006')->firstOrFail();
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/invoice-serials/{$returned->id}/add")
+            ->assertUnprocessable();
+
+        foreach ([$dealer, $project, $gr] as $serial) {
+            $this->actingAs($user)
+                ->postJson("/api/technical-service/requests/{$request->id}/invoice-serials/{$serial->id}/add")
+                ->assertOk();
+
+            $this->assertTrue($serial->refresh()->operation_added);
+        }
+
+        $this->assertFalse($returned->refresh()->operation_added);
+
+        $bulkRequest = $this->technicalServiceRequest([
+            'serial_number' => 'TEST-SERIAL-001',
+            'customer_phone' => '+905551112233',
+        ]);
+        app(MountRequestSubmitService::class)->syncRequestSerials(
+            $bulkRequest,
+            $result['all_invoice_serials'],
+            ['TEST-SERIAL-001'],
+        );
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$bulkRequest->id}/invoice-serials/add-all")
+            ->assertOk()
+            ->assertJsonPath('request.invoice_serials.added_serial_count', 4)
+            ->assertJsonPath('request.invoice_serials.addable_serial_count', 0)
+            ->assertJsonPath('request.invoice_serials.returned_serial_count', 1);
+
+        $this->assertTrue($bulkRequest->requestSerials()->where('serial_number', 'TEST-SERIAL-002')->firstOrFail()->operation_added);
+        $this->assertTrue($bulkRequest->requestSerials()->where('serial_number', 'TEST-SERIAL-004')->firstOrFail()->operation_added);
+        $this->assertTrue($bulkRequest->requestSerials()->where('serial_number', 'TEST-SERIAL-005')->firstOrFail()->operation_added);
+        $this->assertTrue($bulkRequest->requestSerials()->where('serial_number', 'TEST-SERIAL-006')->firstOrFail()->operation_added);
+        $this->assertFalse($bulkRequest->requestSerials()->where('serial_number', 'TEST-SERIAL-003')->firstOrFail()->operation_added);
     }
 
     public function test_frontend_contains_qr_operation_control_and_assignment_guard_labels(): void

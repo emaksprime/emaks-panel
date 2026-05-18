@@ -8,6 +8,49 @@ use PHPUnit\Framework\TestCase;
 
 class MikroInvoiceSerialsServiceTest extends TestCase
 {
+    public function test_disabled_mode_returns_review_required_without_fixture_rows(): void
+    {
+        $result = $this->service('disabled')->forSerial('TEST-SERIAL-001');
+
+        $this->assertSame('review_required', $result['meta']['status']);
+        $this->assertSame([], $result['all_invoice_serials']);
+        $this->assertSame([], $result['selectable_customer_serials']);
+        $this->assertSame([], $result['returned_serials']);
+    }
+
+    public function test_fixture_mode_returns_invoice_group_rows_for_test_serial(): void
+    {
+        $result = $this->service('fixture')->forSerial('TEST-SERIAL-001');
+        $rows = collect($result['all_invoice_serials'])->keyBy('serial_number');
+
+        $this->assertSame('fixture', $result['meta']['status']);
+        $this->assertCount(6, $result['all_invoice_serials']);
+        $this->assertTrue($rows['TEST-SERIAL-001']['is_primary']);
+        $this->assertTrue($rows['TEST-SERIAL-001']['customer_selectable']);
+        $this->assertTrue($rows['TEST-SERIAL-002']['customer_selectable']);
+        $this->assertTrue($rows['TEST-SERIAL-003']['is_returned']);
+        $this->assertSame('returned', $rows['TEST-SERIAL-003']['hidden_reason']);
+        $this->assertCount(1, $result['returned_serials']);
+    }
+
+    public function test_fixture_mode_blocks_dealer_project_and_gr_from_customer_selection(): void
+    {
+        $result = $this->service('fixture')->forSerial('TEST-SERIAL-001');
+        $rows = collect($result['all_invoice_serials'])->keyBy('serial_number');
+
+        foreach (['TEST-SERIAL-004' => 'BAYI SATIS', 'TEST-SERIAL-005' => 'PROJE', 'TEST-SERIAL-006' => 'GR'] as $serial => $normalizedCode) {
+            $this->assertSame($normalizedCode, $rows[$serial]['normalized_responsibility_code']);
+            $this->assertTrue($rows[$serial]['is_responsibility_blocked']);
+            $this->assertFalse($rows[$serial]['customer_selectable']);
+            $this->assertSame('responsibility_code_blocked', $rows[$serial]['hidden_reason']);
+        }
+
+        $this->assertSame(
+            ['TEST-SERIAL-001', 'TEST-SERIAL-002'],
+            collect($result['selectable_customer_serials'])->pluck('serial_number')->all(),
+        );
+    }
+
     public function test_perakende_satis_responsibility_code_is_customer_selectable(): void
     {
         $row = $this->normalize([
@@ -157,8 +200,11 @@ class MikroInvoiceSerialsServiceTest extends TestCase
         return $this->service()->normalizeRows([$row], 'SN-PRIMARY')[0];
     }
 
-    private function service(): MikroInvoiceSerialsService
+    private function service(?string $mode = null): MikroInvoiceSerialsService
     {
-        return new MikroInvoiceSerialsService();
+        return new MikroInvoiceSerialsService(
+            $mode,
+            dirname(__DIR__, 3).'/database/data/technical_service_invoice_serials_fixture.json',
+        );
     }
 }

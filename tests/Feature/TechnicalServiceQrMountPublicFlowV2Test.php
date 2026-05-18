@@ -508,6 +508,31 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertJsonPath('message', 'Ek ürün talebiniz operasyon ekibine iletilecek.');
     }
 
+    public function test_fixture_mode_public_popup_only_returns_customer_selectable_invoice_serials(): void
+    {
+        config(['services.technical_service.invoice_serials_mode' => 'fixture']);
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        ['token' => $token] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => 'TEST-SERIAL-001',
+            'product_name' => 'Fixture Ana Kilit',
+            'product_model' => 'FIXTURE',
+            'brand' => 'EMAKS PRIME',
+        ]);
+
+        $this->postJson('/mount-request/'.$token.'/invoice-serials/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('has_selectable_serials', true)
+            ->assertJsonCount(1, 'selectable_serials')
+            ->assertJsonPath('selectable_serials.0.serial_number', 'TEST-SERIAL-002')
+            ->assertJsonPath('blocked_count', 3)
+            ->assertJsonPath('returned_count', 1)
+            ->assertJsonPath('operation_only_count', 4)
+            ->assertJsonPath('total_count', 5)
+            ->assertJsonMissingPath('selectable_serials.0.hidden_reason')
+            ->assertJsonMissingPath('selectable_serials.0.responsibility_code');
+    }
+
     public function test_frontend_opens_multi_product_popup_when_selectable_payload_exists(): void
     {
         $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
