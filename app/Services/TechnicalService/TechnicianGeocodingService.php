@@ -19,8 +19,8 @@ class TechnicianGeocodingService
             ['source_type' => 'default_start_plus_code', 'value' => $technician->default_start_plus_code],
             ['source_type' => 'google_formatted_address', 'value' => $technician->google_formatted_address],
             ['source_type' => 'default_start_address', 'value' => $technician->default_start_address],
-            ['source_type' => 'cari_address', 'value' => $this->geocodingService->joinParts([$technician->cari_address, $technician->cari_city_district_country])],
             ['source_type' => 'address', 'value' => $this->geocodingService->joinParts([$technician->address, $technician->district, $technician->city, 'Türkiye'])],
+            ['source_type' => 'cari_address', 'value' => $this->geocodingService->joinParts([$technician->cari_address, $technician->cari_city_district_country])],
         ];
 
         foreach ($candidates as $candidate) {
@@ -52,6 +52,7 @@ class TechnicianGeocodingService
                 'ok' => false,
                 'status' => 'skipped',
                 'quality' => 'failed',
+                'needs_review' => true,
                 'latitude' => null,
                 'longitude' => null,
                 'formatted_address' => null,
@@ -60,7 +61,10 @@ class TechnicianGeocodingService
             ];
         }
 
-        return $this->geocodingService->geocodeText($query['query'], $query['source_type']);
+        return $this->geocodingService->geocodeText($query['query'], $query['source_type'], [
+            'city' => $technician->city,
+            'district' => $technician->district,
+        ]);
     }
 
     public function hasValidCoordinates(TechnicalServiceTechnician $technician): bool

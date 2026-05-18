@@ -65,6 +65,10 @@ type ServiceRequestDetailsProps = {
     location: string
     phone?: string | null
     priority?: string | number | null
+    latitude?: number | string | null
+    longitude?: number | string | null
+    startLatitude?: number | string | null
+    startLongitude?: number | string | null
     needsReview?: boolean
     hasLocation?: boolean
     hasAddressInfo?: boolean
@@ -153,6 +157,34 @@ const parseNumericInput = (value: string): number | null => {
   const parsed = Number(normalized)
 
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
+const parseCoordinateValue = (value: number | string | null | undefined): number | null => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim())
+
+  if (!Number.isFinite(parsed)) {
+    return null
+  }
+
+  return parsed
+}
+
+const formatCoordinatePair = (
+  latitude: number | string | null | undefined,
+  longitude: number | string | null | undefined,
+): string => {
+  const parsedLatitude = parseCoordinateValue(latitude)
+  const parsedLongitude = parseCoordinateValue(longitude)
+
+  if (parsedLatitude === null || parsedLongitude === null) {
+    return '-'
+  }
+
+  return `${parsedLatitude.toFixed(6)}, ${parsedLongitude.toFixed(6)}`
 }
 
 const routeQuoteMessage = (message: string | null | undefined): string => {
@@ -736,11 +768,19 @@ export function ServiceRequestDetails({
   const doorPhotos = request.doorPhotos ?? []
   const routeQuote = request.routeQuote ?? null
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
+  const selectedTechnicianIdString = selectedTechnicianId ? String(selectedTechnicianId) : null
+  const routeQuoteTechnicianIdString = routeQuote?.technician_id !== null && routeQuote?.technician_id !== undefined
+    ? String(routeQuote.technician_id)
+    : null
+  const routeQuoteMatchesSelectedTechnician = Boolean(routeQuote && selectedTechnicianIdString && routeQuoteTechnicianIdString === selectedTechnicianIdString)
+  const routeQuoteStaleForSelectedTechnician = Boolean(routeQuote && selectedTechnicianIdString && routeQuoteTechnicianIdString && routeQuoteTechnicianIdString !== selectedTechnicianIdString)
   const hasAssignmentChange = Boolean(selectedTechnicianId && selectedTechnicianId !== String(request.technicianId ?? ''))
   const hasMultiProductRequest = Boolean(invoiceSerials?.has_multi_product || (invoiceSerials?.selected_serials?.length ?? 0) > 1 || saleAndPayment?.mount_payment_status === 'skipped_multi_product')
-  const hasCalculatedRouteQuote = routeQuote?.status === 'calculated'
-  const routeFeeNeedsApproval = routeQuote?.status === 'calculated' && routeQuote.travel_fee_required
-  const routeFeeStatusText = routeQuote?.status === 'calculated'
+  const hasCalculatedRouteQuote = routeQuote?.status === 'calculated' && routeQuoteMatchesSelectedTechnician
+  const routeFeeNeedsApproval = hasCalculatedRouteQuote && routeQuote.travel_fee_required
+  const routeFeeStatusText = routeQuoteStaleForSelectedTechnician
+    ? 'Bu usta için yol hesabı yapılmadı'
+    : hasCalculatedRouteQuote
     ? routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
     : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
   const routeRoundTripKm = hasCalculatedRouteQuote
@@ -769,6 +809,17 @@ export function ServiceRequestDetails({
     : null
   const routeFeeAmount = hasCalculatedRouteQuote && typeof routeQuote?.fee_amount === 'number' && Number.isFinite(routeQuote.fee_amount)
     ? routeQuote.fee_amount
+    : null
+  const selectedTechnicianCoordinateLabel = formatCoordinatePair(
+    selectedTechnician?.latitude ?? selectedTechnician?.startLatitude,
+    selectedTechnician?.longitude ?? selectedTechnician?.startLongitude,
+  )
+  const selectedTechnicianMapHref = selectedTechnicianCoordinateLabel !== '-'
+    ? `https://www.google.com/maps?q=${selectedTechnicianCoordinateLabel.replace(/\s/g, '')}`
+    : null
+  const customerCoordinateLabel = formatCoordinatePair(locationInfo?.latitude, locationInfo?.longitude)
+  const customerMapHref = customerCoordinateLabel !== '-'
+    ? `https://www.google.com/maps?q=${customerCoordinateLabel.replace(/\s/g, '')}`
     : null
   const routeFeeEditorCurrentSnapshot = JSON.stringify({
     oneWay: routeFeeOneWayKmInput,
@@ -1186,7 +1237,7 @@ export function ServiceRequestDetails({
               <p className="mt-1 text-sm text-slate-600">Atama öncesi ödeme, adres, kapı görseli, randevu ve montaj durumu tek yerden kontrol edilir.</p>
             </div>
             {routeQuote ? (
-              <Badge variant={routeFeeNeedsApproval ? 'warning' : routeQuote.status === 'calculated' ? 'positive' : 'outline'}>
+              <Badge variant={routeFeeNeedsApproval ? 'warning' : hasCalculatedRouteQuote ? 'positive' : 'outline'}>
                 {routeFeeStatusText}
               </Badge>
             ) : null}
@@ -1383,12 +1434,12 @@ export function ServiceRequestDetails({
             <span className={['inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')} title={slaTitle}>
               SLA: {currentSlaLabel}
             </span>
-            {routeQuote?.status === 'calculated' ? (
+            {hasCalculatedRouteQuote ? (
               <Badge variant={routeQuote.travel_fee_required ? 'warning' : 'positive'}>
                 {routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'}
               </Badge>
             ) : routeQuote ? (
-              <Badge variant="warning">Yol ücreti hesaplanamadı</Badge>
+              <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Bu usta için yol hesabı yapılmadı' : 'Yol ücreti hesaplanamadı'}</Badge>
             ) : null}
             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
               Mevcut etiketler: {currentPriorityLabel} / {currentSlaLabel}
@@ -1431,7 +1482,7 @@ export function ServiceRequestDetails({
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-slate-900">Şehir içi uygun ustalar</p>
+                  <p className="text-sm font-semibold text-slate-900">Mesafe ve önceliğe göre önerilen ustalar</p>
                   <Badge variant="outline">{technicianSuggestions.length > 0 ? `${technicianSuggestions.length} öneri` : 'Öneri yok'}</Badge>
                 </div>
                 {technicianSuggestions.length > 0 ? (
@@ -1441,6 +1492,13 @@ export function ServiceRequestDetails({
                       const hasAddressInfo = technician.hasAddressInfo ?? Boolean(technician.addressSummary || technician.locationCode || technician.location)
                       const hasPlusCodeInfo = technician.hasPlusCodeInfo ?? Boolean(technician.locationCode)
                       const hasCoordinates = technician.hasCoordinates ?? technician.hasLocation ?? false
+                      const routeMismatch = selected
+                        && hasCalculatedRouteQuote
+                        && typeof technician.estimatedRoundTripKm === 'number'
+                        && technician.estimatedRoundTripKm > 0
+                        && typeof routeRoundTripKm === 'number'
+                        && routeRoundTripKm > 0
+                        && Math.max(routeRoundTripKm, technician.estimatedRoundTripKm) / Math.min(routeRoundTripKm, technician.estimatedRoundTripKm) > 3
                       const routeLocationMessage = technician.routeLocationMessage ?? (hasCoordinates
                         ? 'Routes hesabı için koordinat var.'
                         : hasPlusCodeInfo || hasAddressInfo
@@ -1458,6 +1516,7 @@ export function ServiceRequestDetails({
                             {technician.recommended ? <Badge variant="positive">Önerilen</Badge> : null}
                             {selected ? <Badge variant="secondary">Seçildi</Badge> : null}
                             {technician.needsReview ? <Badge variant="warning">Kontrol gerekli</Badge> : null}
+                            {routeMismatch ? <Badge variant="warning">Mesafe uyumsuzluğu - kontrol gerekli</Badge> : null}
                           </div>
                           <p className="mt-1 text-xs text-slate-500">
                             {[technician.phone, technician.location, technician.distanceKmLabel].filter(Boolean).join(' · ')}
@@ -1519,7 +1578,7 @@ export function ServiceRequestDetails({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-semibold">Yol ücreti</p>
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant={routeFeeNeedsApproval ? 'warning' : routeQuote?.status === 'calculated' ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
+                    <Badge variant={routeFeeNeedsApproval ? 'warning' : hasCalculatedRouteQuote ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
                     <Button
                       type="button"
                       size="sm"
@@ -1556,6 +1615,11 @@ export function ServiceRequestDetails({
                     {routeQuoteManualSaveError}
                   </div>
                 ) : null}
+                {routeQuoteStaleForSelectedTechnician ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    Bu usta için yol hesabı yapılmadı. Seçili usta değiştiği için eski quote gösterilmiyor.
+                  </div>
+                ) : null}
                 <div className="grid gap-2 sm:grid-cols-2">
                   <MiniMetric label="Usta şehir/adres bilgisi" value={selectedTechnician ? (selectedTechnician.hasAddressInfo ? 'Var' : 'Usta adres bilgisi eksik') : 'Usta seçilmedi'} hint={selectedTechnician?.addressSummary ?? undefined} />
                   <MiniMetric label="Usta koordinatı" value={selectedTechnician ? (selectedTechnician.hasCoordinates ? 'Gerçek koordinat var' : 'Gerçek koordinat eksik') : 'Usta seçilmedi'} hint={selectedTechnician && !selectedTechnician.hasCoordinates && (selectedTechnician.hasPlusCodeInfo || selectedTechnician.hasAddressInfo) ? 'Usta adres/Plus Code var, gerçek koordinat eksik.' : undefined} />
@@ -1569,8 +1633,24 @@ export function ServiceRequestDetails({
                   <MiniMetric
                     label="Tahmini yol ücreti"
                     value={hasCalculatedRouteQuote ? routeFeeAmount === null && routeQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
-                    hint={routeQuote ? routeQuoteMessage(routeQuote.message) : 'Yol ücreti hesaplanamadı'}
+                    hint={routeQuoteStaleForSelectedTechnician ? 'Bu usta için yol hesabı yapılmadı' : routeQuote ? routeQuoteMessage(routeQuote.message) : 'Yol ücreti hesaplanamadı'}
                   />
+                </div>
+                <div className="grid gap-2 rounded-2xl border border-blue-100 bg-white/70 p-3 text-xs text-blue-950 sm:grid-cols-2 lg:grid-cols-3">
+                  <MiniMetric
+                    label="Usta koordinatı lat/lng"
+                    value={selectedTechnicianCoordinateLabel}
+                    hint={selectedTechnicianMapHref ? <a className="font-semibold text-blue-700 hover:underline" href={selectedTechnicianMapHref} target="_blank" rel="noreferrer">Haritada aç</a> : 'Gerçek koordinat yok'}
+                  />
+                  <MiniMetric
+                    label="Müşteri koordinatı lat/lng"
+                    value={customerCoordinateLabel}
+                    hint={customerMapHref ? <a className="font-semibold text-blue-700 hover:underline" href={customerMapHref} target="_blank" rel="noreferrer">Haritada aç</a> : 'Müşteri konumu yok'}
+                  />
+                  <MiniMetric label="route quote id" value={routeQuote?.id ?? '-'} />
+                  <MiniMetric label="quote technician_id" value={routeQuoteTechnicianIdString ?? '-'} />
+                  <MiniMetric label="selectedTechnicianId" value={selectedTechnicianIdString ?? '-'} />
+                  <MiniMetric label="Usta adı" value={selectedTechnician?.name ?? '-'} />
                 </div>
                 {routeFeeEditorOpen ? (
                   <div className="grid gap-3 rounded-2xl border border-blue-200 bg-white p-3 text-sm text-slate-700">

@@ -89,6 +89,14 @@ class GeocodeTechnicalServiceTechnicians extends Command
                     $technician->name,
                     $result['error_message'] ?? 'Geocoding başarısız.'
                 ));
+
+                if (! $dryRun) {
+                    $technician->forceFill([
+                        'needs_review' => true,
+                        'route_note' => (string) ($result['error_message'] ?? 'Geocoding başarısız.'),
+                    ])->save();
+                }
+
                 $this->sleep($sleepMs);
 
                 continue;
@@ -112,6 +120,7 @@ class GeocodeTechnicalServiceTechnicians extends Command
                     'start_longitude' => $result['longitude'],
                     'location_source' => $result['provider'] ?? 'google_geocode',
                     'route_note' => $this->routeNote($result),
+                    'needs_review' => (bool) ($result['needs_review'] ?? false),
                 ])->save();
                 $summary['updated']++;
             }
@@ -139,6 +148,11 @@ class GeocodeTechnicalServiceTechnicians extends Command
 
         if ($formatted !== '') {
             $summary .= "; formatted: {$formatted}";
+        }
+
+        $locationType = trim((string) ($result['location_type'] ?? ''));
+        if ($locationType !== '') {
+            $summary .= "; location_type: {$locationType}";
         }
 
         return $summary.'; at '.now()->toDateTimeString();

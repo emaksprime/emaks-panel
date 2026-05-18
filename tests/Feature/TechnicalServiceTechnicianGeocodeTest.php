@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\TechnicalServiceTechnician;
+use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceGeocodingService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -54,6 +55,82 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
 
         $this->assertFalse($result['ok']);
         $this->assertSame('failed', $result['quality']);
+    }
+
+    public function test_common_geocode_service_rejects_generic_city_result(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Ankara, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'APPROXIMATE',
+                        'location' => ['lat' => 39.933365, 'lng' => 32.859742],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $result = app(TechnicalServiceGeocodingService::class)->geocodeText('Ankara', 'cari_address', [
+            'city' => 'Ankara',
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame('rejected', $result['status']);
+        $this->assertSame('Geocode rejected: generic city/country result', $result['error_message']);
+    }
+
+    public function test_common_geocode_service_rejects_city_mismatch(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Tunalı Hilmi Cad. No:1, Çankaya/Ankara, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 39.92077, 'lng' => 32.85411],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $result = app(TechnicalServiceGeocodingService::class)->geocodeText('İzmir adres', 'address', [
+            'city' => 'İzmir',
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame('rejected', $result['status']);
+        $this->assertStringContainsString('Geocode rejected: city mismatch İzmir vs Ankara', (string) $result['error_message']);
+    }
+
+    public function test_plus_code_detailed_result_is_accepted(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Manisa Organize Sanayi Bölgesi, Yunusemre/Manisa, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.619099, 'lng' => 27.428921],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $result = app(TechnicalServiceGeocodingService::class)->geocodeText('8G7C+X5 Manisa', 'google_plus_code', [
+            'city' => 'Manisa',
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertFalse($result['needs_review']);
+        $this->assertSame(38.619099, $result['latitude']);
+        $this->assertSame(27.428921, $result['longitude']);
     }
 
     public function test_common_geocode_service_returns_safe_error_when_api_key_is_missing(): void
@@ -113,8 +190,11 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
                 'status' => 'OK',
                 'results' => [[
-                    'formatted_address' => 'Test formatted address',
-                    'geometry' => ['location' => ['lat' => 38.423734, 'lng' => 27.142826]],
+                    'formatted_address' => 'Alsancak Mahallesi, Konak/İzmir, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.423734, 'lng' => 27.142826],
+                    ],
                 ]],
             ], 200),
         ]);
@@ -150,8 +230,47 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertSame('38.4237340', $technician->start_latitude);
         $this->assertSame('27.1428260', $technician->start_longitude);
         $this->assertSame('google_geocode', $technician->location_source);
+        $this->assertFalse($technician->needs_review);
         $this->assertStringContainsString('Geocoded from google_plus_code', (string) $technician->route_note);
         $this->assertStringNotContainsString('test-geocoding-key', (string) $technician->route_note);
+    }
+
+    public function test_command_rejects_city_mismatch_without_overwriting_coordinates(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Tunalı Hilmi Cad. No:1, Çankaya/Ankara, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 39.92077, 'lng' => 32.85411],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Mismatch Usta',
+            'phone' => '+905555555556',
+            'city' => 'İzmir',
+            'address' => 'Test Mahallesi No 1',
+            'active' => true,
+        ]);
+
+        $exit = Artisan::call('technical-service:geocode-technicians', [
+            '--id' => [$technician->id],
+            '--force' => true,
+            '--sleep-ms' => 0,
+        ]);
+
+        $this->assertSame(0, $exit);
+        $technician->refresh();
+        $this->assertNull($technician->latitude);
+        $this->assertNull($technician->longitude);
+        $this->assertTrue($technician->needs_review);
+        $this->assertStringContainsString('Geocode rejected: city mismatch İzmir vs Ankara', (string) $technician->route_note);
     }
 
     public function test_command_returns_safe_error_when_api_key_is_missing(): void
@@ -170,6 +289,150 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertSame(1, $exit);
         $this->assertStringContainsString('Google geocoding key tanımlı değil.', Artisan::output());
     }
+
+    public function test_technician_update_marks_coordinates_stale_when_address_changes(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Stale Usta',
+            'first_name' => 'Stale',
+            'phone' => '+905555555557',
+            'city' => 'İzmir',
+            'address' => 'Eski adres',
+            'latitude' => '38.4237340',
+            'longitude' => '27.1428260',
+            'start_latitude' => '38.4237340',
+            'start_longitude' => '27.1428260',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/technicians/{$technician->id}", [
+                'first_name' => 'Stale',
+                'city' => 'İzmir',
+                'address' => 'Yeni adres',
+                'latitude' => 38.423734,
+                'longitude' => 27.142826,
+                'start_latitude' => 38.423734,
+                'start_longitude' => 27.142826,
+                'active' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('technician.needs_review', true);
+
+        $technician->refresh();
+        $this->assertTrue($technician->needs_review);
+        $this->assertStringContainsString('Adres değişti, koordinat yeniden doğrulanmalı', (string) $technician->route_note);
+    }
+
+    public function test_manual_lat_lng_update_is_validated_and_marks_manual_source(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Manual Usta',
+            'first_name' => 'Manual',
+            'phone' => '+905555555558',
+            'city' => 'İzmir',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/technicians/{$technician->id}", [
+                'first_name' => 'Manual',
+                'city' => 'İzmir',
+                'latitude' => 38.423734,
+                'longitude' => 27.142826,
+                'active' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('technician.location_source', 'manual')
+            ->assertJsonPath('technician.needs_review', false);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/technicians/{$technician->id}", [
+                'first_name' => 'Manual',
+                'city' => 'İzmir',
+                'latitude' => 0,
+                'longitude' => 0,
+                'active' => true,
+            ])
+            ->assertStatus(422);
+    }
+
+    public function test_technician_geocode_endpoint_updates_coordinates_with_quality_rules(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Manisa Organize Sanayi Bölgesi, Yunusemre/Manisa, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.619099, 'lng' => 27.428921],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Endpoint Usta',
+            'first_name' => 'Endpoint',
+            'phone' => '+905555555559',
+            'city' => 'Manisa',
+            'google_plus_code' => '8G7C+X5 Manisa',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/technicians/{$technician->id}/geocode")
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('technician.latitude', '38.6190990')
+            ->assertJsonPath('technician.longitude', '27.4289210')
+            ->assertJsonPath('technician.needs_review', false);
+    }
+
+    public function test_coordinate_validation_command_marks_and_clears_invalid_city_mismatch(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Berkay Example',
+            'phone' => '+905555555560',
+            'city' => 'İzmir',
+            'latitude' => '39.9207700',
+            'longitude' => '32.8541100',
+            'start_latitude' => '39.9207700',
+            'start_longitude' => '32.8541100',
+            'location_source' => 'google_geocode',
+            'route_note' => 'Geocoded from cari_address; formatted: Tunalı Hilmi Cad. No:1, Çankaya/Ankara, Türkiye; at 2026-05-18 10:00:00',
+            'active' => true,
+        ]);
+
+        $exit = Artisan::call('technical-service:validate-technician-coordinates', [
+            '--clear-invalid' => true,
+        ]);
+
+        $this->assertSame(0, $exit, Artisan::output());
+        $technician->refresh();
+        $this->assertTrue($technician->needs_review);
+        $this->assertNull($technician->latitude);
+        $this->assertNull($technician->longitude);
+        $this->assertStringContainsString('city_mismatch', (string) $technician->route_note);
+    }
+
+    public function test_frontend_contains_stale_and_manual_coordinate_controls(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-technicians.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('Adres değişti, koordinat yeniden doğrulanmalı', $source);
+        $this->assertStringContainsString('Mevcut koordinat eski adrese ait olabilir', $source);
+        $this->assertStringContainsString('Google ile koordinatı güncelle', $source);
+        $this->assertStringContainsString('Manuel koordinat', $source);
+        $this->assertStringContainsString('Koordinat geçersiz. Latitude/Longitude 0/0 olamaz.', $source);
+    }
+
     public function test_coordinate_export_excludes_review_and_suspicious_duplicate_coordinates(): void
     {
         $good = TechnicalServiceTechnician::query()->create([
@@ -183,7 +446,7 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             'start_latitude' => '41.0082376',
             'start_longitude' => '28.9783589',
             'location_source' => 'google_geocode',
-            'route_note' => 'Geocoded from google_plus_code; formatted: Istanbul, Turkiye; at 2026-05-18 10:00:00',
+            'route_note' => 'Geocoded from google_plus_code; formatted: Sultanahmet Mahallesi, Fatih/Istanbul, Turkiye; at 2026-05-18 10:00:00',
             'needs_review' => false,
             'active' => true,
         ]);
@@ -196,6 +459,19 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             'latitude' => '39.9333650',
             'longitude' => '32.8597420',
             'needs_review' => true,
+            'active' => true,
+        ]);
+        TechnicalServiceTechnician::query()->create([
+            'name' => 'Generic Export',
+            'phone' => '+905555555561',
+            'phone_e164' => '+905555555561',
+            'city' => 'Ankara',
+            'source_key' => 'generic-city',
+            'latitude' => '39.9333650',
+            'longitude' => '32.8597420',
+            'location_source' => 'google_geocode',
+            'route_note' => 'Geocoded from cari_address; formatted: Ankara, Türkiye; at 2026-05-18 10:00:00',
+            'needs_review' => false,
             'active' => true,
         ]);
 
@@ -231,6 +507,7 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertSame('google_plus_code', $data['items'][0]['geocode_quality']);
         $this->assertArrayNotHasKey('phone', $data['items'][0]);
         $this->assertNotContains('locksmith:+905555555552:ANKARA', array_column($data['items'], 'source_key'));
+        $this->assertNotContains('generic-city', array_column($data['items'], 'source_key'));
         $this->assertNotContains('duplicate-0', array_column($data['items'], 'source_key'));
     }
 

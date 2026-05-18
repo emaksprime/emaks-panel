@@ -178,6 +178,7 @@ export type ServiceRequestDoorPhoto = {
 export type ServiceRequestRouteQuote = {
   ok?: boolean
   id?: number | string | null
+  technician_id?: number | string | null
   status?: 'calculated' | 'failed' | 'missing_location' | 'missing_api_key' | string | null
   one_way_distance_km?: number | null
   round_trip_distance_km?: number | null

@@ -7,10 +7,13 @@ use App\Http\Requests\ImportTechnicalServiceTechniciansCsvRequest;
 use App\Http\Requests\StoreTechnicalServiceTechnicianRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianRequest;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\TechnicalService\TechnicalServiceGeocodingService;
+use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceTechnicianController extends Controller
 {
@@ -101,9 +104,59 @@ class TechnicalServiceTechnicianController extends Controller
         UpdateTechnicalServiceTechnicianRequest $request,
         TechnicalServiceTechnician $technician,
     ): JsonResponse {
-        $technician->update($this->technicianPayload($request->validated(), $technician));
+        $payload = $this->technicianPayload($request->validated(), $technician);
+        $coordinateChanged = $this->payloadCoordinatePairChanged($technician, $payload);
+        $this->applyManualCoordinateState($payload, $coordinateChanged);
+
+        if ($this->addressFieldsChanged($technician, $payload)
+            && $this->hasStoredCoordinates($technician)
+            && ! $coordinateChanged
+        ) {
+            $payload['needs_review'] = true;
+            $payload['route_note'] = 'Adres değişti, koordinat yeniden doğrulanmalı. Mevcut koordinat eski adrese ait olabilir.';
+        }
+
+        $technician->update($payload);
 
         return response()->json(['technician' => $technician->fresh()]);
+    }
+
+    public function geocode(
+        TechnicalServiceTechnician $technician,
+        TechnicianGeocodingService $geocodingService,
+    ): JsonResponse {
+        $result = $geocodingService->geocode($technician);
+
+        if (! ($result['ok'] ?? false)) {
+            $technician->forceFill([
+                'needs_review' => true,
+                'route_note' => (string) ($result['error_message'] ?? 'Geocoding başarısız.'),
+            ])->save();
+
+            return response()->json([
+                'ok' => false,
+                'message' => $result['error_message'] ?? 'Geocoding başarısız.',
+                'result' => $result,
+                'technician' => $technician->fresh(),
+            ], 422);
+        }
+
+        $technician->forceFill([
+            'latitude' => $result['latitude'],
+            'longitude' => $result['longitude'],
+            'start_latitude' => $result['latitude'],
+            'start_longitude' => $result['longitude'],
+            'location_source' => $result['provider'] ?? 'google_geocode',
+            'route_note' => $this->geocodeRouteNote($result),
+            'needs_review' => (bool) ($result['needs_review'] ?? false),
+        ])->save();
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Koordinat Google ile güncellendi.',
+            'result' => $result,
+            'technician' => $technician->fresh(),
+        ]);
     }
 
     public function destroy(TechnicalServiceTechnician $technician): JsonResponse
@@ -319,5 +372,125 @@ class TechnicalServiceTechnicianController extends Controller
         }
 
         return $payload;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function applyManualCoordinateState(array &$payload, bool $coordinateChanged): void
+    {
+        $primaryPair = $this->coordinatePairFromPayload($payload, 'latitude', 'longitude');
+        $startPair = $this->coordinatePairFromPayload($payload, 'start_latitude', 'start_longitude');
+
+        if ($coordinateChanged && ($primaryPair !== null || $startPair !== null)) {
+            $payload['location_source'] = 'manual';
+            $payload['needs_review'] = false;
+            $payload['route_note'] = 'Manuel koordinat doğrulandı: '.now()->toDateTimeString();
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{latitude:float,longitude:float}|null
+     */
+    private function coordinatePairFromPayload(array $payload, string $latitudeKey, string $longitudeKey): ?array
+    {
+        if (! array_key_exists($latitudeKey, $payload) && ! array_key_exists($longitudeKey, $payload)) {
+            return null;
+        }
+
+        $latitude = $payload[$latitudeKey] ?? null;
+        $longitude = $payload[$longitudeKey] ?? null;
+
+        if ($latitude === null && $longitude === null) {
+            return null;
+        }
+
+        $coordinates = app(TechnicalServiceGeocodingService::class)->validCoordinatePair($latitude, $longitude);
+
+        if ($coordinates === null) {
+            throw ValidationException::withMessages([
+                $latitudeKey => ['Koordinat geçersiz. Latitude/Longitude numeric olmalı ve 0/0 olamaz.'],
+            ]);
+        }
+
+        return $coordinates;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function payloadCoordinatePairChanged(TechnicalServiceTechnician $technician, array $payload): bool
+    {
+        foreach (['latitude', 'longitude', 'start_latitude', 'start_longitude'] as $field) {
+            if (! array_key_exists($field, $payload)) {
+                continue;
+            }
+
+            $new = $payload[$field] === null || $payload[$field] === '' ? null : (float) $payload[$field];
+            $old = $technician->{$field} === null || $technician->{$field} === '' ? null : (float) $technician->{$field};
+
+            if ($new === null && $old === null) {
+                continue;
+            }
+
+            if ($new === null || $old === null || abs($new - $old) > 0.000001) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function addressFieldsChanged(TechnicalServiceTechnician $technician, array $payload): bool
+    {
+        foreach ([
+            'city',
+            'district',
+            'address',
+            'location_code',
+            'google_plus_code',
+            'google_formatted_address',
+            'default_start_address',
+            'default_start_plus_code',
+            'cari_address',
+            'cari_city_district_country',
+        ] as $field) {
+            if (array_key_exists($field, $payload) && trim((string) $payload[$field]) !== trim((string) $technician->{$field})) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasStoredCoordinates(TechnicalServiceTechnician $technician): bool
+    {
+        return app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->latitude, $technician->longitude) !== null
+            || app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->start_latitude, $technician->start_longitude) !== null;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private function geocodeRouteNote(array $result): string
+    {
+        $source = trim((string) ($result['source_type'] ?? 'unknown'));
+        $formatted = trim((string) ($result['formatted_address'] ?? ''));
+        $locationType = trim((string) ($result['location_type'] ?? ''));
+        $note = "Geocoded from {$source}";
+
+        if ($formatted !== '') {
+            $note .= "; formatted: {$formatted}";
+        }
+
+        if ($locationType !== '') {
+            $note .= "; location_type: {$locationType}";
+        }
+
+        return $note.'; at '.now()->toDateTimeString();
     }
 }

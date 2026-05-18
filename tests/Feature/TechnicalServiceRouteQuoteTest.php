@@ -195,6 +195,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/route-quote")
             ->assertOk()
             ->assertJsonPath('status', TechnicalServiceRouteQuote::STATUS_CALCULATED)
+            ->assertJsonPath('technician_id', $technician->id)
             ->assertJsonPath('one_way_distance_km', 22.5)
             ->assertJsonPath('round_trip_distance_km', 45)
             ->assertJsonPath('distance_km', 45)
@@ -205,6 +206,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('fee_amount', 150)
             ->assertJsonPath('message', '30 km üstü yol ücreti gerekli.')
             ->assertJsonPath('request.route_quote.distance_km', 45)
+            ->assertJsonPath('request.route_quote.technician_id', $technician->id)
             ->assertJsonPath('request.route_quote.round_trip_distance_km', 45)
             ->assertJsonPath('request.travel_round_trip_km', 45)
             ->assertJsonPath('request.travel_billable_km', 15)
@@ -321,6 +323,10 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Usta adres/Plus Code var, gerçek koordinat eksik.',
             'Google Routes sonucu yok.',
             'Routes hesaplanmadan ücrete tabi km hesaplanmaz.',
+            'Bu usta için yol hesabı yapılmadı',
+            'quote technician_id',
+            'selectedTechnicianId',
+            'Mesafe uyumsuzluğu - kontrol gerekli',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $detailsSource);
         }

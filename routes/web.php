@@ -60,6 +60,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::patch('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'update'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.update');
+            Route::post('technicians/{technician}/geocode', [TechnicalServiceTechnicianController::class, 'geocode'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.geocode');
             Route::delete('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'destroy'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.destroy');

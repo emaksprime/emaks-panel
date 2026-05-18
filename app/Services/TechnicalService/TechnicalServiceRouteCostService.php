@@ -333,6 +333,7 @@ class TechnicalServiceRouteCostService
         return [
             'ok' => $quote->status === TechnicalServiceRouteQuote::STATUS_CALCULATED,
             'id' => $quote->id,
+            'technician_id' => $quote->technician_id,
             'status' => $quote->status,
             'one_way_distance_km' => $canonical['one_way_distance_km'],
             'round_trip_distance_km' => $canonical['round_trip_distance_km'],

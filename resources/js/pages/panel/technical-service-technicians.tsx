@@ -19,9 +19,11 @@ type TechnicianForm = {
   first_name: string
   last_name: string
   phone: string
+  city_plate_code: string
   city: string
   district: string
   address: string
+  location_code: string
   google_plus_code: string
   google_formatted_address: string
   latitude: string
@@ -32,6 +34,8 @@ type TechnicianForm = {
   start_longitude: string
   mikro_cari_kodu: string
   mikro_cari_adi: string
+  cari_address: string
+  cari_city_district_country: string
   note: string
   active: boolean
 }
@@ -69,9 +73,11 @@ const emptyForm: TechnicianForm = {
   first_name: '',
   last_name: '',
   phone: '',
+  city_plate_code: '',
   city: '',
   district: '',
   address: '',
+  location_code: '',
   google_plus_code: '',
   google_formatted_address: '',
   latitude: '',
@@ -82,6 +88,8 @@ const emptyForm: TechnicianForm = {
   start_longitude: '',
   mikro_cari_kodu: '',
   mikro_cari_adi: '',
+  cari_address: '',
+  cari_city_district_country: '',
   note: '',
   active: true,
 }
@@ -147,6 +155,44 @@ const hasAddressInfo = (technician: ServiceTechnician) => [
   technician.cari_city_district_country,
 ].some((value) => typeof value === 'string' && value.trim() !== '')
 
+const coordinateWatchedFields: Array<keyof TechnicianForm> = [
+  'city',
+  'district',
+  'address',
+  'location_code',
+  'google_plus_code',
+  'google_formatted_address',
+  'default_start_address',
+  'default_start_plus_code',
+  'cari_address',
+  'cari_city_district_country',
+]
+
+const addressSignatureForForm = (form: TechnicianForm): string => JSON.stringify(
+  coordinateWatchedFields.map((field) => String(form[field] ?? '').trim()),
+)
+
+const formHasCoordinates = (form: TechnicianForm): boolean => (
+  hasRealCoordinates({
+    id: 'form',
+    name: 'form',
+    active: true,
+    latitude: form.latitude,
+    longitude: form.longitude,
+    start_latitude: form.start_latitude,
+    start_longitude: form.start_longitude,
+  })
+)
+
+const manualCoordinateInvalid = (form: TechnicianForm): boolean => {
+  const latitude = parseCoordinateValue(form.latitude)
+  const longitude = parseCoordinateValue(form.longitude)
+  const startLatitude = parseCoordinateValue(form.start_latitude)
+  const startLongitude = parseCoordinateValue(form.start_longitude)
+
+  return (latitude === 0 && longitude === 0) || (startLatitude === 0 && startLongitude === 0)
+}
+
 export default function TechnicalServiceTechnicians() {
   const [technicians, setTechnicians] = useState<ServiceTechnician[]>([])
   const [loading, setLoading] = useState(true)
@@ -156,6 +202,9 @@ export default function TechnicalServiceTechnicians() {
   const [form, setForm] = useState<TechnicianForm>(emptyForm)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [initialAddressSignature, setInitialAddressSignature] = useState('')
+  const [geocoding, setGeocoding] = useState(false)
+  const [geocodeMessage, setGeocodeMessage] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
@@ -167,6 +216,7 @@ export default function TechnicalServiceTechnicians() {
   const districtOptions = useMemo(() => getDistrictOptionsForProvince(form.city), [form.city])
   const hasDistrictFallback = form.district.trim() !== ''
     && !districtOptions.some((district) => district.normalizedName === normalizeTurkishLocation(form.district))
+  const coordinateStale = Boolean(editing && formHasCoordinates(form) && initialAddressSignature !== '' && addressSignatureForForm(form) !== initialAddressSignature)
 
   const loadTechnicians = useCallback(async () => {
     setLoading(true)
@@ -238,6 +288,8 @@ export default function TechnicalServiceTechnicians() {
   const openCreate = () => {
     setEditing(null)
     setForm(emptyForm)
+    setInitialAddressSignature('')
+    setGeocodeMessage(null)
     setSaveError(null)
     setDialogOpen(true)
   }
@@ -246,14 +298,15 @@ export default function TechnicalServiceTechnicians() {
     const city = normalizeFormCity(technician.city)
     const district = normalizeFormDistrict(city, technician.district)
 
-    setEditing(technician)
-    setForm({
+    const nextForm = {
       first_name: technician.first_name ?? technician.name ?? '',
       last_name: technician.last_name ?? '',
       phone: technician.phone ?? '',
+      city_plate_code: technician.city_plate_code ?? '',
       city,
       district,
       address: technician.address ?? '',
+      location_code: technician.location_code ?? '',
       google_plus_code: technician.google_plus_code ?? '',
       google_formatted_address: technician.google_formatted_address ?? '',
       latitude: technician.latitude === null || technician.latitude === undefined ? '' : String(technician.latitude),
@@ -264,9 +317,16 @@ export default function TechnicalServiceTechnicians() {
       start_longitude: technician.start_longitude === null || technician.start_longitude === undefined ? '' : String(technician.start_longitude),
       mikro_cari_kodu: technician.mikro_cari_kodu ?? '',
       mikro_cari_adi: technician.mikro_cari_adi ?? '',
+      cari_address: technician.cari_address ?? '',
+      cari_city_district_country: technician.cari_city_district_country ?? '',
       active: technician.active,
       note: technician.note ?? '',
-    })
+    }
+
+    setEditing(technician)
+    setForm(nextForm)
+    setInitialAddressSignature(addressSignatureForForm(nextForm))
+    setGeocodeMessage(null)
     setSaveError(null)
     setDialogOpen(true)
   }
@@ -299,6 +359,12 @@ export default function TechnicalServiceTechnicians() {
       return
     }
 
+    if (manualCoordinateInvalid(form)) {
+      setSaveError('Koordinat geçersiz. Latitude/Longitude 0/0 olamaz.')
+
+      return
+    }
+
     setSaving(true)
     setSaveError(null)
 
@@ -307,9 +373,11 @@ export default function TechnicalServiceTechnicians() {
         first_name: form.first_name.trim(),
         last_name: nullableText(form.last_name),
         phone: nullableText(form.phone),
+        city_plate_code: nullableText(form.city_plate_code),
         city: nullableText(normalizeFormCity(form.city)),
         district: nullableText(normalizeFormDistrict(form.city, form.district)),
         address: nullableText(form.address),
+        location_code: nullableText(form.location_code),
         google_plus_code: nullableText(form.google_plus_code),
         google_formatted_address: nullableText(form.google_formatted_address),
         latitude: nullableNumber(form.latitude),
@@ -320,6 +388,9 @@ export default function TechnicalServiceTechnicians() {
         start_longitude: nullableNumber(form.start_longitude),
         mikro_cari_kodu: nullableText(form.mikro_cari_kodu),
         mikro_cari_adi: nullableText(form.mikro_cari_adi),
+        cari_address: nullableText(form.cari_address),
+        cari_city_district_country: nullableText(form.cari_city_district_country),
+        needs_review: coordinateStale ? true : undefined,
         active: form.active,
         note: nullableText(form.note),
       }
@@ -341,6 +412,55 @@ export default function TechnicalServiceTechnicians() {
   const disableTechnician = async (technician: ServiceTechnician) => {
     await apiRequest(`/api/technical-service/technicians/${technician.id}`, { method: 'DELETE' })
     await loadTechnicians()
+  }
+
+  const geocodeTechnician = async () => {
+    if (!editing) {
+      setGeocodeMessage('Önce kayıt oluşturun, sonra Google ile koordinatı güncelleyin.')
+
+      return
+    }
+
+    setGeocoding(true)
+    setSaveError(null)
+    setGeocodeMessage(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/technicians/${editing.id}/geocode`, {
+        method: 'POST',
+      })
+      const technician = response.technician as ServiceTechnician
+      const city = normalizeFormCity(technician.city)
+      const district = normalizeFormDistrict(city, technician.district)
+      const nextForm = {
+        ...form,
+        city_plate_code: technician.city_plate_code ?? form.city_plate_code,
+        city,
+        district,
+        address: technician.address ?? '',
+        location_code: technician.location_code ?? '',
+        google_plus_code: technician.google_plus_code ?? '',
+        google_formatted_address: technician.google_formatted_address ?? '',
+        latitude: technician.latitude === null || technician.latitude === undefined ? '' : String(technician.latitude),
+        longitude: technician.longitude === null || technician.longitude === undefined ? '' : String(technician.longitude),
+        default_start_address: technician.default_start_address ?? '',
+        default_start_plus_code: technician.default_start_plus_code ?? '',
+        start_latitude: technician.start_latitude === null || technician.start_latitude === undefined ? '' : String(technician.start_latitude),
+        start_longitude: technician.start_longitude === null || technician.start_longitude === undefined ? '' : String(technician.start_longitude),
+        cari_address: technician.cari_address ?? '',
+        cari_city_district_country: technician.cari_city_district_country ?? '',
+      }
+
+      setEditing({ ...technician, id: String(technician.id) })
+      setForm(nextForm)
+      setInitialAddressSignature(addressSignatureForForm(nextForm))
+      setGeocodeMessage(response.message ?? 'Koordinat Google ile güncellendi.')
+      await loadTechnicians()
+    } catch (caught) {
+      setGeocodeMessage(caught instanceof Error ? caught.message : 'Google ile koordinat güncellenemedi.')
+    } finally {
+      setGeocoding(false)
+    }
   }
 
   const importCsv = async () => {
@@ -667,6 +787,15 @@ export default function TechnicalServiceTechnicians() {
           {saveError ? (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{saveError}</div>
           ) : null}
+          {coordinateStale ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-semibold">Adres değişti, koordinat yeniden doğrulanmalı</p>
+              <p className="mt-1">Mevcut koordinat eski adrese ait olabilir. Kaydedilirse kayıt kontrol gerekli olarak işaretlenir.</p>
+            </div>
+          ) : null}
+          {geocodeMessage ? (
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">{geocodeMessage}</div>
+          ) : null}
 
           <div className="grid gap-5">
             <section className="grid gap-4">
@@ -717,6 +846,10 @@ export default function TechnicalServiceTechnicians() {
                   </select>
                 </label>
                 <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Plaka Kodu
+                  <Input value={form.city_plate_code} onChange={(event) => updateForm('city_plate_code', event.target.value)} />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
                   İlçe
                   <select
                     value={form.district}
@@ -746,6 +879,10 @@ export default function TechnicalServiceTechnicians() {
               </label>
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Konum / Adres Kodu
+                  <Input value={form.location_code} onChange={(event) => updateForm('location_code', event.target.value)} />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
                   Google Konum Kodu (Plus Code)
                   <Input value={form.google_plus_code} onChange={(event) => updateForm('google_plus_code', event.target.value)} />
                 </label>
@@ -762,7 +899,17 @@ export default function TechnicalServiceTechnicians() {
                   <Input type="number" step="0.0000001" value={form.longitude} onChange={(event) => updateForm('longitude', event.target.value)} />
                 </label>
               </div>
-              <p className="text-xs text-slate-500">Canlı Google doğrulaması bu aşamada çalışmaz; alanlar ileride backend entegrasyonu için hazır tutulur.</p>
+              {formHasCoordinates(form) ? (
+                <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                  {editing?.location_source === 'manual' ? 'Manuel koordinat' : 'Gerçek koordinat var'}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" variant="outline" onClick={() => void geocodeTechnician()} disabled={!editing || geocoding}>
+                  {geocoding ? 'Google ile güncelleniyor...' : 'Google ile koordinatı güncelle'}
+                </Button>
+                {!editing ? <span className="text-xs text-slate-500">Önce kaydı oluşturun.</span> : null}
+              </div>
             </section>
 
             <section className="grid gap-4">
@@ -801,6 +948,14 @@ export default function TechnicalServiceTechnicians() {
                 <label className="grid gap-2 text-sm font-medium text-slate-700">
                   Mikro Cari Adı
                   <Input value={form.mikro_cari_adi} onChange={(event) => updateForm('mikro_cari_adi', event.target.value)} />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Cari Adres
+                  <Input value={form.cari_address} onChange={(event) => updateForm('cari_address', event.target.value)} />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Cari İlçe İl Ülke
+                  <Input value={form.cari_city_district_country} onChange={(event) => updateForm('cari_city_district_country', event.target.value)} />
                 </label>
               </div>
               <label className="grid gap-2 text-sm font-medium text-slate-700">

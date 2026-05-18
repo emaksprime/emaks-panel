@@ -481,6 +481,10 @@ type TechnicianAssignmentInsight = {
   location: string
   phone?: string | null
   priority?: string | number | null
+  latitude?: number | string | null
+  longitude?: number | string | null
+  startLatitude?: number | string | null
+  startLongitude?: number | string | null
   needsReview?: boolean
   hasLocation?: boolean
   hasAddressInfo?: boolean
@@ -1535,6 +1539,10 @@ export function TechnicalServiceOperationCenter() {
         location: [match.technician.city, match.technician.district].filter(Boolean).join(' / ') || 'Konum bilgisi yok',
         phone: match.technician.phone_display ?? match.technician.phone_e164 ?? match.technician.phone ?? null,
         priority: match.technician.priority ?? null,
+        latitude: match.technician.latitude ?? null,
+        longitude: match.technician.longitude ?? null,
+        startLatitude: match.technician.start_latitude ?? null,
+        startLongitude: match.technician.start_longitude ?? null,
         needsReview: Boolean(match.technician.needs_review),
         hasLocation: hasTechnicianCoordinates,
         hasAddressInfo,

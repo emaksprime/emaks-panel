@@ -58,6 +58,57 @@ class TechnicianCoordinateDataService
     }
 
     /**
+     * @return array{checked:int,marked_review:int,cleared:int,suspicious:array<int,array<string,mixed>>}
+     */
+    public function validate(bool $clearInvalid = false): array
+    {
+        $technicians = TechnicalServiceTechnician::query()->orderBy('id')->get();
+        $duplicateMap = $this->duplicateCoordinateMap($technicians);
+        $summary = [
+            'checked' => $technicians->count(),
+            'marked_review' => 0,
+            'cleared' => 0,
+            'suspicious' => [],
+        ];
+
+        foreach ($technicians as $technician) {
+            $reasons = $this->suspiciousReasons($technician, $duplicateMap);
+
+            if ($reasons === []) {
+                continue;
+            }
+
+            $summary['suspicious'][] = [
+                'id' => $technician->id,
+                'name' => $technician->name,
+                'city' => $technician->city,
+                'coordinate_key' => $this->coordinateKey($technician),
+                'reasons' => $reasons,
+            ];
+
+            $payload = [
+                'needs_review' => true,
+                'route_note' => $this->appendReviewNote($technician, $reasons),
+            ];
+
+            if ($clearInvalid) {
+                $payload = array_merge($payload, [
+                    'latitude' => null,
+                    'longitude' => null,
+                    'start_latitude' => null,
+                    'start_longitude' => null,
+                ]);
+                $summary['cleared']++;
+            }
+
+            $technician->forceFill($payload)->save();
+            $summary['marked_review']++;
+        }
+
+        return $summary;
+    }
+
+    /**
      * @return array{exported:int,needs_review_excluded:int,suspicious_excluded:int,path:string,items:array<int,array<string,mixed>>}
      */
     public function export(string $outputPath, bool $includeReview = false): array
@@ -233,6 +284,14 @@ class TechnicianCoordinateDataService
             $reasons[] = 'broad_formatted_address';
         }
 
+        if ($this->hasGenericCityCountryResult($technician)) {
+            $reasons[] = 'generic_city_country_result';
+        }
+
+        if ($this->hasCityMismatch($technician)) {
+            $reasons[] = 'city_mismatch';
+        }
+
         if ($this->sourceType($technician) === 'cari_address' && $this->sourceAddressTooShort($technician)) {
             $reasons[] = 'short_cari_address';
         }
@@ -351,6 +410,26 @@ class TechnicianCoordinateDataService
         return in_array($normalized, ['turkiye', 'turkey', 'turkiye cumhuriyeti'], true);
     }
 
+    private function hasGenericCityCountryResult(TechnicalServiceTechnician $technician): bool
+    {
+        return $this->geocodingService->isGenericCityCountryResult($this->formattedAddressFromRouteNote($technician));
+    }
+
+    private function hasCityMismatch(TechnicalServiceTechnician $technician): bool
+    {
+        $formatted = $this->formattedAddressFromRouteNote($technician);
+        $city = $this->nullableText($technician->city);
+
+        if ($formatted === null || $city === null) {
+            return false;
+        }
+
+        $expected = $this->geocodingService->normalizeLocationToken($city);
+        $actual = $this->geocodingService->normalizeLocationToken($formatted);
+
+        return $expected !== null && $actual !== null && ! str_contains($actual, $expected);
+    }
+
     private function formattedAddressFromRouteNote(TechnicalServiceTechnician $technician): ?string
     {
         if (preg_match('/formatted:\s*([^;]+)/', (string) $technician->route_note, $matches) !== 1) {
@@ -369,7 +448,18 @@ class TechnicianCoordinateDataService
 
     private function coordinatesInsideTurkey(float $latitude, float $longitude): bool
     {
-        return $latitude >= 35.0 && $latitude <= 43.5 && $longitude >= 25.0 && $longitude <= 46.0;
+        return $this->geocodingService->coordinatesInsideTurkey($latitude, $longitude);
+    }
+
+    /**
+     * @param array<int, string> $reasons
+     */
+    private function appendReviewNote(TechnicalServiceTechnician $technician, array $reasons): string
+    {
+        $current = $this->nullableText($technician->route_note);
+        $review = 'Coordinate review required: '.implode(',', $reasons).'; at '.now()->toDateTimeString();
+
+        return $current !== null ? Str::limit($current.'; '.$review, 2000, '') : $review;
     }
 
     private function nullableText(mixed $value): ?string
