@@ -259,4 +259,27 @@ class AdminUserManagementTest extends TestCase
 
         $this->assertContains('accounting_finance_resmi_stok_kontrol', $selectAllAccess);
     }
+
+    public function test_accounting_finance_number_parser_prevents_42_dot_00_becoming_4200(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/accounting-finance/resmi-stok-kontrol.tsx')) ?: '';
+
+        $this->assertStringContainsString('function parseNumericValue(value: unknown): number', $component);
+        $this->assertStringContainsString("const hasComma = cleaned.includes(',');", $component);
+        $this->assertStringContainsString("const hasDot = cleaned.includes('.');", $component);
+        $this->assertStringContainsString('const decimalSeparator = lastComma > lastDot', $component);
+        $this->assertMatchesRegularExpression(
+            '/function numberValue\(row: ApiRow, key: string\): number\s*{\s*return parseNumericValue\(row\[key\]\);\s*}/',
+            $component,
+        );
+
+        preg_match(
+            '/function numberValue\(row: ApiRow, key: string\): number\s*{(?P<body>[\s\S]*?)\n}/',
+            $component,
+            $matches,
+        );
+
+        $this->assertNotEmpty($matches['body'] ?? null);
+        $this->assertStringNotContainsString("replace(/\\./g, '')", $matches['body']);
+    }
 }
