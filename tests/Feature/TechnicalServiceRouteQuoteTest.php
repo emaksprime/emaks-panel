@@ -226,10 +226,18 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('extra_km', 15)
             ->assertJsonPath('travel_fee_required', true)
             ->assertJsonPath('fee_per_km', 10)
+            ->assertJsonPath('current_fee_per_km', 10)
+            ->assertJsonPath('fee_per_km_matches_current', true)
             ->assertJsonPath('fee_amount', 150)
             ->assertJsonPath('message', '30 km üstü yol ücreti gerekli.')
+            ->assertJsonPath('request.route_fee_config.fee_per_km', 10)
+            ->assertJsonPath('request.route_fee_config.threshold_km', 30)
             ->assertJsonPath('request.route_quote.distance_km', 45)
             ->assertJsonPath('request.route_quote.technician_id', $technician->id)
+            ->assertJsonPath('request.route_quote.origin_latitude', (float) $technician->latitude)
+            ->assertJsonPath('request.route_quote.origin_longitude', (float) $technician->longitude)
+            ->assertJsonPath('request.route_quote.destination_latitude', (float) $request->location_latitude)
+            ->assertJsonPath('request.route_quote.destination_longitude', (float) $request->location_longitude)
             ->assertJsonPath('request.route_quote.round_trip_distance_km', 45)
             ->assertJsonPath('request.travel_round_trip_km', 45)
             ->assertJsonPath('request.travel_billable_km', 15)
@@ -258,6 +266,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('round_trip_distance_km', 175.8)
             ->assertJsonPath('billable_km', 145.8)
             ->assertJsonPath('fee_per_km', 10)
+            ->assertJsonPath('current_fee_per_km', 10)
+            ->assertJsonPath('fee_per_km_matches_current', true)
             ->assertJsonPath('fee_amount', 1458)
             ->assertJsonPath('manual_override', false)
             ->assertJsonPath('manual_note', 'Operasyon düzeltmesi')
@@ -351,6 +361,12 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Yol ücretini hesaplamak için seçili usta ve müşteri konumu kullanılacak.',
             'Bu usta için yol ücretini hesapla',
             'Yol hesabı durumu',
+            'routeQuoteActiveForSelectedTechnician',
+            'activeRouteQuote',
+            'Km başı ücret (sabit ayar)',
+            'Hesaplanmadı',
+            "hasActiveRouteQuote ? numericInputValue(routeOneWayKm) : ''",
+            "hasActiveRouteQuote ? numericInputValue(routeBillableKm) : '0'",
             'Mesafe uyumsuzluğu - kontrol gerekli',
             'Koordinat kontrol gerekli',
             'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.',
@@ -372,6 +388,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         foreach ([
             'validCoordinatePair',
             'technicianCoordinatePair',
+            'routeQuoteActiveForSelection',
             'Yaklaşık şehir/adres mesafesi',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);
@@ -393,7 +410,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Tek yön yol mesafesi',
             'Ücretsiz sınır',
             'Ücrete tabi km',
-            'Km başı ücret',
+            'Km başı ücret (sabit ayar)',
             'Yol ücreti hesaplanamadı',
             'Yol ücreti onayı gerekli',
             'Yol ücreti yok',

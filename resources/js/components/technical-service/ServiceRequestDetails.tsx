@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestInvoiceSerial, ServiceRequestRouteQuoteManualPayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
 const statusVariant = (status: ServiceRequest['status']) => {
@@ -185,6 +185,34 @@ const formatCoordinatePair = (
   }
 
   return `${parsedLatitude.toFixed(6)}, ${parsedLongitude.toFixed(6)}`
+}
+
+const sameCoordinateValue = (
+  left: number | string | null | undefined,
+  right: number | string | null | undefined,
+): boolean => {
+  const parsedLeft = parseCoordinateValue(left)
+  const parsedRight = parseCoordinateValue(right)
+
+  return parsedLeft !== null && parsedRight !== null && Math.abs(parsedLeft - parsedRight) <= 0.000001
+}
+
+const routeQuoteMatchesCoordinates = (
+  routeQuote: ServiceRequestRouteQuote | null,
+  technician: { latitude?: number | string | null, longitude?: number | string | null, startLatitude?: number | string | null, startLongitude?: number | string | null } | null,
+  locationInfo: ServiceRequest['location'] | null,
+): boolean => {
+  if (!routeQuote || !technician || !locationInfo) {
+    return false
+  }
+
+  const technicianLatitude = parseCoordinateValue(technician.latitude) ?? parseCoordinateValue(technician.startLatitude)
+  const technicianLongitude = parseCoordinateValue(technician.longitude) ?? parseCoordinateValue(technician.startLongitude)
+
+  return sameCoordinateValue(routeQuote.origin_latitude, technicianLatitude)
+    && sameCoordinateValue(routeQuote.origin_longitude, technicianLongitude)
+    && sameCoordinateValue(routeQuote.destination_latitude, locationInfo.latitude)
+    && sameCoordinateValue(routeQuote.destination_longitude, locationInfo.longitude)
 }
 
 const routeQuoteMessage = (message: string | null | undefined): string => {
@@ -729,9 +757,9 @@ export function ServiceRequestDetails({
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
     request.serviceType,
-    request.travelRoundTripKm,
-    request.travelFeeAmount,
-    request.travelBillableKm,
+    null,
+    null,
+    null,
     request.technicianPaymentAmount,
   )
   const isActionDisabled = request.status === 'Tamamlandı' || request.status === 'İptal'
@@ -776,10 +804,32 @@ export function ServiceRequestDetails({
   const routeQuoteStaleForSelectedTechnician = Boolean(routeQuote && selectedTechnicianIdString && routeQuoteTechnicianIdString && routeQuoteTechnicianIdString !== selectedTechnicianIdString)
   const hasAssignmentChange = Boolean(selectedTechnicianId && selectedTechnicianId !== String(request.technicianId ?? ''))
   const hasMultiProductRequest = Boolean(invoiceSerials?.has_multi_product || (invoiceSerials?.selected_serials?.length ?? 0) > 1 || saleAndPayment?.mount_payment_status === 'skipped_multi_product')
-  const hasCalculatedRouteQuote = routeQuote?.status === 'calculated' && routeQuoteMatchesSelectedTechnician
-  const routeFeeNeedsApproval = hasCalculatedRouteQuote && routeQuote.travel_fee_required
+  const routeFeeConfigThresholdKm = typeof request.routeFeeConfig?.threshold_km === 'number' && Number.isFinite(request.routeFeeConfig.threshold_km)
+    ? request.routeFeeConfig.threshold_km
+    : 30
+  const routeFeeConfigPerKm = typeof request.routeFeeConfig?.fee_per_km === 'number' && Number.isFinite(request.routeFeeConfig.fee_per_km)
+    ? request.routeFeeConfig.fee_per_km
+    : null
+  const routeQuoteStatusCanDisplay = routeQuote?.status === 'calculated' || routeQuote?.status === 'manual_override'
+  const routeQuoteCoordinatesMatchCurrent = routeQuoteMatchesCoordinates(routeQuote, selectedTechnician, locationInfo)
+  const routeQuoteFeeMatchesCurrent = routeQuote?.fee_per_km_matches_current === true
+    || (
+      typeof routeQuote?.fee_per_km === 'number'
+      && routeFeeConfigPerKm !== null
+      && Math.abs(routeQuote.fee_per_km - routeFeeConfigPerKm) <= 0.001
+    )
+  const routeQuoteActiveForSelectedTechnician = Boolean(
+    routeQuote
+    && routeQuoteMatchesSelectedTechnician
+    && routeQuoteStatusCanDisplay
+    && routeQuoteCoordinatesMatchCurrent
+    && routeQuoteFeeMatchesCurrent,
+  )
+  const activeRouteQuote = routeQuoteActiveForSelectedTechnician ? routeQuote : null
+  const hasActiveRouteQuote = Boolean(activeRouteQuote)
+  const routeFeeNeedsApproval = Boolean(activeRouteQuote?.travel_fee_required)
   const selectedTechnicianName = selectedTechnician?.name ?? request.technician ?? 'Seçili usta'
-  const hasSelectedTechnicianRouteAttempt = Boolean(routeQuote && routeQuoteMatchesSelectedTechnician)
+  const hasSelectedTechnicianRouteAttempt = Boolean(activeRouteQuote)
   const routeFeeStaleMessage = 'Seçili usta değişti. Yeni usta için yol ücreti tekrar hesaplanmalı.'
   const routeFeeNotCalculatedMessage = `${selectedTechnicianName} için yol ücreti henüz hesaplanmadı.`
   const routeFeeNotCalculatedHint = 'Yol ücretini hesaplamak için seçili usta ve müşteri konumu kullanılacak.'
@@ -793,35 +843,33 @@ export function ServiceRequestDetails({
       : 'Yol ücretini hesapla'
   const routeFeeStatusText = routeQuoteStaleForSelectedTechnician
     ? 'Yol ücreti tekrar hesaplanmalı'
-    : hasCalculatedRouteQuote
-      ? routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
-      : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
-  const routeRoundTripKm = hasCalculatedRouteQuote
-    ? typeof routeQuote?.round_trip_distance_km === 'number' && Number.isFinite(routeQuote.round_trip_distance_km)
-      ? routeQuote.round_trip_distance_km
-      : typeof routeQuote?.distance_km === 'number' && Number.isFinite(routeQuote.distance_km)
-        ? routeQuote.distance_km
+    : hasActiveRouteQuote && activeRouteQuote
+      ? activeRouteQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
+      : selectedTechnician ? 'Yol ücreti hesaplanmadı' : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
+  const routeRoundTripKm = hasActiveRouteQuote
+    ? typeof activeRouteQuote?.round_trip_distance_km === 'number' && Number.isFinite(activeRouteQuote.round_trip_distance_km)
+      ? activeRouteQuote.round_trip_distance_km
+      : typeof activeRouteQuote?.distance_km === 'number' && Number.isFinite(activeRouteQuote.distance_km)
+        ? activeRouteQuote.distance_km
         : null
     : null
-  const routeOneWayKm = hasCalculatedRouteQuote
-    ? typeof routeQuote?.one_way_distance_km === 'number' && Number.isFinite(routeQuote.one_way_distance_km)
-      ? routeQuote.one_way_distance_km
+  const routeOneWayKm = hasActiveRouteQuote
+    ? typeof activeRouteQuote?.one_way_distance_km === 'number' && Number.isFinite(activeRouteQuote.one_way_distance_km)
+      ? activeRouteQuote.one_way_distance_km
       : routeRoundTripKm !== null
         ? roundTwo(routeRoundTripKm / 2)
         : null
     : null
-  const routeBillableKm = hasCalculatedRouteQuote
-    ? typeof routeQuote?.billable_km === 'number' && Number.isFinite(routeQuote.billable_km)
-      ? routeQuote.billable_km
-      : typeof routeQuote?.extra_km === 'number' && Number.isFinite(routeQuote.extra_km)
-        ? routeQuote.extra_km
+  const routeBillableKm = hasActiveRouteQuote
+    ? typeof activeRouteQuote?.billable_km === 'number' && Number.isFinite(activeRouteQuote.billable_km)
+      ? activeRouteQuote.billable_km
+      : typeof activeRouteQuote?.extra_km === 'number' && Number.isFinite(activeRouteQuote.extra_km)
+        ? activeRouteQuote.extra_km
         : null
     : null
-  const routeFeePerKm = hasCalculatedRouteQuote && typeof routeQuote?.fee_per_km === 'number' && Number.isFinite(routeQuote.fee_per_km)
-    ? routeQuote.fee_per_km
-    : null
-  const routeFeeAmount = hasCalculatedRouteQuote && typeof routeQuote?.fee_amount === 'number' && Number.isFinite(routeQuote.fee_amount)
-    ? routeQuote.fee_amount
+  const routeFeePerKm = routeFeeConfigPerKm
+  const routeFeeAmount = hasActiveRouteQuote && typeof activeRouteQuote?.fee_amount === 'number' && Number.isFinite(activeRouteQuote.fee_amount)
+    ? activeRouteQuote.fee_amount
     : null
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
     selectedTechnician?.latitude ?? selectedTechnician?.startLatitude,
@@ -866,16 +914,22 @@ export function ServiceRequestDetails({
     : paymentInfo.technicianAmountLabel && paymentInfo.technicianAmountLabel !== 'Belirlenmedi'
       ? paymentInfo.technicianAmountLabel
       : 'Hakediş ayarı eksik'
-  const travelCostLabel = hasCalculatedRouteQuote
-    ? routeFeeAmount === null && routeQuote?.travel_fee_required
+  const technicianLaborCostAmount = typeof request.technicianPaymentAmount === 'number' && Number.isFinite(request.technicianPaymentAmount)
+    ? request.technicianPaymentAmount
+    : paymentInfo.customerAmount
+  const travelCostLabel = hasActiveRouteQuote
+    ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required
       ? 'Km başı ücret ayarı eksik'
       : formatMoneyValue(routeFeeAmount)
-    : 'Yol ücreti hesaplanamadı'
-  const totalTechnicianCostLabel = paymentInfo.totalTechnicianCostLabel && paymentInfo.totalTechnicianCostLabel !== 'Belirlenmedi'
-    ? paymentInfo.totalTechnicianCostLabel
+    : 'Hesaplanmadı'
+  const totalTechnicianCostAmount = technicianLaborCostAmount !== null
+    ? roundTwo(technicianLaborCostAmount + (hasActiveRouteQuote && routeFeeAmount !== null ? routeFeeAmount : 0))
+    : null
+  const totalTechnicianCostLabel = totalTechnicianCostAmount !== null
+    ? formatMoneyValue(totalTechnicianCostAmount)
     : 'Hakediş ayarı eksik'
-  const netProfitLabel = paymentInfo.customerAmount !== null && paymentInfo.totalTechnicianCostAmount !== null
-    ? formatMoneyValue(paymentInfo.customerAmount - paymentInfo.totalTechnicianCostAmount)
+  const netProfitLabel = paymentInfo.customerAmount !== null && totalTechnicianCostAmount !== null
+    ? formatMoneyValue(paymentInfo.customerAmount - totalTechnicianCostAmount)
     : 'Hesaplanamadı'
   const routeFeeEditorSnapshot = (
     oneWay: string,
@@ -916,14 +970,14 @@ export function ServiceRequestDetails({
       return
     }
 
-    const oneWay = numericInputValue(routeOneWayKm)
-    const roundTrip = numericInputValue(routeRoundTripKm)
-    const threshold = numericInputValue(routeQuote?.threshold_km ?? 30)
+    const oneWay = hasActiveRouteQuote ? numericInputValue(routeOneWayKm) : ''
+    const roundTrip = hasActiveRouteQuote ? numericInputValue(routeRoundTripKm) : ''
+    const threshold = numericInputValue(activeRouteQuote?.threshold_km ?? routeFeeConfigThresholdKm)
     const feePerKm = numericInputValue(routeFeePerKm)
-    const billable = numericInputValue(routeBillableKm)
-    const amount = numericInputValue(routeFeeAmount)
-    const manualTouched = Boolean(routeQuote?.manual_override)
-    const note = routeQuote?.manual_note ?? ''
+    const billable = hasActiveRouteQuote ? numericInputValue(routeBillableKm) : '0'
+    const amount = hasActiveRouteQuote ? numericInputValue(routeFeeAmount) : '0'
+    const manualTouched = Boolean(activeRouteQuote?.manual_override)
+    const note = activeRouteQuote?.manual_note ?? ''
 
     setRouteFeeOneWayKmInput(oneWay)
     setRouteFeeRoundTripKmInput(roundTrip)
@@ -1250,7 +1304,7 @@ export function ServiceRequestDetails({
               <p className="mt-1 text-sm text-slate-600">Atama öncesi ödeme, adres, kapı görseli, randevu ve montaj durumu tek yerden kontrol edilir.</p>
             </div>
             {routeQuote ? (
-              <Badge variant={routeFeeNeedsApproval ? 'warning' : hasCalculatedRouteQuote ? 'positive' : 'outline'}>
+              <Badge variant={routeFeeNeedsApproval ? 'warning' : hasActiveRouteQuote ? 'positive' : 'outline'}>
                 {routeFeeStatusText}
               </Badge>
             ) : null}
@@ -1447,9 +1501,9 @@ export function ServiceRequestDetails({
             <span className={['inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')} title={slaTitle}>
               SLA: {currentSlaLabel}
             </span>
-            {hasCalculatedRouteQuote ? (
-              <Badge variant={routeQuote.travel_fee_required ? 'warning' : 'positive'}>
-                {routeQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'}
+            {hasActiveRouteQuote && activeRouteQuote ? (
+              <Badge variant={activeRouteQuote.travel_fee_required ? 'warning' : 'positive'}>
+                {activeRouteQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'}
               </Badge>
             ) : routeQuote ? (
               <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Yol ücreti tekrar hesaplanmalı' : 'Yol ücreti hesaplanamadı'}</Badge>
@@ -1506,7 +1560,7 @@ export function ServiceRequestDetails({
                       const hasPlusCodeInfo = technician.hasPlusCodeInfo ?? Boolean(technician.locationCode)
                       const hasCoordinates = technician.hasCoordinates ?? technician.hasLocation ?? false
                       const routeMismatch = selected
-                        && hasCalculatedRouteQuote
+                        && hasActiveRouteQuote
                         && typeof technician.estimatedRoundTripKm === 'number'
                         && technician.estimatedRoundTripKm > 0
                         && typeof routeRoundTripKm === 'number'
@@ -1564,6 +1618,8 @@ export function ServiceRequestDetails({
                             variant={selected ? 'secondary' : 'outline'}
                             onClick={() => {
                               setRouteFeeEditorMessage(null)
+                              setRouteFeeEditorOpen(false)
+                              setRouteFeeEditorInitialSnapshot('')
                               onTechnicianSelect?.(technician.id, technician.estimatedRoundTripKm ?? null)
                             }}
                           >
@@ -1594,7 +1650,7 @@ export function ServiceRequestDetails({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-semibold">Yol ücreti</p>
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant={routeFeeNeedsApproval ? 'warning' : hasCalculatedRouteQuote ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
+                    <Badge variant={routeFeeNeedsApproval ? 'warning' : hasActiveRouteQuote ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
                     <Button
                       type="button"
                       size="sm"
@@ -1650,15 +1706,15 @@ export function ServiceRequestDetails({
                     <MiniMetric label="Koordinat kontrolü" value="Koordinat kontrol gerekli" hint="Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı." />
                   ) : null}
                   <MiniMetric label="Müşteri konumu var mı?" value={locationInfo?.shared ? 'Var' : 'Yok'} />
-                  <MiniMetric label="Tek yön yol mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasCalculatedRouteQuote && routeQuote?.duration_text ? `Tahmini süre: ${routeQuote.duration_text}` : 'Yol hesabı yapılınca gösterilir.'} />
-                  <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasCalculatedRouteQuote ? undefined : 'Yol hesabı sonucu yok.'} />
-                  <MiniMetric label="Ücretsiz sınır" value={formatKmValue(routeQuote?.threshold_km ?? 30)} />
-                  <MiniMetric label="Ücrete tabi km" value={formatKmValue(routeBillableKm)} hint={hasCalculatedRouteQuote ? undefined : 'Yol hesabı yapılmadan ücrete tabi km hesaplanmaz.'} />
-                  <MiniMetric label="Km başı ücret" value={hasCalculatedRouteQuote ? routeFeePerKm === null ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeePerKm) : '-'} />
+                  <MiniMetric label="Tek yön yol mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasActiveRouteQuote && activeRouteQuote?.duration_text ? `Tahmini süre: ${activeRouteQuote.duration_text}` : 'Yol hesabı yapılınca gösterilir.'} />
+                  <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasActiveRouteQuote ? undefined : 'Yol hesabı sonucu yok.'} />
+                  <MiniMetric label="Ücretsiz sınır" value={formatKmValue(activeRouteQuote?.threshold_km ?? routeFeeConfigThresholdKm)} />
+                  <MiniMetric label="Ücrete tabi km" value={formatKmValue(routeBillableKm)} hint={hasActiveRouteQuote ? undefined : 'Yol hesabı yapılmadan ücrete tabi km hesaplanmaz.'} />
+                  <MiniMetric label="Km başı ücret (sabit ayar)" value={routeFeePerKm === null ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeePerKm)} />
                   <MiniMetric
                     label="Tahmini yol ücreti"
-                    value={hasCalculatedRouteQuote ? routeFeeAmount === null && routeQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
-                    hint={routeQuoteStaleForSelectedTechnician ? routeFeeStaleMessage : routeQuote ? routeQuoteMessage(routeQuote.message) : routeFeeNotCalculatedHint}
+                    value={hasActiveRouteQuote ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
+                    hint={routeQuoteStaleForSelectedTechnician ? routeFeeStaleMessage : hasActiveRouteQuote && activeRouteQuote ? routeQuoteMessage(activeRouteQuote.message) : routeFeeNotCalculatedHint}
                   />
                 </div>
                 <div className="grid gap-2 rounded-2xl border border-blue-100 bg-white/70 p-3 text-xs text-blue-950 sm:grid-cols-2 lg:grid-cols-3">

@@ -14,6 +14,17 @@ class TechnicalServiceRouteCostService
     private const THRESHOLD_KM = 30.0;
 
     /**
+     * @return array{threshold_km:float,fee_per_km:?float}
+     */
+    public function feeConfig(): array
+    {
+        return [
+            'threshold_km' => self::THRESHOLD_KM,
+            'fee_per_km' => $this->feePerKm(),
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function quote(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician, bool $force = false): array
@@ -329,12 +340,20 @@ class TechnicalServiceRouteCostService
     public function payload(TechnicalServiceRouteQuote $quote): array
     {
         $canonical = $this->canonicalDistances($quote);
+        $currentFeePerKm = $this->feePerKm();
+        $feePerKmMatchesCurrent = $canonical['fee_per_km'] !== null
+            && $currentFeePerKm !== null
+            && abs($canonical['fee_per_km'] - $currentFeePerKm) <= 0.001;
 
         return [
             'ok' => $quote->status === TechnicalServiceRouteQuote::STATUS_CALCULATED,
             'id' => $quote->id,
             'technician_id' => $quote->technician_id,
             'status' => $quote->status,
+            'origin_latitude' => $quote->origin_latitude !== null ? (float) $quote->origin_latitude : null,
+            'origin_longitude' => $quote->origin_longitude !== null ? (float) $quote->origin_longitude : null,
+            'destination_latitude' => $quote->destination_latitude !== null ? (float) $quote->destination_latitude : null,
+            'destination_longitude' => $quote->destination_longitude !== null ? (float) $quote->destination_longitude : null,
             'one_way_distance_km' => $canonical['one_way_distance_km'],
             'round_trip_distance_km' => $canonical['round_trip_distance_km'],
             'distance_km' => $quote->distance_km !== null ? (float) $quote->distance_km : null,
@@ -346,6 +365,8 @@ class TechnicalServiceRouteCostService
             'extra_km' => $canonical['billable_km'],
             'travel_fee_required' => (bool) $quote->travel_fee_required,
             'fee_per_km' => $canonical['fee_per_km'],
+            'current_fee_per_km' => $currentFeePerKm,
+            'fee_per_km_matches_current' => $feePerKmMatchesCurrent,
             'fee_amount' => $canonical['fee_amount'],
             'provider' => $quote->provider,
             'source' => $quote->provider === TechnicalServiceRouteQuote::PROVIDER_MANUAL_OVERRIDE

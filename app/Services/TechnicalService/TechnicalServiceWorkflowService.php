@@ -752,6 +752,7 @@ class TechnicalServiceWorkflowService
         $payload['invoice_serials'] = $this->invoiceSerialsPayload($request);
         $payload['location'] = $this->locationPayload($request);
         $payload['door_photos'] = $this->doorPhotoPayload($request);
+        $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
 
         if ($includeHistory) {

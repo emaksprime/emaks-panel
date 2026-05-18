@@ -30,6 +30,7 @@ export type ServiceRequest = {
   travelRoundTripKm?: number | null
   travelBillableKm?: number | null
   travelFeeAmount?: number | null
+  technicianPaymentAmount?: number | null
   travelCalculationSource?: string | null
   travelCalculatedAt?: string | null
   qrSource?: ServiceRequestQrSource | null
@@ -41,7 +42,13 @@ export type ServiceRequest = {
   invoiceSerials?: ServiceRequestInvoiceSerials | null
   location?: ServiceRequestLocation | null
   doorPhotos?: ServiceRequestDoorPhoto[]
+  routeFeeConfig?: ServiceRequestRouteFeeConfig | null
   routeQuote?: ServiceRequestRouteQuote | null
+}
+
+export type ServiceRequestRouteFeeConfig = {
+  threshold_km?: number | null
+  fee_per_km?: number | null
 }
 
 export type ServiceRequestQrSource = {
@@ -180,6 +187,10 @@ export type ServiceRequestRouteQuote = {
   id?: number | string | null
   technician_id?: number | string | null
   status?: 'calculated' | 'failed' | 'missing_location' | 'missing_api_key' | string | null
+  origin_latitude?: number | null
+  origin_longitude?: number | null
+  destination_latitude?: number | null
+  destination_longitude?: number | null
   one_way_distance_km?: number | null
   round_trip_distance_km?: number | null
   distance_km?: number | null
@@ -191,6 +202,8 @@ export type ServiceRequestRouteQuote = {
   extra_km?: number | null
   travel_fee_required?: boolean
   fee_per_km?: number | null
+  current_fee_per_km?: number | null
+  fee_per_km_matches_current?: boolean
   fee_amount?: number | null
   provider?: string | null
   source?: 'google_routes' | 'manual_override' | string | null

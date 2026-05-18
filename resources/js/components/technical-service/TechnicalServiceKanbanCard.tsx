@@ -170,6 +170,14 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
   const hiddenSerialCount = (request.invoiceSerials?.hidden_serials ?? []).length
   const returnedSerialCount = request.invoiceSerials?.returned_serial_count ?? (request.invoiceSerials?.returned_serials ?? []).length
   const routeQuote = request.routeQuote
+  const routeQuoteMatchesAssignedTechnician = Boolean(
+    routeQuote
+    && request.technicianId
+    && routeQuote.technician_id !== null
+    && routeQuote.technician_id !== undefined
+    && String(routeQuote.technician_id) === String(request.technicianId),
+  )
+  const routeQuoteHasCurrentFee = routeQuote?.fee_per_km_matches_current !== false
 
   const hasTechnician = hasTechnicalServiceTechnician(request)
   const technicianApproved = isTechnicalServiceTechnicianApproved(request)
@@ -206,11 +214,11 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     addBadge({ label: 'Atama engeli var', tone: 'rose', icon: 'warning', important: true })
   }
 
-  if (routeQuote?.status === 'calculated') {
+  if (routeQuote?.status === 'calculated' && routeQuoteMatchesAssignedTechnician && routeQuoteHasCurrentFee) {
     addBadge(routeQuote.travel_fee_required
       ? { label: 'Yol ücreti onayı gerekli', tone: 'amber', icon: 'warning', important: true }
       : { label: 'Yol ücreti yok', tone: 'green', icon: 'paid' })
-  } else if (routeQuote) {
+  } else if (routeQuote && routeQuoteMatchesAssignedTechnician) {
     addBadge({ label: 'Yol ücreti hesaplanamadı', tone: 'amber', icon: 'warning' })
   }
 

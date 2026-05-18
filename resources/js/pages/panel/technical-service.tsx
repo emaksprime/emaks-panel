@@ -21,12 +21,12 @@ import type {
   ServiceFilters as FilterState,
   ServicePriority,
   ServiceRequest,
+  ServiceRequestRouteQuote,
   ServiceRequestRouteQuoteManualPayload,
   ServiceTechnician,
   WarrantySerialResponse,
 } from '@/components/technical-service/types'
 import {
-  calculateTravelPreview,
   formatTechnicalServiceDateTime,
   formatTechnicalServiceDate,
   formatTechnicalServiceMrn,
@@ -329,6 +329,12 @@ function parseNullableNumber(value: number | string | null | undefined): number 
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function formatMoneyLabel(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
+    : '-'
+}
+
 function validCoordinatePair(
   latitude: number | string | null | undefined,
   longitude: number | string | null | undefined,
@@ -350,6 +356,49 @@ function validCoordinatePair(
 function technicianCoordinatePair(technician: ServiceTechnician): { latitude: number, longitude: number } | null {
   return validCoordinatePair(technician.latitude, technician.longitude)
     ?? validCoordinatePair(technician.start_latitude, technician.start_longitude)
+}
+
+function sameCoordinateValue(left: number | string | null | undefined, right: number | string | null | undefined): boolean {
+  const parsedLeft = parseNullableNumber(left)
+  const parsedRight = parseNullableNumber(right)
+
+  return parsedLeft !== null && parsedRight !== null && Math.abs(parsedLeft - parsedRight) <= 0.000001
+}
+
+function routeQuoteActiveForSelection(
+  routeQuote: ServiceRequestRouteQuote | null | undefined,
+  selectedTechnicianId: string,
+  technician: ServiceTechnician | null,
+  request: ServiceRequest | null,
+): boolean {
+  if (!routeQuote || !selectedTechnicianId || !technician || !request) {
+    return false
+  }
+
+  const technicianCoordinates = technicianCoordinatePair(technician)
+  const requestCoordinates = validCoordinatePair(request.location?.latitude, request.location?.longitude)
+  const routeQuoteTechnicianId = routeQuote.technician_id === null || routeQuote.technician_id === undefined
+    ? null
+    : String(routeQuote.technician_id)
+  const configFeePerKm = typeof request.routeFeeConfig?.fee_per_km === 'number' && Number.isFinite(request.routeFeeConfig.fee_per_km)
+    ? request.routeFeeConfig.fee_per_km
+    : null
+  const feeMatchesConfig = routeQuote.fee_per_km_matches_current === true
+    || (
+      typeof routeQuote.fee_per_km === 'number'
+      && configFeePerKm !== null
+      && Math.abs(routeQuote.fee_per_km - configFeePerKm) <= 0.001
+    )
+
+  return routeQuoteTechnicianId === selectedTechnicianId
+    && (routeQuote.status === 'calculated' || routeQuote.status === 'manual_override')
+    && technicianCoordinates !== null
+    && requestCoordinates !== null
+    && sameCoordinateValue(routeQuote.origin_latitude, technicianCoordinates.latitude)
+    && sameCoordinateValue(routeQuote.origin_longitude, technicianCoordinates.longitude)
+    && sameCoordinateValue(routeQuote.destination_latitude, requestCoordinates.latitude)
+    && sameCoordinateValue(routeQuote.destination_longitude, requestCoordinates.longitude)
+    && feeMatchesConfig
 }
 
 function technicianDisplayName(technician: ServiceTechnician): string {
@@ -716,6 +765,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     invoiceSerials: request.invoice_serials ?? null,
     location: request.location ?? null,
     doorPhotos: request.door_photos ?? [],
+    routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
   }
 }
@@ -1402,30 +1452,43 @@ export function TechnicalServiceOperationCenter() {
     setFieldError(null)
     setFieldDialogOpen(true)
   }, [])
+  const selectedAssignTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption) ?? null
+  const modalRouteQuote = modalRequest?.routeQuote ?? null
+  const assignmentRouteQuote = routeQuoteActiveForSelection(modalRouteQuote, assignTechnicianOption, selectedAssignTechnicianRecord, modalRequest)
+    ? modalRouteQuote
+    : null
   const modalPayment = getServicePaymentInfo(
     modalRequest?.serviceType,
-    modalRequest?.travelRoundTripKm,
-    modalRequest?.travelFeeAmount,
-    modalRequest?.travelBillableKm,
+    assignmentRouteQuote?.round_trip_distance_km ?? assignmentRouteQuote?.distance_km ?? null,
+    assignmentRouteQuote?.fee_amount ?? null,
+    assignmentRouteQuote?.billable_km ?? assignmentRouteQuote?.extra_km ?? null,
     modalRequest?.technicianPaymentAmount,
-  )
-  const assignTravelRoundTripKm = travelRoundTripKm.trim() === '' ? null : Number(travelRoundTripKm)
-  const assignTravelPreview = calculateTravelPreview(
-    typeof assignTravelRoundTripKm === 'number' && Number.isFinite(assignTravelRoundTripKm) && assignTravelRoundTripKm >= 0
-      ? assignTravelRoundTripKm
-      : null,
   )
   const assignPaymentPreview = getServicePaymentInfo(
     modalRequest?.serviceType,
-    assignTravelPreview.roundTripKm,
-    assignTravelPreview.travelFeeAmount,
+    assignmentRouteQuote?.round_trip_distance_km ?? assignmentRouteQuote?.distance_km ?? null,
+    assignmentRouteQuote?.fee_amount ?? null,
+    assignmentRouteQuote?.billable_km ?? assignmentRouteQuote?.extra_km ?? null,
   )
+  const assignmentTechnicianLaborAmount = typeof modalRequest?.technicianPaymentAmount === 'number' && Number.isFinite(modalRequest.technicianPaymentAmount)
+    ? modalRequest.technicianPaymentAmount
+    : assignPaymentPreview.customerAmount
+  const assignmentRouteFeeAmount = assignmentRouteQuote && typeof assignmentRouteQuote.fee_amount === 'number' && Number.isFinite(assignmentRouteQuote.fee_amount)
+    ? assignmentRouteQuote.fee_amount
+    : null
+  const assignmentTravelAmountLabel = assignmentRouteQuote
+    ? assignPaymentPreview.travelAmountLabel
+    : 'Hesaplanmadı'
+  const assignmentTotalTechnicianCostAmount = assignmentTechnicianLaborAmount !== null
+    ? assignmentTechnicianLaborAmount + (assignmentRouteFeeAmount ?? 0)
+    : null
+  const assignmentTotalTechnicianCostLabel = assignmentTotalTechnicianCostAmount !== null
+    ? formatMoneyLabel(assignmentTotalTechnicianCostAmount)
+    : 'Belirlenmedi'
   const effectiveMountPaymentMissing = modalRequest?.serviceType === 'Montaj' && isMountPaymentMissing(mikroMountCheck)
   const mountPaymentAccepted = modalRequest?.serviceType === 'Montaj' && isMountPaymentAccepted(mikroMountCheck)
   const assignmentBlockerMessages = modalRequest?.assignmentBlockers?.messages ?? []
   const hasAssignmentBlockers = assignmentBlockerMessages.length > 0
-  const selectedAssignTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption) ?? null
-  const assignmentRouteQuote = modalRequest?.routeQuote ?? null
   const assignmentRouteRoundTripKm = typeof assignmentRouteQuote?.round_trip_distance_km === 'number'
     ? assignmentRouteQuote.round_trip_distance_km
     : typeof assignmentRouteQuote?.distance_km === 'number'
@@ -2605,11 +2668,7 @@ export function TechnicalServiceOperationCenter() {
     setPriorityUpdateError(null)
     setPriorityUpdateLoading(false)
     setAssignTechnicianOption(request.technicianId ?? '')
-    setTravelRoundTripKm(
-      typeof request.travelRoundTripKm === 'number' && Number.isFinite(request.travelRoundTripKm)
-        ? String(request.travelRoundTripKm)
-        : '',
-    )
+    setTravelRoundTripKm('')
     setRouteQuoteError(null)
     setRouteQuoteManualSaveError(null)
     setShowNearbyTechnicians(false)
@@ -3091,6 +3150,8 @@ export function TechnicalServiceOperationCenter() {
                             onChange={() => {
                               setAssignTechnicianOption(match.technician.id)
                               setRouteQuoteError(null)
+                              setRouteQuoteManualSaveError(null)
+                              setTravelRoundTripKm('')
                               setShowNearbyTechnicians(false)
                             }}
                             className="mt-1 h-4 w-4 accent-primary"
@@ -3144,6 +3205,8 @@ export function TechnicalServiceOperationCenter() {
                         onChange={() => {
                           setAssignTechnicianOption('other')
                           setRouteQuoteError(null)
+                          setRouteQuoteManualSaveError(null)
+                          setTravelRoundTripKm('')
                           setShowNearbyTechnicians(false)
                         }}
                         className="mr-3 h-4 w-4 accent-primary"
@@ -3254,11 +3317,11 @@ export function TechnicalServiceOperationCenter() {
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-600">Yol ücreti</span>
-                    <span className="font-semibold text-slate-900">{assignPaymentPreview.travelAmountLabel}</span>
+                    <span className="font-semibold text-slate-900">{assignmentTravelAmountLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
                     <span className="font-medium text-slate-600">Toplam usta maliyeti</span>
-                    <span className="font-semibold text-slate-950">{assignPaymentPreview.totalTechnicianCostLabel}</span>
+                    <span className="font-semibold text-slate-950">{assignmentTotalTechnicianCostLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
                     <span className="font-medium text-slate-600">Müşteriden alınan ücret</span>
@@ -3267,8 +3330,8 @@ export function TechnicalServiceOperationCenter() {
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-600">Net fark / kâr</span>
                     <span className="font-semibold text-slate-950">
-                      {modalPayment.customerAmount !== null && assignPaymentPreview.totalTechnicianCostAmount !== null
-                        ? `${(modalPayment.customerAmount - assignPaymentPreview.totalTechnicianCostAmount).toLocaleString('tr-TR')} TL`
+                      {modalPayment.customerAmount !== null && assignmentTotalTechnicianCostAmount !== null
+                        ? formatMoneyLabel(modalPayment.customerAmount - assignmentTotalTechnicianCostAmount)
                         : '-'}
                     </span>
                   </div>
@@ -3926,10 +3989,7 @@ export function TechnicalServiceOperationCenter() {
                       setAssignTechnicianOption(technicianId)
                       setRouteQuoteError(null)
                       setRouteQuoteManualSaveError(null)
-
-                      if (technicianId !== (modalRequest?.technicianId ?? '')) {
-                        setTravelRoundTripKm('')
-                      }
+                      setTravelRoundTripKm('')
                     }}
                     onRouteQuoteCalculate={handleRouteQuoteCalculate}
                     onRouteQuoteManualSave={handleRouteQuoteManualSave}
