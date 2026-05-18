@@ -558,6 +558,7 @@ class TechnicalServiceController extends Controller
                 'selectable_customer_serials' => $result['selectable_customer_serials'],
                 'returned_serials' => $result['returned_serials'],
                 'checked_at' => now()->toISOString(),
+                'check_status' => $result['meta']['status'] ?? null,
                 'check_error' => null,
             ];
         } catch (Throwable $exception) {
@@ -566,6 +567,7 @@ class TechnicalServiceController extends Controller
                 'selectable_customer_serials' => [],
                 'returned_serials' => [],
                 'checked_at' => now()->toISOString(),
+                'check_status' => 'failed',
                 'check_error' => $exception->getMessage(),
             ];
         }

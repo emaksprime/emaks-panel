@@ -552,7 +552,13 @@ class PublicMountRequestController extends Controller
         $existing = $context['invoice_serials'] ?? null;
 
         if (is_array($existing) && isset($existing['all_invoice_serials'])) {
-            return $session;
+            $existingRows = is_array($existing['all_invoice_serials'] ?? null)
+                ? $existing['all_invoice_serials']
+                : [];
+
+            if ($invoiceSerialsService->mode() !== 'fixture' || $existingRows !== []) {
+                return $session;
+            }
         }
 
         try {
@@ -562,6 +568,7 @@ class PublicMountRequestController extends Controller
                 'selectable_customer_serials' => $result['selectable_customer_serials'],
                 'returned_serials' => $result['returned_serials'],
                 'checked_at' => now()->toISOString(),
+                'check_status' => $result['meta']['status'] ?? null,
                 'check_error' => null,
             ];
         } catch (\Throwable $exception) {
@@ -570,6 +577,7 @@ class PublicMountRequestController extends Controller
                 'selectable_customer_serials' => [],
                 'returned_serials' => [],
                 'checked_at' => now()->toISOString(),
+                'check_status' => 'failed',
                 'check_error' => $exception->getMessage(),
             ];
         }

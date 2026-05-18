@@ -3,6 +3,10 @@
     {
       "invoice_series": "TSF",
       "invoice_number": "2026-LOCAL-001",
+      "aliases": [
+        "W720FWS03E241227A00997",
+        "W720CWS05E250918A00705"
+      ],
       "rows": [
         {
           "Aranan Seri No": "TEST-SERIAL-001",

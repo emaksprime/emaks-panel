@@ -221,6 +221,8 @@ class MikroInvoiceSerialsServiceTest extends TestCase
             'bayi' => ['TEST-SERIAL-004'],
             'proje' => ['TEST-SERIAL-005'],
             'gr' => ['TEST-SERIAL-006'],
+            'local form serial' => ['W720FWS03E241227A00997'],
+            'local operation serial' => ['W720CWS05E250918A00705'],
         ];
     }
 

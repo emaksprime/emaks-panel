@@ -821,6 +821,10 @@ export function ServiceRequestDetails({
   const routeQuoteStaleForSelectedTechnician = Boolean(routeQuote && selectedTechnicianIdString && routeQuoteTechnicianIdString && routeQuoteTechnicianIdString !== selectedTechnicianIdString)
   const hasAssignmentChange = Boolean(selectedTechnicianId && selectedTechnicianId !== String(request.technicianId ?? ''))
   const hasMultiProductRequest = Boolean(invoiceSerials?.has_multi_product || (invoiceSerials?.selected_serials?.length ?? 0) > 1 || saleAndPayment?.mount_payment_status === 'skipped_multi_product')
+  const customerOpenAddress = [
+    [request.city, request.district].filter(Boolean).join(' / '),
+    request.address,
+  ].filter((value) => String(value ?? '').trim() !== '').join(' - ')
   const routeFeeConfigThresholdKm = typeof request.routeFeeConfig?.threshold_km === 'number' && Number.isFinite(request.routeFeeConfig.threshold_km)
     ? request.routeFeeConfig.threshold_km
     : 30
@@ -1643,7 +1647,12 @@ export function ServiceRequestDetails({
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-slate-900">Mesafe ve önceliğe göre önerilen ustalar</p>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900">Mesafe ve önceliğe göre önerilen ustalar</p>
+                    <p className="mt-1 max-w-3xl truncate text-xs text-slate-500" title={customerOpenAddress || undefined}>
+                      Müşteri açık adresi: {displayOrEmpty(customerOpenAddress, 'Bilgi yok')}
+                    </p>
+                  </div>
                   <Badge variant="outline">{technicianSuggestions.length > 0 ? `${technicianSuggestions.length} öneri` : 'Öneri yok'}</Badge>
                 </div>
                 {technicianSuggestions.length > 0 ? (

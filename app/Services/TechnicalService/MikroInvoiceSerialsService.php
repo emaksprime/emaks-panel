@@ -70,6 +70,11 @@ class MikroInvoiceSerialsService
         ];
     }
 
+    public function mode(): string
+    {
+        return $this->invoiceSerialsMode();
+    }
+
     private function invoiceSerialsMode(): string
     {
         $mode = strtolower(trim((string) (
@@ -111,18 +116,29 @@ class MikroInvoiceSerialsService
                 continue;
             }
 
+            $aliases = $group['aliases'] ?? $group['serial_aliases'] ?? [];
+            if ($this->matchesAnySerial($aliases, $serialNo)) {
+                return array_values(array_filter($rows, 'is_array'));
+            }
+
             foreach ($rows as $row) {
                 if (! is_array($row)) {
                     continue;
                 }
 
+                $searchedFixtureSerial = $this->firstText($row, [
+                    'Aranan Seri No',
+                    'aranan_seri_no',
+                    'searched_serial',
+                    'searched_serial_number',
+                ]);
                 $fixtureSerial = $this->firstText($row, [
                     'Faturadaki Seri No',
                     'faturadaki_seri_no',
                     'serial_number',
                 ]);
 
-                if ($this->sameSerial($fixtureSerial, $serialNo)) {
+                if ($this->sameSerial($fixtureSerial, $serialNo) || $this->sameSerial($searchedFixtureSerial, $serialNo)) {
                     return array_values(array_filter($rows, 'is_array'));
                 }
             }
@@ -585,6 +601,25 @@ class MikroInvoiceSerialsService
     private function sameSerial(?string $left, string $right): bool
     {
         return Str::of((string) $left)->trim()->upper()->value() === Str::of($right)->trim()->upper()->value();
+    }
+
+    private function matchesAnySerial(mixed $serials, string $searchedSerial): bool
+    {
+        if (! is_array($serials)) {
+            $serials = [$serials];
+        }
+
+        foreach ($serials as $serial) {
+            if (! is_scalar($serial) && ! $serial instanceof \Stringable) {
+                continue;
+            }
+
+            if ($this->sameSerial($this->nullableText($serial), $searchedSerial)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function documentNo(?string $series, ?string $number): ?string

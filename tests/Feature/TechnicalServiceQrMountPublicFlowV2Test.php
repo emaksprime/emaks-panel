@@ -533,6 +533,35 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertJsonMissingPath('selectable_serials.0.responsibility_code');
     }
 
+    public function test_fixture_mode_refreshes_cached_empty_context_for_local_serial_alias(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        ['token' => $token] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => 'W720FWS03E241227A00997',
+            'product_name' => 'Local Alias Kilit',
+            'product_model' => 'FIXTURE',
+            'brand' => 'EMAKS PRIME',
+        ]);
+
+        config(['services.technical_service.invoice_serials_mode' => 'disabled']);
+        $this->postJson('/mount-request/'.$token.'/invoice-serials/check')
+            ->assertOk()
+            ->assertJsonPath('has_selectable_serials', false)
+            ->assertJsonCount(0, 'selectable_serials');
+
+        config(['services.technical_service.invoice_serials_mode' => 'fixture']);
+        $this->postJson('/mount-request/'.$token.'/invoice-serials/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('has_selectable_serials', true)
+            ->assertJsonCount(2, 'selectable_serials')
+            ->assertJsonPath('selectable_serials.0.serial_number', 'TEST-SERIAL-001')
+            ->assertJsonPath('selectable_serials.1.serial_number', 'TEST-SERIAL-002')
+            ->assertJsonPath('operation_only_count', 4)
+            ->assertJsonPath('returned_count', 1)
+            ->assertJsonPath('total_count', 6);
+    }
+
     public function test_frontend_opens_multi_product_popup_when_selectable_payload_exists(): void
     {
         $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));

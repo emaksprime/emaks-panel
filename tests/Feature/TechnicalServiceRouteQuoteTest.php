@@ -670,6 +670,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         foreach ([
             'Operasyon ve Montaj Kontrolü',
             'Usta / Çilingir Atama',
+            'Müşteri açık adresi',
             'Google Routes tek yön mesafesi',
             'Ücretsiz sınır',
             'Ücrete tabi km',

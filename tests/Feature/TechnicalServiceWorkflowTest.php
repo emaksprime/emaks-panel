@@ -667,6 +667,36 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.invoice_serials.returned_serials.0.color_status', 'red');
     }
 
+    public function test_invoice_serial_recheck_uses_fixture_alias_and_preserves_requested_primary(): void
+    {
+        config(['services.technical_service.invoice_serials_mode' => 'fixture']);
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+            'serial_number' => 'W720CWS05E250918A00705',
+            'product_name' => 'Local Alias Kilit',
+            'product_model' => 'FIXTURE',
+            'brand' => 'EMAKS PRIME',
+            'qr_context_payload' => [
+                'invoice_serials' => [
+                    'all_invoice_serials' => [],
+                    'selectable_customer_serials' => [],
+                    'returned_serials' => [],
+                ],
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/invoice-serials/recheck")
+            ->assertOk()
+            ->assertJsonPath('request.invoice_serials.selected_serials.0.serial_number', 'W720CWS05E250918A00705')
+            ->assertJsonPath('request.invoice_serials.other_serials.0.serial_number', 'TEST-SERIAL-001')
+            ->assertJsonPath('request.invoice_serials.other_serials.1.serial_number', 'TEST-SERIAL-002')
+            ->assertJsonPath('request.invoice_serials.returned_serials.0.serial_number', 'TEST-SERIAL-003')
+            ->assertJsonPath('request.invoice_serials.hidden_serials.0.serial_number', 'TEST-SERIAL-004')
+            ->assertJsonPath('request.invoice_serials.has_multi_product', true);
+    }
+
     public function test_invoice_serial_operation_add_remove_and_add_all_actions(): void
     {
         $user = $this->adminUser();
