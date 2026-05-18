@@ -325,6 +325,7 @@ class AdminController extends Controller
             str_starts_with($code, 'support') => 'Destek',
             str_starts_with($code, 'cari') || str_starts_with($code, 'customer') || $code === 'customers' || str_starts_with($code, 'finance_cari') => 'Müşteri Yönetimi',
             str_starts_with($code, 'proforma') => 'Proforma',
+            str_starts_with($code, 'accounting_finance') => 'Muhasebe / Finans',
             str_starts_with($code, 'admin') || $code === 'user_admin' || $code === 'dashboard' => 'Sistem Yönetimi',
             $type === 'data_source' => 'Veri Kaynakları',
             default => 'Sistem Yönetimi',

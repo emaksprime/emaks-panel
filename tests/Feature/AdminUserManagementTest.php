@@ -222,4 +222,41 @@ class AdminUserManagementTest extends TestCase
         $this->assertStringContainsString('Dar yetkiyi sabitle', $component);
         $this->assertStringContainsString('rol fallback fazladan alan açamaz', $component);
     }
+
+    public function test_accounting_finance_resource_is_grouped_in_admin_users_response(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+
+        $resources = collect($this->actingAs($admin)
+            ->getJson('/api/admin/users')
+            ->assertOk()
+            ->json('resources'));
+
+        $accountingResource = $resources->firstWhere('code', 'accounting_finance_resmi_stok_kontrol');
+
+        $this->assertNotNull($accountingResource);
+        $this->assertSame('Muhasebe / Finans', $accountingResource['group']);
+    }
+
+    public function test_admin_users_group_order_and_select_all_include_accounting_finance(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
+
+        $this->assertMatchesRegularExpression(
+            "/'Proforma',\\s*'Muhasebe \\/ Finans',\\s*'Sistem Yönetimi'/",
+            $component,
+        );
+        $this->assertStringContainsString('access: data.resources.map((resource) => resource.code)', $component);
+
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $selectAllAccess = collect($this->actingAs($admin)
+            ->getJson('/api/admin/users')
+            ->assertOk()
+            ->json('resources'))
+            ->pluck('code')
+            ->values()
+            ->all();
+
+        $this->assertContains('accounting_finance_resmi_stok_kontrol', $selectAllAccess);
+    }
 }
