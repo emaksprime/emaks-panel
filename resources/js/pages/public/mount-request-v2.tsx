@@ -1,6 +1,12 @@
 import { Head, Link, useForm } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
+import {
+    getDistrictOptionsForProvince,
+    normalizeDistrictName,
+    normalizeProvinceName,
+    TURKEY_PROVINCES,
+} from '@/components/technical-service/turkey-locations';
 
 declare global {
     interface Window {
@@ -19,6 +25,20 @@ const DOOR_PHOTO_FIELDS = [
     { code: 'door_side_photo', label: 'Kapı Yan Yüzü' },
     { code: 'door_back_photo', label: 'Kapı Arka Yüzü' },
 ] as const;
+const DOOR_PHOTO_GUIDANCE: Record<DoorPhotoFieldCode, { title: string; helper: string }> = {
+    door_front_photo: {
+        title: 'Örnek çekim',
+        helper: 'Kapıyı tamamen kadraja al.',
+    },
+    door_side_photo: {
+        title: 'Örnek çekim',
+        helper: 'Kilit/yan profil net görünsün.',
+    },
+    door_back_photo: {
+        title: 'Örnek çekim',
+        helper: 'Bulanık fotoğraf yükleme.',
+    },
+};
 
 type Product = {
     product_name?: string | null;
@@ -144,6 +164,25 @@ function FieldError({ message }: { message?: string }) {
     return <p className="mt-1 text-xs font-semibold text-red-600">{message}</p>;
 }
 
+function DoorPhotoPlaceholder({ fieldCode }: { fieldCode: DoorPhotoFieldCode }) {
+    const guidance = DOOR_PHOTO_GUIDANCE[fieldCode];
+
+    return (
+        <div className="grid aspect-[4/3] max-w-full gap-2 overflow-hidden rounded-lg border border-dashed border-slate-300 bg-white p-3 text-xs text-slate-600">
+            <div className="relative mx-auto mt-1 h-24 w-16 rounded-t-full border-2 border-slate-300 bg-slate-50">
+                <div className="absolute inset-x-3 top-6 h-10 rounded border border-slate-200 bg-white" />
+                <div className="absolute right-3 top-12 h-2 w-2 rounded-full bg-slate-400" />
+                <div className="absolute inset-x-4 bottom-3 h-5 rounded-sm border border-slate-200 bg-white" />
+            </div>
+            <div>
+                <p className="font-semibold text-slate-900">{guidance.title}</p>
+                <p className="mt-1">{guidance.helper}</p>
+                <p className="mt-1 font-semibold text-rose-700">Bulanık fotoğraf yükleme.</p>
+            </div>
+        </div>
+    );
+}
+
 function normalizePhoneDigits(value: string): string {
     let digits = value.replace(/\D+/g, '');
 
@@ -156,6 +195,14 @@ function normalizePhoneDigits(value: string): string {
     }
 
     return digits.slice(0, 10);
+}
+
+function normalizeCityForForm(value: string | null | undefined): string {
+    return normalizeProvinceName(value) ?? String(value ?? '').trim();
+}
+
+function normalizeDistrictForForm(city: string | null | undefined, value: string | null | undefined): string {
+    return normalizeDistrictName(city, value) ?? String(value ?? '').trim();
 }
 
 function draftKey(): string | null {
@@ -304,6 +351,23 @@ export default function MountRequestV2({
 
     const submitUrl = actions?.submit_url;
     const storageKey = draftKey();
+    const districtOptions = getDistrictOptionsForProvince(form.data.city);
+    const cityHasFallback = form.data.city.trim() !== ''
+        && !TURKEY_PROVINCES.some((province) => province.name === form.data.city);
+    const districtHasFallback = form.data.district.trim() !== ''
+        && !districtOptions.some((district) => district.name === form.data.district);
+
+    const handleCityChange = (value: string) => {
+        form.setData({
+            ...form.data,
+            city: normalizeCityForForm(value),
+            district: '',
+        });
+    };
+
+    const handleDistrictChange = (value: string) => {
+        form.setData('district', normalizeDistrictForForm(form.data.city, value));
+    };
 
     const applyLocationSelection = (payload: {
         city?: string;
@@ -314,11 +378,13 @@ export default function MountRequestV2({
         placeId?: string;
     }) => {
         const mapUrl = `https://www.google.com/maps?q=${payload.lat},${payload.lng}`;
+        const city = normalizeCityForForm(payload.city || form.data.city);
+        const district = normalizeDistrictForForm(city, payload.district || form.data.district);
 
         form.setData({
             ...form.data,
-            city: payload.city || form.data.city,
-            district: payload.district || form.data.district,
+            city,
+            district,
             address: payload.address || `Konum paylaşıldı: ${payload.lat}, ${payload.lng}`,
             location_latitude: String(payload.lat),
             location_longitude: String(payload.lng),
@@ -921,6 +987,45 @@ export default function MountRequestV2({
                                         </p>
                                     )}
 
+                                    <div className="grid gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm">
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <div>
+                                                <p className="text-sm font-semibold text-emerald-950">Konumunu ekle</p>
+                                                <p className="mt-1 text-xs text-emerald-800">
+                                                    Konum paylaşırsan usta seçimi ve yol ücreti daha doğru hesaplanır.
+                                                </p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={openLocationModal}
+                                                className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800"
+                                            >
+                                                Konumumu kullan
+                                            </button>
+                                        </div>
+                                        {form.data.location_map_url ? (
+                                            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-emerald-900">
+                                                <span>Konum alındı</span>
+                                                <span className="text-emerald-700">
+                                                    {form.data.location_latitude}, {form.data.location_longitude}
+                                                </span>
+                                                <a
+                                                    href={form.data.location_map_url}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    className="text-blue-700 underline-offset-4 hover:underline"
+                                                >
+                                                    Haritada aç
+                                                </a>
+                                            </div>
+                                        ) : null}
+                                        {locationStatus ? (
+                                            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                                                {locationStatus}
+                                            </p>
+                                        ) : null}
+                                    </div>
+
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <label className="block text-sm font-semibold text-slate-800">
                                             İsim
@@ -974,25 +1079,40 @@ export default function MountRequestV2({
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <label className="block text-sm font-semibold text-slate-800">
                                             İl
-                                            <input
-                                                type="text"
+                                            <select
                                                 value={form.data.city}
-                                                onChange={(event) => form.setData('city', event.target.value)}
+                                                onChange={(event) => handleCityChange(event.target.value)}
                                                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
                                                 required
-                                            />
+                                            >
+                                                <option value="">İl seçin</option>
+                                                {cityHasFallback ? <option value={form.data.city}>Mevcut değer: {form.data.city}</option> : null}
+                                                {TURKEY_PROVINCES.map((province) => (
+                                                    <option key={province.plateCode} value={province.name}>
+                                                        {province.name}
+                                                    </option>
+                                                ))}
+                                            </select>
                                             <FieldError message={form.errors.city} />
                                         </label>
 
                                         <label className="block text-sm font-semibold text-slate-800">
                                             İlçe
-                                            <input
-                                                type="text"
+                                            <select
                                                 value={form.data.district}
-                                                onChange={(event) => form.setData('district', event.target.value)}
-                                                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                                                onChange={(event) => handleDistrictChange(event.target.value)}
+                                                disabled={!form.data.city}
+                                                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                                                 required
-                                            />
+                                            >
+                                                <option value="">{form.data.city ? 'İlçe seçin' : 'Önce il seçin'}</option>
+                                                {districtHasFallback ? <option value={form.data.district}>Mevcut değer: {form.data.district}</option> : null}
+                                                {districtOptions.map((district) => (
+                                                    <option key={district.normalizedName} value={district.name}>
+                                                        {district.name}
+                                                    </option>
+                                                ))}
+                                            </select>
                                             <FieldError message={form.errors.district} />
                                         </label>
                                     </div>
@@ -1009,31 +1129,7 @@ export default function MountRequestV2({
                                     </label>
 
                                     <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4">
-                                        <div className="flex flex-wrap items-center justify-between gap-3">
-                                            <div>
-                                                <p className="text-sm font-semibold text-slate-900">Konum</p>
-                                                <p className="mt-1 text-xs text-slate-500">
-                                                    Konum seçildiğinde adres bilgileri otomatik doldurulur. Eksik alan varsa tamamlayabilirsiniz.
-                                                </p>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={openLocationModal}
-                                                className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-100"
-                                            >
-                                                Konumumu ekle
-                                            </button>
-                                        </div>
-                                        {form.data.location_map_url && (
-                                            <a
-                                                href={form.data.location_map_url}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className="text-sm font-semibold text-blue-700 underline-offset-4 hover:underline"
-                                            >
-                                                Haritada aç
-                                            </a>
-                                        )}
+                                        <p className="text-sm font-semibold text-slate-900">Adres detayları</p>
                                         <div className="grid gap-3 sm:grid-cols-5">
                                             {[
                                                 ['building_no', 'Bina No'],
@@ -1154,9 +1250,7 @@ export default function MountRequestV2({
                                                         {preview?.url ? (
                                                             <img src={preview.url} alt={field.label} className="aspect-[4/3] w-full max-w-full rounded-lg object-cover" />
                                                         ) : (
-                                                            <div className="grid aspect-[4/3] max-w-full place-items-center overflow-hidden rounded-lg border border-dashed border-slate-300 bg-white text-xs font-semibold text-slate-500">
-                                                                Görsel bekleniyor
-                                                            </div>
+                                                            <DoorPhotoPlaceholder fieldCode={field.code} />
                                                         )}
                                                         {preview ? (
                                                             <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-600">

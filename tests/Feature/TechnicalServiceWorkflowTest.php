@@ -875,9 +875,10 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Ödeme / Montaj Bloğu',
             'Adres Kontrol Bloğu',
             'Randevu Kontrol Bloğu',
-            'Ek Operasyon Kontrolleri',
             'Ödeme kontrol edildi mi?',
+            'Ödeme kontrol edilmedi',
             'Kapı görselleri bakıldı mı?',
+            'Kapı görseli kontrol edilmedi',
             'Randevu tarihi güncellenecek mi?',
             'Usta atama engelleri',
             'Henüz kapı fotoğrafı yüklenmedi',
@@ -931,6 +932,9 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertStringNotContainsString('Montaj / Servis Durumu', $detailsSource);
         $this->assertStringNotContainsString('Operasyon Kontrolü', $detailsSource);
+        $this->assertStringNotContainsString('Ek Operasyon Kontrolleri', $detailsSource);
+        $this->assertStringNotContainsString('Stok Kodu', $detailsSource);
+        $this->assertStringNotContainsString('Stok kodu', $detailsSource);
         $this->assertStringNotContainsString('Bayi/Proje - otomatik eklenemez', $detailsSource);
         $this->assertStringNotContainsString('Müşteri tercihi', $detailsSource);
 
@@ -944,6 +948,8 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         foreach ([
             'QR Montaj Formu',
+            'Ödeme kontrol edilmedi',
+            'Kapı görseli kontrol edilmedi',
             'Montaj ödemesi alındı',
             'Çoklu ürün talebi',
             'Montaja eklenen',

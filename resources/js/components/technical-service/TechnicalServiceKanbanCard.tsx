@@ -214,6 +214,14 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     addBadge({ label: 'Atama engeli var', tone: 'rose', icon: 'warning', important: true })
   }
 
+  if (request.operationControl?.payment_checked !== 'yes') {
+    addBadge({ label: 'Ödeme kontrol edilmedi', tone: 'rose', icon: 'warning', important: true })
+  }
+
+  if (!request.operationControl?.door_photos_checked || request.operationControl.door_photos_checked === 'unreviewed') {
+    addBadge({ label: 'Kapı görseli kontrol edilmedi', tone: 'rose', icon: 'warning', important: true })
+  }
+
   if (routeQuote?.status === 'calculated' && routeQuoteMatchesAssignedTechnician && routeQuoteHasCurrentFee) {
     addBadge(routeQuote.travel_fee_required
       ? { label: 'Yol ücreti onayı gerekli', tone: 'amber', icon: 'warning', important: true }

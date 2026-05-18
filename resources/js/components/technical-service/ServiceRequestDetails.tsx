@@ -464,7 +464,6 @@ const InvoiceSerialRow = ({
     </div>
     <div className="mt-3 grid gap-2 sm:grid-cols-2">
       <MiniMetric label="Model" value={displayOrEmpty(serial.product_model, '-')} />
-      <MiniMetric label="Stok kodu" value={displayOrEmpty(serial.stock_code, '-')} />
       <MiniMetric label="Durum etiketi" value={serialToneLabel(serial)} />
       <MiniMetric label="Montaj durumu" value={displayOrEmpty(serial.mount_status_label, serial.mount_payment_status === 'paid' ? 'Montaj Dahil' : '-')} />
       {serial.hidden_reason ? (
@@ -926,6 +925,8 @@ export function ServiceRequestDetails({
   })
   const routeFeeEditorHasChanges = routeFeeEditorInitialSnapshot !== '' && routeFeeEditorCurrentSnapshot !== routeFeeEditorInitialSnapshot
   const operationControl = request.operationControl ?? {}
+  const paymentControlMissing = operationControl.payment_checked !== 'yes'
+  const doorPhotoControlMissing = !operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed'
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
   const assignmentUiBlockerMessages = [
     operationControl.payment_checked === 'yes' ? null : 'Önce ödeme kontrolünü tamamlayın.',
@@ -1388,7 +1389,6 @@ export function ServiceRequestDetails({
             <MiniMetric label="Model" value={displayOrEmpty(productInfo?.product_model ?? request.model, '-')} />
             <MiniMetric label="Seri No" value={displayOrEmpty(productInfo?.serial_number ?? request.serialNumber, '-')} />
             <MiniMetric label="Marka" value={displayOrEmpty(productInfo?.brand, '-')} />
-            <MiniMetric label="Stok Kodu" value={displayOrEmpty(productInfo?.stock_code, '-')} />
             <MiniMetric label="Aktivasyon Kodu" value={displayOrEmpty(productInfo?.activation_code, '-')} />
             <MiniMetric label="Fatura No" value={displayOrEmpty(documentInfo?.invoice_display_no, '-')} />
             <MiniMetric label="İrsaliye No" value={displayOrEmpty(documentInfo?.dispatch_display_no, '-')} />
@@ -1473,6 +1473,11 @@ export function ServiceRequestDetails({
                 })}
               </div>
             )}
+            {doorPhotoControlMissing ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">
+                Kapı görseli kontrol edilmedi
+              </div>
+            ) : null}
             <OperationControlRow
               label="Kapı görselleri bakıldı mı?"
               value={operationControl.door_photos_checked ?? 'unreviewed'}
@@ -1508,6 +1513,11 @@ export function ServiceRequestDetails({
                 <MiniMetric label="Ödeme referansı" value={<span className="break-all" title={displayOrEmpty(saleAndPayment?.payment_reference, '-')}>{displayOrEmpty(saleAndPayment?.payment_reference, '-')}</span>} />
                 <MiniMetric label="Ödeme tarihi" value={dateTimeOrEmpty(saleAndPayment?.paid_at, '-')} />
               </div>
+              {paymentControlMissing ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">
+                  Ödeme kontrol edilmedi
+                </div>
+              ) : null}
               <OperationControlRow
                 label="Ödeme kontrol edildi mi?"
                 value={operationControl.payment_checked ?? 'unreviewed'}
@@ -1581,34 +1591,6 @@ export function ServiceRequestDetails({
               />
             </section>
 
-            <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ek Operasyon Kontrolleri</p>
-                <p className="mt-1 text-sm text-slate-600">Eksik bilgi ve müşteri arama kararları aynı alanda tutulur.</p>
-              </div>
-              <OperationControlRow
-                label="Eksik bilgi var mı?"
-                value={operationControl.missing_info ?? 'unreviewed'}
-                options={[
-                  { value: 'no', label: 'Yok', tone: 'positive' },
-                  { value: 'yes', label: 'Var', tone: 'problem' },
-                  { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
-                ]}
-                disabled={operationControlUpdateInFlight}
-                onChange={(value) => operationControlChange('missing_info', value as 'yes' | 'no' | 'unreviewed')}
-              />
-              <OperationControlRow
-                label="Müşteri aranacak mı?"
-                value={operationControl.customer_call_required ?? 'unreviewed'}
-                options={[
-                  { value: 'no', label: 'Hayır', tone: 'positive' },
-                  { value: 'yes', label: 'Evet', tone: 'problem' },
-                  { value: 'unreviewed', label: 'Kontrol edilmedi', tone: 'neutral' },
-                ]}
-                disabled={operationControlUpdateInFlight}
-                onChange={(value) => operationControlChange('customer_call_required', value as 'yes' | 'no' | 'unreviewed')}
-              />
-            </section>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
