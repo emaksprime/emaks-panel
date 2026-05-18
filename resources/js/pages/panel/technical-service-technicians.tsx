@@ -630,6 +630,7 @@ export default function TechnicalServiceTechnicians() {
                         </span>
                         {hasPlusCodeInfo(technician) ? <span className="inline-flex rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">Plus Code var</span> : null}
                         {hasAddressInfo(technician) ? <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">Adres var</span> : null}
+                        {technician.needs_review && hasRealCoordinates(technician) ? <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">Koordinat kontrol gerekli</span> : null}
                       </div>
                     </div>
                     {technician.import_note ? (
@@ -703,6 +704,7 @@ export default function TechnicalServiceTechnicians() {
                         </span>
                         {hasPlusCodeInfo(technician) ? <span className="inline-flex rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">Plus Code var</span> : null}
                         {hasAddressInfo(technician) ? <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">Adres var</span> : null}
+                        {technician.needs_review && hasRealCoordinates(technician) ? <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">Koordinat kontrol gerekli</span> : null}
                       </div>
                       {technician.import_note ? <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{technician.import_note}</p> : null}
                     </td>

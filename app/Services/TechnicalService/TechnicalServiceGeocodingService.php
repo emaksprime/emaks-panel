@@ -188,6 +188,7 @@ class TechnicalServiceGeocodingService
             'source_type' => $query['source_type'],
             'quality' => $query['quality'],
             'needs_review' => $quality['needs_review'],
+            'review_reason' => $quality['message'] ?? null,
             'location_type' => $locationType !== '' ? $locationType : null,
             'latitude' => $coordinates['latitude'],
             'longitude' => $coordinates['longitude'],
@@ -237,9 +238,9 @@ class TechnicalServiceGeocodingService
 
         if ($this->isGenericCityCountryResult($formattedAddress)) {
             return [
-                'accepted' => false,
+                'accepted' => true,
                 'needs_review' => true,
-                'message' => 'Geocode rejected: generic city/country result',
+                'message' => 'review_required: generic_city_result',
             ];
         }
 
@@ -252,9 +253,9 @@ class TechnicalServiceGeocodingService
                 $actualCity = $this->extractDisplayCity($formattedAddress) ?? $formattedAddress;
 
                 return [
-                    'accepted' => false,
+                    'accepted' => true,
                     'needs_review' => true,
-                    'message' => "Geocode rejected: city mismatch {$displayCity} vs {$actualCity}",
+                    'message' => "review_required: city_mismatch {$displayCity} vs {$actualCity}",
                 ];
             }
         }
@@ -269,9 +270,9 @@ class TechnicalServiceGeocodingService
             }
 
             return [
-                'accepted' => false,
+                'accepted' => true,
                 'needs_review' => true,
-                'message' => 'Geocode rejected: approximate city-level result',
+                'message' => 'review_required: approximate_city_level_result',
             ];
         }
 

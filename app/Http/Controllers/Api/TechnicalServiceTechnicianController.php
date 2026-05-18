@@ -487,6 +487,11 @@ class TechnicalServiceTechnicianController extends Controller
             $note .= "; formatted: {$formatted}";
         }
 
+        $reviewReason = trim((string) ($result['review_reason'] ?? ''));
+        if ((bool) ($result['needs_review'] ?? false) && $reviewReason !== '') {
+            $note .= "; {$reviewReason}";
+        }
+
         if ($locationType !== '') {
             $note .= "; location_type: {$locationType}";
         }

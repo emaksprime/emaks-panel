@@ -150,6 +150,11 @@ class GeocodeTechnicalServiceTechnicians extends Command
             $summary .= "; formatted: {$formatted}";
         }
 
+        $reviewReason = trim((string) ($result['review_reason'] ?? ''));
+        if ((bool) ($result['needs_review'] ?? false) && $reviewReason !== '') {
+            $summary .= "; {$reviewReason}";
+        }
+
         $locationType = trim((string) ($result['location_type'] ?? ''));
         if ($locationType !== '') {
             $summary .= "; location_type: {$locationType}";

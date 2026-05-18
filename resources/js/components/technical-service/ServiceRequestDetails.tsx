@@ -1500,7 +1500,9 @@ export function ServiceRequestDetails({
                         && routeRoundTripKm > 0
                         && Math.max(routeRoundTripKm, technician.estimatedRoundTripKm) / Math.min(routeRoundTripKm, technician.estimatedRoundTripKm) > 3
                       const routeLocationMessage = technician.routeLocationMessage ?? (hasCoordinates
-                        ? 'Routes hesabı için koordinat var.'
+                        ? technician.needsReview
+                          ? 'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.'
+                          : 'Routes hesabı için koordinat var.'
                         : hasPlusCodeInfo || hasAddressInfo
                           ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Google Routes için lat/lng gerekli.'
                           : 'Usta adres bilgisi eksik.')
@@ -1516,6 +1518,7 @@ export function ServiceRequestDetails({
                             {technician.recommended ? <Badge variant="positive">Önerilen</Badge> : null}
                             {selected ? <Badge variant="secondary">Seçildi</Badge> : null}
                             {technician.needsReview ? <Badge variant="warning">Kontrol gerekli</Badge> : null}
+                            {technician.needsReview && hasCoordinates ? <Badge variant="warning">Koordinat kontrol gerekli</Badge> : null}
                             {routeMismatch ? <Badge variant="warning">Mesafe uyumsuzluğu - kontrol gerekli</Badge> : null}
                           </div>
                           <p className="mt-1 text-xs text-slate-500">
@@ -1538,7 +1541,7 @@ export function ServiceRequestDetails({
                           <span className={['rounded-full px-2 py-1', hasCoordinates ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'].join(' ')}>
                             {hasCoordinates ? 'Gerçek koordinat var' : hasPlusCodeInfo || hasAddressInfo ? 'Gerçek koordinat eksik' : 'Usta koordinatı eksik'}
                           </span>
-                          <span className={['rounded-full px-2 py-1', technician.routeReady ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-700'].join(' ')} title={routeLocationMessage}>
+                          <span className={['rounded-full px-2 py-1', technician.needsReview && hasCoordinates ? 'bg-amber-50 text-amber-800' : technician.routeReady ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-700'].join(' ')} title={routeLocationMessage}>
                             {technician.routeReady ? 'Routes hazır' : 'Routes için koordinat eksik'}
                           </span>
                           <span className="rounded-full bg-slate-100 px-2 py-1">İş: {technician.scheduledCount}</span>
@@ -1624,6 +1627,9 @@ export function ServiceRequestDetails({
                   <MiniMetric label="Usta şehir/adres bilgisi" value={selectedTechnician ? (selectedTechnician.hasAddressInfo ? 'Var' : 'Usta adres bilgisi eksik') : 'Usta seçilmedi'} hint={selectedTechnician?.addressSummary ?? undefined} />
                   <MiniMetric label="Usta koordinatı" value={selectedTechnician ? (selectedTechnician.hasCoordinates ? 'Gerçek koordinat var' : 'Gerçek koordinat eksik') : 'Usta seçilmedi'} hint={selectedTechnician && !selectedTechnician.hasCoordinates && (selectedTechnician.hasPlusCodeInfo || selectedTechnician.hasAddressInfo) ? 'Usta adres/Plus Code var, gerçek koordinat eksik.' : undefined} />
                   <MiniMetric label="Routes hesap durumu" value={selectedTechnician ? (selectedTechnician.routeReady ? 'Hesaplanabilir' : 'Usta koordinatı eksik olduğu için Google Routes hesaplanamadı') : 'Usta seçilmedi'} hint={selectedTechnician?.routeLocationMessage ?? undefined} />
+                  {selectedTechnician?.needsReview && selectedTechnician.hasCoordinates ? (
+                    <MiniMetric label="Koordinat kontrolü" value="Koordinat kontrol gerekli" hint="Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı." />
+                  ) : null}
                   <MiniMetric label="Müşteri konumu var mı?" value={locationInfo?.shared ? 'Var' : 'Yok'} />
                   <MiniMetric label="Tek yön Google Routes mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasCalculatedRouteQuote && routeQuote?.duration_text ? `Tahmini süre: ${routeQuote.duration_text}` : 'Google Routes hesaplanınca gösterilir.'} />
                   <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasCalculatedRouteQuote ? undefined : 'Google Routes sonucu yok.'} />

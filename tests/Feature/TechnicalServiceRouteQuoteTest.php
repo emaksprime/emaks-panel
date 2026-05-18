@@ -109,6 +109,29 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame('Google Routes API anahtarı tanımlı değil.', $missingApiKey['message']);
     }
 
+    public function test_route_service_calculates_when_technician_coordinates_need_review(): void
+    {
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        Http::fake([
+            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(45), 200),
+        ]);
+
+        $technician = $this->technicianWithLocation();
+        $technician->forceFill(['needs_review' => true])->save();
+
+        $payload = app(TechnicalServiceRouteCostService::class)->quote(
+            $this->technicalServiceRequestWithLocation(),
+            $technician,
+        );
+
+        $this->assertSame(TechnicalServiceRouteQuote::STATUS_CALCULATED, $payload['status']);
+        $this->assertSame(45.0, $payload['round_trip_distance_km']);
+        $this->assertSame(150.0, $payload['fee_amount']);
+    }
+
     public function test_route_service_reuses_cached_quote_for_same_coordinates(): void
     {
         config([
@@ -327,6 +350,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'quote technician_id',
             'selectedTechnicianId',
             'Mesafe uyumsuzluğu - kontrol gerekli',
+            'Koordinat kontrol gerekli',
+            'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $detailsSource);
         }

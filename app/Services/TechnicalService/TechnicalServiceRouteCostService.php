@@ -258,16 +258,16 @@ class TechnicalServiceRouteCostService
      */
     private function technicianCoordinates(TechnicalServiceTechnician $technician): ?array
     {
-        $latitude = $technician->latitude ?? $technician->start_latitude;
-        $longitude = $technician->longitude ?? $technician->start_longitude;
+        $coordinates = app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->latitude, $technician->longitude)
+            ?? app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->start_latitude, $technician->start_longitude);
 
-        if ($latitude === null || $longitude === null) {
+        if ($coordinates === null) {
             return null;
         }
 
         return [
-            'latitude' => (float) $latitude,
-            'longitude' => (float) $longitude,
+            'latitude' => $coordinates['latitude'],
+            'longitude' => $coordinates['longitude'],
         ];
     }
 

@@ -91,7 +91,7 @@ class TechnicianCoordinateDataService
                 'route_note' => $this->appendReviewNote($technician, $reasons),
             ];
 
-            if ($clearInvalid) {
+            if ($clearInvalid && $this->shouldClearCoordinates($reasons)) {
                 $payload = array_merge($payload, [
                     'latitude' => null,
                     'longitude' => null,
@@ -266,7 +266,11 @@ class TechnicianCoordinateDataService
         $coordinates = $this->coordinatePair($technician);
         $coordinateKey = $this->coordinateKey($technician);
 
-        if ($coordinates === null) {
+        if ($this->hasZeroZeroCoordinates($technician)) {
+            $reasons[] = 'zero_zero_coordinates';
+        } elseif ($this->hasOutOfRangeCoordinates($technician)) {
+            $reasons[] = 'invalid_coordinate_range';
+        } elseif ($coordinates === null) {
             $reasons[] = 'missing_or_invalid_coordinates';
         } elseif (! $this->coordinatesInsideTurkey($coordinates['latitude'], $coordinates['longitude'])) {
             $reasons[] = 'coordinates_outside_turkey';
@@ -449,6 +453,43 @@ class TechnicianCoordinateDataService
     private function coordinatesInsideTurkey(float $latitude, float $longitude): bool
     {
         return $this->geocodingService->coordinatesInsideTurkey($latitude, $longitude);
+    }
+
+    /**
+     * @param array<int, string> $reasons
+     */
+    private function shouldClearCoordinates(array $reasons): bool
+    {
+        return collect($reasons)->contains(fn (string $reason): bool => in_array($reason, [
+            'zero_zero_coordinates',
+            'invalid_coordinate_range',
+            'coordinates_outside_turkey',
+        ], true));
+    }
+
+    private function hasZeroZeroCoordinates(TechnicalServiceTechnician $technician): bool
+    {
+        $latitude = $this->rawCoordinate($technician->latitude ?? $technician->start_latitude);
+        $longitude = $this->rawCoordinate($technician->longitude ?? $technician->start_longitude);
+
+        return $latitude === 0.0 && $longitude === 0.0;
+    }
+
+    private function hasOutOfRangeCoordinates(TechnicalServiceTechnician $technician): bool
+    {
+        $latitude = $this->rawCoordinate($technician->latitude ?? $technician->start_latitude);
+        $longitude = $this->rawCoordinate($technician->longitude ?? $technician->start_longitude);
+
+        return ($latitude !== null && abs($latitude) > 90) || ($longitude !== null && abs($longitude) > 180);
+    }
+
+    private function rawCoordinate(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return is_numeric($value) ? (float) $value : null;
     }
 
     /**

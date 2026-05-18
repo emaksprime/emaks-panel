@@ -1543,7 +1543,7 @@ export function TechnicalServiceOperationCenter() {
         longitude: match.technician.longitude ?? null,
         startLatitude: match.technician.start_latitude ?? null,
         startLongitude: match.technician.start_longitude ?? null,
-        needsReview: Boolean(match.technician.needs_review),
+        needsReview: match.technician.needs_review === true,
         hasLocation: hasTechnicianCoordinates,
         hasAddressInfo,
         hasPlusCodeInfo,
@@ -1552,7 +1552,9 @@ export function TechnicalServiceOperationCenter() {
         addressSummary,
         locationCode: match.technician.location_code ?? null,
         routeLocationMessage: hasTechnicianCoordinates
-          ? 'Routes hesabı için koordinat var.'
+          ? match.technician.needs_review === true
+            ? 'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.'
+            : 'Routes hesabı için koordinat var.'
           : hasPlusCodeInfo || hasAddressInfo
             ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Google Routes için lat/lng gerekli.'
             : 'Usta adres bilgisi eksik.',

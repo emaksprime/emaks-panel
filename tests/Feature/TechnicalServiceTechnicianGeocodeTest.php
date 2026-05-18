@@ -57,7 +57,7 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertSame('failed', $result['quality']);
     }
 
-    public function test_common_geocode_service_rejects_generic_city_result(): void
+    public function test_common_geocode_service_flags_generic_city_result_for_review(): void
     {
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
         Http::fake([
@@ -77,12 +77,15 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             'city' => 'Ankara',
         ]);
 
-        $this->assertFalse($result['ok']);
-        $this->assertSame('rejected', $result['status']);
-        $this->assertSame('Geocode rejected: generic city/country result', $result['error_message']);
+        $this->assertTrue($result['ok']);
+        $this->assertSame('ok', $result['status']);
+        $this->assertTrue($result['needs_review']);
+        $this->assertSame('review_required: generic_city_result', $result['review_reason']);
+        $this->assertSame(39.933365, $result['latitude']);
+        $this->assertSame(32.859742, $result['longitude']);
     }
 
-    public function test_common_geocode_service_rejects_city_mismatch(): void
+    public function test_common_geocode_service_flags_city_mismatch_for_review(): void
     {
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
         Http::fake([
@@ -102,9 +105,12 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             'city' => 'İzmir',
         ]);
 
-        $this->assertFalse($result['ok']);
-        $this->assertSame('rejected', $result['status']);
-        $this->assertStringContainsString('Geocode rejected: city mismatch İzmir vs Ankara', (string) $result['error_message']);
+        $this->assertTrue($result['ok']);
+        $this->assertSame('ok', $result['status']);
+        $this->assertTrue($result['needs_review']);
+        $this->assertStringContainsString('review_required: city_mismatch İzmir vs Ankara', (string) $result['review_reason']);
+        $this->assertSame(39.92077, $result['latitude']);
+        $this->assertSame(32.85411, $result['longitude']);
     }
 
     public function test_plus_code_detailed_result_is_accepted(): void
@@ -235,7 +241,7 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertStringNotContainsString('test-geocoding-key', (string) $technician->route_note);
     }
 
-    public function test_command_rejects_city_mismatch_without_overwriting_coordinates(): void
+    public function test_command_writes_city_mismatch_coordinates_as_review_required(): void
     {
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
         Http::fake([
@@ -267,10 +273,10 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
 
         $this->assertSame(0, $exit);
         $technician->refresh();
-        $this->assertNull($technician->latitude);
-        $this->assertNull($technician->longitude);
+        $this->assertSame('39.9207700', $technician->latitude);
+        $this->assertSame('32.8541100', $technician->longitude);
         $this->assertTrue($technician->needs_review);
-        $this->assertStringContainsString('Geocode rejected: city mismatch İzmir vs Ankara', (string) $technician->route_note);
+        $this->assertStringContainsString('review_required: city_mismatch İzmir vs Ankara', (string) $technician->route_note);
     }
 
     public function test_command_returns_safe_error_when_api_key_is_missing(): void
@@ -394,7 +400,7 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             ->assertJsonPath('technician.needs_review', false);
     }
 
-    public function test_coordinate_validation_command_marks_and_clears_invalid_city_mismatch(): void
+    public function test_coordinate_validation_command_keeps_reviewable_city_mismatch_coordinates(): void
     {
         $technician = TechnicalServiceTechnician::query()->create([
             'name' => 'Berkay Example',
@@ -416,9 +422,43 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertSame(0, $exit, Artisan::output());
         $technician->refresh();
         $this->assertTrue($technician->needs_review);
-        $this->assertNull($technician->latitude);
-        $this->assertNull($technician->longitude);
+        $this->assertSame('39.9207700', $technician->latitude);
+        $this->assertSame('32.8541100', $technician->longitude);
         $this->assertStringContainsString('city_mismatch', (string) $technician->route_note);
+    }
+
+    public function test_coordinate_validation_command_clears_only_impossible_coordinates(): void
+    {
+        $zeroZero = TechnicalServiceTechnician::query()->create([
+            'name' => 'Zero Zero',
+            'phone' => '+905555555570',
+            'city' => 'İzmir',
+            'latitude' => '0.0000000',
+            'longitude' => '0.0000000',
+            'start_latitude' => '0.0000000',
+            'start_longitude' => '0.0000000',
+            'active' => true,
+        ]);
+        $outsideTurkey = TechnicalServiceTechnician::query()->create([
+            'name' => 'Outside Turkey',
+            'phone' => '+905555555571',
+            'city' => 'İzmir',
+            'latitude' => '52.5200080',
+            'longitude' => '13.4049540',
+            'start_latitude' => '52.5200080',
+            'start_longitude' => '13.4049540',
+            'active' => true,
+        ]);
+
+        $exit = Artisan::call('technical-service:validate-technician-coordinates', [
+            '--clear-invalid' => true,
+        ]);
+
+        $this->assertSame(0, $exit, Artisan::output());
+        $this->assertNull($zeroZero->refresh()->latitude);
+        $this->assertNull($zeroZero->longitude);
+        $this->assertNull($outsideTurkey->refresh()->latitude);
+        $this->assertNull($outsideTurkey->longitude);
     }
 
     public function test_frontend_contains_stale_and_manual_coordinate_controls(): void
