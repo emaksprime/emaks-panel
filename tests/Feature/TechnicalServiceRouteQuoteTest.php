@@ -245,6 +245,45 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('request.route_quote.message', '30 km üstü yol ücreti gerekli.');
     }
 
+    public function test_route_quote_endpoint_embeds_selected_cached_quote_in_request_payload(): void
+    {
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        Http::fake([
+            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(80), 200),
+        ]);
+
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequestWithLocation();
+        $selectedTechnician = $this->technicianWithLocation();
+        $otherTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Baska Rota Ustasi',
+            'phone' => '+905555555553',
+            'city' => 'Istanbul',
+            'active' => true,
+            'latitude' => 41.11,
+            'longitude' => 29.11,
+        ]);
+        $selectedQuote = $this->createCachedQuote($request, $selectedTechnician, 10.0, 150.0);
+        $otherQuote = $this->createCachedQuote($request, $otherTechnician, 10.0, 150.0);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$selectedTechnician->id}/route-quote")
+            ->assertOk()
+            ->assertJsonPath('id', $selectedQuote->id)
+            ->assertJsonPath('technician_id', $selectedTechnician->id)
+            ->assertJsonPath('request.route_quote.id', $selectedQuote->id)
+            ->assertJsonPath('request.route_quote.technician_id', $selectedTechnician->id);
+
+        $this->assertDatabaseHas('technical_service_route_quotes', [
+            'id' => $otherQuote->id,
+            'technician_id' => $otherTechnician->id,
+        ]);
+        Http::assertSentCount(0);
+    }
+
     public function test_manual_route_quote_endpoint_recalculates_or_overrides_fee_without_closing_request_payload(): void
     {
         $user = $this->adminUser();
@@ -392,6 +431,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'const responseStatus = typeof response.status',
             "responseStatus !== 'calculated'",
             'routeQuoteFailed',
+            'if (!updatedRequest)',
+            'setSelectedDetailRequest(updatedRequest)',
             'Yaklaşık şehir/adres mesafesi',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);

@@ -343,9 +343,11 @@ class TechnicalServiceController extends Controller
         TechnicalServiceRouteCostService $routeCostService,
     ): JsonResponse {
         $quote = $routeCostService->quote($technicalServiceRequest, $technician);
+        $requestPayload = $this->workflowService->serialize($technicalServiceRequest->refresh(), true);
+        $requestPayload['route_quote'] = $quote;
 
         return response()->json(array_merge($quote, [
-            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+            'request' => $requestPayload,
         ]));
     }
 

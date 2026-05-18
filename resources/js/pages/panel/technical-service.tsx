@@ -2324,17 +2324,21 @@ export function TechnicalServiceOperationCenter() {
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
-      if (updatedRequest) {
-        preserveDetailScroll(() => {
-          setRequests((current) => current.map((request) => (
-            request.id === updatedRequest.id ? updatedRequest : request
-          )))
-          setSelectedListRequest((current) => (
-            current?.id === updatedRequest.id ? updatedRequest : current
-          ))
-          setSelectedDetailRequest(updatedRequest)
-        })
+      if (!updatedRequest) {
+        setRouteQuoteError('Yol ücreti hesaplandı ancak talep detayı güncellenemedi.')
+
+        return
       }
+
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
 
       const responseRoundTripKm = typeof response.round_trip_distance_km === 'number' && Number.isFinite(response.round_trip_distance_km)
         ? response.round_trip_distance_km
