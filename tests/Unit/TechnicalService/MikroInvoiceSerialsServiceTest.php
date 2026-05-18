@@ -33,6 +33,27 @@ class MikroInvoiceSerialsServiceTest extends TestCase
         $this->assertCount(1, $result['returned_serials']);
     }
 
+    #[DataProvider('fixtureSerialProvider')]
+    public function test_fixture_mode_all_test_serial_aliases_return_same_invoice_group(string $serial): void
+    {
+        $result = $this->service('fixture')->forSerial($serial);
+
+        $this->assertSame('fixture', $result['meta']['status']);
+        $this->assertCount(6, $result['all_invoice_serials']);
+        $this->assertSame(
+            ['TEST-SERIAL-001', 'TEST-SERIAL-002', 'TEST-SERIAL-003', 'TEST-SERIAL-004', 'TEST-SERIAL-005', 'TEST-SERIAL-006'],
+            collect($result['all_invoice_serials'])->pluck('serial_number')->values()->all(),
+        );
+        $this->assertSame(
+            ['TEST-SERIAL-001', 'TEST-SERIAL-002'],
+            collect($result['selectable_customer_serials'])->pluck('serial_number')->values()->all(),
+        );
+        $this->assertSame(
+            ['TEST-SERIAL-003'],
+            collect($result['returned_serials'])->pluck('serial_number')->values()->all(),
+        );
+    }
+
     public function test_fixture_mode_blocks_dealer_project_and_gr_from_customer_selection(): void
     {
         $result = $this->service('fixture')->forSerial('TEST-SERIAL-001');
@@ -188,6 +209,18 @@ class MikroInvoiceSerialsServiceTest extends TestCase
             'gr' => ['GR'],
             'cilingir_turkish' => ['ÇİLİNGİR SATIŞLARI'],
             'cilinigir_typo' => ['ÇİLİNİGİR SATIŞLARI'],
+        ];
+    }
+
+    public static function fixtureSerialProvider(): array
+    {
+        return [
+            'primary' => ['TEST-SERIAL-001'],
+            'selectable second' => ['TEST-SERIAL-002'],
+            'returned' => ['TEST-SERIAL-003'],
+            'bayi' => ['TEST-SERIAL-004'],
+            'proje' => ['TEST-SERIAL-005'],
+            'gr' => ['TEST-SERIAL-006'],
         ];
     }
 
