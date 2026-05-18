@@ -8,6 +8,7 @@ use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
+use App\Models\TechnicalServiceTechnician;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -486,6 +487,80 @@ class TechnicalServiceWorkflowService
         $this->writeEvent($request, 'technician_updated', $current, $this->currentWorkflowStatus($request), $user, $payload, 'Usta bilgisi güncellendi');
 
         return $request->refresh();
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{request:TechnicalServiceRequest,message_text:string,copy_text:string,whatsapp_url:string}
+     */
+    public function recordTechnicianEarningsMessage(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        array $payload,
+        ?Authenticatable $user = null
+    ): array {
+        $old = $this->snapshot($request);
+        $laborAmount = $this->nullableFloat($payload['labor_amount'] ?? null) ?? 0.0;
+        $routeFeeAmount = $this->nullableFloat($payload['route_fee_amount'] ?? null) ?? 0.0;
+        $totalAmount = $this->nullableFloat($payload['total_amount'] ?? null) ?? ($laborAmount + $routeFeeAmount);
+        $note = trim((string) ($payload['note'] ?? ''));
+        $messageText = trim((string) ($payload['message_text'] ?? ''));
+
+        if ($messageText === '') {
+            $messageText = $this->technicianEarningsMessageText($request, $technician, $laborAmount, $routeFeeAmount, $totalAmount, $note);
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $operationControl['technician_earning_message'] = [
+            'status' => 'sent',
+            'sent_at' => now()->toISOString(),
+            'technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'technician_phone' => $this->technicianPhone($technician),
+            'labor_amount' => round($laborAmount, 2),
+            'route_fee_amount' => round($routeFeeAmount, 2),
+            'total_amount' => round($totalAmount, 2),
+            'manual_override' => (bool) ($payload['manual_override'] ?? false),
+            'note' => $note !== '' ? $note : null,
+            'message_text' => $messageText,
+        ];
+
+        $request->forceFill([
+            'operation_control_payload' => $operationControl,
+            'updated_by_user_id' => $user?->id,
+        ])->save();
+
+        $eventPayload = [
+            'technician_id' => $technician->id,
+            'labor_amount' => round($laborAmount, 2),
+            'route_fee_amount' => round($routeFeeAmount, 2),
+            'total_amount' => round($totalAmount, 2),
+            'manual_override' => (bool) ($payload['manual_override'] ?? false),
+            'note' => $note !== '' ? $note : null,
+        ];
+
+        $this->writeAuditLog($request, 'technician_earning_message_sent', $old, $this->snapshot($request), $user, $note !== '' ? $note : null);
+        $this->writeEvent(
+            $request,
+            'technician_earning_message_sent',
+            $this->currentWorkflowStatus($request),
+            $this->currentWorkflowStatus($request),
+            $user,
+            $eventPayload,
+            'Hakediş bilgisi gönderildi'
+        );
+
+        $whatsappPhone = $this->whatsappPhone($this->technicianPhone($technician));
+        $whatsappUrl = $whatsappPhone !== ''
+            ? 'https://wa.me/'.$whatsappPhone.'?text='.rawurlencode($messageText)
+            : '';
+
+        return [
+            'request' => $request->refresh(),
+            'message_text' => $messageText,
+            'copy_text' => $messageText,
+            'whatsapp_url' => $whatsappUrl,
+        ];
     }
 
     /**
@@ -1174,7 +1249,19 @@ class TechnicalServiceWorkflowService
             'payment_provider' => $request->mount_payment_provider,
             'paid_at' => $this->dateTimeString($request->mount_payment_paid_at),
             'extra_mount_payment' => $extraPayment,
+            'technician_earning_message' => $this->technicianEarningMessagePayload($request),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function technicianEarningMessagePayload(TechnicalServiceRequest $request): ?array
+    {
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $payload = $operationControl['technician_earning_message'] ?? null;
+
+        return is_array($payload) ? $payload : null;
     }
 
     /**
@@ -1540,6 +1627,13 @@ class TechnicalServiceWorkflowService
     private function financialAliases(TechnicalServiceRequest $request): array
     {
         $customerAmount = $this->customerAmountForService($request->service_type);
+        $extraPayment = $this->latestExtraMountPaymentPayload($request);
+        $paidExtraCustomerAmount = ($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
+            ? (float) ($extraPayment['amount'] ?? 0)
+            : 0.0;
+        $totalCustomerCollected = $customerAmount !== null
+            ? $customerAmount + $paidExtraCustomerAmount
+            : ($paidExtraCustomerAmount > 0 ? $paidExtraCustomerAmount : null);
         $travelRoundTripKm = $request->travel_round_trip_km !== null ? (float) $request->travel_round_trip_km : null;
         $travelBillableKm = $request->travel_billable_km !== null
             ? (float) $request->travel_billable_km
@@ -1555,8 +1649,8 @@ class TechnicalServiceWorkflowService
         $totalTechnicianCost = $technicianFee !== null && $travelFee !== null
             ? $technicianFee + $travelFee
             : null;
-        $profit = $customerAmount !== null && $totalTechnicianCost !== null
-            ? $customerAmount - $totalTechnicianCost
+        $profit = $totalCustomerCollected !== null && $totalTechnicianCost !== null
+            ? $totalCustomerCollected - $totalTechnicianCost
             : null;
 
         return [
@@ -1564,6 +1658,8 @@ class TechnicalServiceWorkflowService
             'customer_amount' => $customerAmount,
             'customer_price' => $customerAmount,
             'customer_payment' => $customerAmount,
+            'extra_customer_payment' => $paidExtraCustomerAmount,
+            'total_customer_collected' => $totalCustomerCollected,
             'service_fee' => $customerAmount,
             'technician_fee' => $technicianFee,
             'technician_cost' => $technicianFee,
@@ -1590,6 +1686,72 @@ class TechnicalServiceWorkflowService
             'servis', 'ariza' => 1800.0,
             default => null,
         };
+    }
+
+    private function nullableFloat(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return is_numeric($value) ? (float) $value : null;
+    }
+
+    private function technicianPhone(TechnicalServiceTechnician $technician): string
+    {
+        return trim((string) ($technician->phone_e164 ?: $technician->phone_display ?: $technician->phone ?: ''));
+    }
+
+    private function whatsappPhone(string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+
+        if (str_starts_with($digits, '00')) {
+            $digits = substr($digits, 2);
+        }
+
+        if (str_starts_with($digits, '0')) {
+            $digits = '90'.substr($digits, 1);
+        }
+
+        if (! str_starts_with($digits, '90') && strlen($digits) === 10) {
+            $digits = '90'.$digits;
+        }
+
+        return $digits;
+    }
+
+    private function moneyText(float $amount): string
+    {
+        return number_format($amount, 2, ',', '.').' TL';
+    }
+
+    private function technicianEarningsMessageText(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        float $laborAmount,
+        float $routeFeeAmount,
+        float $totalAmount,
+        string $note
+    ): string {
+        $region = trim(implode(' / ', array_filter([$request->customer_city, $request->customer_district])));
+        $lines = [
+            'Merhaba '.$technician->name.',',
+            'Hakediş bilgisi:',
+            'MRN: '.$request->mrn,
+            'Bölge: '.($region !== '' ? $region : '-'),
+            'Ürün / Seri: '.trim(($request->product_name ?: '-').' / '.($request->serial_number ?: '-')),
+            'Montaj işçilik: '.$this->moneyText($laborAmount),
+            'Yol ücreti: '.$this->moneyText($routeFeeAmount),
+            'Toplam hakediş: '.$this->moneyText($totalAmount),
+            'Randevu: '.($request->scheduled_at?->format('d.m.Y H:i') ?: ($request->scheduled_date?->format('d.m.Y') ?: '-')),
+        ];
+
+        if ($note !== '') {
+            $lines[] = 'Not: '.$note;
+        }
+
+        return implode("\n", $lines);
     }
 
     private function auditLogTableAvailable(): bool

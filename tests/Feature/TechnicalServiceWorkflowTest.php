@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
+use App\Models\TechnicalServiceRouteQuote;
+use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
@@ -180,6 +182,139 @@ class TechnicalServiceWorkflowTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen');
+    }
+
+    public function test_assign_endpoint_uses_selected_technician_and_returns_fresh_payload(): void
+    {
+        $user = $this->adminUser();
+        $staleTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Eski Usta',
+            'phone' => '+905551111111',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $selectedTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Seçilen Usta',
+            'phone' => '+905552222222',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'technical_service_technician_id' => $staleTechnician->id,
+            'technician_name' => $staleTechnician->name,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $quote = TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technician_id' => $selectedTechnician->id,
+            'origin_latitude' => 41,
+            'origin_longitude' => 29,
+            'destination_latitude' => 41.1,
+            'destination_longitude' => 29.1,
+            'distance_meters' => 45000,
+            'distance_km' => 45,
+            'duration_seconds' => 1800,
+            'threshold_km' => 30,
+            'extra_km' => 15,
+            'fee_per_km' => 10,
+            'fee_amount' => 150,
+            'travel_fee_required' => true,
+            'provider' => 'google_routes',
+            'status' => 'calculated',
+            'raw_payload' => [
+                'one_way_distance_meters' => 22500,
+                'round_trip_distance_meters' => 45000,
+            ],
+            'calculated_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $selectedTechnician->id,
+                'route_quote_id' => $quote->id,
+                'travel_round_trip_km' => 45,
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $selectedTechnician->id)
+            ->assertJsonPath('request.technician_name', $selectedTechnician->name)
+            ->assertJsonPath('request.technician_phone', $selectedTechnician->phone)
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.technician_approval_status', 'bekliyor');
+
+        $request->refresh();
+
+        $this->assertSame($selectedTechnician->id, $request->technical_service_technician_id);
+        $this->assertSame($selectedTechnician->name, $request->technician_name);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'technician_updated',
+            'title' => 'Usta bilgisi güncellendi',
+        ]);
+    }
+
+    public function test_technician_earning_message_endpoint_records_audit_without_payment_side_effect(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Hakediş Ustası',
+            'phone_e164' => '+905551234567',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'technician_payment_amount' => 3000,
+            'travel_fee_amount' => 150,
+            'mount_payment_status' => 'paid',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/technicians/{$technician->id}/earnings-message", [
+                'labor_amount' => 3000,
+                'route_fee_amount' => 150,
+                'total_amount' => 3200,
+                'manual_override' => true,
+                'note' => 'Operasyon düzeltmesi',
+            ])
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('request.sale_and_payment.technician_earning_message.status', 'sent')
+            ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount', 3200)
+            ->assertJsonPath('request.sale_and_payment.mount_payment_status', 'paid')
+            ->assertJsonPath('request.mount_payment_status', 'paid')
+            ->assertJson(fn ($json) => $json
+                ->whereType('message_text', 'string')
+                ->whereType('whatsapp_url', 'string')
+                ->etc()
+            );
+
+        $request->refresh();
+
+        $this->assertSame('paid', $request->mount_payment_status);
+        $this->assertSame('sent', $request->operation_control_payload['technician_earning_message']['status'] ?? null);
+        $this->assertEquals(3200.0, $request->operation_control_payload['technician_earning_message']['total_amount'] ?? null);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'technician_earning_message_sent',
+            'title' => 'Hakediş bilgisi gönderildi',
+        ]);
+        $this->assertDatabaseHas('technical_service_audit_logs', [
+            'entity_type' => 'technical_service_request',
+            'entity_id' => $request->id,
+            'action_type' => 'technician_earning_message_sent',
+        ]);
     }
 
     public function test_assignment_is_blocked_until_payment_and_door_photo_controls_are_complete(): void

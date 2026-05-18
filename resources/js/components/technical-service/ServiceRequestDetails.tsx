@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
 const statusVariant = (status: ServiceRequest['status']) => {
@@ -101,12 +101,15 @@ type ServiceRequestDetailsProps = {
   routeQuoteManualSaveError?: string | null
   extraPaymentCreateLoading?: boolean
   extraPaymentCreateError?: string | null
+  technicianEarningMessageLoading?: boolean
+  technicianEarningMessageError?: string | null
   assignLoading?: boolean
   canSubmitAssign?: boolean
   onTechnicianSelect?: (technicianId: string, estimatedRoundTripKm?: number | null) => void
   onRouteQuoteCalculate?: () => void | Promise<void>
   onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
+  onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
 }
 
@@ -754,12 +757,15 @@ export function ServiceRequestDetails({
   routeQuoteManualSaveError = null,
   extraPaymentCreateLoading = false,
   extraPaymentCreateError = null,
+  technicianEarningMessageLoading = false,
+  technicianEarningMessageError = null,
   assignLoading = false,
   canSubmitAssign = false,
   onTechnicianSelect,
   onRouteQuoteCalculate,
   onRouteQuoteManualSave,
   onExtraMountPaymentCreate,
+  onTechnicianEarningMessageCreate,
   onAssignSelectedTechnician,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
@@ -799,6 +805,10 @@ export function ServiceRequestDetails({
   const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
+  const [earningTotalInput, setEarningTotalInput] = useState('')
+  const [earningNoteInput, setEarningNoteInput] = useState('')
+  const [earningMessageText, setEarningMessageText] = useState('')
+  const [earningMessageUrl, setEarningMessageUrl] = useState('')
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
   const locationInfo = request.location ?? null
   const doorPhotos = request.doorPhotos ?? []
@@ -884,6 +894,7 @@ export function ServiceRequestDetails({
     : null
   const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
   const extraMountPayment = saleAndPayment?.extra_mount_payment ?? null
+  const technicianEarningMessage = saleAndPayment?.technician_earning_message ?? null
   const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
   const canCreateExtraPayment = Boolean(
     selectedTechnician
@@ -930,6 +941,12 @@ export function ServiceRequestDetails({
 
   const resolvedSaleMountLabel = saleAndPayment?.sale_mount_label ?? mikroMountCheck?.montaj_durumu ?? '-'
   const resolvedMountPaymentLabel = saleAndPayment?.mount_payment_label ?? mountPaymentLabel
+  const paidExtraCustomerAmount = extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
+    ? extraMountPayment.amount
+    : 0
+  const totalCustomerCollectedAmount = paymentInfo.customerAmount !== null
+    ? roundTwo(paymentInfo.customerAmount + paidExtraCustomerAmount)
+    : paidExtraCustomerAmount > 0 ? paidExtraCustomerAmount : null
   const technicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
     ? selectedTechnician.technicianAmountLabel
     : paymentInfo.technicianAmountLabel && paymentInfo.technicianAmountLabel !== 'Belirlenmedi'
@@ -946,12 +963,20 @@ export function ServiceRequestDetails({
   const totalTechnicianCostAmount = technicianLaborCostAmount !== null
     ? roundTwo(technicianLaborCostAmount + (hasActiveRouteQuote && routeFeeAmount !== null ? routeFeeAmount : 0))
     : null
+  const earningTotalAmount = parseNumericInput(earningTotalInput) ?? totalTechnicianCostAmount
   const totalTechnicianCostLabel = totalTechnicianCostAmount !== null
     ? formatMoneyValue(totalTechnicianCostAmount)
     : 'Hakediş ayarı eksik'
-  const netProfitLabel = paymentInfo.customerAmount !== null && totalTechnicianCostAmount !== null
-    ? formatMoneyValue(paymentInfo.customerAmount - totalTechnicianCostAmount)
+  const netProfitLabel = totalCustomerCollectedAmount !== null && earningTotalAmount !== null
+    ? formatMoneyValue(totalCustomerCollectedAmount - earningTotalAmount)
     : 'Hesaplanamadı'
+  const canSendTechnicianEarning = Boolean(
+    selectedTechnician
+    && selectedTechnician.phone
+    && onTechnicianEarningMessageCreate
+    && earningTotalAmount !== null
+    && earningTotalAmount >= 0,
+  )
   const routeFeeEditorSnapshot = (
     oneWay: string,
     roundTrip: string,
@@ -1109,6 +1134,42 @@ export function ServiceRequestDetails({
 
     await onExtraMountPaymentCreate(payload)
     setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
+  }
+  const handleTechnicianEarningMessageCreate = async () => {
+    if (!selectedTechnician || !onTechnicianEarningMessageCreate) {
+      setRouteFeeEditorMessage('Önce usta seçin.')
+
+      return
+    }
+
+    if (!selectedTechnician.phone) {
+      setRouteFeeEditorMessage('Usta telefonu olmadan hakediş bilgisi gönderilemez.')
+
+      return
+    }
+
+    if (earningTotalAmount === null) {
+      setRouteFeeEditorMessage('Ustaya gönderilecek toplam hakediş hesaplanamadı.')
+
+      return
+    }
+
+    const response = await onTechnicianEarningMessageCreate({
+      technician_id: selectedTechnician.id,
+      labor_amount: technicianLaborCostAmount,
+      route_fee_amount: hasActiveRouteQuote ? routeFeeAmount : 0,
+      total_amount: earningTotalAmount,
+      note: earningNoteInput.trim() || null,
+      message_text: earningMessageText.trim() || null,
+      manual_override: parseNumericInput(earningTotalInput) !== null,
+    })
+
+    if (response && typeof response === 'object') {
+      setEarningMessageText(response.message_text ?? response.copy_text ?? '')
+      setEarningMessageUrl(response.whatsapp_url ?? '')
+    }
+
+    setRouteFeeEditorMessage('Hakediş bilgisi gönderildi.')
   }
   const operationControlChange = <K extends keyof NonNullable<ServiceRequest['operationControl']>>(
     key: K,
@@ -1611,9 +1672,10 @@ export function ServiceRequestDetails({
                   <div className="grid gap-2">
                     {technicianSuggestions.map((technician) => {
                       const selected = selectedTechnicianId === technician.id
-                      const hasAddressInfo = technician.hasAddressInfo ?? Boolean(technician.addressSummary || technician.locationCode || technician.location)
-                      const hasPlusCodeInfo = technician.hasPlusCodeInfo ?? Boolean(technician.locationCode)
                       const hasCoordinates = technician.hasCoordinates ?? technician.hasLocation ?? false
+                      const coordinateLabel = hasCoordinates
+                        ? technician.needsReview ? 'Kontrol gerekli' : 'Koordinat var'
+                        : 'Koordinat yok'
                       const routeMismatch = selected
                         && hasActiveRouteQuote
                         && typeof technician.estimatedRoundTripKm === 'number'
@@ -1621,13 +1683,6 @@ export function ServiceRequestDetails({
                         && typeof routeRoundTripKm === 'number'
                         && routeRoundTripKm > 0
                         && Math.max(routeRoundTripKm, technician.estimatedRoundTripKm) / Math.min(routeRoundTripKm, technician.estimatedRoundTripKm) > 3
-                      const routeLocationMessage = technician.routeLocationMessage ?? (hasCoordinates
-                        ? technician.needsReview
-                          ? 'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.'
-                          : 'Yol hesabı için koordinat var.'
-                        : hasPlusCodeInfo || hasAddressInfo
-                          ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Yol hesabı için lat/lng gerekli.'
-                          : 'Usta adres bilgisi eksik.')
 
                       return (
                       <div key={technician.id} className={[
@@ -1647,24 +1702,13 @@ export function ServiceRequestDetails({
                             {[technician.phone, technician.location, technician.distanceKmLabel].filter(Boolean).join(' · ')}
                           </p>
                           <p className="mt-1 truncate text-xs text-slate-500" title={technician.addressSummary ?? undefined}>
-                            {displayOrEmpty(technician.addressSummary ?? technician.locationCode ?? '', 'Adres bilgisi yok')}
+                            Adres: {displayOrEmpty(technician.addressSummary ?? '', 'Bilgi yok')}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 md:justify-end">
                           <span className="rounded-full bg-slate-100 px-2 py-1">Öncelik: {displayOrEmpty(String(technician.priority ?? ''), '-')}</span>
-                          <span className={['rounded-full px-2 py-1', hasAddressInfo ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'].join(' ')}>
-                            {hasAddressInfo ? 'Usta adresi var' : 'Usta adres bilgisi eksik'}
-                          </span>
-                          {hasPlusCodeInfo ? (
-                            <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-700">
-                              Plus Code var
-                            </span>
-                          ) : null}
                           <span className={['rounded-full px-2 py-1', hasCoordinates ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'].join(' ')}>
-                            {hasCoordinates ? 'Gerçek koordinat var' : hasPlusCodeInfo || hasAddressInfo ? 'Gerçek koordinat eksik' : 'Usta koordinatı eksik'}
-                          </span>
-                          <span className={['rounded-full px-2 py-1', technician.needsReview && hasCoordinates ? 'bg-amber-50 text-amber-800' : technician.routeReady ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-700'].join(' ')} title={routeLocationMessage}>
-                            {technician.routeReady ? 'Yol hesabına hazır' : 'Yol hesabı için koordinat eksik'}
+                            {coordinateLabel}
                           </span>
                           <span className="rounded-full bg-slate-100 px-2 py-1">İş: {technician.scheduledCount}</span>
                           <Button
@@ -1908,15 +1952,81 @@ export function ServiceRequestDetails({
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3">
               <div>
                 <p className="text-sm font-semibold text-slate-950">Hakediş / Maliyet Özeti</p>
-                <p className="mt-1 text-xs text-slate-500">Müşteri tahsilatı, usta hakedişi ve yol maliyeti tek yerde izlenir.</p>
+                <p className="mt-1 text-xs text-slate-500">Müşteri tahsilatı ve ustaya gönderilecek hakediş ayrı izlenir.</p>
               </div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 <MiniMetric label="Müşteriden alınan montaj ücreti" value={mountPaymentLabel} />
+                <MiniMetric label="Müşteriden alınan ek ödeme" value={paidExtraCustomerAmount > 0 ? formatMoneyValue(paidExtraCustomerAmount) : 'Yok'} />
+                <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : 'Belirlenmedi'} />
                 <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
-                <MiniMetric label="Usta hakedişi / işçilik" value={technicianLaborCostLabel} />
-                <MiniMetric label="Yol ücreti" value={travelCostLabel} />
-                <MiniMetric label="Toplam usta maliyeti" value={totalTechnicianCostLabel} />
+                <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} />
+                <MiniMetric label="Usta yol ücreti" value={travelCostLabel} />
+                <MiniMetric label="Ustaya gönderilecek toplam hakediş" value={earningTotalAmount !== null ? formatMoneyValue(earningTotalAmount) : totalTechnicianCostLabel} />
                 <MiniMetric label="Net fark / kâr" value={netProfitLabel} />
+                <MiniMetric
+                  label="Hakediş durumu"
+                  value={technicianEarningMessage?.status === 'sent' ? 'Hakediş bilgisi gönderildi' : 'Hakediş bilgisi gönderilmedi'}
+                  hint={technicianEarningMessage?.sent_at ? dateTimeOrEmpty(technicianEarningMessage.sent_at, '-') : undefined}
+                />
+              </div>
+              {technicianEarningMessageError ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                  {technicianEarningMessageError}
+                </div>
+              ) : null}
+              <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div className="grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)]">
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Toplam hakediş
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={earningTotalInput}
+                      onChange={(event) => setEarningTotalInput(event.target.value)}
+                      placeholder={totalTechnicianCostAmount !== null ? String(totalTechnicianCostAmount) : '0'}
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Hakediş notu / mesaj
+                    <Input
+                      value={earningNoteInput}
+                      onChange={(event) => setEarningNoteInput(event.target.value)}
+                      placeholder="Ustaya gönderilecek mesaj için operasyon notu"
+                    />
+                  </label>
+                </div>
+                {earningMessageText || technicianEarningMessage?.message_text ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+                    <p className="font-semibold">Hakediş mesajı</p>
+                    <pre className="mt-2 whitespace-pre-wrap break-words font-sans">{earningMessageText || technicianEarningMessage?.message_text}</pre>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(earningMessageText || technicianEarningMessage?.message_text || '')}>
+                        Mesajı kopyala
+                      </Button>
+                      {(earningMessageUrl || selectedTechnician?.phone) ? (
+                        <Button asChild type="button" size="sm" variant="outline">
+                          <a href={earningMessageUrl || whatsappHrefForPhone(selectedTechnician?.phone)} target="_blank" rel="noreferrer">
+                            WhatsApp Aç
+                          </a>
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-slate-500">
+                    Ödeme onayı hakedişi otomatik gönderilmiş saymaz; bu mesaj ayrı kaydedilir.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleTechnicianEarningMessageCreate()}
+                    disabled={!canSendTechnicianEarning || technicianEarningMessageLoading}
+                  >
+                    {technicianEarningMessageLoading ? 'Hazırlanıyor...' : 'Hakediş bilgisini gönder'}
+                  </Button>
+                </div>
               </div>
             </div>
             {combinedAssignmentBlockerMessages.length > 0 ? (

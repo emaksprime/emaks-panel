@@ -353,6 +353,42 @@ class TechnicalServiceController extends Controller
         ]));
     }
 
+    public function technicianEarningsMessage(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceTechnician $technician,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'labor_amount' => ['nullable', 'numeric', 'min:0'],
+            'route_fee_amount' => ['nullable', 'numeric', 'min:0'],
+            'total_amount' => ['required', 'numeric', 'min:0'],
+            'note' => ['nullable', 'string', 'max:2000'],
+            'message_text' => ['nullable', 'string', 'max:5000'],
+            'manual_override' => ['nullable', 'boolean'],
+        ]);
+
+        if (blank($technician->phone_e164) && blank($technician->phone_display) && blank($technician->phone)) {
+            throw ValidationException::withMessages([
+                'technician' => 'Usta telefonu olmadan hakediş bilgisi gönderilemez.',
+            ]);
+        }
+
+        $result = $this->workflowService->recordTechnicianEarningsMessage(
+            $technicalServiceRequest,
+            $technician,
+            $validated,
+            $request->user(),
+        );
+
+        return response()->json([
+            'ok' => true,
+            'message_text' => $result['message_text'],
+            'copy_text' => $result['copy_text'],
+            'whatsapp_url' => $result['whatsapp_url'],
+            'request' => $this->workflowService->serialize($result['request'], true),
+        ]);
+    }
+
     public function manualRouteQuote(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
@@ -698,6 +734,7 @@ class TechnicalServiceController extends Controller
             'technical_service_technician_id' => $technician?->id,
             'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
             'technician_approval_status' => 'bekliyor',
+            'route_quote_id' => $payload['route_quote_id'] ?? null,
             'note' => $payload['note'] ?? null,
         ];
 

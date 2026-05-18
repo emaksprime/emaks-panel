@@ -24,6 +24,7 @@ import type {
   ServiceRequestExtraMountPaymentPayload,
   ServiceRequestRouteQuote,
   ServiceRequestRouteQuoteManualPayload,
+  ServiceRequestTechnicianEarningMessagePayload,
   ServiceTechnician,
   WarrantySerialResponse,
 } from '@/components/technical-service/types'
@@ -560,14 +561,10 @@ function technicianAddressSummary(technician: ServiceTechnician): string {
     technician.city,
     technician.district,
     technician.address,
-    technician.location_code,
-    technician.google_plus_code,
     technician.google_formatted_address,
     technician.default_start_address,
-    technician.default_start_plus_code,
     technician.cari_address,
     technician.cari_city_district_country,
-    technician.route_note,
   ].filter((value): value is string => typeof value === 'string' && value.trim() !== '').join(' · ')
 }
 
@@ -814,6 +811,8 @@ export function TechnicalServiceOperationCenter() {
   const [routeQuoteManualSaveError, setRouteQuoteManualSaveError] = useState<string | null>(null)
   const [extraPaymentCreateLoading, setExtraPaymentCreateLoading] = useState(false)
   const [extraPaymentCreateError, setExtraPaymentCreateError] = useState<string | null>(null)
+  const [technicianEarningMessageLoading, setTechnicianEarningMessageLoading] = useState(false)
+  const [technicianEarningMessageError, setTechnicianEarningMessageError] = useState<string | null>(null)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
@@ -1943,6 +1942,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignError(null)
     setRouteQuoteError(null)
     setExtraPaymentCreateError(null)
+    setTechnicianEarningMessageError(null)
     setRouteQuoteLoading(false)
   }
 
@@ -2459,6 +2459,47 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleTechnicianEarningMessageCreate = async (payload: ServiceRequestTechnicianEarningMessagePayload) => {
+    if (!selectedId) {
+      return undefined
+    }
+
+    setTechnicianEarningMessageLoading(true)
+    setTechnicianEarningMessageError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/technicians/${payload.technician_id}/earnings-message`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (!updatedRequest) {
+        setTechnicianEarningMessageError('Hakediş bilgisi hazırlandı ancak talep detayı güncellenemedi.')
+
+        return response
+      }
+
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+
+      return response
+    } catch (caught) {
+      setTechnicianEarningMessageError(caught instanceof Error ? caught.message : 'Hakediş bilgisi gönderilemedi.')
+
+      throw caught
+    } finally {
+      setTechnicianEarningMessageLoading(false)
+    }
+  }
+
   const handleAssignSubmit = async () => {
     if (!selectedId) {
       return
@@ -2494,7 +2535,9 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
-    const parsedTravelRoundTripKm = travelRoundTripKm.trim() === '' ? 0 : Number(travelRoundTripKm)
+    const parsedTravelRoundTripKm = typeof assignmentRouteRoundTripKm === 'number'
+      ? assignmentRouteRoundTripKm
+      : travelRoundTripKm.trim() === '' ? 0 : Number(travelRoundTripKm)
     const submittedTechnicianOption = assignTechnicianOption
     const submittedTravelRoundTripKm = String(parsedTravelRoundTripKm)
 
@@ -2514,6 +2557,7 @@ export function TechnicalServiceOperationCenter() {
           ...(isManualTechnician
             ? { technician_name: selectedTechnician }
             : { technical_service_technician_id: assignTechnicianOption }),
+          route_quote_id: assignmentRouteQuote?.id ?? null,
           travel_round_trip_km: parsedTravelRoundTripKm,
           mount_payment_missing: effectiveMountPaymentMissing,
           override_without_payment: effectiveMountPaymentMissing ? assignOverrideWithoutPayment : false,
@@ -2729,6 +2773,7 @@ export function TechnicalServiceOperationCenter() {
     setRouteQuoteError(null)
     setRouteQuoteManualSaveError(null)
     setExtraPaymentCreateError(null)
+    setTechnicianEarningMessageError(null)
     setShowNearbyTechnicians(false)
     setSelectedId(request.id)
     setIsDetailDialogOpen(true)
@@ -4041,6 +4086,8 @@ export function TechnicalServiceOperationCenter() {
                     routeQuoteError={routeQuoteError}
                     routeQuoteManualSaveLoading={routeQuoteManualSaveLoading}
                     routeQuoteManualSaveError={routeQuoteManualSaveError}
+                    technicianEarningMessageLoading={technicianEarningMessageLoading}
+                    technicianEarningMessageError={technicianEarningMessageError}
                     assignLoading={assignLoading}
                     canSubmitAssign={canSubmitAssign}
                     onTechnicianSelect={(technicianId) => {
@@ -4048,11 +4095,13 @@ export function TechnicalServiceOperationCenter() {
                       setRouteQuoteError(null)
                       setRouteQuoteManualSaveError(null)
                       setExtraPaymentCreateError(null)
+                      setTechnicianEarningMessageError(null)
                       setTravelRoundTripKm('')
                     }}
                     onRouteQuoteCalculate={handleRouteQuoteCalculate}
                     onRouteQuoteManualSave={handleRouteQuoteManualSave}
                     onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
+                    onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
                     extraPaymentCreateLoading={extraPaymentCreateLoading}
                     extraPaymentCreateError={extraPaymentCreateError}
                     onAssignSelectedTechnician={handleAssignSubmit}

@@ -11,6 +11,7 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -479,6 +480,12 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame('Montaj Dahil', $serial->source_payload['mount_status_label']);
         $this->assertTrue($serial->operation_added);
         $this->assertSame('green', $serial->color_status);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->refresh(), true);
+
+        $this->assertSame(150.0, $payload['extra_customer_payment']);
+        $this->assertSame(3150.0, $payload['total_customer_collected']);
+        $this->assertNull($payload['sale_and_payment']['technician_earning_message']);
     }
 
     public function test_technician_api_returns_coordinate_and_address_fields_for_route_ui(): void

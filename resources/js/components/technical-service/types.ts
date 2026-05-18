@@ -78,6 +78,7 @@ export type ServiceRequestSaleAndPayment = {
   payment_provider?: string | null
   paid_at?: string | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
+  technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
 }
 
 export type ServiceRequestExtraMountPayment = {
@@ -92,6 +93,20 @@ export type ServiceRequestExtraMountPayment = {
   reason?: string | null
   note?: string | null
   selected_serial_ids?: Array<number | string>
+}
+
+export type ServiceRequestTechnicianEarningMessage = {
+  status?: string | null
+  sent_at?: string | null
+  technician_id?: number | string | null
+  technician_name?: string | null
+  technician_phone?: string | null
+  labor_amount?: number | null
+  route_fee_amount?: number | null
+  total_amount?: number | null
+  manual_override?: boolean
+  note?: string | null
+  message_text?: string | null
 }
 
 export type ServiceRequestDocumentInfo = {
@@ -253,6 +268,16 @@ export type ServiceRequestExtraMountPaymentPayload = {
   currency?: string
   reason?: 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra'
   note?: string | null
+}
+
+export type ServiceRequestTechnicianEarningMessagePayload = {
+  technician_id: number | string
+  labor_amount?: number | null
+  route_fee_amount?: number | null
+  total_amount: number
+  note?: string | null
+  message_text?: string | null
+  manual_override?: boolean
 }
 
 export type ServiceTechnician = {

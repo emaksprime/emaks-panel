@@ -20,6 +20,7 @@ class AssignTechnicalServiceRequest extends FormRequest
         return [
             'technical_service_technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
             'technician_name' => ['required_without:technical_service_technician_id', 'nullable', 'string', 'max:255'],
+            'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
             'travel_round_trip_km' => ['required', 'numeric', 'min:0'],
             'mount_payment_missing' => ['nullable', 'boolean'],
             'appointment_time_slot' => ['nullable', 'string', 'in:10:00 - 12:00,12:00 - 14:00,14:00 - 16:00,16:00 - 18:00'],
