@@ -8,6 +8,7 @@ use App\Services\TechnicalService\TechnicalServiceGeocodingService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -427,6 +428,55 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertStringContainsString('city_mismatch', (string) $technician->route_note);
     }
 
+    public function test_coordinate_validation_default_marks_review_without_clearing_coordinates(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Default Validate Usta',
+            'phone' => '+905555555572',
+            'city' => 'Ä°zmir',
+            'latitude' => '0.0000000',
+            'longitude' => '0.0000000',
+            'start_latitude' => '0.0000000',
+            'start_longitude' => '0.0000000',
+            'active' => true,
+        ]);
+
+        $exit = Artisan::call('technical-service:validate-technician-coordinates');
+
+        $this->assertSame(0, $exit, Artisan::output());
+        $technician->refresh();
+        $this->assertTrue($technician->needs_review);
+        $this->assertSame('0.0000000', $technician->latitude);
+        $this->assertSame('0.0000000', $technician->longitude);
+    }
+
+    public function test_coordinate_validation_command_keeps_reviewable_generic_city_coordinates(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Generic City Usta',
+            'phone' => '+905555555573',
+            'city' => 'Ankara',
+            'latitude' => '39.9333650',
+            'longitude' => '32.8597420',
+            'start_latitude' => '39.9333650',
+            'start_longitude' => '32.8597420',
+            'location_source' => 'google_geocode',
+            'route_note' => 'Geocoded from cari_address; formatted: Ankara, Turkey; at 2026-05-18 10:00:00',
+            'active' => true,
+        ]);
+
+        $exit = Artisan::call('technical-service:validate-technician-coordinates', [
+            '--clear-invalid' => true,
+        ]);
+
+        $this->assertSame(0, $exit, Artisan::output());
+        $technician->refresh();
+        $this->assertTrue($technician->needs_review);
+        $this->assertSame('39.9333650', $technician->latitude);
+        $this->assertSame('32.8597420', $technician->longitude);
+        $this->assertStringContainsString('generic_city_country_result', (string) $technician->route_note);
+    }
+
     public function test_coordinate_validation_command_clears_only_impossible_coordinates(): void
     {
         $zeroZero = TechnicalServiceTechnician::query()->create([
@@ -449,6 +499,18 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             'start_longitude' => '13.4049540',
             'active' => true,
         ]);
+        DB::table('technical_service_technicians')->insert([
+            'name' => 'Non Numeric',
+            'phone' => '+905555555574',
+            'city' => 'Ä°zmir',
+            'latitude' => 'not-a-number',
+            'longitude' => '27.1428260',
+            'start_latitude' => 'not-a-number',
+            'start_longitude' => '27.1428260',
+            'active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         $exit = Artisan::call('technical-service:validate-technician-coordinates', [
             '--clear-invalid' => true,
@@ -459,6 +521,9 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertNull($zeroZero->longitude);
         $this->assertNull($outsideTurkey->refresh()->latitude);
         $this->assertNull($outsideTurkey->longitude);
+        $nonNumeric = DB::table('technical_service_technicians')->where('name', 'Non Numeric')->first();
+        $this->assertNull($nonNumeric->latitude);
+        $this->assertNull($nonNumeric->longitude);
     }
 
     public function test_frontend_contains_stale_and_manual_coordinate_controls(): void

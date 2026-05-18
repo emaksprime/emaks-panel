@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 class ValidateTechnicalServiceTechnicianCoordinates extends Command
 {
     protected $signature = 'technical-service:validate-technician-coordinates
-        {--clear-invalid : Clear latitude/longitude fields for suspicious technician coordinates}';
+        {--clear-invalid : Clear only impossible coordinates such as 0/0, non-numeric, out-of-range, or outside-Turkey values}';
 
     protected $description = 'Validate technical service technician coordinates and mark suspicious records for review.';
 

@@ -263,10 +263,13 @@ class TechnicianCoordinateDataService
     private function suspiciousReasons(TechnicalServiceTechnician $technician, array $duplicateMap): array
     {
         $reasons = [];
-        $coordinates = $this->coordinatePair($technician);
+        $hasNonNumericCoordinates = $this->hasNonNumericCoordinates($technician);
+        $coordinates = $hasNonNumericCoordinates ? null : $this->coordinatePair($technician);
         $coordinateKey = $this->coordinateKey($technician);
 
-        if ($this->hasZeroZeroCoordinates($technician)) {
+        if ($hasNonNumericCoordinates) {
+            $reasons[] = 'non_numeric_coordinates';
+        } elseif ($this->hasZeroZeroCoordinates($technician)) {
             $reasons[] = 'zero_zero_coordinates';
         } elseif ($this->hasOutOfRangeCoordinates($technician)) {
             $reasons[] = 'invalid_coordinate_range';
@@ -376,6 +379,10 @@ class TechnicianCoordinateDataService
 
     private function coordinateKey(TechnicalServiceTechnician $technician): ?string
     {
+        if ($this->hasNonNumericCoordinates($technician)) {
+            return null;
+        }
+
         $coordinates = $this->coordinatePair($technician);
 
         return $coordinates !== null
@@ -462,9 +469,23 @@ class TechnicianCoordinateDataService
     {
         return collect($reasons)->contains(fn (string $reason): bool => in_array($reason, [
             'zero_zero_coordinates',
+            'non_numeric_coordinates',
             'invalid_coordinate_range',
             'coordinates_outside_turkey',
         ], true));
+    }
+
+    private function hasNonNumericCoordinates(TechnicalServiceTechnician $technician): bool
+    {
+        foreach (['latitude', 'longitude', 'start_latitude', 'start_longitude'] as $field) {
+            $value = $technician->getRawOriginal($field);
+
+            if ($value !== null && $value !== '' && ! is_numeric($value)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function hasZeroZeroCoordinates(TechnicalServiceTechnician $technician): bool
