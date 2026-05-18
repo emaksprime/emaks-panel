@@ -13,6 +13,10 @@ use Illuminate\Support\Str;
 
 class MountRequestSubmitService
 {
+    public const CUSTOMER_ADDRESS_GEOCODE_WARNING = 'Müşteri adresi koordinata çevrilemedi.';
+
+    public function __construct(private readonly TechnicalServiceGeocodingService $geocodingService) {}
+
     public const MULTI_PRODUCT_OPERATION_WARNING = 'Müşteri birden fazla ürün montaj talebi iletti. Müşteri ile iletişime geçiniz.';
     public const CHECK_PENDING_WARNING = 'Seri / montaj kontrolü bekliyor.';
 
@@ -37,6 +41,21 @@ class MountRequestSubmitService
                 ? self::CHECK_PENDING_WARNING
                 : null,
         ]));
+        $location = $this->resolveLocation($payload);
+        $requestContextPayload = Arr::except($context, ['secret', 'token']);
+
+        if (($location['warning'] ?? null) !== null) {
+            $description[] = self::CUSTOMER_ADDRESS_GEOCODE_WARNING;
+        }
+
+        if (($location['geocode_attempted'] ?? false) === true) {
+            $requestContextPayload['customer_address_geocode'] = [
+                'ok' => $location['latitude'] !== null && $location['longitude'] !== null,
+                'source' => $location['source'],
+                'accuracy' => $location['accuracy'],
+                'error' => $location['warning'],
+            ];
+        }
 
         $request = TechnicalServiceRequest::query()->create([
             'mrn' => $this->nextMrn(),
@@ -80,12 +99,15 @@ class MountRequestSubmitService
             'order_display_no' => $documents['order_display_no'],
             'invoice_customer_type' => $this->nullableText($context['invoice_customer_type'] ?? null)
                 ?? TechnicalServiceRequestSerial::CUSTOMER_UNKNOWN,
-            'qr_context_payload' => Arr::except($context, ['secret', 'token']),
-            'location_latitude' => $payload['location_latitude'] ?? null,
-            'location_longitude' => $payload['location_longitude'] ?? null,
+            'qr_context_payload' => $requestContextPayload,
+            'location_latitude' => $location['latitude'],
+            'location_longitude' => $location['longitude'],
             'location_place_id' => $this->nullableText($payload['location_place_id'] ?? null),
-            'location_formatted_address' => $this->nullableText($payload['location_formatted_address'] ?? null),
+            'location_formatted_address' => $location['formatted_address'],
             'location_map_url' => $this->nullableText($payload['location_map_url'] ?? null),
+            'location_source' => $location['source'],
+            'location_accuracy' => $location['accuracy'],
+            'location_note' => $location['note'],
             'building_no' => $this->nullableText($payload['building_no'] ?? null),
             'apartment_no' => $this->nullableText($payload['apartment_no'] ?? null),
             'door_no' => $this->nullableText($payload['door_no'] ?? null),
@@ -110,6 +132,105 @@ class MountRequestSubmitService
         ])->save();
 
         return $request->fresh(['requestSerials', 'uploads']);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{latitude:?float,longitude:?float,formatted_address:?string,source:?string,accuracy:?string,note:?string,warning:?string,geocode_attempted:bool}
+     */
+    private function resolveLocation(array $payload): array
+    {
+        $formattedAddress = $this->nullableText($payload['location_formatted_address'] ?? null);
+        $coordinates = $this->geocodingService->validCoordinatePair(
+            $payload['location_latitude'] ?? null,
+            $payload['location_longitude'] ?? null,
+        );
+
+        if ($coordinates !== null) {
+            return [
+                'latitude' => $coordinates['latitude'],
+                'longitude' => $coordinates['longitude'],
+                'formatted_address' => $formattedAddress,
+                'source' => $this->nullableText($payload['location_source'] ?? null),
+                'accuracy' => $this->nullableText($payload['location_accuracy'] ?? null),
+                'note' => null,
+                'warning' => null,
+                'geocode_attempted' => false,
+            ];
+        }
+
+        $query = $this->customerAddressQuery($payload);
+
+        if ($query === null) {
+            return [
+                'latitude' => null,
+                'longitude' => null,
+                'formatted_address' => $formattedAddress,
+                'source' => null,
+                'accuracy' => null,
+                'note' => null,
+                'warning' => null,
+                'geocode_attempted' => false,
+            ];
+        }
+
+        $result = $this->geocodingService->geocodeText($query, 'customer_manual_address');
+
+        if (($result['ok'] ?? false) === true) {
+            $resultFormattedAddress = $this->nullableText($result['formatted_address'] ?? null);
+
+            return [
+                'latitude' => (float) $result['latitude'],
+                'longitude' => (float) $result['longitude'],
+                'formatted_address' => $formattedAddress ?? $resultFormattedAddress,
+                'source' => 'manual_geocoded',
+                'accuracy' => $this->nullableText($result['quality'] ?? null),
+                'note' => $this->locationNote($result),
+                'warning' => null,
+                'geocode_attempted' => true,
+            ];
+        }
+
+        return [
+            'latitude' => null,
+            'longitude' => null,
+            'formatted_address' => $formattedAddress,
+            'source' => 'geocode_failed',
+            'accuracy' => null,
+            'note' => $this->nullableText($result['error_message'] ?? null),
+            'warning' => self::CUSTOMER_ADDRESS_GEOCODE_WARNING,
+            'geocode_attempted' => true,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function customerAddressQuery(array $payload): ?string
+    {
+        $address = $this->geocodingService->joinParts([
+            $payload['location_formatted_address'] ?? null,
+            $payload['service_address'] ?? null,
+            $payload['customer_district'] ?? null,
+            $payload['customer_city'] ?? null,
+        ]);
+
+        return $address !== null ? $this->geocodingService->joinParts([$address, 'Türkiye']) : null;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private function locationNote(array $result): string
+    {
+        $formatted = $this->nullableText($result['formatted_address'] ?? null);
+        $summary = 'Manual customer address geocoded';
+
+        if ($formatted !== null) {
+            $summary .= "; formatted: {$formatted}";
+        }
+
+        return $summary.'; at '.now()->toDateTimeString();
     }
 
     /**

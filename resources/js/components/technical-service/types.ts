@@ -152,6 +152,9 @@ export type ServiceRequestLocation = {
   place_id?: string | null
   formatted_address?: string | null
   map_url?: string | null
+  source?: string | null
+  accuracy?: string | null
+  note?: string | null
   building_no?: string | null
   apartment_no?: string | null
   door_no?: string | null

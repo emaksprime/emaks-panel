@@ -13,6 +13,7 @@ use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
@@ -369,6 +370,76 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->assertSame('A', $request->apartment_no);
         $this->assertSame('5', $request->door_no);
         $this->assertSame('2', $request->floor_no);
+    }
+
+    public function test_manual_address_without_coordinates_is_geocoded_on_submit(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Kadıköy, İstanbul, Türkiye',
+                    'geometry' => ['location' => ['lat' => 40.9876543, 'lng' => 29.1234567]],
+                ]],
+            ], 200),
+        ]);
+
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+        $this->get('/mount-request/'.$token)->assertOk();
+
+        $this->post('/mount-request/'.$token.'/submit', $this->validPayload([
+            'location_latitude' => null,
+            'location_longitude' => null,
+            'location_formatted_address' => null,
+        ]))->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('viewState', 'submitted')
+                ->has('submitted.mrn'));
+
+        $request = TechnicalServiceRequest::query()->firstOrFail();
+        $this->assertSame('40.9876543', $request->location_latitude);
+        $this->assertSame('29.1234567', $request->location_longitude);
+        $this->assertSame('manual_geocoded', $request->location_source);
+        $this->assertSame('address_fallback', $request->location_accuracy);
+        $this->assertSame('Kadıköy, İstanbul, Türkiye', $request->location_formatted_address);
+        $this->assertStringContainsString('Manual customer address geocoded', (string) $request->location_note);
+        $this->assertTrue($request->qr_context_payload['customer_address_geocode']['ok'] ?? false);
+        Http::assertSent(fn ($request): bool => str_starts_with($request->url(), 'https://maps.googleapis.com/maps/api/geocode/json'));
+    }
+
+    public function test_manual_address_geocode_failure_does_not_block_submit_and_records_operation_warning(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'ZERO_RESULTS',
+                'results' => [],
+            ], 200),
+        ]);
+
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+        $this->get('/mount-request/'.$token)->assertOk();
+
+        $this->post('/mount-request/'.$token.'/submit', $this->validPayload([
+            'location_latitude' => null,
+            'location_longitude' => null,
+            'location_formatted_address' => null,
+        ]))->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('viewState', 'submitted')
+                ->has('submitted.mrn'));
+
+        $request = TechnicalServiceRequest::query()->firstOrFail();
+        $this->assertNull($request->location_latitude);
+        $this->assertNull($request->location_longitude);
+        $this->assertSame('geocode_failed', $request->location_source);
+        $this->assertStringContainsString(MountRequestSubmitService::CUSTOMER_ADDRESS_GEOCODE_WARNING, (string) $request->description);
+        $this->assertFalse($request->qr_context_payload['customer_address_geocode']['ok'] ?? true);
+        $this->assertSame(MountRequestSubmitService::CUSTOMER_ADDRESS_GEOCODE_WARNING, $request->qr_context_payload['customer_address_geocode']['error'] ?? null);
+        Http::assertSent(fn ($request): bool => str_starts_with($request->url(), 'https://maps.googleapis.com/maps/api/geocode/json'));
     }
 
     public function test_submit_without_address_or_location_is_rejected(): void

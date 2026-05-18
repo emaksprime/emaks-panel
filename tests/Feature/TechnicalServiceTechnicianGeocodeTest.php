@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\TechnicalServiceTechnician;
+use App\Services\TechnicalService\TechnicalServiceGeocodingService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -13,40 +14,29 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_query_builder_uses_expected_priority_and_skips_empty_addresses(): void
+    public function test_common_geocode_service_returns_valid_lat_lng(): void
     {
-        $service = app(TechnicianGeocodingService::class);
-
-        $plusCodeTechnician = new TechnicalServiceTechnician([
-            'name' => 'Plus Code Usta',
-            'google_plus_code' => '394F+84 Bodrum, Mugla',
-            'location_code' => 'Location code should not win',
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Konak, İzmir, Türkiye',
+                    'geometry' => ['location' => ['lat' => 38.423734, 'lng' => 27.142826]],
+                ]],
+            ], 200),
         ]);
-        $this->assertSame('google_plus_code', $service->bestQueryFor($plusCodeTechnician)['source_type'] ?? null);
-        $this->assertSame('exact_plus_code', $service->bestQueryFor($plusCodeTechnician)['quality'] ?? null);
 
-        $formattedAddressTechnician = new TechnicalServiceTechnician([
-            'name' => 'Formatli Usta',
-            'google_formatted_address' => 'Konak, Izmir, Turkiye',
-        ]);
-        $this->assertSame('google_formatted_address', $service->bestQueryFor($formattedAddressTechnician)['source_type'] ?? null);
-        $this->assertSame('formatted_address', $service->bestQueryFor($formattedAddressTechnician)['quality'] ?? null);
+        $result = app(TechnicalServiceGeocodingService::class)->geocodeText('Konak, İzmir, Türkiye', 'address');
 
-        $fallbackAddressTechnician = new TechnicalServiceTechnician([
-            'name' => 'Adresli Usta',
-            'address' => 'Test Mahallesi Test Sokak No 1',
-            'district' => 'Kadikoy',
-            'city' => 'Istanbul',
-        ]);
-        $fallback = $service->bestQueryFor($fallbackAddressTechnician);
-        $this->assertSame('address', $fallback['source_type'] ?? null);
-        $this->assertSame('address_fallback', $fallback['quality'] ?? null);
-        $this->assertStringContainsString('Türkiye', $fallback['query'] ?? '');
-
-        $this->assertNull($service->bestQueryFor(new TechnicalServiceTechnician(['name' => 'Bos Usta'])));
+        $this->assertTrue($result['ok']);
+        $this->assertSame(38.423734, $result['latitude']);
+        $this->assertSame(27.142826, $result['longitude']);
+        $this->assertSame('Konak, İzmir, Türkiye', $result['formatted_address']);
+        $this->assertSame('address_fallback', $result['quality']);
     }
 
-    public function test_geocode_validates_lat_lng_and_rejects_zero_zero(): void
+    public function test_common_geocode_service_rejects_zero_zero(): void
     {
         config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
         Http::fake([
@@ -59,15 +49,60 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             ], 200),
         ]);
 
-        $service = app(TechnicianGeocodingService::class);
-        $result = $service->geocode(new TechnicalServiceTechnician([
-            'name' => 'Zero Usta',
-            'address' => 'Test Adres',
-            'city' => 'Istanbul',
-        ]));
+        $result = app(TechnicalServiceGeocodingService::class)->geocodeText('Test adres', 'address');
 
         $this->assertFalse($result['ok']);
         $this->assertSame('failed', $result['quality']);
+    }
+
+    public function test_common_geocode_service_returns_safe_error_when_api_key_is_missing(): void
+    {
+        config([
+            'services.google.geocoding_api_key' => null,
+            'services.google.places_api_key' => null,
+            'services.google.routes_api_key' => null,
+        ]);
+        Http::fake();
+
+        $result = app(TechnicalServiceGeocodingService::class)->geocodeText('Konak, İzmir, Türkiye', 'address');
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame('missing_api_key', $result['status']);
+        $this->assertSame('Google geocoding key tanımlı değil.', $result['error']);
+        Http::assertNothingSent();
+    }
+
+    public function test_query_builder_uses_expected_priority_and_skips_empty_addresses(): void
+    {
+        $service = app(TechnicianGeocodingService::class);
+
+        $plusCodeTechnician = new TechnicalServiceTechnician([
+            'name' => 'Plus Code Usta',
+            'google_plus_code' => '394F+84 Bodrum, Muğla',
+            'location_code' => 'Location code should not win',
+        ]);
+        $this->assertSame('google_plus_code', $service->bestQueryFor($plusCodeTechnician)['source_type'] ?? null);
+        $this->assertSame('exact_plus_code', $service->bestQueryFor($plusCodeTechnician)['quality'] ?? null);
+
+        $formattedAddressTechnician = new TechnicalServiceTechnician([
+            'name' => 'Formatlı Usta',
+            'google_formatted_address' => 'Konak, İzmir, Türkiye',
+        ]);
+        $this->assertSame('google_formatted_address', $service->bestQueryFor($formattedAddressTechnician)['source_type'] ?? null);
+        $this->assertSame('formatted_address', $service->bestQueryFor($formattedAddressTechnician)['quality'] ?? null);
+
+        $fallbackAddressTechnician = new TechnicalServiceTechnician([
+            'name' => 'Adresli Usta',
+            'address' => 'Test Mahallesi Test Sokak No 1',
+            'district' => 'Kadıköy',
+            'city' => 'İstanbul',
+        ]);
+        $fallback = $service->bestQueryFor($fallbackAddressTechnician);
+        $this->assertSame('address', $fallback['source_type'] ?? null);
+        $this->assertSame('address_fallback', $fallback['quality'] ?? null);
+        $this->assertStringContainsString('Türkiye', $fallback['query'] ?? '');
+
+        $this->assertNull($service->bestQueryFor(new TechnicalServiceTechnician(['name' => 'Boş Usta'])));
     }
 
     public function test_command_dry_run_does_not_write_and_update_persists_coordinates(): void
@@ -86,8 +121,8 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $technician = TechnicalServiceTechnician::query()->create([
             'name' => 'Geocode Usta',
             'phone' => '+905555555555',
-            'city' => 'Izmir',
-            'google_plus_code' => '8G7C+X5 Izmir',
+            'city' => 'İzmir',
+            'google_plus_code' => '8G7C+X5 İzmir',
             'active' => true,
         ]);
 
