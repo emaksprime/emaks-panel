@@ -9,11 +9,14 @@ use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\DataSource;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\B2B\B2BCariControlService;
 use App\Services\B2B\B2BPartnerAccessService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -21,13 +24,14 @@ class B2BPartnerController extends Controller
 {
     public function __construct(
         private readonly B2BPartnerAccessService $access,
+        private readonly B2BCariControlService $cariControlService,
     ) {}
 
     public function index(Request $request): JsonResponse
     {
         $filters = $request->validate([
-            'partner_type' => ['nullable', 'string', Rule::in([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH])],
-            'capability' => ['nullable', 'string', Rule::in([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH])],
+            'partner_type' => ['nullable', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
+            'capability' => ['nullable', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
             'active' => ['nullable', 'boolean'],
             'city' => ['nullable', 'string', 'max:128'],
             'search' => ['nullable', 'string', 'max:255'],
@@ -171,7 +175,7 @@ class B2BPartnerController extends Controller
     {
         $data = $request->validate([
             'capabilities' => ['required', 'array', 'min:1'],
-            'capabilities.*' => ['required', 'string', Rule::in([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH])],
+            'capabilities.*' => ['required', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
         ]);
         $capabilities = $this->normalizeCapabilities($data);
         $user = $request->user();
@@ -214,9 +218,22 @@ class B2BPartnerController extends Controller
             && (
                 $this->access->canManageCapabilities($user, [B2BPartner::TYPE_DEALER])
                 || $this->access->canManageCapabilities($user, [B2BPartner::TYPE_LOCKSMITH])
+                || $this->access->canManageCapabilities($user, [B2BPartner::TYPE_MANUFACTURER])
+                || $this->access->canManageCapabilities($user, [B2BPartner::TYPE_SELLER])
             ),
             403,
         );
+
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:255'],
+            'capability' => ['nullable', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
+            'city' => ['nullable', 'string', 'max:128'],
+            'include_review_required' => ['nullable', 'boolean'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:250'],
+            'offset' => ['nullable', 'integer', 'min:0'],
+        ]);
+
+        return response()->json($this->cariControlService->candidateResponse($filters));
 
         $search = trim((string) $request->query('search', ''));
         $existingSources = $this->existingCariSources();
@@ -252,6 +269,13 @@ class B2BPartnerController extends Controller
 
     public function importCariControl(Request $request): JsonResponse
     {
+        $request->merge([
+            'action' => 'import',
+            'candidates' => $request->input('candidates', $request->input('items', [])),
+        ]);
+
+        return $this->applyCariControl($request);
+
         $data = $request->validate([
             'items' => ['required', 'array', 'min:1'],
             'items.*.mikro_cari_kodu' => ['required', 'string', 'max:128'],
@@ -325,6 +349,230 @@ class B2BPartnerController extends Controller
         });
 
         return response()->json(['items' => $results]);
+    }
+
+    public function applyCariControl(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'action' => ['required', 'string', Rule::in(['create_partner', 'update_partner', 'add_capability', 'mark_review', 'import'])],
+            'candidates' => ['required', 'array', 'min:1'],
+            'candidates.*' => ['required', 'array'],
+            'selected_capabilities' => ['nullable', 'array'],
+            'selected_capabilities.*' => ['required_with:selected_capabilities', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
+            'existing_partner_id' => ['nullable', 'integer', Rule::exists((new B2BPartner)->getTable(), 'id')],
+        ]);
+        $user = $request->user();
+        abort_unless($user, 403);
+
+        $results = DB::transaction(function () use ($data, $request, $user): array {
+            return collect($data['candidates'])
+                ->map(function (array $item) use ($data, $request, $user): array {
+                    $candidate = $this->cariControlService->normalizeCandidateInput($item);
+                    $capabilities = $this->candidateSelectedCapabilities($item, $data);
+                    abort_unless($this->access->canManageCapabilities($user, $capabilities), 403);
+
+                    return $this->applyCariCandidate($data['action'], $candidate, $capabilities, $request, $user->id, $data['existing_partner_id'] ?? null);
+                })
+                ->values()
+                ->all();
+        });
+
+        return response()->json(['items' => $results]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, string>  $capabilities
+     * @return array<string, mixed>
+     */
+    private function applyCariCandidate(string $action, array $candidate, array $capabilities, Request $request, int $userId, mixed $explicitPartnerId): array
+    {
+        $mikroCode = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
+
+        if ($mikroCode === null) {
+            throw ValidationException::withMessages([
+                'candidates' => 'Cari adayında mikro_cari_kodu zorunludur.',
+            ]);
+        }
+
+        $partner = $this->candidatePartner($candidate, $explicitPartnerId);
+
+        if ($action === 'create_partner') {
+            $activePartner = B2BPartner::query()
+                ->where('active', true)
+                ->where('mikro_cari_kodu', $mikroCode)
+                ->first();
+
+            if ($activePartner) {
+                throw new HttpResponseException(response()->json([
+                    'status' => 'duplicate_mikro_cari',
+                    'message' => 'Bu Mikro cari zaten aktif bir B2B partner kaydına bağlı. Yeni kayıt açmak yerine mevcut partnere rol ekleyin.',
+                    'existing_partner_id' => $activePartner->id,
+                ], 409));
+            }
+
+            return $this->createPartnerFromCari($candidate, $capabilities, $request, $userId);
+        }
+
+        if ($action === 'import' && ! $partner) {
+            return $this->createPartnerFromCari($candidate, $capabilities, $request, $userId);
+        }
+
+        if (! $partner) {
+            throw ValidationException::withMessages([
+                'existing_partner_id' => 'Bu işlem için mevcut partner seçilmelidir.',
+            ]);
+        }
+
+        if ($action === 'mark_review') {
+            $oldValues = $this->auditPayload($partner);
+            $metadata = is_array($partner->metadata) ? $partner->metadata : [];
+            $metadata['cari_control_review'] = [
+                'marked_at' => now()->toIso8601String(),
+                'candidate' => $candidate,
+            ];
+            $partner->forceFill(['metadata' => $metadata])->save();
+            $partner->refresh();
+            $this->writeAuditLog($partner, $request, 'b2b.partner.cari_review_marked', $oldValues, $this->auditPayload($partner), $userId);
+
+            return ['partner_id' => $partner->id, 'status' => 'review_marked'];
+        }
+
+        if ($action === 'add_capability') {
+            $oldCapabilities = $partner->capabilityCodes();
+            $mergedCapabilities = collect($oldCapabilities)->merge($capabilities)->unique()->values()->all();
+            $oldValues = $this->auditPayload($partner);
+            $partner->forceFill(['partner_type' => $this->primaryPartnerType($mergedCapabilities)])->save();
+            $this->syncCapabilities($partner, $mergedCapabilities, $request, $userId, $oldCapabilities);
+            $partner->refresh();
+            $this->writeAuditLog($partner, $request, 'b2b.partner.capability_added', $oldValues, $this->auditPayload($partner), $userId);
+
+            return ['partner_id' => $partner->id, 'status' => 'capability_added'];
+        }
+
+        $oldValues = $this->auditPayload($partner);
+        $partner->fill($this->snapshotPayload($candidate, $partner));
+
+        if ($action === 'import') {
+            $oldCapabilities = $partner->capabilityCodes();
+            $mergedCapabilities = collect($oldCapabilities)->merge($capabilities)->unique()->values()->all();
+            $partner->partner_type = $this->primaryPartnerType($mergedCapabilities);
+            $this->syncCapabilities($partner, $mergedCapabilities, $request, $userId, $oldCapabilities);
+        }
+
+        $partner->save();
+        $partner->refresh();
+        $this->writeAuditLog($partner, $request, 'b2b.partner.updated_from_cari', $oldValues, $this->auditPayload($partner), $userId);
+
+        return ['partner_id' => $partner->id, 'status' => 'updated'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, string>  $capabilities
+     * @return array<string, mixed>
+     */
+    private function createPartnerFromCari(array $candidate, array $capabilities, Request $request, int $userId): array
+    {
+        $mikroCode = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
+        $snapshotPayload = $this->snapshotPayload($candidate);
+        $snapshotPayload['display_name'] = $snapshotPayload['display_name'] ?? $mikroCode;
+        $partner = B2BPartner::query()->create([
+            'partner_type' => $this->primaryPartnerType($capabilities),
+            'partner_code' => $this->uniquePartnerCode($mikroCode),
+            ...$snapshotPayload,
+            'mikro_cari_kodu' => $mikroCode,
+            'active' => true,
+            'metadata' => [
+                'cari_control' => [
+                    'source' => $candidate['source_used'] ?? 'gateway_candidate',
+                    'status' => $candidate['status'] ?? null,
+                    'confidence' => $candidate['confidence'] ?? null,
+                ],
+            ],
+        ]);
+        $this->syncCapabilities($partner, $capabilities, $request, $userId, []);
+        $this->writeAuditLog($partner, $request, 'b2b.partner.imported_from_cari', null, $this->auditPayload($partner), $userId);
+
+        return ['partner_id' => $partner->id, 'status' => 'created'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function snapshotPayload(array $candidate, ?B2BPartner $partner = null): array
+    {
+        return [
+            'display_name' => $this->nullableString($candidate['display_name'] ?? null)
+                ?? $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
+                ?? $partner?->display_name,
+            'mikro_cari_unvan' => $this->nullableString($candidate['mikro_cari_unvan'] ?? null) ?? $partner?->mikro_cari_unvan,
+            'cari_grup_kodu' => $this->nullableString($candidate['cari_grup_kodu'] ?? null) ?? $partner?->cari_grup_kodu,
+            'responsibility_code' => $this->nullableString($candidate['responsibility_code'] ?? null) ?? $partner?->responsibility_code,
+            'phone' => $this->nullableString($candidate['phone'] ?? null) ?? $partner?->phone,
+            'email' => $this->nullableString($candidate['email'] ?? null) ?? $partner?->email,
+            'city' => $this->nullableString($candidate['city'] ?? null) ?? $partner?->city,
+            'district' => $this->nullableString($candidate['district'] ?? null) ?? $partner?->district,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidatePartner(array $candidate, mixed $explicitPartnerId): ?B2BPartner
+    {
+        if ($explicitPartnerId) {
+            return B2BPartner::query()->find($explicitPartnerId);
+        }
+
+        if (! empty($candidate['existing_partner_id'])) {
+            return B2BPartner::query()->find($candidate['existing_partner_id']);
+        }
+
+        return B2BPartner::query()
+            ->where('mikro_cari_kodu', $this->nullableString($candidate['mikro_cari_kodu'] ?? null))
+            ->first();
+    }
+
+    /**
+     * @param  array<string, mixed>  $item
+     * @param  array<string, mixed>  $data
+     * @return array<int, string>
+     */
+    private function candidateSelectedCapabilities(array $item, array $data): array
+    {
+        $capabilities = $this->cariControlService->normalizeCapabilities($item['selected_capabilities'] ?? []);
+
+        if ($capabilities === []) {
+            $capabilities = $this->cariControlService->normalizeCapabilities($data['selected_capabilities'] ?? []);
+        }
+
+        if ($capabilities === []) {
+            $capabilities = $this->cariControlService->normalizeCapabilities($item['capabilities'] ?? $item['suggested_capabilities'] ?? []);
+        }
+
+        if ($capabilities === []) {
+            throw ValidationException::withMessages([
+                'selected_capabilities' => 'En az bir partner rolü seçilmelidir.',
+            ]);
+        }
+
+        return $capabilities;
+    }
+
+    private function uniquePartnerCode(?string $mikroCode): string
+    {
+        $base = Str::limit('B2B-'.preg_replace('/[^A-Z0-9]+/', '-', Str::upper((string) $mikroCode)), 120, '');
+        $code = $base;
+        $counter = 1;
+
+        while (B2BPartner::query()->where('partner_code', $code)->exists()) {
+            $code = Str::limit($base.'-'.$counter, 128, '');
+            $counter++;
+        }
+
+        return $code;
     }
 
     public function locksmithTechnicians(Request $request): JsonResponse
@@ -411,9 +659,9 @@ class B2BPartnerController extends Controller
     private function validatedPartnerData(Request $request, ?B2BPartner $partner = null): array
     {
         $data = $request->validate([
-            'partner_type' => ['nullable', 'string', Rule::in([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH])],
+            'partner_type' => ['nullable', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
             'capabilities' => ['nullable', 'array', 'min:1'],
-            'capabilities.*' => ['required_with:capabilities', 'string', Rule::in([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH])],
+            'capabilities.*' => ['required_with:capabilities', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
             'partner_code' => [
                 'required',
                 'string',
@@ -506,7 +754,7 @@ class B2BPartnerController extends Controller
     private function normalizeCapabilities(array $data): array
     {
         $capabilities = collect($data['capabilities'] ?? [])
-            ->filter(fn (mixed $capability): bool => in_array($capability, [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], true))
+            ->filter(fn (mixed $capability): bool => in_array($capability, B2BPartner::SUPPORTED_CAPABILITIES, true))
             ->values();
 
         if ($capabilities->isEmpty() && ! empty($data['partner_type'])) {
@@ -529,9 +777,13 @@ class B2BPartnerController extends Controller
      */
     private function primaryPartnerType(array $capabilities): string
     {
-        return in_array(B2BPartner::TYPE_DEALER, $capabilities, true)
-            ? B2BPartner::TYPE_DEALER
-            : B2BPartner::TYPE_LOCKSMITH;
+        foreach ([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH, B2BPartner::TYPE_MANUFACTURER, B2BPartner::TYPE_SELLER] as $type) {
+            if (in_array($type, $capabilities, true)) {
+                return $type;
+            }
+        }
+
+        return B2BPartner::TYPE_DEALER;
     }
 
     /**

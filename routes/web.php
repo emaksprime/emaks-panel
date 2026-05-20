@@ -53,18 +53,21 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         });
 
         Route::prefix('b2b')
-            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.partner_users.manage')
+            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.manufacturers.view,b2b.sellers.view,b2b.partner_users.manage')
             ->group(function () {
                 Route::get('partners', [B2BPartnerController::class, 'index'])
                     ->name('api.b2b.partners.index');
                 Route::post('partners', [B2BPartnerController::class, 'store'])
-                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partners.store');
                 Route::get('cari-control', [B2BPartnerController::class, 'cariControl'])
-                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.cari-control.index');
+                Route::post('cari-control/apply', [B2BPartnerController::class, 'applyCariControl'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.cari-control.apply');
                 Route::post('cari-control/import', [B2BPartnerController::class, 'importCariControl'])
-                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.cari-control.import');
                 Route::get('users/search', [B2BPartnerUserController::class, 'searchUsers'])
                     ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
@@ -82,13 +85,13 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::get('partners/{partner}', [B2BPartnerController::class, 'show'])
                     ->name('api.b2b.partners.show');
                 Route::patch('partners/{partner}/active', [B2BPartnerController::class, 'updateActive'])
-                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partners.active');
                 Route::patch('partners/{partner}/capabilities', [B2BPartnerController::class, 'updateCapabilities'])
-                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partners.capabilities');
                 Route::patch('partners/{partner}', [B2BPartnerController::class, 'update'])
-                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partners.update');
             });
 
@@ -221,7 +224,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'description' => 'Bayi ve çilingir partner kayıtları',
             'buttons' => [],
         ],
-    ]))->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view')->name('b2b.partners');
+    ]))->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.manufacturers.view,b2b.sellers.view')->name('b2b.partners');
 
     Route::get('panel/b2b/users', fn () => Inertia::render('panel/b2b/users', [
         'page' => [

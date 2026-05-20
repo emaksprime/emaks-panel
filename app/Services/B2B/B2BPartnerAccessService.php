@@ -85,6 +85,8 @@ class B2BPartnerAccessService
         return match ($partnerType) {
             B2BPartner::TYPE_DEALER => $this->panelAccess->userCanAccess($user, 'b2b.dealers.manage'),
             B2BPartner::TYPE_LOCKSMITH => $this->panelAccess->userCanAccess($user, 'b2b.locksmiths.manage'),
+            B2BPartner::TYPE_MANUFACTURER => $this->panelAccess->userCanAccess($user, 'b2b.manufacturers.manage'),
+            B2BPartner::TYPE_SELLER => $this->panelAccess->userCanAccess($user, 'b2b.sellers.manage'),
             default => false,
         };
     }

@@ -17,6 +17,17 @@ class B2BPartner extends Model
 
     public const TYPE_LOCKSMITH = 'locksmith';
 
+    public const TYPE_MANUFACTURER = 'manufacturer';
+
+    public const TYPE_SELLER = 'seller';
+
+    public const SUPPORTED_CAPABILITIES = [
+        self::TYPE_DEALER,
+        self::TYPE_LOCKSMITH,
+        self::TYPE_MANUFACTURER,
+        self::TYPE_SELLER,
+    ];
+
     protected $table = 'b2b_partners';
 
     protected $fillable = [

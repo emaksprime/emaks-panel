@@ -32,6 +32,10 @@ class B2BPartnerPermissionSeeder extends Seeder
     private function resources(): array
     {
         return [
+            ['code' => 'b2b.manufacturers.view', 'name' => 'B2B Üretici Görünümü', 'type' => 'scope', 'description' => 'Üretici partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
+            ['code' => 'b2b.manufacturers.manage', 'name' => 'B2B Üretici Yönetimi', 'type' => 'action', 'description' => 'Üretici partner kayıtlarını yönetme yetkisi.', 'active' => true],
+            ['code' => 'b2b.sellers.view', 'name' => 'B2B Satıcı Görünümü', 'type' => 'scope', 'description' => 'Satıcı partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
+            ['code' => 'b2b.sellers.manage', 'name' => 'B2B Satıcı Yönetimi', 'type' => 'action', 'description' => 'Satıcı partner kayıtlarını yönetme yetkisi.', 'active' => true],
             ['code' => 'b2b.view', 'name' => 'B2B Partner Görünümü', 'type' => 'page', 'description' => 'B2B partner modülü giriş yetkisi.', 'active' => true],
             ['code' => 'b2b.manage', 'name' => 'B2B Partner Yönetimi', 'type' => 'action', 'description' => 'B2B partner yönetim aksiyonları.', 'active' => true],
             ['code' => 'b2b.dealers.view', 'name' => 'B2B Bayi Görünümü', 'type' => 'scope', 'description' => 'Bayi partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
@@ -184,6 +188,16 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'name' => 'B2B Çilingir',
                 'description' => 'Çilingir/servis partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
             ],
+            [
+                'code' => 'b2b_manufacturer',
+                'name' => 'B2B Üretici',
+                'description' => 'Üretici kanal partner kullanıcısı. Partner bazlı erişim ayrıca atanır.',
+            ],
+            [
+                'code' => 'b2b_seller',
+                'name' => 'B2B Satıcı',
+                'description' => 'Satıcı kanal partner kullanıcısı. Partner bazlı erişim ayrıca atanır.',
+            ],
         ];
     }
 
@@ -201,6 +215,10 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'b2b.dealers.manage',
                 'b2b.locksmiths.view',
                 'b2b.locksmiths.manage',
+                'b2b.manufacturers.view',
+                'b2b.manufacturers.manage',
+                'b2b.sellers.view',
+                'b2b.sellers.manage',
                 'b2b.orders.view',
                 'b2b.orders.manage',
                 'b2b.stock.view',
@@ -221,6 +239,21 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'b2b.view',
                 'b2b.locksmiths.view',
                 'b2b.technical_service.view',
+                'b2b.finance.view',
+            ],
+            'b2b_manufacturer' => [
+                'dashboard',
+                'b2b.view',
+                'b2b.manufacturers.view',
+                'b2b.stock.view',
+                'b2b.finance.view',
+            ],
+            'b2b_seller' => [
+                'dashboard',
+                'b2b.view',
+                'b2b.sellers.view',
+                'b2b.orders.view',
+                'b2b.stock.view',
                 'b2b.finance.view',
             ],
         ];

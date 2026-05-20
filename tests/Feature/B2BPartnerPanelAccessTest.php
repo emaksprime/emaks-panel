@@ -7,6 +7,7 @@ use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\B2B\B2BPartnerUserProfile;
+use App\Models\DataSource;
 use App\Models\MenuGroup;
 use App\Models\Page;
 use App\Models\PageMenu;
@@ -18,6 +19,7 @@ use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class B2BPartnerPanelAccessTest extends TestCase
@@ -231,6 +233,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             'b2b.dealers.manage',
             'b2b.locksmiths.view',
             'b2b.locksmiths.manage',
+            'b2b.manufacturers.view',
+            'b2b.manufacturers.manage',
+            'b2b.sellers.view',
+            'b2b.sellers.manage',
             'b2b.orders.view',
             'b2b.orders.manage',
             'b2b.stock.view',
@@ -262,6 +268,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             'code' => 'b2b_locksmith',
             'name' => 'B2B Çilingir',
         ]);
+        $this->assertDatabaseHas('panel.roles', [
+            'code' => 'b2b_manufacturer',
+        ]);
+        $this->assertDatabaseHas('panel.roles', [
+            'code' => 'b2b_seller',
+        ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_manager',
             'resource_code' => 'b2b.partner_users.manage',
@@ -275,6 +287,16 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_locksmith',
             'resource_code' => 'b2b.technical_service.view',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('panel.role_resource_permissions', [
+            'role_code' => 'b2b_manufacturer',
+            'resource_code' => 'b2b.manufacturers.view',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('panel.role_resource_permissions', [
+            'role_code' => 'b2b_seller',
+            'resource_code' => 'b2b.sellers.view',
             'can_view' => true,
         ]);
     }
@@ -657,7 +679,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('partner.active_users_count', 1);
     }
 
-    public function test_cari_control_returns_query_contract_without_red_zone_source(): void
+    public function test_cari_control_returns_query_contract_when_gateway_source_is_unavailable(): void
     {
         $admin = $this->userWithRole('admin', true);
 
@@ -669,6 +691,58 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('query_contract.document_path', 'docs/b2b-mikro-cari-control-query-contract.md')
             ->assertJsonPath('query_contract.mode', 'select_only_discovery')
             ->assertJsonCount(0, 'items');
+    }
+
+    public function test_cari_control_uses_existing_customers_list_gateway_candidates(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+        $this->technician(['mikro_cari_kodu' => '320.CLG.001']);
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'musteri_kodu' => '120.BAYI.001',
+                        'firma_unvani' => 'Ankara Bayi A.S.',
+                        'grup' => 'BAYI',
+                        'temsilci_kodu' => 'SALES01',
+                        'city' => 'Ankara',
+                    ],
+                    [
+                        'musteri_kodu' => '320.CLG.001',
+                        'firma_unvani' => 'Merkez Cilingir',
+                        'grup' => 'Servis',
+                    ],
+                    [
+                        'musteri_kodu' => '120.ONLINE.001',
+                        'firma_unvani' => 'Online Perakende',
+                        'grup' => 'ONLINE PERAKENDE',
+                    ],
+                    [
+                        'musteri_kodu' => '320.FAB.001',
+                        'firma_unvani' => 'Kapi Uretici Fabrika',
+                        'grup' => 'URETICI',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?include_review_required=1')
+            ->assertOk()
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonPath('source_used', 'customers_list')
+            ->assertJsonPath('excluded_online_retail_count', 1)
+            ->assertJsonCount(3, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '120.BAYI.001')
+            ->assertJsonPath('candidates.0.suggested_capabilities.0', B2BPartner::TYPE_DEALER)
+            ->assertJsonPath('candidates.0.suggested_capabilities.1', B2BPartner::TYPE_SELLER)
+            ->assertJsonPath('candidates.1.suggested_capabilities.0', B2BPartner::TYPE_LOCKSMITH)
+            ->assertJsonPath('candidates.2.suggested_capabilities.0', B2BPartner::TYPE_MANUFACTURER);
+
+        Http::assertSentCount(1);
     }
 
     public function test_cari_control_query_contract_doc_contains_select_only_discovery_contract(): void
@@ -764,6 +838,94 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertDatabaseHas('b2b_partner_audit_logs', [
             'partner_id' => $partner->id,
             'action' => 'b2b.partner.capability_added',
+        ]);
+    }
+
+    public function test_cari_control_apply_create_partner_blocks_duplicate_active_mikro_cari(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'mikro_cari_kodu' => 'CR-DUP-001',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'create_partner',
+                'candidates' => [[
+                    'mikro_cari_kodu' => 'CR-DUP-001',
+                    'display_name' => 'Duplicate Cari',
+                    'selected_capabilities' => [B2BPartner::TYPE_SELLER],
+                ]],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('existing_partner_id', $partner->id);
+
+        $this->assertSame(1, B2BPartner::query()->where('mikro_cari_kodu', 'CR-DUP-001')->count());
+    }
+
+    public function test_cari_control_apply_updates_snapshot_adds_capability_and_marks_review(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'mikro_cari_kodu' => 'CR-APPLY-001',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'update_partner',
+                'existing_partner_id' => $partner->id,
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                'candidates' => [[
+                    'mikro_cari_kodu' => 'CR-APPLY-001',
+                    'display_name' => 'Updated Snapshot',
+                    'mikro_cari_unvan' => 'Updated Snapshot Unvan',
+                    'city' => 'Bursa',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'updated');
+
+        $partner->refresh();
+        $this->assertSame('Updated Snapshot', $partner->display_name);
+        $this->assertSame('Bursa', $partner->city);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'add_capability',
+                'existing_partner_id' => $partner->id,
+                'selected_capabilities' => [B2BPartner::TYPE_SELLER],
+                'candidates' => [['mikro_cari_kodu' => 'CR-APPLY-001']],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'capability_added');
+
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_SELLER], $partner->fresh()->capabilityCodes());
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'mark_review',
+                'existing_partner_id' => $partner->id,
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                'candidates' => [['mikro_cari_kodu' => 'CR-APPLY-001', 'status' => 'review_required']],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'review_marked');
+
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.updated_from_cari',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.capability_added',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.cari_review_marked',
         ]);
     }
 
@@ -1089,6 +1251,26 @@ class B2BPartnerPanelAccessTest extends TestCase
             [
                 'can_view' => true,
                 'can_execute' => false,
+            ],
+        );
+    }
+
+    private function dataSource(string $code): DataSource
+    {
+        return DataSource::query()->updateOrCreate(
+            ['code' => $code],
+            [
+                'name' => 'Test '.$code,
+                'db_type' => 'n8n_json',
+                'query_template' => 'SELECT 1',
+                'allowed_params' => ['search', 'scope_key', 'customer_scope_key', 'page', 'limit', 'bypass_cache'],
+                'connection_meta' => [
+                    'endpoint_url' => 'https://n8n.test/gateway',
+                    'response_rows_key' => 'rows',
+                    'timeout_seconds' => 10,
+                ],
+                'preview_payload' => [],
+                'active' => true,
             ],
         );
     }

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
 
-type PartnerType = 'dealer' | 'locksmith'
+type PartnerType = 'dealer' | 'locksmith' | 'manufacturer' | 'seller'
 type FormMode = 'create' | 'edit' | 'detail'
 
 type Partner = {
@@ -77,8 +77,12 @@ type CariControlCandidate = {
   district?: string | null
   suggested_capabilities?: PartnerType[]
   capabilities?: PartnerType[]
+  selected_capabilities?: PartnerType[]
   status?: string | null
   status_label?: string | null
+  confidence?: number | null
+  existing_partner_id?: number | null
+  difference_summary?: string[]
 }
 
 type CariControlSource = {
@@ -100,8 +104,12 @@ type CariControlState = {
   status: string
   message: string
   search?: string
+  candidates?: CariControlCandidate[]
   items?: CariControlCandidate[]
+  excluded_online_retail_count?: number
+  source_used?: string | null
   existing_sources?: CariControlSource[]
+  source_inventory?: CariControlSource[]
   query_contract?: {
     document_path: string
     mode: string
@@ -135,10 +143,24 @@ const emptyFilters: Filters = {
   mikro_cari_kodu: '',
 }
 
-const partnerTypeLabel = (type: PartnerType) => (type === 'dealer' ? 'Bayi' : 'Çilingir')
+const partnerTypeLabel = (type: PartnerType) => {
+  if (type === 'dealer') {
+    return 'Bayi'
+  }
+
+  if (type === 'locksmith') {
+    return 'Çilingir'
+  }
+
+  if (type === 'manufacturer') {
+    return 'Üretici'
+  }
+
+  return 'Satıcı'
+}
 
 const partnerCapabilities = (partner: Partner): PartnerType[] => {
-  const capabilities = partner.capabilities?.filter((capability): capability is PartnerType => capability === 'dealer' || capability === 'locksmith') ?? []
+  const capabilities = partner.capabilities?.filter((capability): capability is PartnerType => ['dealer', 'locksmith', 'manufacturer', 'seller'].includes(capability)) ?? []
 
   return capabilities.length > 0 ? capabilities : [partner.partner_type]
 }
@@ -146,7 +168,7 @@ const partnerCapabilities = (partner: Partner): PartnerType[] => {
 const capabilityChips = (capabilities: PartnerType[]) => capabilities.map((capability) => (
   <span
     key={capability}
-    className={`rounded-full px-2.5 py-1 text-xs font-semibold ${capability === 'dealer' ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}
+    className={`rounded-full px-2.5 py-1 text-xs font-semibold ${capability === 'dealer' ? 'bg-sky-50 text-sky-700' : capability === 'locksmith' ? 'bg-emerald-50 text-emerald-700' : capability === 'manufacturer' ? 'bg-violet-50 text-violet-700' : 'bg-amber-50 text-amber-700'}`}
   >
     {partnerTypeLabel(capability)}
   </span>
@@ -170,11 +192,25 @@ const selectedTechnicianLabel = (technicians: TechnicianOption[], id: string) =>
   return `${technician.name}${technician.phone ? ` · ${technician.phone}` : ''}`
 }
 
-const primaryPartnerType = (capabilities: PartnerType[]): PartnerType => (capabilities.includes('dealer') ? 'dealer' : 'locksmith')
+const primaryPartnerType = (capabilities: PartnerType[]): PartnerType => {
+  if (capabilities.includes('dealer')) {
+    return 'dealer'
+  }
+
+  if (capabilities.includes('locksmith')) {
+    return 'locksmith'
+  }
+
+  if (capabilities.includes('manufacturer')) {
+    return 'manufacturer'
+  }
+
+  return 'seller'
+}
 
 const candidateCapabilities = (candidate: CariControlCandidate): PartnerType[] => {
   const capabilities = (candidate.capabilities ?? candidate.suggested_capabilities ?? [])
-    .filter((capability): capability is PartnerType => capability === 'dealer' || capability === 'locksmith')
+    .filter((capability): capability is PartnerType => ['dealer', 'locksmith', 'manufacturer', 'seller'].includes(capability))
 
   return capabilities.length > 0 ? capabilities : ['dealer']
 }
@@ -192,12 +228,15 @@ export default function B2BPartnersPage() {
   const [technicianLoading, setTechnicianLoading] = useState(false)
   const [cariChecking, setCariChecking] = useState(false)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
+  const [cariControlOpen, setCariControlOpen] = useState(false)
   const [selectedCariCodes, setSelectedCariCodes] = useState<string[]>([])
+  const [candidateCapabilitySelections, setCandidateCapabilitySelections] = useState<Record<string, PartnerType[]>>({})
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
-  const hasDealerForm = form.capabilities.includes('dealer')
   const hasLocksmithForm = form.capabilities.includes('locksmith')
+  const hasMikroForm = form.capabilities.some((capability) => ['dealer', 'manufacturer', 'seller'].includes(capability))
+  const cariCandidates = useMemo(() => cariControl?.candidates ?? cariControl?.items ?? [], [cariControl])
   const activeFilterText = useMemo(() => {
     if (filters.partner_type === 'dealer') {
       return 'Bayiler'
@@ -337,6 +376,8 @@ export default function B2BPartnersPage() {
     setCariChecking(true)
     setCariControl(null)
     setSelectedCariCodes([])
+    setCandidateCapabilitySelections({})
+    setCariControlOpen(true)
     setError(null)
     setMessage(null)
 
@@ -348,17 +389,25 @@ export default function B2BPartnersPage() {
         params.set('search', search)
       }
 
+      params.set('include_review_required', '1')
+
       const response = await fetch(`/api/b2b/cari-control${params.toString() ? `?${params.toString()}` : ''}`, {
         credentials: 'same-origin',
         headers: { Accept: 'application/json' },
       })
       const payload = await response.json().catch(() => null)
       const fallbackMessage = response.ok ? 'Cari kontrol sonucu alındı.' : 'Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.'
-      setCariControl({
+      const nextControl = {
         ...payload,
         status: payload?.status ?? (response.ok ? 'ok' : 'datasource_required'),
         message: payload?.message ?? fallbackMessage,
-      })
+      }
+      const nextCandidates = nextControl.candidates ?? nextControl.items ?? []
+      const nextSelections = Object.fromEntries(
+        nextCandidates.map((candidate: CariControlCandidate) => [candidate.mikro_cari_kodu, candidateCapabilities(candidate)]),
+      )
+      setCandidateCapabilitySelections(nextSelections)
+      setCariControl(nextControl)
     } catch {
       setCariControl({
         status: 'datasource_required',
@@ -377,8 +426,22 @@ export default function B2BPartnersPage() {
     ))
   }
 
+  const toggleCandidateCapability = (mikroCariKodu: string, capability: PartnerType) => {
+    setCandidateCapabilitySelections((current) => {
+      const currentCapabilities = current[mikroCariKodu] ?? ['dealer']
+      const nextCapabilities = currentCapabilities.includes(capability)
+        ? currentCapabilities.filter((item) => item !== capability)
+        : [...currentCapabilities, capability]
+
+      return {
+        ...current,
+        [mikroCariKodu]: nextCapabilities.length > 0 ? nextCapabilities : currentCapabilities,
+      }
+    })
+  }
+
   const importSelectedCariCandidates = async () => {
-    const candidates = (cariControl?.items ?? []).filter((candidate) => selectedCariCodes.includes(candidate.mikro_cari_kodu))
+    const candidates = cariCandidates.filter((candidate) => selectedCariCodes.includes(candidate.mikro_cari_kodu))
 
     if (candidates.length === 0) {
       setError('Partner oluşturmak veya güncellemek için en az bir cari adayı seçin.')
@@ -391,12 +454,13 @@ export default function B2BPartnersPage() {
     setMessage(null)
 
     try {
-      const payload = await apiRequest('/api/b2b/cari-control/import', {
+      const payload = await apiRequest('/api/b2b/cari-control/apply', {
         method: 'POST',
         body: JSON.stringify({
-          items: candidates.map((candidate) => ({
+          action: 'import',
+          candidates: candidates.map((candidate) => ({
             ...candidate,
-            capabilities: candidateCapabilities(candidate),
+            selected_capabilities: candidateCapabilitySelections[candidate.mikro_cari_kodu] ?? candidateCapabilities(candidate),
           })),
         }),
       })
@@ -506,8 +570,9 @@ export default function B2BPartnersPage() {
           </div>
         )}
 
-        {cariControl && (
-          <section className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-950 shadow-sm">
+        {cariControl && cariControlOpen && (
+          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/40 px-4 py-8">
+          <section className="w-full max-w-6xl rounded-2xl border border-amber-200 bg-amber-50/95 p-4 text-sm text-amber-950 shadow-2xl">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <h2 className="text-base font-semibold">Cari Kontrol</h2>
@@ -515,7 +580,10 @@ export default function B2BPartnersPage() {
                   Mikro cari sorgusu uydurulmaz. Onaylı SELECT-only n8n keşif çıktısı gelmeden otomatik partner açılmaz.
                 </p>
               </div>
-              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-800">{cariControl.status}</span>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-800">{cariControl.status}</span>
+                <Button type="button" variant="outline" onClick={() => setCariControlOpen(false)}>Kapat</Button>
+              </div>
             </div>
 
             {cariControl.query_contract && (
@@ -563,13 +631,18 @@ export default function B2BPartnersPage() {
                 </Button>
               </div>
 
-              {(cariControl.items ?? []).length === 0 ? (
+              <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-600">
+                <span>Kaynak: {cariControl.source_used ?? '-'}</span>
+                <span>Online perakende hariç: {cariControl.excluded_online_retail_count ?? 0}</span>
+              </div>
+
+              {cariCandidates.length === 0 ? (
                 <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-slate-600">
                   Aday verisi yok. n8n üzerinden SELECT-only keşif sonucu onaylanıp bu sözleşmeye uygun aday listesi gelmeden kayıt açılmaz.
                 </div>
               ) : (
                 <div className="mt-3 grid gap-2">
-                  {(cariControl.items ?? []).map((candidate) => (
+                  {cariCandidates.map((candidate) => (
                     <label key={candidate.mikro_cari_kodu} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
                       <input
                         type="checkbox"
@@ -583,7 +656,22 @@ export default function B2BPartnersPage() {
                         <span className="mt-1 block text-xs text-slate-500">
                           {candidate.mikro_cari_kodu} · {candidate.city ?? '-'} / {candidate.district ?? '-'} · {candidate.status_label ?? candidate.status ?? 'Kontrol gerekli'}
                         </span>
-                        <span className="mt-2 flex flex-wrap gap-1">{capabilityChips(candidateCapabilities(candidate))}</span>
+                        {candidate.existing_partner_id && (
+                          <span className="mt-2 inline-flex rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">Mevcut partner bulundu</span>
+                        )}
+                        <span className="mt-2 grid gap-1 sm:grid-cols-4">
+                          {(['dealer', 'locksmith', 'manufacturer', 'seller'] as const).map((capability) => (
+                            <span key={capability} className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={(candidateCapabilitySelections[candidate.mikro_cari_kodu] ?? candidateCapabilities(candidate)).includes(capability)}
+                                onChange={() => toggleCandidateCapability(candidate.mikro_cari_kodu, capability)}
+                                disabled={!cariControl.actions_enabled}
+                              />
+                              {partnerTypeLabel(capability)}
+                            </span>
+                          ))}
+                        </span>
                       </span>
                     </label>
                   ))}
@@ -591,11 +679,12 @@ export default function B2BPartnersPage() {
               )}
             </div>
           </section>
+          </div>
         )}
 
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center gap-2">
-            {(['', 'dealer', 'locksmith'] as const).map((type) => (
+            {(['', 'dealer', 'locksmith', 'manufacturer', 'seller'] as const).map((type) => (
               <button
                 key={type || 'all'}
                 type="button"
@@ -700,7 +789,7 @@ export default function B2BPartnersPage() {
               <section className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <div className="mb-2 text-sm font-semibold text-slate-800">Roller</div>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  {(['dealer', 'locksmith'] as const).map((capability) => (
+                  {(['dealer', 'locksmith', 'manufacturer', 'seller'] as const).map((capability) => (
                     <label key={capability} className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${form.capabilities.includes(capability) ? 'border-blue-200 bg-white text-blue-700' : 'border-slate-200 bg-white text-slate-600'}`}>
                       <input
                         type="checkbox"
@@ -708,7 +797,7 @@ export default function B2BPartnersPage() {
                         onChange={() => toggleCapability(capability)}
                         disabled={formMode === 'detail'}
                       />
-                      {capability === 'dealer' ? 'Bayi kanalı' : 'Çilingir / servis kanalı'}
+                      {capability === 'dealer' ? 'Bayi kanalı' : capability === 'locksmith' ? 'Çilingir / servis kanalı' : capability === 'manufacturer' ? 'Üretici kanalı' : 'Satıcı kanalı'}
                     </label>
                   ))}
                 </div>
@@ -752,7 +841,7 @@ export default function B2BPartnersPage() {
                 </label>
               </section>
 
-              {hasDealerForm && (
+              {hasMikroForm && (
                 <section className="grid gap-3 rounded-xl border border-sky-100 bg-sky-50/60 p-3">
                   <div>
                     <div className="text-sm font-semibold text-sky-900">Mikro cari bağlantısı</div>
