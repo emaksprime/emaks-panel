@@ -27,6 +27,8 @@ type Partner = {
   technical_service_technician_id: number | null
   linked_technician_name: string | null
   linked_technician_phone: string | null
+  child_cari_accounts?: CariControlChildAccount[]
+  invoice_usage_note?: string | null
   users_count?: number
   active_users_count?: number
 }
@@ -34,12 +36,19 @@ type Partner = {
 type TechnicianOption = {
   id: number
   name: string
+  display_name?: string
   phone: string | null
   city: string | null
   district: string | null
   mikro_cari_kodu: string | null
   mikro_cari_adi: string | null
+  cari_code?: string | null
+  cari_title?: string | null
+  technician_type?: string | null
+  active?: boolean
   source_key: string
+  match_reason?: string | null
+  requires_type_review?: boolean
 }
 
 type PartnerForm = {
@@ -93,7 +102,9 @@ type CariControlChildAccount = {
   mikro_cari_kodu: string
   mikro_cari_unvan?: string | null
   display_name?: string | null
+  usage_type?: string | null
   cari_usage_type?: string | null
+  invoice_usage_note?: string | null
   status?: string | null
   status_label?: string | null
 }
@@ -301,6 +312,18 @@ export default function B2BPartnersPage() {
         params.set('search', search.trim())
       }
 
+      if (form.mikro_cari_kodu.trim() !== '') {
+        params.set('mikro_cari_kodu', form.mikro_cari_kodu.trim())
+      }
+
+      if (form.phone.trim() !== '') {
+        params.set('phone', form.phone.trim())
+      }
+
+      if (form.city.trim() !== '') {
+        params.set('city', form.city.trim())
+      }
+
       const response = await apiRequest(`/api/b2b/locksmith-technicians?${params.toString()}`)
       setTechnicians(response.items ?? [])
     } catch (requestError) {
@@ -308,7 +331,7 @@ export default function B2BPartnersPage() {
     } finally {
       setTechnicianLoading(false)
     }
-  }, [technicianSearch])
+  }, [form.city, form.mikro_cari_kodu, form.phone, technicianSearch])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -385,12 +408,12 @@ export default function B2BPartnersPage() {
     setForm((current) => ({
       ...current,
       technical_service_technician_id: technicianId,
-      display_name: technician && current.display_name.trim() === '' ? technician.name : current.display_name,
+      display_name: technician && current.display_name.trim() === '' ? technician.display_name ?? technician.name : current.display_name,
       phone: technician && current.phone.trim() === '' ? technician.phone ?? '' : current.phone,
       city: technician && current.city.trim() === '' ? technician.city ?? '' : current.city,
       district: technician && current.district.trim() === '' ? technician.district ?? '' : current.district,
-      mikro_cari_kodu: technician && current.mikro_cari_kodu.trim() === '' ? technician.mikro_cari_kodu ?? '' : current.mikro_cari_kodu,
-      mikro_cari_unvan: technician && current.mikro_cari_unvan.trim() === '' ? technician.mikro_cari_adi ?? '' : current.mikro_cari_unvan,
+      mikro_cari_kodu: technician && current.mikro_cari_kodu.trim() === '' ? technician.mikro_cari_kodu ?? technician.cari_code ?? '' : current.mikro_cari_kodu,
+      mikro_cari_unvan: technician && current.mikro_cari_unvan.trim() === '' ? technician.mikro_cari_adi ?? technician.cari_title ?? '' : current.mikro_cari_unvan,
     }))
   }
 
@@ -538,6 +561,15 @@ export default function B2BPartnersPage() {
       setSelectedCariCodes([])
       setSelectedCariCandidates({})
       setMessage(`${payload.items?.length ?? candidates.length} cari adayı işlendi.`)
+
+      const defaultUsers = (payload.items ?? [])
+        .map((item: { default_user?: { username?: string; default_password?: string } }) => item.default_user)
+        .filter((user: { username?: string; default_password?: string } | undefined): user is { username?: string; default_password?: string } => Boolean(user?.username))
+
+      if (defaultUsers.length > 0) {
+        setMessage(`${payload.items?.length ?? candidates.length} cari adayi islendi. Bayi kullanicisi olusturuldu: ${defaultUsers.map((user) => user.username).join(', ')}. Varsayilan sifre: 12345678`)
+      }
+
       await loadPartners()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Cari adayları işlenemedi.')
@@ -1085,6 +1117,23 @@ export default function B2BPartnersPage() {
                       Teknik servis ustası bağlı değil. Bu partner portal/yetki kaydı olarak durur; çilingir işleri için mevcut usta kaydına bağlanmalıdır.
                     </div>
                   )}
+                </section>
+              )}
+
+              {(editingPartner?.child_cari_accounts ?? []).length > 0 && (
+                <section className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
+                  <div className="text-sm font-semibold text-indigo-900">Alt cari hesaplari</div>
+                  <div className="mt-2 grid gap-2">
+                    {(editingPartner?.child_cari_accounts ?? []).map((child) => (
+                      <div key={child.mikro_cari_kodu} className="rounded-lg bg-white px-3 py-2 text-sm text-indigo-900">
+                        <div className="font-semibold">{child.cari_usage_type ?? child.usage_type ?? 'Alt cari'}</div>
+                        <div className="text-xs text-indigo-700">{child.mikro_cari_kodu} · {child.mikro_cari_unvan ?? child.display_name ?? '-'}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs text-indigo-700">
+                    Konsinye/teshir siparislerinde fatura cari kodu bu alt cari hesabindan secilecektir. Bu fazda siparis/fatura logic degistirilmedi.
+                  </p>
                 </section>
               )}
 

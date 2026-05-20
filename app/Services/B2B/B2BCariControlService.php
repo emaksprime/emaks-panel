@@ -89,7 +89,7 @@ class B2BCariControlService
     {
         $normalized = $this->normalizeRow($candidate, 'manual_apply');
 
-        return $normalized ?? [
+        $normalized = $normalized ?? [
             'mikro_cari_kodu' => trim((string) ($candidate['mikro_cari_kodu'] ?? '')),
             'display_name' => $this->nullableString($candidate['display_name'] ?? null),
             'mikro_cari_unvan' => $this->nullableString($candidate['mikro_cari_unvan'] ?? null),
@@ -107,6 +107,11 @@ class B2BCariControlService
             'status' => $this->nullableString($candidate['status'] ?? null) ?? 'review_required',
             'raw_source' => $candidate,
         ];
+
+        $normalized['child_cari_accounts'] = $this->normalizeChildCariAccountsInput($candidate['child_cari_accounts'] ?? []);
+        $normalized['review_required'] = (bool) ($candidate['review_required'] ?? (($normalized['status'] ?? null) === 'review_required'));
+
+        return $normalized;
     }
 
     /**
@@ -304,7 +309,9 @@ class B2BCariControlService
                     'mikro_cari_kodu' => $candidate['mikro_cari_kodu'],
                     'mikro_cari_unvan' => $candidate['mikro_cari_unvan'] ?? $candidate['display_name'] ?? null,
                     'display_name' => $candidate['display_name'] ?? $candidate['mikro_cari_unvan'] ?? null,
-                    'cari_usage_type' => $childInfo['usage_type'],
+                    'usage_type' => $childInfo['usage_type'],
+                    'cari_usage_type' => $childInfo['display_label'],
+                    'invoice_usage_note' => $childInfo['invoice_usage_note'],
                     'status' => $candidate['status'] ?? null,
                     'status_label' => $candidate['status_label'] ?? null,
                 ];
@@ -349,6 +356,10 @@ class B2BCariControlService
         $parent = $candidate;
         $parent['mikro_cari_kodu'] = $parentCode;
         $parent['child_cari_accounts'] = [];
+        $parent['review_required'] = true;
+        $parent['status'] = 'review_required';
+        $parent['status_label'] = 'Kontrol gerekli';
+        $parent['synthetic_parent'] = true;
 
         $existingPartner = $existingPartners[$this->normalizedText($parentCode)] ?? null;
 
@@ -386,7 +397,7 @@ class B2BCariControlService
             $base['confidence'] = max((float) ($base['confidence'] ?? 0), (float) ($incoming['confidence'] ?? 0));
         }
 
-        if (($base['status'] ?? null) === 'review_required' && ($incoming['status'] ?? null) === 'candidate') {
+        if (($base['synthetic_parent'] ?? false) !== true && ($base['status'] ?? null) === 'review_required' && ($incoming['status'] ?? null) === 'candidate') {
             $base['status'] = 'candidate';
             $base['status_label'] = 'Aday';
         }
@@ -404,7 +415,7 @@ class B2BCariControlService
     }
 
     /**
-     * @return array{parent_code: string, usage_type: string}|null
+     * @return array{parent_code: string, usage_type: string, display_label: string, invoice_usage_note: string}|null
      */
     private function childCariInfo(string $code): ?array
     {
@@ -416,16 +427,43 @@ class B2BCariControlService
 
         $lastPart = array_pop($parts);
         $normalizedSuffix = $this->normalizedText($lastPart);
-        $usageType = self::CHILD_CARI_USAGE_SUFFIXES[$normalizedSuffix] ?? null;
+        $usage = $this->childCariUsage($normalizedSuffix);
 
-        if ($usageType === null) {
+        if ($usage === null) {
             return null;
         }
 
         return [
             'parent_code' => implode('.', $parts),
-            'usage_type' => $usageType,
+            'usage_type' => $usage['usage_type'],
+            'display_label' => $usage['display_label'],
+            'invoice_usage_note' => $usage['invoice_usage_note'],
         ];
+    }
+
+    /**
+     * @return array{usage_type: string, display_label: string, invoice_usage_note: string}|null
+     */
+    private function childCariUsage(string $normalizedSuffix): ?array
+    {
+        return match ($normalizedSuffix) {
+            'KONSINYE' => [
+                'usage_type' => 'consignment',
+                'display_label' => 'Konsinye cari',
+                'invoice_usage_note' => 'Konsinye siparisi/faturasi icin bu alt cari hesabi kullanilacak.',
+            ],
+            'TESHIR' => [
+                'usage_type' => 'showroom',
+                'display_label' => 'Teshir cari',
+                'invoice_usage_note' => 'Teshir siparisi/faturasi icin bu alt cari hesabi kullanilacak.',
+            ],
+            'PROJE' => [
+                'usage_type' => 'project',
+                'display_label' => 'Proje cari',
+                'invoice_usage_note' => 'Proje siparisi/faturasi icin bu alt cari hesabi kullanilacak.',
+            ],
+            default => null,
+        };
     }
 
     /**
@@ -486,6 +524,7 @@ class B2BCariControlService
                 $child['mikro_cari_kodu'] ?? null,
                 $child['mikro_cari_unvan'] ?? null,
                 $child['display_name'] ?? null,
+                $child['usage_type'] ?? null,
                 $child['cari_usage_type'] ?? null,
             ])));
 
@@ -544,11 +583,11 @@ class B2BCariControlService
         $groupName = $this->value($row, ['grup', 'Grup', 'cari_grup_adi', 'cari_grup']);
         $responsibility = $this->value($row, ['responsibility_code', 'sorumluluk_kodu', 'srm', 'srm_merkezi', 'Sorumluluk Kodu']);
         $rep = $this->value($row, ['temsilci_kodu', 'temsilci', 'sales_rep', 'TemsilciKodu', 'TemsilciAdi']);
-        $phone = $this->value($row, ['phone', 'cep_tel', 'telefon', 'gsm', 'cari_CepTel', 'cari_CepTel', 'CepTel']);
-        $email = $this->value($row, ['email', 'cari_EMail', 'Cari Email', 'e_mail']);
-        $city = $this->value($row, ['city', 'il', 'cari_il']);
-        $district = $this->value($row, ['district', 'ilce', 'cari_ilce']);
-        $address = $this->value($row, ['address', 'adres', 'cari_adres']);
+        $phone = $this->value($row, ['cari_CepTel', 'cari_tel', 'cari_tel_no', 'cari_telefon', 'cep_tel', 'telefon', 'phone', 'gsm', 'cep', 'CepTel']);
+        $email = $this->value($row, ['cari_EMail', 'cari_email', 'email', 'e_mail', 'mail', 'Cari Email']);
+        $city = $this->value($row, ['cari_il', 'il', 'city', 'sehir', 'şehir']);
+        $district = $this->value($row, ['cari_ilce', 'ilce', 'ilçe', 'district']);
+        $address = $this->value($row, ['cari_adres', 'cari_adres1', 'cari_adres2', 'adres', 'address']);
         $taxNo = $this->value($row, ['tax_no', 'vergi_no', 'vkn', 'tckn']);
         $normalizedCode = $this->normalizedText($code);
         $existingPartner = $existingPartners[$normalizedCode] ?? null;
@@ -596,6 +635,7 @@ class B2BCariControlService
             'confidence' => $confidence,
             'status' => $status,
             'status_label' => $statusLabel,
+            'review_required' => $status === 'review_required',
             'existing_partner_id' => $existingPartner?->id,
             'difference_summary' => $existingPartner ? $this->differenceSummary($existingPartner, [
                 'mikro_cari_unvan' => $title,
@@ -781,7 +821,55 @@ class B2BCariControlService
             'ö' => 'o',
             'Ç' => 'C',
             'ç' => 'c',
+            'İ' => 'I',
+            'I' => 'I',
+            'ı' => 'I',
+            'Ş' => 'S',
+            'ş' => 's',
+            'Ğ' => 'G',
+            'ğ' => 'g',
+            'Ü' => 'U',
+            'ü' => 'u',
+            'Ö' => 'O',
+            'ö' => 'o',
+            'Ç' => 'C',
+            'ç' => 'c',
         ]);
+    }
+
+    /**
+     * @param  mixed  $children
+     * @return array<int, array<string, mixed>>
+     */
+    private function normalizeChildCariAccountsInput(mixed $children): array
+    {
+        if (! is_array($children)) {
+            return [];
+        }
+
+        return collect($children)
+            ->filter(fn (mixed $child): bool => is_array($child))
+            ->map(function (array $child): array {
+                $code = $this->nullableString($child['mikro_cari_kodu'] ?? null);
+                $childInfo = $code ? $this->childCariInfo($code) : null;
+                $usageType = $this->nullableString($child['usage_type'] ?? null) ?? $childInfo['usage_type'] ?? null;
+                $displayLabel = $this->nullableString($child['cari_usage_type'] ?? null) ?? $childInfo['display_label'] ?? 'Alt cari';
+
+                return [
+                    'mikro_cari_kodu' => $code,
+                    'mikro_cari_unvan' => $this->nullableString($child['mikro_cari_unvan'] ?? null),
+                    'display_name' => $this->nullableString($child['display_name'] ?? null),
+                    'usage_type' => $usageType,
+                    'cari_usage_type' => $displayLabel,
+                    'invoice_usage_note' => $this->nullableString($child['invoice_usage_note'] ?? null) ?? $childInfo['invoice_usage_note'] ?? null,
+                    'status' => $this->nullableString($child['status'] ?? null),
+                    'status_label' => $this->nullableString($child['status_label'] ?? null),
+                ];
+            })
+            ->filter(fn (array $child): bool => $child['mikro_cari_kodu'] !== null)
+            ->unique('mikro_cari_kodu')
+            ->values()
+            ->all();
     }
 
     /**

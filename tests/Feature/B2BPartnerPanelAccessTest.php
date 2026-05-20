@@ -19,6 +19,7 @@ use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -139,6 +140,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             'phone' => '+905551111111',
             'city' => 'İstanbul',
             'active' => true,
+            'mikro_cari_kodu' => '320.CLG.001',
+            'cari_code' => '320.CLG.001',
         ]);
         $partner = $this->partner([
             'partner_type' => B2BPartner::TYPE_LOCKSMITH,
@@ -536,6 +539,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             'name' => 'Aktif Çilingir',
             'technician_type' => 'locksmith',
             'active' => true,
+            'mikro_cari_kodu' => '320.CLG.001',
+            'cari_code' => '320.CLG.001',
         ]);
         $this->technician([
             'name' => 'Pasif Çilingir',
@@ -547,13 +552,20 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technician_type' => 'technician',
             'active' => true,
         ]);
-
         $this->actingAs($admin)
             ->getJson('/api/b2b/locksmith-technicians?search=Çilingir')
             ->assertOk()
             ->assertJsonCount(1, 'items')
             ->assertJsonPath('items.0.id', $activeLocksmith->id)
             ->assertJsonPath('items.0.source_key', 'technical_service_technician:'.$activeLocksmith->id);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/locksmith-technicians?mikro_cari_kodu=320.CLG.001')
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $activeLocksmith->id)
+            ->assertJsonPath('items.0.match_reason', 'cari_match')
+            ->assertJsonPath('items.0.requires_type_review', false);
     }
 
     public function test_partner_list_filters_search_type_active_and_city(): void
@@ -771,6 +783,11 @@ class B2BPartnerPanelAccessTest extends TestCase
                         'grup' => 'BAYI',
                     ],
                     [
+                        'musteri_kodu' => '120.00.33.00005.PROJE',
+                        'firma_unvani' => 'KEYSWORLD GUVENLIK SISTEMLERI PROJE',
+                        'grup' => 'BAYI',
+                    ],
+                    [
                         'musteri_kodu' => '120.ONLINE.00001',
                         'firma_unvani' => 'Online Perakende Musteri',
                         'grup' => 'ONLINE PERAKENDE',
@@ -787,7 +804,16 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('candidates.0.search_match', 'child')
             ->assertJsonPath('candidates.0.matched_child_cari_codes.0', '120.00.33.00005.KONSINYE')
             ->assertJsonPath('candidates.0.child_cari_accounts.0.mikro_cari_kodu', '120.00.33.00005.KONSINYE')
+            ->assertJsonPath('candidates.0.child_cari_accounts.0.usage_type', 'consignment')
             ->assertJsonPath('candidates.0.child_cari_accounts.1.mikro_cari_kodu', '120.00.33.00005.TEŞHIR');
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=PROJE&include_review_required=1')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '120.00.33.00005')
+            ->assertJsonPath('candidates.0.search_match', 'child')
+            ->assertJsonPath('candidates.0.matched_child_cari_codes.0', '120.00.33.00005.PROJE');
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?search=KEYSWORLD&capability=dealer&include_review_required=1')
@@ -806,6 +832,63 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('excluded_online_retail_count', 1)
             ->assertJsonCount(0, 'candidates');
+    }
+
+    public function test_cari_control_child_only_candidate_creates_review_required_parent(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'musteri_kodu' => '120.00.99.00001.KONSINYE',
+                    'firma_unvani' => 'Sadece Alt Cari Konsinye',
+                    'grup' => 'BAYI',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=KONSINYE&include_review_required=1')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '120.00.99.00001')
+            ->assertJsonPath('candidates.0.status', 'review_required')
+            ->assertJsonPath('candidates.0.review_required', true)
+            ->assertJsonPath('candidates.0.child_cari_accounts.0.usage_type', 'consignment');
+    }
+
+    public function test_cari_control_normalizes_contact_and_location_aliases(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'cari_kod' => '120.ALIAS.001',
+                    'cari_unvan1' => 'Alias Bayi',
+                    'cari_grup_kodu' => 'BAYI',
+                    'cari_tel_no' => '+905551112233',
+                    'cari_email' => 'alias@example.com',
+                    'sehir' => 'Ankara',
+                    'ilçe' => 'Cankaya',
+                    'cari_adres2' => 'Test Mahallesi',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=ALIAS&include_review_required=1')
+            ->assertOk()
+            ->assertJsonPath('candidates.0.phone', '+905551112233')
+            ->assertJsonPath('candidates.0.email', 'alias@example.com')
+            ->assertJsonPath('candidates.0.city', 'Ankara')
+            ->assertJsonPath('candidates.0.district', 'Cankaya')
+            ->assertJsonPath('candidates.0.address', 'Test Mahallesi');
     }
 
     public function test_cari_control_query_contract_doc_contains_select_only_discovery_contract(): void
@@ -875,6 +958,121 @@ class B2BPartnerPanelAccessTest extends TestCase
             'partner_id' => $partner->id,
             'action' => 'b2b.partner.imported_from_cari',
         ]);
+    }
+
+    public function test_dealer_cari_import_creates_default_scoped_dealer_user_and_child_metadata(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $otherPartner = $this->partner(['mikro_cari_kodu' => 'CR-OTHER-001']);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.ÇLG.06.002',
+                    'display_name' => 'BAHATTİN ÖZBEK',
+                    'mikro_cari_unvan' => 'BAHATTİN ÖZBEK',
+                    'phone' => '+905551112233',
+                    'city' => 'Ankara',
+                    'child_cari_accounts' => [[
+                        'mikro_cari_kodu' => '320.ÇLG.06.002.KONSINYE',
+                        'mikro_cari_unvan' => 'BAHATTİN ÖZBEK KONSINYE',
+                        'usage_type' => 'consignment',
+                        'invoice_usage_note' => 'Konsinye siparisi/faturasi icin bu alt cari hesabi kullanilacak.',
+                    ]],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'created')
+            ->assertJsonPath('items.0.default_user.username', 'bahat320')
+            ->assertJsonPath('items.0.default_user.default_password', '12345678');
+
+        $partner = B2BPartner::query()->where('mikro_cari_kodu', '320.ÇLG.06.002')->firstOrFail();
+        $user = User::query()->where('username', 'bahat320')->firstOrFail();
+
+        $this->assertTrue(Hash::check('12345678', $user->password_hash));
+        $this->assertNotSame('12345678', $user->password_hash);
+        $this->assertSame('b2b_dealer', $user->role_code);
+        $this->assertTrue((bool) $user->force_password_change);
+        $this->assertSame('consignment', $partner->metadata['child_cari_accounts'][0]['usage_type']);
+
+        $this->assertDatabaseHas('b2b_partner_user_profiles', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'view',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'orders',
+            'can_view' => true,
+            'can_create' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'stock',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseMissing('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'technical_service',
+        ]);
+        $this->assertFalse(app(B2BPartnerAccessService::class)->canViewPartner($user, $otherPartner));
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.default_user_created',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'subject_id' => $user->id,
+            'action' => 'b2b.partner_user.assigned',
+        ]);
+    }
+
+    public function test_default_dealer_username_gets_unique_suffix_and_locksmith_only_creates_no_dealer_user(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        User::factory()->create(['username' => 'bahat320']);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.CLG.06.002',
+                    'display_name' => 'BAHATTIN OZBEK',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.default_user.username', 'bahat3202');
+
+        $this->assertDatabaseMissing('b2b_partner_user_access', [
+            'user_id' => User::query()->where('username', 'bahat3202')->value('id'),
+            'access_scope' => 'technical_service',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.CLG.06.003',
+                    'display_name' => 'Sadece Cilingir',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonMissingPath('items.0.default_user');
     }
 
     public function test_import_existing_mikro_cari_adds_capability_instead_of_duplicate_partner(): void

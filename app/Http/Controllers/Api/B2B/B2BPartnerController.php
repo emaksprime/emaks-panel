@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerCapability;
+use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\DataSource;
 use App\Models\TechnicalServiceTechnician;
+use App\Models\User;
 use App\Services\B2B\B2BCariControlService;
 use App\Services\B2B\B2BPartnerAccessService;
 use Illuminate\Database\Eloquent\Builder;
@@ -16,6 +18,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -453,6 +456,7 @@ class B2BPartnerController extends Controller
 
         $oldValues = $this->auditPayload($partner);
         $partner->fill($this->snapshotPayload($candidate, $partner));
+        $partner->metadata = $this->mergeCariCandidateMetadata($partner, $candidate);
 
         if ($action === 'import') {
             $oldCapabilities = $partner->capabilityCodes();
@@ -478,24 +482,24 @@ class B2BPartnerController extends Controller
         $mikroCode = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
         $snapshotPayload = $this->snapshotPayload($candidate);
         $snapshotPayload['display_name'] = $snapshotPayload['display_name'] ?? $mikroCode;
+        $metadata = $this->cariCandidateMetadata($candidate);
         $partner = B2BPartner::query()->create([
             'partner_type' => $this->primaryPartnerType($capabilities),
             'partner_code' => $this->uniquePartnerCode($mikroCode),
             ...$snapshotPayload,
             'mikro_cari_kodu' => $mikroCode,
             'active' => true,
-            'metadata' => [
-                'cari_control' => [
-                    'source' => $candidate['source_used'] ?? 'gateway_candidate',
-                    'status' => $candidate['status'] ?? null,
-                    'confidence' => $candidate['confidence'] ?? null,
-                ],
-            ],
+            'metadata' => $metadata,
         ]);
         $this->syncCapabilities($partner, $capabilities, $request, $userId, []);
         $this->writeAuditLog($partner, $request, 'b2b.partner.imported_from_cari', null, $this->auditPayload($partner), $userId);
+        $defaultUser = $this->ensureDefaultDealerUser($partner, $capabilities, $candidate, $request, $userId);
 
-        return ['partner_id' => $partner->id, 'status' => 'created'];
+        return array_filter([
+            'partner_id' => $partner->id,
+            'status' => 'created',
+            'default_user' => $defaultUser,
+        ], fn (mixed $value): bool => $value !== null);
     }
 
     /**
@@ -516,6 +520,60 @@ class B2BPartnerController extends Controller
             'city' => $this->nullableString($candidate['city'] ?? null) ?? $partner?->city,
             'district' => $this->nullableString($candidate['district'] ?? null) ?? $partner?->district,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function cariCandidateMetadata(array $candidate): array
+    {
+        $children = $this->childCariAccountsMetadata($candidate);
+
+        return array_filter([
+            'cari_control' => [
+                'source' => $candidate['source_used'] ?? 'gateway_candidate',
+                'status' => $candidate['status'] ?? null,
+                'confidence' => $candidate['confidence'] ?? null,
+            ],
+            'child_cari_accounts' => $children,
+            'invoice_usage_note' => $children === [] ? null : 'Konsinye/teshir/proje siparislerinde fatura cari kodu ilgili alt cari hesabindan secilecektir. Bu fazda siparis/fatura logic degistirilmedi.',
+        ], fn (mixed $value): bool => $value !== null && $value !== []);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<int, array<string, mixed>>
+     */
+    private function childCariAccountsMetadata(array $candidate): array
+    {
+        return collect($candidate['child_cari_accounts'] ?? [])
+            ->filter(fn (mixed $child): bool => is_array($child))
+            ->map(fn (array $child): array => [
+                'mikro_cari_kodu' => $this->nullableString($child['mikro_cari_kodu'] ?? null),
+                'mikro_cari_unvan' => $this->nullableString($child['mikro_cari_unvan'] ?? null),
+                'usage_type' => $this->nullableString($child['usage_type'] ?? null),
+                'invoice_usage_note' => $this->nullableString($child['invoice_usage_note'] ?? null),
+            ])
+            ->filter(fn (array $child): bool => $child['mikro_cari_kodu'] !== null)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function mergeCariCandidateMetadata(B2BPartner $partner, array $candidate): array
+    {
+        $metadata = is_array($partner->metadata) ? $partner->metadata : [];
+        $candidateMetadata = $this->cariCandidateMetadata($candidate);
+
+        foreach ($candidateMetadata as $key => $value) {
+            $metadata[$key] = $value;
+        }
+
+        return $metadata;
     }
 
     /**
@@ -576,20 +634,175 @@ class B2BPartnerController extends Controller
         return $code;
     }
 
+    /**
+     * @param  array<int, string>  $capabilities
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>|null
+     */
+    private function ensureDefaultDealerUser(B2BPartner $partner, array $capabilities, array $candidate, Request $request, int $actorId): ?array
+    {
+        if (! in_array(B2BPartner::TYPE_DEALER, $capabilities, true)) {
+            return null;
+        }
+
+        $existingProfile = B2BPartnerUserProfile::query()
+            ->where('partner_id', $partner->id)
+            ->whereHas('user', fn (Builder $query): Builder => $query->where('role_code', 'b2b_dealer'))
+            ->first();
+
+        if ($existingProfile) {
+            return [
+                'user_id' => $existingProfile->user_id,
+                'username' => $existingProfile->user?->username,
+                'status' => 'already_linked',
+            ];
+        }
+
+        $username = $this->uniqueDealerUsername($partner->display_name ?? $candidate['display_name'] ?? $candidate['mikro_cari_unvan'] ?? null, $partner->mikro_cari_kodu);
+        $user = User::query()->create([
+            'username' => $username,
+            'full_name' => Str::limit((string) ($partner->display_name ?? $candidate['display_name'] ?? $candidate['mikro_cari_unvan'] ?? $username), 120, ''),
+            'password_hash' => Hash::make('12345678'),
+            'role_code' => 'b2b_dealer',
+            'aktif' => true,
+            'force_password_change' => true,
+        ]);
+
+        B2BPartnerUserProfile::query()->updateOrCreate(
+            [
+                'partner_id' => $partner->id,
+                'user_id' => $user->id,
+            ],
+            [
+                'title' => 'Bayi kullanicisi',
+                'phone' => $partner->phone,
+                'active' => true,
+                'metadata' => [
+                    'default_dealer_user' => true,
+                    'source' => 'b2b_cari_control',
+                ],
+            ],
+        );
+
+        foreach ($this->defaultDealerAccessRows() as $scope => $attributes) {
+            B2BPartnerUserAccess::query()->updateOrCreate(
+                [
+                    'partner_id' => $partner->id,
+                    'user_id' => $user->id,
+                    'access_scope' => $scope,
+                ],
+                [
+                    ...$attributes,
+                    'created_by' => $actorId,
+                ],
+            );
+        }
+
+        $this->writeAuditLog($partner, $request, 'b2b.partner.default_user_created', null, [
+            'user_id' => $user->id,
+            'username' => $user->username,
+            'role_code' => $user->role_code,
+            'default_password_assigned' => true,
+        ], $actorId);
+        $this->writePartnerUserAuditLog($partner, $request, 'b2b.partner_user.assigned', $user, null, [
+            'user_id' => $user->id,
+            'partner_id' => $partner->id,
+            'scopes' => $this->defaultDealerAccessRows(),
+        ], $actorId);
+
+        return [
+            'user_id' => $user->id,
+            'username' => $user->username,
+            'role_code' => $user->role_code,
+            'default_password' => '12345678',
+            'status' => 'created',
+        ];
+    }
+
+    private function uniqueDealerUsername(?string $displayName, ?string $mikroCode): string
+    {
+        $name = strtolower(Str::ascii((string) ($displayName ?: 'bayi')));
+        $namePrefix = substr(preg_replace('/[^a-z0-9]/', '', $name) ?: 'bayi', 0, 5);
+        $digits = preg_replace('/\D/', '', (string) $mikroCode) ?: '000';
+        $base = $namePrefix.substr($digits, 0, 3);
+        $username = $base;
+        $counter = 2;
+
+        while (User::query()->where('username', $username)->exists()) {
+            $username = $base.$counter;
+            $counter++;
+        }
+
+        return $username;
+    }
+
+    /**
+     * @return array<string, array<string, bool>>
+     */
+    private function defaultDealerAccessRows(): array
+    {
+        return [
+            'view' => [
+                'can_view' => true,
+                'can_create' => false,
+                'can_update' => false,
+                'can_approve' => false,
+            ],
+            'orders' => [
+                'can_view' => true,
+                'can_create' => true,
+                'can_update' => false,
+                'can_approve' => false,
+            ],
+            'stock' => [
+                'can_view' => true,
+                'can_create' => false,
+                'can_update' => false,
+                'can_approve' => false,
+            ],
+        ];
+    }
+
     public function locksmithTechnicians(Request $request): JsonResponse
     {
         $filters = $request->validate([
             'search' => ['nullable', 'string', 'max:255'],
             'city' => ['nullable', 'string', 'max:128'],
+            'mikro_cari_kodu' => ['nullable', 'string', 'max:128'],
+            'phone' => ['nullable', 'string', 'max:64'],
         ]);
 
         $likeOperator = DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
+        $hasLegacyLookup = ! empty($filters['search']) || ! empty($filters['mikro_cari_kodu']) || ! empty($filters['phone']);
         $query = TechnicalServiceTechnician::query()
             ->where('active', true)
-            ->where('technician_type', 'locksmith');
+            ->where(function (Builder $query) use ($hasLegacyLookup): void {
+                $query->where('technician_type', 'locksmith');
+
+                if ($hasLegacyLookup) {
+                    $query->orWhereNull('technician_type');
+                }
+            });
 
         if (! empty($filters['city'])) {
             $query->where('city', $likeOperator, $filters['city']);
+        }
+
+        if (! empty($filters['mikro_cari_kodu'])) {
+            $mikroCariKodu = $filters['mikro_cari_kodu'];
+            $query->where(function (Builder $query) use ($likeOperator, $mikroCariKodu): void {
+                $query->where('mikro_cari_kodu', $likeOperator, '%'.$mikroCariKodu.'%')
+                    ->orWhere('cari_code', $likeOperator, '%'.$mikroCariKodu.'%');
+            });
+        }
+
+        if (! empty($filters['phone'])) {
+            $phone = $filters['phone'];
+            $query->where(function (Builder $query) use ($likeOperator, $phone): void {
+                $query->where('phone', $likeOperator, '%'.$phone.'%')
+                    ->orWhere('phone_display', $likeOperator, '%'.$phone.'%')
+                    ->orWhere('phone_e164', $likeOperator, '%'.$phone.'%');
+            });
         }
 
         if (! empty($filters['search'])) {
@@ -608,18 +821,60 @@ class B2BPartnerController extends Controller
                 ->orderBy('name')
                 ->limit(50)
                 ->get()
-                ->map(fn (TechnicalServiceTechnician $technician): array => [
-                    'id' => $technician->id,
-                    'name' => $technician->name,
-                    'phone' => $technician->phone,
-                    'city' => $technician->city,
-                    'district' => $technician->district,
-                    'mikro_cari_kodu' => $technician->mikro_cari_kodu ?? $technician->cari_code,
-                    'mikro_cari_adi' => $technician->mikro_cari_adi ?? $technician->cari_title,
-                    'source_key' => 'technical_service_technician:'.$technician->id,
-                ])
+                ->map(fn (TechnicalServiceTechnician $technician): array => $this->locksmithTechnicianPayload($technician, $filters))
                 ->values(),
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @return array<string, mixed>
+     */
+    private function locksmithTechnicianPayload(TechnicalServiceTechnician $technician, array $filters): array
+    {
+        $cariCode = $technician->mikro_cari_kodu ?? $technician->cari_code;
+        $cariTitle = $technician->mikro_cari_adi ?? $technician->cari_title;
+
+        return [
+            'id' => $technician->id,
+            'name' => $technician->name,
+            'display_name' => $technician->name,
+            'phone' => $technician->phone,
+            'city' => $technician->city,
+            'district' => $technician->district,
+            'mikro_cari_kodu' => $cariCode,
+            'mikro_cari_adi' => $cariTitle,
+            'cari_code' => $technician->cari_code,
+            'cari_title' => $technician->cari_title,
+            'technician_type' => $technician->technician_type,
+            'active' => (bool) $technician->active,
+            'source_key' => 'technical_service_technician:'.$technician->id,
+            'match_reason' => $this->technicianMatchReason($technician, $filters),
+            'requires_type_review' => $technician->technician_type === null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    private function technicianMatchReason(TechnicalServiceTechnician $technician, array $filters): string
+    {
+        $mikroCariKodu = $this->nullableString($filters['mikro_cari_kodu'] ?? null);
+        $phone = $this->nullableString($filters['phone'] ?? null);
+
+        if ($mikroCariKodu && in_array($mikroCariKodu, array_filter([$technician->mikro_cari_kodu, $technician->cari_code]), true)) {
+            return 'cari_match';
+        }
+
+        if ($phone && str_contains((string) $technician->phone, $phone)) {
+            return 'phone_match';
+        }
+
+        if ($technician->technician_type === null) {
+            return 'legacy_type_review';
+        }
+
+        return 'locksmith';
     }
 
     /**
@@ -957,6 +1212,32 @@ class B2BPartnerController extends Controller
     }
 
     /**
+     * @param  array<string, mixed>|null  $oldValues
+     * @param  array<string, mixed>  $newValues
+     */
+    private function writePartnerUserAuditLog(
+        B2BPartner $partner,
+        Request $request,
+        string $action,
+        User $subjectUser,
+        ?array $oldValues,
+        array $newValues,
+        int $actorId,
+    ): void {
+        B2BPartnerAuditLog::query()->create([
+            'partner_id' => $partner->id,
+            'user_id' => $actorId,
+            'action' => $action,
+            'subject_type' => User::class,
+            'subject_id' => $subjectUser->id,
+            'old_values' => $oldValues,
+            'new_values' => $newValues,
+            'ip' => $request->ip(),
+            'user_agent' => (string) $request->userAgent(),
+        ]);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function partnerPayload(B2BPartner $partner): array
@@ -983,6 +1264,8 @@ class B2BPartnerController extends Controller
             'linked_technician_phone' => $partner->technician?->phone,
             'linked_technician_city' => $partner->technician?->city,
             'linked_technician_mikro_cari_kodu' => $partner->technician?->mikro_cari_kodu ?? $partner->technician?->cari_code,
+            'child_cari_accounts' => is_array($partner->metadata) ? ($partner->metadata['child_cari_accounts'] ?? []) : [],
+            'invoice_usage_note' => is_array($partner->metadata) ? ($partner->metadata['invoice_usage_note'] ?? null) : null,
             'users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->count(),
             'active_users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->where('active', true)->count(),
             'mikro_snapshot' => [
