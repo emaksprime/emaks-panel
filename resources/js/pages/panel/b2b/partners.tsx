@@ -799,7 +799,7 @@ export default function B2BPartnersPage() {
                   placeholder="Cari kodu, ünvan, telefon, şehir, grup veya alt cari ara"
                 />
                 <select
-                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                  className="h-10 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
                   value={cariCapabilityFilter}
                   onChange={(event) => setCariCapabilityFilter(event.target.value as '' | PartnerType)}
                 >
@@ -810,7 +810,7 @@ export default function B2BPartnersPage() {
                   <option value="seller">Satıcı</option>
                 </select>
                 <select
-                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                  className="h-10 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
                   value={cariStatusFilter}
                   onChange={(event) => setCariStatusFilter(event.target.value as CariControlStatusFilter)}
                 >
@@ -950,15 +950,15 @@ export default function B2BPartnersPage() {
             <span className="ml-auto text-sm text-slate-500">{activeFilterText} · {partners.length} kayıt</span>
           </div>
 
-          <div className="mt-4 grid gap-3 md:grid-cols-5">
-            <Input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Ara: kod, ad, cari" />
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={filters.active} onChange={(event) => setFilters((current) => ({ ...current, active: event.target.value as Filters['active'] }))}>
+          <div className="mt-4 grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-5">
+            <Input className="w-full min-w-0 max-w-full" value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Ara: kod, ad, cari" />
+            <select className="h-10 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={filters.active} onChange={(event) => setFilters((current) => ({ ...current, active: event.target.value as Filters['active'] }))}>
               <option value="">Aktif/Pasif</option>
               <option value="1">Aktif</option>
               <option value="0">Pasif</option>
             </select>
-            <Input value={filters.city} onChange={(event) => setFilters((current) => ({ ...current, city: event.target.value }))} placeholder="Şehir" />
-            <Input value={filters.mikro_cari_kodu} onChange={(event) => setFilters((current) => ({ ...current, mikro_cari_kodu: event.target.value }))} placeholder="Mikro cari kodu" />
+            <Input className="w-full min-w-0 max-w-full" value={filters.city} onChange={(event) => setFilters((current) => ({ ...current, city: event.target.value }))} placeholder="Şehir" />
+            <Input className="w-full min-w-0 max-w-full" value={filters.mikro_cari_kodu} onChange={(event) => setFilters((current) => ({ ...current, mikro_cari_kodu: event.target.value }))} placeholder="Mikro cari kodu" />
             <div className="flex gap-2">
               <Button type="button" variant="outline" onClick={() => setFilters(emptyFilters)}>Temizle</Button>
               <Button type="button" onClick={() => void loadPartners()} disabled={loading}>{loading ? 'Yükleniyor...' : 'Filtrele'}</Button>
@@ -966,8 +966,8 @@ export default function B2BPartnersPage() {
           </div>
         </section>
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(420px,0.65fr)]">
-          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="grid gap-6 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px]">
+          <section className="min-w-0 max-w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             {partners.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
                 Kayıt bulunamadı.
@@ -1041,7 +1041,7 @@ export default function B2BPartnersPage() {
             )}
           </section>
 
-          <aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <aside className="min-w-0 w-full max-w-full rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-4">
               <h3 className="text-base font-semibold text-slate-900">
                 {formMode === 'create' ? 'Yeni Partner' : formMode === 'detail' ? 'Partner Detayı' : 'Partner Düzenle'}
@@ -1054,7 +1054,7 @@ export default function B2BPartnersPage() {
                 <div className="mb-2 text-sm font-semibold text-slate-800">Roller</div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {(['dealer', 'locksmith', 'manufacturer', 'seller'] as const).map((capability) => (
-                    <label key={capability} className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${form.capabilities.includes(capability) ? 'border-blue-200 bg-white text-blue-700' : 'border-slate-200 bg-white text-slate-600'}`}>
+                    <label key={capability} className={`flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${form.capabilities.includes(capability) ? 'border-blue-200 bg-white text-blue-700' : 'border-slate-200 bg-white text-slate-600'}`}>
                       <input
                         type="checkbox"
                         checked={form.capabilities.includes(capability)}
@@ -1072,31 +1072,31 @@ export default function B2BPartnersPage() {
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="grid gap-1 text-sm font-semibold text-slate-700">
                     Partner kodu
-                    <Input value={form.partner_code} onChange={(event) => updateForm('partner_code', event.target.value)} disabled={formMode === 'detail'} />
+                    <Input className="w-full min-w-0 max-w-full" value={form.partner_code} onChange={(event) => updateForm('partner_code', event.target.value)} disabled={formMode === 'detail'} />
                   </label>
                   <label className="grid gap-1 text-sm font-semibold text-slate-700">
                     Görünen ad
-                    <Input value={form.display_name} onChange={(event) => updateForm('display_name', event.target.value)} disabled={formMode === 'detail'} />
+                    <Input className="w-full min-w-0 max-w-full" value={form.display_name} onChange={(event) => updateForm('display_name', event.target.value)} disabled={formMode === 'detail'} />
                   </label>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="grid gap-1 text-sm font-semibold text-slate-700">
                     Telefon
-                    <Input value={form.phone} onChange={(event) => updateForm('phone', event.target.value)} disabled={formMode === 'detail'} />
+                    <Input className="w-full min-w-0 max-w-full" value={form.phone} onChange={(event) => updateForm('phone', event.target.value)} disabled={formMode === 'detail'} />
                   </label>
                   <label className="grid gap-1 text-sm font-semibold text-slate-700">
                     E-posta
-                    <Input value={form.email} onChange={(event) => updateForm('email', event.target.value)} disabled={formMode === 'detail'} />
+                    <Input className="w-full min-w-0 max-w-full" value={form.email} onChange={(event) => updateForm('email', event.target.value)} disabled={formMode === 'detail'} />
                   </label>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="grid gap-1 text-sm font-semibold text-slate-700">
                     İl
-                    <Input value={form.city} onChange={(event) => updateForm('city', event.target.value)} disabled={formMode === 'detail'} />
+                    <Input className="w-full min-w-0 max-w-full" value={form.city} onChange={(event) => updateForm('city', event.target.value)} disabled={formMode === 'detail'} />
                   </label>
                   <label className="grid gap-1 text-sm font-semibold text-slate-700">
                     İlçe
-                    <Input value={form.district} onChange={(event) => updateForm('district', event.target.value)} disabled={formMode === 'detail'} />
+                    <Input className="w-full min-w-0 max-w-full" value={form.district} onChange={(event) => updateForm('district', event.target.value)} disabled={formMode === 'detail'} />
                   </label>
                 </div>
                 <label className="grid gap-1 text-sm font-semibold text-slate-700">
@@ -1123,21 +1123,21 @@ export default function B2BPartnersPage() {
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
                       Mikro cari kodu
-                      <Input value={form.mikro_cari_kodu} onChange={(event) => updateForm('mikro_cari_kodu', event.target.value)} disabled={formMode === 'detail'} />
+                      <Input className="w-full min-w-0 max-w-full" value={form.mikro_cari_kodu} onChange={(event) => updateForm('mikro_cari_kodu', event.target.value)} disabled={formMode === 'detail'} />
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
                       Mikro cari ünvanı
-                      <Input value={form.mikro_cari_unvan} onChange={(event) => updateForm('mikro_cari_unvan', event.target.value)} disabled={formMode === 'detail'} />
+                      <Input className="w-full min-w-0 max-w-full" value={form.mikro_cari_unvan} onChange={(event) => updateForm('mikro_cari_unvan', event.target.value)} disabled={formMode === 'detail'} />
                     </label>
                   </div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
                       Cari grup kodu
-                      <Input value={form.cari_grup_kodu} onChange={(event) => updateForm('cari_grup_kodu', event.target.value)} disabled={formMode === 'detail'} />
+                      <Input className="w-full min-w-0 max-w-full" value={form.cari_grup_kodu} onChange={(event) => updateForm('cari_grup_kodu', event.target.value)} disabled={formMode === 'detail'} />
                     </label>
                     <label className="grid gap-1 text-sm font-semibold text-slate-700">
                       Sorumluluk kodu
-                      <Input value={form.responsibility_code} onChange={(event) => updateForm('responsibility_code', event.target.value)} disabled={formMode === 'detail'} />
+                      <Input className="w-full min-w-0 max-w-full" value={form.responsibility_code} onChange={(event) => updateForm('responsibility_code', event.target.value)} disabled={formMode === 'detail'} />
                     </label>
                   </div>
                 </section>
@@ -1148,13 +1148,13 @@ export default function B2BPartnersPage() {
                   <label className="grid gap-1 text-sm font-semibold text-emerald-900">
                     Teknik Servis Ustası
                     <div className="flex gap-2">
-                      <Input value={technicianSearch} onChange={(event) => setTechnicianSearch(event.target.value)} placeholder="Ad, telefon, cari kodu veya şehir" disabled={formMode === 'detail'} />
+                      <Input className="w-full min-w-0 max-w-full" value={technicianSearch} onChange={(event) => setTechnicianSearch(event.target.value)} placeholder="Ad, telefon, cari kodu veya şehir" disabled={formMode === 'detail'} />
                       <Button type="button" variant="outline" onClick={() => void loadTechnicians()} disabled={technicianLoading || formMode === 'detail'}>
                         {technicianLoading ? 'Aranıyor...' : 'Ara'}
                       </Button>
                     </div>
                     <select
-                      className="mt-2 h-10 rounded-md border border-emerald-200 bg-white px-3 text-sm"
+                       className="mt-2 h-10 w-full min-w-0 max-w-full rounded-md border border-emerald-200 bg-white px-3 text-sm"
                       value={form.technical_service_technician_id}
                       onChange={(event) => selectTechnician(event.target.value)}
                       disabled={formMode === 'detail'}
