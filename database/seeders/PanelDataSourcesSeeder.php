@@ -11,30 +11,10 @@ class PanelDataSourcesSeeder extends Seeder
     {
         $connectionMeta = $this->connectionMeta();
 
-        $this->upsertSalesMainDashboard();
+        $this->seedSalesMainDashboardWithoutQueryOverwrite();
 
         foreach ($this->metadataOnlySources() as $index => $source) {
-            DataSource::query()->updateOrCreate(
-                ['code' => $source['code']],
-                [
-                    'name' => $source['name'],
-                    'db_type' => 'n8n_json',
-                    'query_template' => '',
-                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
-                    'connection_meta' => [
-                        ...$connectionMeta,
-                        'query_status' => 'missing',
-                        'reference' => $source['reference'],
-                    ],
-                    'preview_payload' => [
-                        'mode' => 'query_missing',
-                        'message' => 'Gercek sorgu PrimeCRM referansindan dogrulanip Admin > Veri Kaynaklari ekranindan eklenecek.',
-                    ],
-                    'active' => true,
-                    'sort_order' => 30 + $index,
-                    'description' => $source['description'],
-                ],
-            );
+            $this->seedMetadataOnlySourceWithoutQueryOverwrite($source, $index, $connectionMeta);
         }
     }
 
@@ -47,6 +27,30 @@ class PanelDataSourcesSeeder extends Seeder
         $this->upsertSalesMainDashboard();
 
         return true;
+    }
+
+    private function seedSalesMainDashboardWithoutQueryOverwrite(): void
+    {
+        $source = DataSource::query()->where('code', 'sales_main_dashboard')->first();
+
+        if (! $source) {
+            $this->upsertSalesMainDashboard();
+
+            return;
+        }
+
+        if ($this->isMissingQueryTemplate($source->query_template)) {
+            $this->upsertSalesMainDashboard();
+
+            return;
+        }
+
+        $source->forceFill([
+            'allowed_params' => $this->mergeAllowedParams($source->allowed_params ?? [], [
+                'allowed_cari_group_codes',
+                'denied_cari_group_codes',
+            ]),
+        ])->save();
     }
 
     private function upsertSalesMainDashboard(): void
@@ -582,6 +586,62 @@ SQL_SALES_MAIN_DASHBOARD,
             'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
             'sql_policy' => 'unchanged',
         ];
+    }
+
+    /**
+     * @param  array<string, string>  $source
+     * @param  array<string, mixed>  $connectionMeta
+     */
+    private function seedMetadataOnlySourceWithoutQueryOverwrite(array $source, int $index, array $connectionMeta): void
+    {
+        $existing = DataSource::query()->where('code', $source['code'])->first();
+
+        if ($existing) {
+            return;
+        }
+
+        DataSource::query()->updateOrCreate(
+            ['code' => $source['code']],
+            [
+                'name' => $source['name'],
+                'db_type' => 'n8n_json',
+                'query_template' => '',
+                'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+                'connection_meta' => [
+                    ...$connectionMeta,
+                    'query_status' => 'missing',
+                    'reference' => $source['reference'],
+                ],
+                'preview_payload' => [
+                    'mode' => 'query_missing',
+                    'message' => 'Gercek sorgu PrimeCRM referansindan dogrulanip Admin > Veri Kaynaklari ekranindan eklenecek.',
+                ],
+                'active' => true,
+                'sort_order' => 30 + $index,
+                'description' => $source['description'],
+            ],
+        );
+    }
+
+    private function isMissingQueryTemplate(?string $queryTemplate): bool
+    {
+        $queryTemplate = trim((string) $queryTemplate);
+
+        return $queryTemplate === ''
+            || str_contains($queryTemplate, 'Query template metadata panel.data_sources');
+    }
+
+    /**
+     * @param  array<int, string>  $currentParams
+     * @param  array<int, string>  $requiredParams
+     * @return array<int, string>
+     */
+    private function mergeAllowedParams(array $currentParams, array $requiredParams): array
+    {
+        return array_values(array_unique([
+            ...$currentParams,
+            ...$requiredParams,
+        ]));
     }
 
     /**

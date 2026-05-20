@@ -32,12 +32,6 @@ class PanelPostDeployRefresh extends Command
             '--no-interaction' => true,
         ]));
 
-        $this->runStep('PanelKnownWorkflowDataSourcesSeeder', fn () => $this->call('db:seed', [
-            '--class' => PanelKnownWorkflowDataSourcesSeeder::class,
-            '--force' => true,
-            '--no-interaction' => true,
-        ]));
-
         $this->runStep('optimize:clear', fn () => $this->call('optimize:clear', ['--no-interaction' => true]));
         $this->runStep('cache:clear', fn () => $this->call('cache:clear', ['--no-interaction' => true]));
         $this->runStep('route:clear', fn () => $this->call('route:clear', ['--no-interaction' => true]));

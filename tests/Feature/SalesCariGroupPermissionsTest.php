@@ -210,6 +210,57 @@ class SalesCariGroupPermissionsTest extends TestCase
         $this->assertSourceSnapshotsSame($protectedSnapshots);
     }
 
+    public function test_panel_data_sources_run_preserves_existing_sales_main_template_and_protected_sources(): void
+    {
+        $protectedSnapshots = $this->sourceSnapshots(['stock_dashboard', 'orders_alinan', 'orders_verilen']);
+        $sentinelQuery = "SELECT N'live-sales-main-sentinel' AS value";
+
+        DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail()->forceFill([
+            'query_template' => $sentinelQuery,
+            'allowed_params' => ['date_from', 'date_to'],
+        ])->save();
+
+        $this->seed(PanelDataSourcesSeeder::class);
+
+        $source = DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail();
+
+        $this->assertSame($sentinelQuery, $source->query_template);
+        $this->assertSame(['date_from', 'date_to', 'allowed_cari_group_codes', 'denied_cari_group_codes'], $source->allowed_params);
+        $this->assertSourceSnapshotsSame($protectedSnapshots);
+
+        $this->assertTrue(app(PanelDataSourcesSeeder::class)->refreshSource('sales_main_dashboard'));
+
+        $source->refresh();
+        $queryTemplate = (string) $source->query_template;
+
+        $this->assertNotSame($sentinelQuery, $queryTemplate);
+        $this->assertStringContainsString('allowed_cari_group_codes', $queryTemplate);
+        $this->assertStringContainsString('denied_cari_group_codes', $queryTemplate);
+        $this->assertStringContainsString('ch.cari_grup_kodu', $queryTemplate);
+        $this->assertStringContainsString('STRING_SPLIT', $queryTemplate);
+        $this->assertSourceSnapshotsSame($protectedSnapshots);
+    }
+
+    public function test_full_post_deploy_refresh_preserves_existing_sales_main_template_and_protected_sources(): void
+    {
+        $protectedSnapshots = $this->sourceSnapshots(['stock_dashboard', 'orders_alinan', 'orders_verilen']);
+        $sentinelQuery = "SELECT N'full-refresh-sales-main-sentinel' AS value";
+
+        DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail()->forceFill([
+            'query_template' => $sentinelQuery,
+            'allowed_params' => ['date_from', 'date_to'],
+        ])->save();
+
+        $this->artisan('panel:post-deploy-refresh')
+            ->assertExitCode(0);
+
+        $source = DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail();
+
+        $this->assertSame($sentinelQuery, $source->query_template);
+        $this->assertSame(['date_from', 'date_to', 'allowed_cari_group_codes', 'denied_cari_group_codes'], $source->allowed_params);
+        $this->assertSourceSnapshotsSame($protectedSnapshots);
+    }
+
     public function test_sales_known_workflow_sources_support_scoped_post_deploy_refresh_without_touching_stock_or_orders(): void
     {
         $protectedSnapshots = $this->sourceSnapshots(['stock_dashboard', 'orders_alinan', 'orders_verilen']);
