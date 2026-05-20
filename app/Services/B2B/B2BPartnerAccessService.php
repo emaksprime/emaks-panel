@@ -5,10 +5,15 @@ namespace App\Services\B2B;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\User;
+use App\Services\PanelAccessService;
 use Illuminate\Database\Eloquent\Builder;
 
 class B2BPartnerAccessService
 {
+    public function __construct(
+        private readonly PanelAccessService $panelAccess,
+    ) {}
+
     public function canViewPartner(User $user, B2BPartner $partner): bool
     {
         if ($this->isSuperAdmin($user)) {
@@ -25,6 +30,38 @@ class B2BPartnerAccessService
     public function canManagePartner(User $user, B2BPartner $partner): bool
     {
         return $this->canAccessScope($user, $partner, 'manage', 'update');
+    }
+
+    public function canCreatePartner(User $user, string $partnerType): bool
+    {
+        return $this->canManagePartnerType($user, $partnerType);
+    }
+
+    public function canUpdatePartner(User $user, B2BPartner $partner): bool
+    {
+        if ($this->isSuperAdmin($user)) {
+            return true;
+        }
+
+        return $this->canManagePartnerType($user, (string) $partner->partner_type)
+            && $this->canManagePartner($user, $partner);
+    }
+
+    public function canManagePartnerType(User $user, string $partnerType): bool
+    {
+        if ($this->isSuperAdmin($user)) {
+            return true;
+        }
+
+        if ($this->panelAccess->userCanAccess($user, 'b2b.manage')) {
+            return true;
+        }
+
+        return match ($partnerType) {
+            B2BPartner::TYPE_DEALER => $this->panelAccess->userCanAccess($user, 'b2b.dealers.manage'),
+            B2BPartner::TYPE_LOCKSMITH => $this->panelAccess->userCanAccess($user, 'b2b.locksmiths.manage'),
+            default => false,
+        };
     }
 
     public function visiblePartnerQuery(User $user, ?string $partnerType = null): Builder

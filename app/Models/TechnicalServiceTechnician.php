@@ -16,9 +16,9 @@ class TechnicalServiceTechnician extends Model
 
     protected $fillable = [
         'name',
+        'technician_type',
         'first_name',
         'last_name',
-        'technician_type',
         'city_plate_code',
         'priority',
         'phone',

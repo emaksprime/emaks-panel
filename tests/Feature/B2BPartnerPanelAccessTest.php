@@ -6,6 +6,9 @@ use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\B2B\B2BPartnerUserProfile;
+use App\Models\MenuGroup;
+use App\Models\Page;
+use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
@@ -237,6 +240,218 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->assertSame(count($codes), Resource::query()->whereIn('code', $codes)->count());
         $this->assertSame(1, Resource::query()->where('code', 'b2b.view')->count());
+        $this->assertSame(1, Page::query()->where('code', 'b2b_partners')->count());
+        $this->assertSame(1, MenuGroup::query()->where('code', 'b2b')->count());
+        $this->assertSame(1, PageMenu::query()
+            ->where('page_id', Page::query()->where('code', 'b2b_partners')->value('id'))
+            ->count());
+    }
+
+    public function test_create_dealer_partner_works(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_type' => B2BPartner::TYPE_DEALER,
+                'partner_code' => 'DEALER-CREATE-001',
+                'display_name' => 'Yeni Bayi',
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('partner.partner_code', 'DEALER-CREATE-001')
+            ->assertJsonPath('partner.partner_type', B2BPartner::TYPE_DEALER)
+            ->assertJsonPath('partner.technical_service_technician_id', null);
+
+        $this->assertDatabaseHas('b2b_partners', [
+            'partner_code' => 'DEALER-CREATE-001',
+            'partner_type' => B2BPartner::TYPE_DEALER,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'action' => 'b2b.partner.created',
+        ]);
+    }
+
+    public function test_create_locksmith_partner_with_locksmith_technician_works(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician([
+            'name' => 'Locksmith Partner Usta',
+            'technician_type' => 'locksmith',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+                'partner_code' => 'LOCKSMITH-CREATE-001',
+                'display_name' => 'Yeni Çilingir',
+                'technical_service_technician_id' => $technician->id,
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('partner.partner_type', B2BPartner::TYPE_LOCKSMITH)
+            ->assertJsonPath('partner.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('partner.linked_technician_name', 'Locksmith Partner Usta');
+    }
+
+    public function test_create_dealer_with_technician_id_fails(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['technician_type' => 'locksmith']);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_type' => B2BPartner::TYPE_DEALER,
+                'partner_code' => 'DEALER-WITH-TECH',
+                'technical_service_technician_id' => $technician->id,
+            ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('technical_service_technician_id');
+    }
+
+    public function test_create_locksmith_with_non_locksmith_technician_fails(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['technician_type' => 'technician']);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+                'partner_code' => 'LOCKSMITH-WITH-NON-LOCKSMITH',
+                'technical_service_technician_id' => $technician->id,
+            ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('technical_service_technician_id');
+    }
+
+    public function test_update_partner_writes_audit_log(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner(['display_name' => 'Eski Ünvan']);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/b2b/partners/{$partner->id}", $this->partnerPayload([
+                'partner_type' => B2BPartner::TYPE_DEALER,
+                'partner_code' => $partner->partner_code,
+                'display_name' => 'Yeni Ünvan',
+            ]))
+            ->assertOk()
+            ->assertJsonPath('partner.display_name', 'Yeni Ünvan');
+
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.updated',
+        ]);
+    }
+
+    public function test_active_toggle_writes_audit_log(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner(['active' => true]);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/b2b/partners/{$partner->id}/active", ['active' => false])
+            ->assertOk()
+            ->assertJsonPath('partner.active', false);
+
+        $this->assertDatabaseHas('b2b_partners', [
+            'id' => $partner->id,
+            'active' => false,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.active_changed',
+        ]);
+    }
+
+    public function test_unauthorized_user_cannot_create_or_update_partner(): void
+    {
+        $user = $this->partnerUser();
+        $partner = $this->partner();
+        $this->grantPartnerAccess($user, $partner, 'manage', ['can_update' => true]);
+
+        $this->actingAs($user)
+            ->postJson('/api/b2b/partners', $this->partnerPayload(['partner_code' => 'DENIED-CREATE']))
+            ->assertForbidden();
+
+        $this->actingAs($user)
+            ->patchJson("/api/b2b/partners/{$partner->id}", $this->partnerPayload(['partner_code' => $partner->partner_code]))
+            ->assertForbidden();
+    }
+
+    public function test_scoped_user_cannot_update_unscoped_partner(): void
+    {
+        $user = $this->userWithRole('b2b_manager');
+        $this->grantPanelResource('b2b_manager', 'b2b.manage');
+        $visiblePartner = $this->partner(['display_name' => 'Visible']);
+        $hiddenPartner = $this->partner(['display_name' => 'Hidden']);
+        $this->grantPartnerAccess($user, $visiblePartner, 'manage', [
+            'can_view' => true,
+            'can_update' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/b2b/partners/{$hiddenPartner->id}", $this->partnerPayload([
+                'partner_code' => $hiddenPartner->partner_code,
+            ]))
+            ->assertForbidden();
+    }
+
+    public function test_locksmith_technician_lookup_only_returns_active_locksmiths(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $activeLocksmith = $this->technician([
+            'name' => 'Aktif Çilingir',
+            'technician_type' => 'locksmith',
+            'active' => true,
+        ]);
+        $this->technician([
+            'name' => 'Pasif Çilingir',
+            'technician_type' => 'locksmith',
+            'active' => false,
+        ]);
+        $this->technician([
+            'name' => 'Normal Teknisyen',
+            'technician_type' => 'technician',
+            'active' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/locksmith-technicians?search=Çilingir')
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $activeLocksmith->id)
+            ->assertJsonPath('items.0.source_key', 'technical_service_technician:'.$activeLocksmith->id);
+    }
+
+    public function test_partner_list_filters_search_type_active_and_city(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'display_name' => 'Ankara Filtre Bayi',
+            'partner_code' => 'FILTER-DEALER',
+            'city' => 'Ankara',
+            'active' => true,
+        ]);
+        $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'display_name' => 'İstanbul Filtre Çilingir',
+            'partner_code' => 'FILTER-LOCKSMITH',
+            'city' => 'İstanbul',
+            'active' => true,
+        ]);
+        $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'display_name' => 'Pasif Bayi',
+            'partner_code' => 'FILTER-PASSIVE',
+            'city' => 'Ankara',
+            'active' => false,
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/partners?partner_type=dealer&active=1&city=Ankara&search=Filtre')
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.partner_code', 'FILTER-DEALER');
     }
 
     private function partnerUser(): User
@@ -302,5 +517,63 @@ class B2BPartnerPanelAccessTest extends TestCase
             'can_update' => false,
             'can_approve' => false,
         ], $attributes));
+    }
+
+    private function grantPanelResource(string $roleCode, string $resourceCode): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        RoleResourcePermission::query()->updateOrCreate(
+            [
+                'role_code' => $roleCode,
+                'resource_code' => $resourceCode,
+            ],
+            [
+                'can_view' => true,
+                'can_execute' => false,
+            ],
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function technician(array $attributes = []): TechnicalServiceTechnician
+    {
+        $sequence = TechnicalServiceTechnician::query()->count() + 1;
+
+        return TechnicalServiceTechnician::query()->create(array_merge([
+            'name' => 'Test Usta '.$sequence,
+            'technician_type' => 'locksmith',
+            'phone' => '+90555111000'.$sequence,
+            'city' => 'İstanbul',
+            'district' => 'Kadıköy',
+            'mikro_cari_kodu' => '320.CLG.'.$sequence,
+            'mikro_cari_adi' => 'Test Usta Cari '.$sequence,
+            'active' => true,
+        ], $attributes));
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function partnerPayload(array $overrides = []): array
+    {
+        return array_merge([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'partner_code' => 'PARTNER-PAYLOAD',
+            'display_name' => 'Partner Payload',
+            'mikro_cari_kodu' => 'CR-PAYLOAD',
+            'mikro_cari_unvan' => 'Partner Payload Cari',
+            'cari_grup_kodu' => null,
+            'responsibility_code' => null,
+            'phone' => '+905551119999',
+            'email' => 'partner@example.test',
+            'city' => 'İstanbul',
+            'district' => 'Kadıköy',
+            'active' => true,
+            'technical_service_technician_id' => null,
+        ], $overrides);
     }
 }

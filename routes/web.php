@@ -1,9 +1,9 @@
 <?php
 
-use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\B2B\B2BPartnerController;
-use App\Http\Controllers\Api\PageConfigController;
 use App\Http\Controllers\Api\CariBilgiDataController;
+use App\Http\Controllers\Api\NavigationController;
+use App\Http\Controllers\Api\PageConfigController;
 use App\Http\Controllers\Api\PageDataController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
@@ -56,8 +56,19 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             ->group(function () {
                 Route::get('partners', [B2BPartnerController::class, 'index'])
                     ->name('api.b2b.partners.index');
+                Route::post('partners', [B2BPartnerController::class, 'store'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.partners.store');
+                Route::get('locksmith-technicians', [B2BPartnerController::class, 'locksmithTechnicians'])
+                    ->name('api.b2b.locksmith-technicians.index');
                 Route::get('partners/{partner}', [B2BPartnerController::class, 'show'])
                     ->name('api.b2b.partners.show');
+                Route::patch('partners/{partner}/active', [B2BPartnerController::class, 'updateActive'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.partners.active');
+                Route::patch('partners/{partner}', [B2BPartnerController::class, 'update'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.partners.update');
             });
 
         Route::prefix('technical-service')->group(function () {
@@ -178,6 +189,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::get('support/activation', [SupportController::class, 'activation'])
         ->middleware(['panel.access:support', 'panel.access:support_activation_query'])
         ->name('support.activation');
+
+    Route::get('panel/b2b/partners', fn () => Inertia::render('panel/b2b/partners', [
+        'page' => [
+            'title' => 'B2B Partner Yönetimi',
+            'slug' => 'b2b_partners',
+            'routePath' => '/panel/b2b/partners',
+            'component' => 'panel/b2b/partners',
+            'layoutType' => 'module',
+            'description' => 'Bayi ve çilingir partner kayıtları',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view')->name('b2b.partners');
 
     Route::get('technical-service/serial-query', fn () => Inertia::render('panel/technical-service-serial-query', [
         'page' => [

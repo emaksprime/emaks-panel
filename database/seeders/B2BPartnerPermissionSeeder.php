@@ -2,6 +2,9 @@
 
 namespace Database\Seeders;
 
+use App\Models\MenuGroup;
+use App\Models\Page;
+use App\Models\PageMenu;
 use App\Models\Resource;
 use Illuminate\Database\Seeder;
 
@@ -15,6 +18,8 @@ class B2BPartnerPermissionSeeder extends Seeder
                 $resource,
             );
         });
+
+        $this->upsertPartnerDirectoryPage();
     }
 
     /**
@@ -36,5 +41,46 @@ class B2BPartnerPermissionSeeder extends Seeder
             ['code' => 'b2b.technical_service.view', 'name' => 'B2B Teknik Servis Görünümü', 'type' => 'scope', 'description' => 'Partner teknik servis işleri görünümü yetkisi.', 'active' => true],
             ['code' => 'b2b.partner_users.manage', 'name' => 'B2B Partner Kullanıcı Yönetimi', 'type' => 'action', 'description' => 'Partner kullanıcılarını yönetme yetkisi.', 'active' => true],
         ];
+    }
+
+    private function upsertPartnerDirectoryPage(): void
+    {
+        $group = MenuGroup::query()->updateOrCreate(
+            ['code' => 'b2b'],
+            [
+                'name' => 'B2B',
+                'icon' => 'building-2',
+                'menu_order' => 84,
+                'active' => true,
+            ],
+        );
+
+        $page = Page::query()->updateOrCreate(
+            ['code' => 'b2b_partners'],
+            [
+                'resource_code' => 'b2b.view',
+                'name' => 'B2B Partner Yönetimi',
+                'route' => '/panel/b2b/partners',
+                'component' => 'panel/b2b/partners',
+                'layout_type' => 'module',
+                'icon' => 'building-2',
+                'description' => 'Bayi ve çilingir partner kayıt yönetimi',
+                'page_order' => 84,
+                'active' => true,
+            ],
+        );
+
+        PageMenu::query()->updateOrCreate(
+            [
+                'menu_group_id' => $group->id,
+                'page_id' => $page->id,
+            ],
+            [
+                'label' => 'Partner Yönetimi',
+                'icon' => 'building-2',
+                'sort_order' => 84,
+                'is_visible' => true,
+            ],
+        );
     }
 }
