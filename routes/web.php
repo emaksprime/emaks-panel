@@ -74,6 +74,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                     ->name('api.b2b.users.search');
                 Route::get('locksmith-technicians', [B2BPartnerController::class, 'locksmithTechnicians'])
                     ->name('api.b2b.locksmith-technicians.index');
+                Route::post('locksmith-technicians/sync', [B2BPartnerController::class, 'syncLocksmithTechnicians'])
+                    ->middleware('panel.access:b2b.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.locksmith-technicians.sync');
                 Route::get('partners/{partner}/users', [B2BPartnerUserController::class, 'index'])
                     ->name('api.b2b.partner-users.index');
                 Route::post('partners/{partner}/users', [B2BPartnerUserController::class, 'store'])

@@ -23,6 +23,8 @@ type Partner = {
   email: string | null
   city: string | null
   district: string | null
+  address?: string | null
+  source_field_missing?: string[]
   active: boolean
   technical_service_technician_id: number | null
   linked_technician_name: string | null
@@ -40,6 +42,7 @@ type TechnicianOption = {
   phone: string | null
   city: string | null
   district: string | null
+  address?: string | null
   mikro_cari_kodu: string | null
   mikro_cari_adi: string | null
   cari_code?: string | null
@@ -251,6 +254,7 @@ export default function B2BPartnersPage() {
   const [saving, setSaving] = useState(false)
   const [technicianLoading, setTechnicianLoading] = useState(false)
   const [cariChecking, setCariChecking] = useState(false)
+  const [locksmithSyncing, setLocksmithSyncing] = useState(false)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
   const [cariControlOpen, setCariControlOpen] = useState(false)
   const [cariSearch, setCariSearch] = useState('')
@@ -578,6 +582,24 @@ export default function B2BPartnersPage() {
     }
   }
 
+  const syncLocksmithTechnicians = async () => {
+    setLocksmithSyncing(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const payload = await apiRequest('/api/b2b/locksmith-technicians/sync', {
+        method: 'POST',
+      })
+      setMessage(`Çilingir eşitleme tamamlandı. Oluşturulan: ${payload.created ?? 0}, güncellenen: ${payload.updated ?? 0}, rol eklenen: ${payload.capability_added ?? 0}, kontrol gerekli: ${payload.review_required ?? 0}, atlanan: ${payload.skipped ?? 0}.`)
+      await loadPartners()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Çilingirler eşitlenemedi.')
+    } finally {
+      setLocksmithSyncing(false)
+    }
+  }
+
   const submitPartner = async () => {
     setSaving(true)
     setError(null)
@@ -674,6 +696,9 @@ export default function B2BPartnersPage() {
               disabled={cariChecking}
             >
               {cariChecking ? 'Kontrol ediliyor...' : 'Cari Kontrol'}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void syncLocksmithTechnicians()} disabled={locksmithSyncing}>
+              {locksmithSyncing ? 'Eşitleniyor...' : 'Çilingirleri eşitle'}
             </Button>
             <Button type="button" onClick={startCreate}>Yeni Partner</Button>
           </div>
@@ -951,6 +976,7 @@ export default function B2BPartnersPage() {
                           <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-600">
                             <span><strong className="text-slate-800">Kod:</strong> {partner.partner_code}</span>
                             <span><strong className="text-slate-800">Cari:</strong> {partner.mikro_cari_kodu ?? '-'}</span>
+                            <span><strong className="text-slate-800">Telefon:</strong> {partner.phone ?? '-'}</span>
                             <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
                             <span><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
                           </div>
@@ -1102,7 +1128,7 @@ export default function B2BPartnersPage() {
                       <option value="">Usta bağlantısı yok</option>
                       {technicians.map((technician) => (
                         <option key={technician.id} value={technician.id}>
-                          {technician.name} · {locationLabel(technician.city, technician.district)}
+                          {technician.name}{technician.phone ? ` · ${technician.phone}` : ''} · {locationLabel(technician.city, technician.district)}{(technician.mikro_cari_kodu ?? technician.cari_code) ? ` · ${technician.mikro_cari_kodu ?? technician.cari_code}` : ''}
                         </option>
                       ))}
                     </select>

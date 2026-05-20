@@ -371,7 +371,7 @@ class B2BPartnerController extends Controller
         $results = DB::transaction(function () use ($data, $request, $user): array {
             return collect($data['candidates'])
                 ->map(function (array $item) use ($data, $request, $user): array {
-                    $candidate = $this->cariControlService->normalizeCandidateInput($item);
+                    $candidate = $this->cariControlService->enrichCandidateForApply($item);
                     $capabilities = $this->candidateSelectedCapabilities($item, $data);
                     abort_unless($this->access->canManageCapabilities($user, $capabilities), 403);
 
@@ -450,8 +450,13 @@ class B2BPartnerController extends Controller
             $this->syncCapabilities($partner, $mergedCapabilities, $request, $userId, $oldCapabilities);
             $partner->refresh();
             $this->writeAuditLog($partner, $request, 'b2b.partner.capability_added', $oldValues, $this->auditPayload($partner), $userId);
+            $defaultUser = $this->ensureDefaultDealerUser($partner, $mergedCapabilities, $candidate, $request, $userId);
 
-            return ['partner_id' => $partner->id, 'status' => 'capability_added'];
+            return array_filter([
+                'partner_id' => $partner->id,
+                'status' => 'capability_added',
+                'default_user' => $defaultUser,
+            ], fn (mixed $value): bool => $value !== null);
         }
 
         $oldValues = $this->auditPayload($partner);
@@ -468,8 +473,15 @@ class B2BPartnerController extends Controller
         $partner->save();
         $partner->refresh();
         $this->writeAuditLog($partner, $request, 'b2b.partner.updated_from_cari', $oldValues, $this->auditPayload($partner), $userId);
+        $defaultUser = $action === 'import'
+            ? $this->ensureDefaultDealerUser($partner, $partner->capabilityCodes(), $candidate, $request, $userId)
+            : null;
 
-        return ['partner_id' => $partner->id, 'status' => 'updated'];
+        return array_filter([
+            'partner_id' => $partner->id,
+            'status' => 'updated',
+            'default_user' => $defaultUser,
+        ], fn (mixed $value): bool => $value !== null);
     }
 
     /**
@@ -533,12 +545,34 @@ class B2BPartnerController extends Controller
         return array_filter([
             'cari_control' => [
                 'source' => $candidate['source_used'] ?? 'gateway_candidate',
+                'detail_source' => $candidate['detail_source_used'] ?? null,
                 'status' => $candidate['status'] ?? null,
                 'confidence' => $candidate['confidence'] ?? null,
             ],
+            'address' => $this->nullableString($candidate['address'] ?? null),
+            'raw_source_summary' => $this->rawSourceSummary($candidate),
+            'source_field_missing' => $candidate['source_field_missing'] ?? null,
             'child_cari_accounts' => $children,
             'invoice_usage_note' => $children === [] ? null : 'Konsinye/teshir/proje siparislerinde fatura cari kodu ilgili alt cari hesabindan secilecektir. Bu fazda siparis/fatura logic degistirilmedi.',
         ], fn (mixed $value): bool => $value !== null && $value !== []);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function rawSourceSummary(array $candidate): array
+    {
+        return [
+            'mikro_cari_kodu' => $this->nullableString($candidate['mikro_cari_kodu'] ?? null),
+            'source_used' => $candidate['source_used'] ?? null,
+            'detail_source_used' => $candidate['detail_source_used'] ?? null,
+            'phone_present' => $this->nullableString($candidate['phone'] ?? null) !== null,
+            'email_present' => $this->nullableString($candidate['email'] ?? null) !== null,
+            'city_present' => $this->nullableString($candidate['city'] ?? null) !== null,
+            'district_present' => $this->nullableString($candidate['district'] ?? null) !== null,
+            'address_present' => $this->nullableString($candidate['address'] ?? null) !== null,
+        ];
     }
 
     /**
@@ -812,7 +846,13 @@ class B2BPartnerController extends Controller
                     ->orWhere('phone', $likeOperator, '%'.$search.'%')
                     ->orWhere('mikro_cari_kodu', $likeOperator, '%'.$search.'%')
                     ->orWhere('cari_code', $likeOperator, '%'.$search.'%')
-                    ->orWhere('city', $likeOperator, '%'.$search.'%');
+                    ->orWhere('mikro_cari_adi', $likeOperator, '%'.$search.'%')
+                    ->orWhere('cari_title', $likeOperator, '%'.$search.'%')
+                    ->orWhere('city', $likeOperator, '%'.$search.'%')
+                    ->orWhere('district', $likeOperator, '%'.$search.'%')
+                    ->orWhere('address', $likeOperator, '%'.$search.'%')
+                    ->orWhere('cari_address', $likeOperator, '%'.$search.'%')
+                    ->orWhere('source_key', $likeOperator, '%'.$search.'%');
             });
         }
 
@@ -824,6 +864,115 @@ class B2BPartnerController extends Controller
                 ->map(fn (TechnicalServiceTechnician $technician): array => $this->locksmithTechnicianPayload($technician, $filters))
                 ->values(),
         ]);
+    }
+
+    public function syncLocksmithTechnicians(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        abort_unless($user && $this->access->canManageCapabilities($user, [B2BPartner::TYPE_LOCKSMITH]), 403);
+
+        $summary = DB::transaction(function () use ($request, $user): array {
+            $result = [
+                'created' => 0,
+                'updated' => 0,
+                'capability_added' => 0,
+                'skipped' => 0,
+                'review_required' => 0,
+                'items' => [],
+            ];
+
+            TechnicalServiceTechnician::query()
+                ->where('active', true)
+                ->where(function (Builder $query): void {
+                    $query->where('technician_type', 'locksmith')
+                        ->orWhere(function (Builder $query): void {
+                            $query->whereNull('technician_type')
+                                ->where(function (Builder $query): void {
+                                    $query->whereNotNull('mikro_cari_kodu')
+                                        ->orWhereNotNull('cari_code')
+                                        ->orWhereNotNull('source_key');
+                                });
+                        });
+                })
+                ->orderBy('id')
+                ->get()
+                ->each(function (TechnicalServiceTechnician $technician) use (&$result, $request, $user): void {
+                    $partner = $this->partnerForTechnicianSync($technician);
+
+                    if ($this->activeTechnicianLinked($technician->id, $partner)) {
+                        $result['skipped']++;
+                        $result['items'][] = [
+                            'technician_id' => $technician->id,
+                            'status' => 'skipped',
+                            'reason' => 'technician_already_linked',
+                        ];
+
+                        return;
+                    }
+
+                    if ($partner && $partner->technical_service_technician_id && (int) $partner->technical_service_technician_id !== (int) $technician->id) {
+                        $result['skipped']++;
+                        $result['review_required']++;
+                        $result['items'][] = [
+                            'technician_id' => $technician->id,
+                            'partner_id' => $partner->id,
+                            'status' => 'review_required',
+                            'reason' => 'partner_has_different_technician',
+                        ];
+
+                        return;
+                    }
+
+                    if ($partner) {
+                        $oldValues = $this->auditPayload($partner);
+                        $oldCapabilities = $partner->capabilityCodes();
+                        $capabilities = collect($oldCapabilities)->merge([B2BPartner::TYPE_LOCKSMITH])->unique()->values()->all();
+                        $partner->fill($this->technicianSnapshotPayload($technician, $partner));
+                        $partner->metadata = $this->mergeTechnicianMetadata($partner, $technician);
+                        $partner->partner_type = $this->primaryPartnerType($capabilities);
+                        $partner->technical_service_technician_id = $technician->id;
+                        $partner->save();
+                        $this->syncCapabilities($partner, $capabilities, $request, $user->id, $oldCapabilities);
+                        $partner->refresh();
+                        $this->writeAuditLog($partner, $request, 'b2b.partner.updated_from_technician', $oldValues, $this->auditPayload($partner), $user->id);
+                        $this->writeAuditLog($partner, $request, 'b2b.partner.locksmith_synced', $oldValues, $this->auditPayload($partner), $user->id);
+
+                        $result['updated']++;
+                        if (! in_array(B2BPartner::TYPE_LOCKSMITH, $oldCapabilities, true)) {
+                            $result['capability_added']++;
+                        }
+                        $result['items'][] = [
+                            'technician_id' => $technician->id,
+                            'partner_id' => $partner->id,
+                            'status' => 'updated',
+                        ];
+
+                        return;
+                    }
+
+                    $partner = B2BPartner::query()->create([
+                        'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+                        'partner_code' => $this->uniqueLocksmithPartnerCode($technician),
+                        ...$this->technicianSnapshotPayload($technician),
+                        'active' => true,
+                        'technical_service_technician_id' => $technician->id,
+                        'metadata' => $this->technicianMetadata($technician),
+                    ]);
+                    $this->syncCapabilities($partner, [B2BPartner::TYPE_LOCKSMITH], $request, $user->id, []);
+                    $this->writeAuditLog($partner, $request, 'b2b.partner.locksmith_synced', null, $this->auditPayload($partner), $user->id);
+
+                    $result['created']++;
+                    $result['items'][] = [
+                        'technician_id' => $technician->id,
+                        'partner_id' => $partner->id,
+                        'status' => 'created',
+                    ];
+                });
+
+            return $result;
+        });
+
+        return response()->json($summary);
     }
 
     /**
@@ -842,6 +991,7 @@ class B2BPartnerController extends Controller
             'phone' => $technician->phone,
             'city' => $technician->city,
             'district' => $technician->district,
+            'address' => $technician->address ?? $technician->cari_address,
             'mikro_cari_kodu' => $cariCode,
             'mikro_cari_adi' => $cariTitle,
             'cari_code' => $technician->cari_code,
@@ -852,6 +1002,99 @@ class B2BPartnerController extends Controller
             'match_reason' => $this->technicianMatchReason($technician, $filters),
             'requires_type_review' => $technician->technician_type === null,
         ];
+    }
+
+    private function partnerForTechnicianSync(TechnicalServiceTechnician $technician): ?B2BPartner
+    {
+        $partner = B2BPartner::query()
+            ->where('active', true)
+            ->where('technical_service_technician_id', $technician->id)
+            ->first();
+
+        if ($partner) {
+            return $partner;
+        }
+
+        $codes = array_values(array_filter([$technician->mikro_cari_kodu, $technician->cari_code]));
+
+        if ($codes === []) {
+            return null;
+        }
+
+        return B2BPartner::query()
+            ->where('active', true)
+            ->whereIn('mikro_cari_kodu', $codes)
+            ->first();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function technicianSnapshotPayload(TechnicalServiceTechnician $technician, ?B2BPartner $partner = null): array
+    {
+        return [
+            'display_name' => $this->nullableString($technician->display_name)
+                ?? $this->nullableString($technician->name)
+                ?? $partner?->display_name,
+            'mikro_cari_kodu' => $this->nullableString($technician->mikro_cari_kodu)
+                ?? $this->nullableString($technician->cari_code)
+                ?? $partner?->mikro_cari_kodu,
+            'mikro_cari_unvan' => $this->nullableString($technician->mikro_cari_adi)
+                ?? $this->nullableString($technician->cari_title)
+                ?? $partner?->mikro_cari_unvan,
+            'phone' => $this->nullableString($technician->phone) ?? $partner?->phone,
+            'city' => $this->nullableString($technician->city) ?? $partner?->city,
+            'district' => $this->nullableString($technician->district) ?? $partner?->district,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function technicianMetadata(TechnicalServiceTechnician $technician): array
+    {
+        return [
+            'technician_sync' => [
+                'technical_service_technician_id' => $technician->id,
+                'source_key' => $technician->source_key,
+                'synced_at' => now()->toIso8601String(),
+            ],
+            'address' => $this->nullableString($technician->address) ?? $this->nullableString($technician->cari_address),
+            'technician_snapshot' => [
+                'name' => $technician->name,
+                'phone' => $technician->phone,
+                'city' => $technician->city,
+                'district' => $technician->district,
+                'address' => $technician->address ?? $technician->cari_address,
+                'mikro_cari_kodu' => $technician->mikro_cari_kodu ?? $technician->cari_code,
+                'mikro_cari_unvan' => $technician->mikro_cari_adi ?? $technician->cari_title,
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mergeTechnicianMetadata(B2BPartner $partner, TechnicalServiceTechnician $technician): array
+    {
+        return [
+            ...(is_array($partner->metadata) ? $partner->metadata : []),
+            ...$this->technicianMetadata($technician),
+        ];
+    }
+
+    private function uniqueLocksmithPartnerCode(TechnicalServiceTechnician $technician): string
+    {
+        $base = Str::limit('B2B-LG-'.$technician->id, 120, '');
+        $code = $base;
+        $counter = 1;
+
+        while (B2BPartner::query()->where('partner_code', $code)->exists()) {
+            $code = Str::limit($base.'-'.$counter, 128, '');
+            $counter++;
+        }
+
+        return $code;
     }
 
     /**
@@ -1264,6 +1507,8 @@ class B2BPartnerController extends Controller
             'linked_technician_phone' => $partner->technician?->phone,
             'linked_technician_city' => $partner->technician?->city,
             'linked_technician_mikro_cari_kodu' => $partner->technician?->mikro_cari_kodu ?? $partner->technician?->cari_code,
+            'address' => is_array($partner->metadata) ? ($partner->metadata['address'] ?? null) : null,
+            'source_field_missing' => is_array($partner->metadata) ? ($partner->metadata['source_field_missing'] ?? []) : [],
             'child_cari_accounts' => is_array($partner->metadata) ? ($partner->metadata['child_cari_accounts'] ?? []) : [],
             'invoice_usage_note' => is_array($partner->metadata) ? ($partner->metadata['invoice_usage_note'] ?? null) : null,
             'users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->count(),

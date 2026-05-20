@@ -6,6 +6,7 @@ use App\Models\B2B\B2BPartner;
 use App\Models\DataSource;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\N8nPanelDataGateway;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class B2BCariControlService
@@ -18,6 +19,11 @@ class B2BCariControlService
         'cari_bilgi_dashboard',
         'customer_detail',
         'sales_customer_search',
+    ];
+
+    private const DETAIL_SOURCE_CODES = [
+        'customer_detail',
+        'cari_bilgi_dashboard',
     ];
 
     private const ONLINE_RETAIL_SIGNALS = [
@@ -112,6 +118,25 @@ class B2BCariControlService
         $normalized['review_required'] = (bool) ($candidate['review_required'] ?? (($normalized['status'] ?? null) === 'review_required'));
 
         return $normalized;
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    public function enrichCandidateForApply(array $candidate): array
+    {
+        $normalized = $this->normalizeCandidateInput($candidate);
+
+        if ($this->missingCandidateFields($normalized) !== []) {
+            $detail = $this->detailCandidate($normalized);
+
+            if ($detail !== null) {
+                $normalized = $this->mergeCandidateDetail($normalized, $detail);
+            }
+        }
+
+        return $this->withSourceFieldMissingMeta($normalized);
     }
 
     /**
@@ -583,7 +608,7 @@ class B2BCariControlService
         $groupName = $this->value($row, ['grup', 'Grup', 'cari_grup_adi', 'cari_grup']);
         $responsibility = $this->value($row, ['responsibility_code', 'sorumluluk_kodu', 'srm', 'srm_merkezi', 'Sorumluluk Kodu']);
         $rep = $this->value($row, ['temsilci_kodu', 'temsilci', 'sales_rep', 'TemsilciKodu', 'TemsilciAdi']);
-        $phone = $this->value($row, ['cari_CepTel', 'cari_tel', 'cari_tel_no', 'cari_telefon', 'cep_tel', 'telefon', 'phone', 'gsm', 'cep', 'CepTel']);
+        $phone = $this->value($row, ['cari_CepTel', 'cari_cep_tel', 'cari_tel', 'cari_tel_no', 'cari_telefon', 'cep_tel', 'telefon', 'phone', 'gsm', 'cep', 'CepTel']);
         $email = $this->value($row, ['cari_EMail', 'cari_email', 'email', 'e_mail', 'mail', 'Cari Email']);
         $city = $this->value($row, ['cari_il', 'il', 'city', 'sehir', 'şehir']);
         $district = $this->value($row, ['cari_ilce', 'ilce', 'ilçe', 'district']);
@@ -807,34 +832,141 @@ class B2BCariControlService
 
     private function ascii(string $value): string
     {
-        return strtr($value, [
-            'İ' => 'I',
-            'I' => 'I',
-            'ı' => 'I',
-            'Ş' => 'S',
-            'ş' => 's',
-            'Ğ' => 'G',
-            'ğ' => 'g',
-            'Ü' => 'U',
-            'ü' => 'u',
-            'Ö' => 'O',
-            'ö' => 'o',
-            'Ç' => 'C',
-            'ç' => 'c',
-            'İ' => 'I',
-            'I' => 'I',
-            'ı' => 'I',
-            'Ş' => 'S',
-            'ş' => 's',
-            'Ğ' => 'G',
-            'ğ' => 'g',
-            'Ü' => 'U',
-            'ü' => 'u',
-            'Ö' => 'O',
-            'ö' => 'o',
-            'Ç' => 'C',
-            'ç' => 'c',
-        ]);
+        return Str::ascii($value);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>|null
+     */
+    private function detailCandidate(array $candidate): ?array
+    {
+        $code = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
+
+        if ($code === null) {
+            return null;
+        }
+
+        foreach ($this->detailSources() as $source) {
+            try {
+                $result = $this->gateway->run($source->code, $this->detailGatewayFilters($code), $source);
+            } catch (RuntimeException) {
+                continue;
+            }
+
+            $rows = collect($result['rows'])
+                ->map(fn (array $row): ?array => $this->normalizeRow($row, $source->code))
+                ->filter()
+                ->values();
+
+            if ($rows->isEmpty()) {
+                continue;
+            }
+
+            $normalizedCode = $this->normalizedText($code);
+            $match = $rows->first(
+                fn (array $row): bool => $this->normalizedText($row['mikro_cari_kodu'] ?? null) === $normalizedCode
+            ) ?? $rows->first();
+
+            if (is_array($match)) {
+                return $match;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return \Illuminate\Support\Collection<int, DataSource>
+     */
+    private function detailSources()
+    {
+        return DataSource::query()
+            ->whereIn('code', self::DETAIL_SOURCE_CODES)
+            ->get()
+            ->sortBy(function (DataSource $source): int {
+                $index = array_search($source->code, self::DETAIL_SOURCE_CODES, true);
+
+                return $index === false ? 999 : $index;
+            })
+            ->filter(fn (DataSource $source): bool => $this->isRunnableSource($source))
+            ->values();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function detailGatewayFilters(string $code): array
+    {
+        return [
+            'search' => $code,
+            'customer_filter' => $code,
+            'cari_filter' => $code,
+            'scope_key' => 'all',
+            'customer_scope_key' => 'bayi_proje',
+            'limit' => 10,
+            'page' => 1,
+            'bypass_cache' => true,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<int, string>
+     */
+    private function missingCandidateFields(array $candidate): array
+    {
+        return collect(['phone', 'email', 'city', 'district', 'address'])
+            ->filter(fn (string $field): bool => $this->nullableString($candidate[$field] ?? null) === null)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function withSourceFieldMissingMeta(array $candidate): array
+    {
+        $candidate['source_field_missing'] = $this->missingCandidateFields($candidate);
+
+        return $candidate;
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $detail
+     * @return array<string, mixed>
+     */
+    private function mergeCandidateDetail(array $candidate, array $detail): array
+    {
+        foreach ([
+            'display_name',
+            'mikro_cari_unvan',
+            'cari_grup_kodu',
+            'responsibility_code',
+            'temsilci_kodu',
+            'srm_merkezi',
+            'phone',
+            'email',
+            'city',
+            'district',
+            'address',
+            'tax_no',
+        ] as $field) {
+            if ($this->nullableString($candidate[$field] ?? null) === null && $this->nullableString($detail[$field] ?? null) !== null) {
+                $candidate[$field] = $detail[$field];
+            }
+        }
+
+        $candidate['detail_source_used'] = $detail['source_used'] ?? null;
+        $candidate['raw_source_summary'] = [
+            'list_source' => $candidate['source_used'] ?? null,
+            'detail_source' => $detail['source_used'] ?? null,
+            'detail_fields_applied' => array_values(array_diff(['phone', 'email', 'city', 'district', 'address'], $this->missingCandidateFields($candidate))),
+        ];
+
+        return $candidate;
     }
 
     /**

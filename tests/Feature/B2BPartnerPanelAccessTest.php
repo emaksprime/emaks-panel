@@ -568,6 +568,94 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('items.0.requires_type_review', false);
     }
 
+    public function test_locksmith_technician_lookup_searches_address_and_returns_full_payload(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician([
+            'name' => 'Adresli Usta',
+            'technician_type' => 'locksmith',
+            'active' => true,
+            'address' => 'Anahtar Sokak No 5',
+            'city' => 'Bursa',
+            'district' => 'Nilufer',
+            'mikro_cari_kodu' => '320.CLG.ADDR',
+            'mikro_cari_adi' => 'Adresli Usta Cari',
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/locksmith-technicians?search=Anahtar')
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $technician->id)
+            ->assertJsonPath('items.0.address', 'Anahtar Sokak No 5')
+            ->assertJsonPath('items.0.city', 'Bursa')
+            ->assertJsonPath('items.0.district', 'Nilufer')
+            ->assertJsonPath('items.0.mikro_cari_kodu', '320.CLG.ADDR')
+            ->assertJsonPath('items.0.mikro_cari_adi', 'Adresli Usta Cari');
+    }
+
+    public function test_locksmith_technician_sync_creates_and_merges_b2b_partners_without_duplicates(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $existingDealer = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'mikro_cari_kodu' => '320.CLG.MERGE',
+            'display_name' => 'Mevcut Bayi',
+        ]);
+        $mergeTechnician = $this->technician([
+            'name' => 'Merge Usta',
+            'technician_type' => 'locksmith',
+            'mikro_cari_kodu' => '320.CLG.MERGE',
+            'mikro_cari_adi' => 'Merge Usta Cari',
+            'phone' => '+905551110111',
+            'city' => 'Ankara',
+            'district' => 'Cankaya',
+            'address' => 'Merge Adres',
+        ]);
+        $newTechnician = $this->technician([
+            'name' => 'Yeni Sync Usta',
+            'technician_type' => 'locksmith',
+            'mikro_cari_kodu' => '320.CLG.NEW',
+            'mikro_cari_adi' => 'Yeni Sync Cari',
+            'phone' => '+905551110222',
+            'city' => 'Izmir',
+            'district' => 'Bornova',
+            'address' => 'Yeni Adres',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/locksmith-technicians/sync')
+            ->assertOk()
+            ->assertJsonPath('created', 1)
+            ->assertJsonPath('updated', 1)
+            ->assertJsonPath('capability_added', 1);
+
+        $existingDealer->refresh();
+        $this->assertTrue($existingDealer->hasCapability(B2BPartner::TYPE_LOCKSMITH));
+        $this->assertSame($mergeTechnician->id, (int) $existingDealer->technical_service_technician_id);
+        $this->assertSame('+905551110111', $existingDealer->phone);
+        $this->assertSame('Merge Adres', $existingDealer->metadata['address']);
+
+        $newPartner = B2BPartner::query()
+            ->where('technical_service_technician_id', $newTechnician->id)
+            ->firstOrFail();
+        $this->assertSame('Yeni Sync Usta', $newPartner->display_name);
+        $this->assertSame('320.CLG.NEW', $newPartner->mikro_cari_kodu);
+        $this->assertSame('Yeni Adres', $newPartner->metadata['address']);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/locksmith-technicians/sync')
+            ->assertOk()
+            ->assertJsonPath('created', 0);
+
+        $this->assertSame(1, B2BPartner::query()->where('technical_service_technician_id', $newTechnician->id)->count());
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $existingDealer->id,
+            'action' => 'b2b.partner.locksmith_synced',
+        ]);
+    }
+
     public function test_partner_list_filters_search_type_active_and_city(): void
     {
         $admin = $this->userWithRole('admin', true);
@@ -891,6 +979,77 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('candidates.0.address', 'Test Mahallesi');
     }
 
+    public function test_cari_apply_enriches_missing_contact_fields_from_detail_source_and_preserves_existing_values(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customer_detail');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'cari_kod' => '120.DETAIL.001',
+                    'cari_unvan1' => 'Detail Bayi',
+                    'cari_grup_kodu' => 'BAYI',
+                    'cari_cep_tel' => '+905550001122',
+                    'cari_EMail' => 'detail@example.test',
+                    'cari_il' => 'Ankara',
+                    'cari_ilce' => 'Cankaya',
+                    'cari_adres1' => 'Detail Mahallesi',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                'candidates' => [[
+                    'mikro_cari_kodu' => '120.DETAIL.001',
+                    'display_name' => 'Detail Bayi',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'created');
+
+        $partner = B2BPartner::query()->where('mikro_cari_kodu', '120.DETAIL.001')->firstOrFail();
+        $this->assertSame('+905550001122', $partner->phone);
+        $this->assertSame('detail@example.test', $partner->email);
+        $this->assertSame('Ankara', $partner->city);
+        $this->assertSame('Cankaya', $partner->district);
+        $this->assertSame('Detail Mahallesi', $partner->metadata['address']);
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'update_partner',
+                'existing_partner_id' => $partner->id,
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                'candidates' => [[
+                    'mikro_cari_kodu' => '120.DETAIL.001',
+                    'display_name' => 'Detail Bayi Updated',
+                    'phone' => '',
+                    'email' => '',
+                    'city' => '',
+                    'district' => '',
+                ]],
+            ])
+            ->assertOk();
+
+        $partner->refresh();
+        $this->assertSame('+905550001122', $partner->phone);
+        $this->assertSame('detail@example.test', $partner->email);
+        $this->assertSame('Ankara', $partner->city);
+        $this->assertSame('Cankaya', $partner->district);
+    }
+
     public function test_cari_control_query_contract_doc_contains_select_only_discovery_contract(): void
     {
         $contract = file_get_contents(base_path('docs/b2b-mikro-cari-control-query-contract.md')) ?: '';
@@ -905,11 +1064,14 @@ class B2BPartnerPanelAccessTest extends TestCase
     public function test_partner_directory_ui_uses_multi_role_cards_without_horizontal_scroll(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/b2b/partners.tsx'));
+        $usersSource = file_get_contents(resource_path('js/pages/panel/b2b/users.tsx'));
 
         $this->assertIsString($source);
+        $this->assertIsString($usersSource);
         $this->assertStringContainsString('Bayi kanalı', $source);
         $this->assertStringContainsString('Çilingir / servis kanalı', $source);
         $this->assertStringContainsString("Mikro'da yeni cari oluşturmaz", $source);
+        $this->assertStringContainsString('Çilingirleri eşitle', $source);
         $this->assertStringContainsString('Kullanıcı:', $source);
         $this->assertStringContainsString('Cari kodu,', $source);
         $this->assertStringContainsString('cariSearch', $source);
@@ -919,6 +1081,9 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Eşleşen cari bulunamadı.', $source);
         $this->assertStringNotContainsString('overflow-x-auto', $source);
         $this->assertStringNotContainsString('Bayi için kullanılmaz', $source);
+        $this->assertStringNotContainsString('overflow-x-auto', $usersSource);
+        $this->assertStringContainsString('grid gap-3 rounded-xl', $usersSource);
+        $this->assertStringContainsString('Partner kullanıcı yetkileri güncellendi', $usersSource);
     }
 
     public function test_cari_control_and_admin_role_preset_ui_contracts_exist(): void
