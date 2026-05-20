@@ -227,6 +227,7 @@ class B2BPartnerController extends Controller
         $filters = $request->validate([
             'search' => ['nullable', 'string', 'max:255'],
             'capability' => ['nullable', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
+            'status' => ['nullable', 'string', Rule::in(['new', 'existing', 'changed', 'review_required', 'candidate'])],
             'city' => ['nullable', 'string', 'max:128'],
             'include_review_required' => ['nullable', 'boolean'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:250'],

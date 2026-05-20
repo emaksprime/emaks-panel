@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Heading from '@/components/heading'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,6 +7,7 @@ import { apiRequest } from '@/lib/api'
 
 type PartnerType = 'dealer' | 'locksmith' | 'manufacturer' | 'seller'
 type FormMode = 'create' | 'edit' | 'detail'
+type CariControlStatusFilter = '' | 'new' | 'existing' | 'changed' | 'review_required'
 
 type Partner = {
   id: number
@@ -83,6 +84,18 @@ type CariControlCandidate = {
   confidence?: number | null
   existing_partner_id?: number | null
   difference_summary?: string[]
+  child_cari_accounts?: CariControlChildAccount[]
+  matched_child_cari_codes?: string[]
+  search_match?: 'parent' | 'child' | null
+}
+
+type CariControlChildAccount = {
+  mikro_cari_kodu: string
+  mikro_cari_unvan?: string | null
+  display_name?: string | null
+  cari_usage_type?: string | null
+  status?: string | null
+  status_label?: string | null
 }
 
 type CariControlSource = {
@@ -229,14 +242,23 @@ export default function B2BPartnersPage() {
   const [cariChecking, setCariChecking] = useState(false)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
   const [cariControlOpen, setCariControlOpen] = useState(false)
+  const [cariSearch, setCariSearch] = useState('')
+  const [cariCapabilityFilter, setCariCapabilityFilter] = useState<'' | PartnerType>('')
+  const [cariStatusFilter, setCariStatusFilter] = useState<CariControlStatusFilter>('')
   const [selectedCariCodes, setSelectedCariCodes] = useState<string[]>([])
+  const [selectedCariCandidates, setSelectedCariCandidates] = useState<Record<string, CariControlCandidate>>({})
   const [candidateCapabilitySelections, setCandidateCapabilitySelections] = useState<Record<string, PartnerType[]>>({})
+  const skipNextCariSearchEffect = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
   const hasLocksmithForm = form.capabilities.includes('locksmith')
   const hasMikroForm = form.capabilities.some((capability) => ['dealer', 'manufacturer', 'seller'].includes(capability))
   const cariCandidates = useMemo(() => cariControl?.candidates ?? cariControl?.items ?? [], [cariControl])
+  const selectedCariItems = useMemo(
+    () => selectedCariCodes.map((code) => selectedCariCandidates[code]).filter((candidate): candidate is CariControlCandidate => Boolean(candidate)),
+    [selectedCariCandidates, selectedCariCodes],
+  )
   const activeFilterText = useMemo(() => {
     if (filters.partner_type === 'dealer') {
       return 'Bayiler'
@@ -372,21 +394,34 @@ export default function B2BPartnersPage() {
     }))
   }
 
-  const runCariControl = async () => {
+  const runCariControl = useCallback(async (options: { search?: string; resetSelection?: boolean } = {}) => {
     setCariChecking(true)
     setCariControl(null)
-    setSelectedCariCodes([])
-    setCandidateCapabilitySelections({})
+
+    if (options.resetSelection) {
+      setSelectedCariCodes([])
+      setSelectedCariCandidates({})
+      setCandidateCapabilitySelections({})
+    }
+
     setCariControlOpen(true)
     setError(null)
     setMessage(null)
 
     try {
-      const search = (filters.mikro_cari_kodu || filters.search).trim()
+      const search = (options.search ?? (cariSearch || filters.mikro_cari_kodu || filters.search)).trim()
       const params = new URLSearchParams()
 
       if (search !== '') {
         params.set('search', search)
+      }
+
+      if (cariCapabilityFilter !== '') {
+        params.set('capability', cariCapabilityFilter)
+      }
+
+      if (cariStatusFilter !== '') {
+        params.set('status', cariStatusFilter)
       }
 
       params.set('include_review_required', '1')
@@ -406,7 +441,7 @@ export default function B2BPartnersPage() {
       const nextSelections = Object.fromEntries(
         nextCandidates.map((candidate: CariControlCandidate) => [candidate.mikro_cari_kodu, candidateCapabilities(candidate)]),
       )
-      setCandidateCapabilitySelections(nextSelections)
+      setCandidateCapabilitySelections((current) => ({ ...nextSelections, ...current }))
       setCariControl(nextControl)
     } catch {
       setCariControl({
@@ -416,14 +451,50 @@ export default function B2BPartnersPage() {
     } finally {
       setCariChecking(false)
     }
-  }
+  }, [cariCapabilityFilter, cariSearch, cariStatusFilter, filters.mikro_cari_kodu, filters.search])
 
-  const toggleCariCandidate = (mikroCariKodu: string) => {
+  useEffect(() => {
+    if (!cariControlOpen) {
+      return undefined
+    }
+
+    if (skipNextCariSearchEffect.current) {
+      skipNextCariSearchEffect.current = false
+
+      return undefined
+    }
+
+    const search = cariSearch.trim()
+
+    if (search !== '' && search.length < 2) {
+      return undefined
+    }
+
+    const timer = window.setTimeout(() => {
+      void runCariControl({ search })
+    }, 300)
+
+    return () => window.clearTimeout(timer)
+  }, [cariCapabilityFilter, cariControlOpen, cariSearch, cariStatusFilter, runCariControl])
+
+  const toggleCariCandidate = (candidate: CariControlCandidate) => {
+    const mikroCariKodu = candidate.mikro_cari_kodu
+
     setSelectedCariCodes((current) => (
       current.includes(mikroCariKodu)
         ? current.filter((code) => code !== mikroCariKodu)
         : [...current, mikroCariKodu]
     ))
+    setSelectedCariCandidates((current) => {
+      if (current[mikroCariKodu]) {
+        const next = { ...current }
+        delete next[mikroCariKodu]
+
+        return next
+      }
+
+      return { ...current, [mikroCariKodu]: candidate }
+    })
   }
 
   const toggleCandidateCapability = (mikroCariKodu: string, capability: PartnerType) => {
@@ -441,7 +512,7 @@ export default function B2BPartnersPage() {
   }
 
   const importSelectedCariCandidates = async () => {
-    const candidates = cariCandidates.filter((candidate) => selectedCariCodes.includes(candidate.mikro_cari_kodu))
+    const candidates = selectedCariItems
 
     if (candidates.length === 0) {
       setError('Partner oluşturmak veya güncellemek için en az bir cari adayı seçin.')
@@ -465,6 +536,7 @@ export default function B2BPartnersPage() {
         }),
       })
       setSelectedCariCodes([])
+      setSelectedCariCandidates({})
       setMessage(`${payload.items?.length ?? candidates.length} cari adayı işlendi.`)
       await loadPartners()
     } catch (requestError) {
@@ -558,7 +630,17 @@ export default function B2BPartnersPage() {
             description="Bayi ve çilingir partner rolleri, manuel Mikro cari bağlantısı ve teknik servis usta eşleştirmesi."
           />
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" variant="outline" onClick={() => void runCariControl()} disabled={cariChecking}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const nextSearch = (filters.mikro_cari_kodu || filters.search).trim()
+                skipNextCariSearchEffect.current = true
+                setCariSearch(nextSearch)
+                void runCariControl({ search: nextSearch, resetSelection: true })
+              }}
+              disabled={cariChecking}
+            >
               {cariChecking ? 'Kontrol ediliyor...' : 'Cari Kontrol'}
             </Button>
             <Button type="button" onClick={startCreate}>Yeni Partner</Button>
@@ -631,35 +713,134 @@ export default function B2BPartnersPage() {
                 </Button>
               </div>
 
+              <form
+                className="mt-3 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_auto_auto]"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  const search = cariSearch.trim()
+
+                  if (search === '' || search.length >= 2) {
+                    void runCariControl({ search })
+                  }
+                }}
+              >
+                <Input
+                  value={cariSearch}
+                  onChange={(event) => setCariSearch(event.target.value)}
+                  placeholder="Cari kodu, ünvan, telefon, şehir, grup veya alt cari ara"
+                />
+                <select
+                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                  value={cariCapabilityFilter}
+                  onChange={(event) => setCariCapabilityFilter(event.target.value as '' | PartnerType)}
+                >
+                  <option value="">Tüm roller</option>
+                  <option value="dealer">Bayi</option>
+                  <option value="locksmith">Çilingir</option>
+                  <option value="manufacturer">Üretici</option>
+                  <option value="seller">Satıcı</option>
+                </select>
+                <select
+                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                  value={cariStatusFilter}
+                  onChange={(event) => setCariStatusFilter(event.target.value as CariControlStatusFilter)}
+                >
+                  <option value="">Tüm durumlar</option>
+                  <option value="new">Yeni</option>
+                  <option value="existing">Mevcut</option>
+                  <option value="changed">Güncellenecek</option>
+                  <option value="review_required">Kontrol gerekli</option>
+                </select>
+                <Button type="submit" variant="outline" disabled={cariChecking || (cariSearch.trim() !== '' && cariSearch.trim().length < 2)}>
+                  Ara
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setCariSearch('')
+                    setCariCapabilityFilter('')
+                    setCariStatusFilter('')
+                  }}
+                  disabled={cariChecking}
+                >
+                  Temizle
+                </Button>
+              </form>
+
               <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-600">
                 <span>Kaynak: {cariControl.source_used ?? '-'}</span>
+                <span>{cariCandidates.length} aday bulundu</span>
                 <span>Online perakende hariç: {cariControl.excluded_online_retail_count ?? 0}</span>
               </div>
 
-              {cariCandidates.length === 0 ? (
+              {cariChecking && (
+                <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">
+                  Cariler aranıyor...
+                </div>
+              )}
+
+              {selectedCariItems.length > 0 && (
+                <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Seçilenler</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {selectedCariItems.map((candidate) => (
+                      <span key={candidate.mikro_cari_kodu} className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-emerald-800">
+                        {candidate.mikro_cari_kodu}
+                        <button type="button" className="text-emerald-500 hover:text-emerald-800" onClick={() => toggleCariCandidate(candidate)}>
+                          Kaldır
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {cariCandidates.length === 0 && cariSearch.trim() !== '' && (
+                <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-slate-600">
+                  Eşleşen cari bulunamadı.
+                </div>
+              )}
+
+              {cariCandidates.length === 0 && cariSearch.trim() === '' ? (
                 <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-slate-600">
                   Aday verisi yok. n8n üzerinden SELECT-only keşif sonucu onaylanıp bu sözleşmeye uygun aday listesi gelmeden kayıt açılmaz.
                 </div>
-              ) : (
+              ) : cariCandidates.length > 0 ? (
                 <div className="mt-3 grid gap-2">
                   {cariCandidates.map((candidate) => (
-                    <label key={candidate.mikro_cari_kodu} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                    <article key={candidate.mikro_cari_kodu} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
                       <input
                         type="checkbox"
                         className="mt-1"
                         checked={selectedCariCodes.includes(candidate.mikro_cari_kodu)}
-                        onChange={() => toggleCariCandidate(candidate.mikro_cari_kodu)}
+                        onChange={() => toggleCariCandidate(candidate)}
                         disabled={!cariControl.actions_enabled}
                       />
-                      <span className="min-w-0 flex-1">
+                      <div className="min-w-0 flex-1">
                         <span className="block font-semibold text-slate-900">{candidate.display_name ?? candidate.mikro_cari_unvan ?? candidate.mikro_cari_kodu}</span>
                         <span className="mt-1 block text-xs text-slate-500">
                           {candidate.mikro_cari_kodu} · {candidate.city ?? '-'} / {candidate.district ?? '-'} · {candidate.status_label ?? candidate.status ?? 'Kontrol gerekli'}
                         </span>
+                        {(candidate.child_cari_accounts ?? []).length > 0 && (
+                          <div className="mt-2 grid gap-1">
+                            {(candidate.child_cari_accounts ?? []).map((child) => {
+                              const isMatched = (candidate.matched_child_cari_codes ?? []).includes(child.mikro_cari_kodu)
+
+                              return (
+                                <div key={child.mikro_cari_kodu} className={`rounded-lg border px-2 py-1 text-xs ${isMatched ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-600'}`}>
+                                  <span className="font-semibold">{child.cari_usage_type ?? 'Alt cari'}</span>
+                                  <span className="ml-2">{child.mikro_cari_kodu}</span>
+                                  {(child.display_name ?? child.mikro_cari_unvan) && <span className="ml-2">{child.display_name ?? child.mikro_cari_unvan}</span>}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
                         {candidate.existing_partner_id && (
                           <span className="mt-2 inline-flex rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">Mevcut partner bulundu</span>
                         )}
-                        <span className="mt-2 grid gap-1 sm:grid-cols-4">
+                        <div className="mt-2 grid gap-1 sm:grid-cols-4">
                           {(['dealer', 'locksmith', 'manufacturer', 'seller'] as const).map((capability) => (
                             <span key={capability} className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700">
                               <input
@@ -671,12 +852,12 @@ export default function B2BPartnersPage() {
                               {partnerTypeLabel(capability)}
                             </span>
                           ))}
-                        </span>
-                      </span>
-                    </label>
+                        </div>
+                      </div>
+                    </article>
                   ))}
                 </div>
-              )}
+              ) : null}
             </div>
           </section>
           </div>

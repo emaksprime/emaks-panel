@@ -745,6 +745,69 @@ class B2BPartnerPanelAccessTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_cari_control_search_groups_child_cari_accounts_under_parent_candidate(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'musteri_kodu' => '120.00.33.00005',
+                        'firma_unvani' => 'KEYSWORLD GUVENLIK SISTEMLERI',
+                        'grup' => 'BAYI',
+                        'city' => 'Istanbul',
+                    ],
+                    [
+                        'musteri_kodu' => '120.00.33.00005.KONSINYE',
+                        'firma_unvani' => 'KEYSWORLD GUVENLIK SISTEMLERI KONSINYE',
+                        'grup' => 'BAYI',
+                    ],
+                    [
+                        'musteri_kodu' => '120.00.33.00005.TEŞHIR',
+                        'firma_unvani' => 'KEYSWORLD GUVENLIK SISTEMLERI TESHIR',
+                        'grup' => 'BAYI',
+                    ],
+                    [
+                        'musteri_kodu' => '120.ONLINE.00001',
+                        'firma_unvani' => 'Online Perakende Musteri',
+                        'grup' => 'ONLINE PERAKENDE',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=KONSINYE&include_review_required=1')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '120.00.33.00005')
+            ->assertJsonPath('candidates.0.search_match', 'child')
+            ->assertJsonPath('candidates.0.matched_child_cari_codes.0', '120.00.33.00005.KONSINYE')
+            ->assertJsonPath('candidates.0.child_cari_accounts.0.mikro_cari_kodu', '120.00.33.00005.KONSINYE')
+            ->assertJsonPath('candidates.0.child_cari_accounts.1.mikro_cari_kodu', '120.00.33.00005.TEŞHIR');
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=KEYSWORLD&capability=dealer&include_review_required=1')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.search_match', 'parent')
+            ->assertJsonPath('candidates.0.suggested_capabilities.0', B2BPartner::TYPE_DEALER);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=KEYSWORLD&capability=manufacturer&include_review_required=1')
+            ->assertOk()
+            ->assertJsonCount(0, 'candidates');
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=ONLINE&include_review_required=1')
+            ->assertOk()
+            ->assertJsonPath('excluded_online_retail_count', 1)
+            ->assertJsonCount(0, 'candidates');
+    }
+
     public function test_cari_control_query_contract_doc_contains_select_only_discovery_contract(): void
     {
         $contract = file_get_contents(base_path('docs/b2b-mikro-cari-control-query-contract.md')) ?: '';
@@ -765,6 +828,12 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Çilingir / servis kanalı', $source);
         $this->assertStringContainsString("Mikro'da yeni cari oluşturmaz", $source);
         $this->assertStringContainsString('Kullanıcı:', $source);
+        $this->assertStringContainsString('Cari kodu,', $source);
+        $this->assertStringContainsString('cariSearch', $source);
+        $this->assertStringContainsString('selectedCariCandidates', $source);
+        $this->assertStringContainsString('child_cari_accounts', $source);
+        $this->assertStringContainsString('matched_child_cari_codes', $source);
+        $this->assertStringContainsString('Eşleşen cari bulunamadı.', $source);
         $this->assertStringNotContainsString('overflow-x-auto', $source);
         $this->assertStringNotContainsString('Bayi için kullanılmaz', $source);
     }

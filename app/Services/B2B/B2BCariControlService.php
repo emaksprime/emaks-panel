@@ -6,7 +6,6 @@ use App\Models\B2B\B2BPartner;
 use App\Models\DataSource;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\N8nPanelDataGateway;
-use Illuminate\Support\Collection;
 use RuntimeException;
 
 class B2BCariControlService
@@ -31,6 +30,12 @@ class B2BCariControlService
         'PAZARYERI',
         'PAZAR YERI',
         'MARKETPLACE',
+    ];
+
+    private const CHILD_CARI_USAGE_SUFFIXES = [
+        'KONSINYE' => 'Konsinye cari',
+        'TESHIR' => 'Teşhir cari',
+        'PROJE' => 'Proje cari',
     ];
 
     public function __construct(
@@ -220,25 +225,31 @@ class B2BCariControlService
         $excludedOnlineRetailCount = 0;
         $includeReviewRequired = (bool) ($filters['include_review_required'] ?? false);
         $requestedCapability = $this->nullableString($filters['capability'] ?? null);
+        $requestedStatus = $this->nullableString($filters['status'] ?? null);
         $cityFilter = $this->normalizedText($filters['city'] ?? null);
+        $search = $this->normalizedText($filters['search'] ?? null);
         $offset = max(0, (int) ($filters['offset'] ?? 0));
         $limit = min(250, max(1, (int) ($filters['limit'] ?? 100)));
 
-        $candidates = collect($rows)
-            ->map(fn (array $row): ?array => $this->normalizeRow($row, $sourceCode, $existingPartners, $techniciansByCari))
-            ->filter(function (?array $candidate) use (&$excludedOnlineRetailCount): bool {
-                if (! $candidate) {
-                    return false;
-                }
+        $normalizedRows = [];
 
-                if (($candidate['status'] ?? null) === 'excluded_online_retail') {
-                    $excludedOnlineRetailCount++;
+        foreach ($rows as $row) {
+            $candidate = $this->normalizeRow($row, $sourceCode, $existingPartners, $techniciansByCari);
 
-                    return false;
-                }
+            if (! $candidate) {
+                continue;
+            }
 
-                return true;
-            })
+            if (($candidate['status'] ?? null) === 'excluded_online_retail') {
+                $excludedOnlineRetailCount++;
+
+                continue;
+            }
+
+            $normalizedRows[] = $candidate;
+        }
+
+        $candidates = collect($this->groupChildCariAccounts($normalizedRows, $existingPartners))
             ->filter(function (array $candidate) use ($includeReviewRequired): bool {
                 return $includeReviewRequired || ($candidate['status'] ?? null) !== 'review_required';
             })
@@ -249,6 +260,7 @@ class B2BCariControlService
 
                 return in_array($requestedCapability, $candidate['suggested_capabilities'] ?? [], true);
             })
+            ->filter(fn (array $candidate): bool => $this->matchesStatusFilter($candidate, $requestedStatus))
             ->filter(function (array $candidate) use ($cityFilter): bool {
                 if ($cityFilter === '') {
                     return true;
@@ -256,6 +268,8 @@ class B2BCariControlService
 
                 return str_contains($this->normalizedText($candidate['city'] ?? null), $cityFilter);
             })
+            ->map(fn (array $candidate): array => $this->annotateSearchMatch($candidate, $search))
+            ->filter(fn (array $candidate): bool => $search === '' || ($candidate['search_match'] ?? null) !== null)
             ->slice($offset, $limit)
             ->values()
             ->all();
@@ -264,6 +278,229 @@ class B2BCariControlService
             'candidates' => $candidates,
             'excluded_online_retail_count' => $excludedOnlineRetailCount,
         ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $candidates
+     * @param  array<string, B2BPartner>  $existingPartners
+     * @return array<int, array<string, mixed>>
+     */
+    private function groupChildCariAccounts(array $candidates, array $existingPartners): array
+    {
+        $grouped = [];
+
+        foreach ($candidates as $candidate) {
+            $childInfo = $this->childCariInfo((string) ($candidate['mikro_cari_kodu'] ?? ''));
+
+            if ($childInfo) {
+                $groupKey = $this->normalizedText($childInfo['parent_code']);
+
+                if (! isset($grouped[$groupKey])) {
+                    $grouped[$groupKey] = $this->parentCandidateFromChild($candidate, $childInfo['parent_code'], $existingPartners);
+                }
+
+                $grouped[$groupKey] = $this->mergeCandidateMetadata($grouped[$groupKey], $candidate);
+                $grouped[$groupKey]['child_cari_accounts'][] = [
+                    'mikro_cari_kodu' => $candidate['mikro_cari_kodu'],
+                    'mikro_cari_unvan' => $candidate['mikro_cari_unvan'] ?? $candidate['display_name'] ?? null,
+                    'display_name' => $candidate['display_name'] ?? $candidate['mikro_cari_unvan'] ?? null,
+                    'cari_usage_type' => $childInfo['usage_type'],
+                    'status' => $candidate['status'] ?? null,
+                    'status_label' => $candidate['status_label'] ?? null,
+                ];
+
+                continue;
+            }
+
+            $groupKey = $this->normalizedText($candidate['mikro_cari_kodu'] ?? null);
+            $candidate['child_cari_accounts'] = $candidate['child_cari_accounts'] ?? [];
+
+            if (! isset($grouped[$groupKey])) {
+                $grouped[$groupKey] = $candidate;
+
+                continue;
+            }
+
+            $children = $grouped[$groupKey]['child_cari_accounts'] ?? [];
+            $grouped[$groupKey] = $this->mergeCandidateMetadata($candidate, $grouped[$groupKey]);
+            $grouped[$groupKey]['child_cari_accounts'] = $children;
+        }
+
+        return collect($grouped)
+            ->map(function (array $candidate): array {
+                $candidate['child_cari_accounts'] = collect($candidate['child_cari_accounts'] ?? [])
+                    ->unique('mikro_cari_kodu')
+                    ->values()
+                    ->all();
+
+                return $candidate;
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, B2BPartner>  $existingPartners
+     * @return array<string, mixed>
+     */
+    private function parentCandidateFromChild(array $candidate, string $parentCode, array $existingPartners): array
+    {
+        $parent = $candidate;
+        $parent['mikro_cari_kodu'] = $parentCode;
+        $parent['child_cari_accounts'] = [];
+
+        $existingPartner = $existingPartners[$this->normalizedText($parentCode)] ?? null;
+
+        if ($existingPartner) {
+            $parent['existing_partner_id'] = $existingPartner->id;
+            $parent['difference_summary'] = $this->differenceSummary($existingPartner, [
+                'mikro_cari_unvan' => $parent['mikro_cari_unvan'] ?? null,
+                'cari_grup_kodu' => $parent['cari_grup_kodu'] ?? null,
+                'responsibility_code' => $parent['responsibility_code'] ?? null,
+                'phone' => $parent['phone'] ?? null,
+                'email' => $parent['email'] ?? null,
+                'city' => $parent['city'] ?? null,
+                'district' => $parent['district'] ?? null,
+            ]);
+        }
+
+        return $parent;
+    }
+
+    /**
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $incoming
+     * @return array<string, mixed>
+     */
+    private function mergeCandidateMetadata(array $base, array $incoming): array
+    {
+        $capabilities = array_values(array_unique([
+            ...($base['suggested_capabilities'] ?? []),
+            ...($incoming['suggested_capabilities'] ?? []),
+        ]));
+
+        if ($capabilities !== []) {
+            $base['suggested_capabilities'] = $capabilities;
+            $base['capabilities'] = $capabilities;
+            $base['confidence'] = max((float) ($base['confidence'] ?? 0), (float) ($incoming['confidence'] ?? 0));
+        }
+
+        if (($base['status'] ?? null) === 'review_required' && ($incoming['status'] ?? null) === 'candidate') {
+            $base['status'] = 'candidate';
+            $base['status_label'] = 'Aday';
+        }
+
+        if (($base['existing_partner_id'] ?? null) === null && ($incoming['existing_partner_id'] ?? null) !== null) {
+            $base['existing_partner_id'] = $incoming['existing_partner_id'];
+        }
+
+        $base['difference_summary'] = array_values(array_unique([
+            ...($base['difference_summary'] ?? []),
+            ...($incoming['difference_summary'] ?? []),
+        ]));
+
+        return $base;
+    }
+
+    /**
+     * @return array{parent_code: string, usage_type: string}|null
+     */
+    private function childCariInfo(string $code): ?array
+    {
+        $parts = explode('.', trim($code));
+
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        $lastPart = array_pop($parts);
+        $normalizedSuffix = $this->normalizedText($lastPart);
+        $usageType = self::CHILD_CARI_USAGE_SUFFIXES[$normalizedSuffix] ?? null;
+
+        if ($usageType === null) {
+            return null;
+        }
+
+        return [
+            'parent_code' => implode('.', $parts),
+            'usage_type' => $usageType,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function matchesStatusFilter(array $candidate, ?string $statusFilter): bool
+    {
+        if ($statusFilter === null) {
+            return true;
+        }
+
+        $status = $this->normalizedText($statusFilter);
+
+        return match ($status) {
+            'NEW', 'YENI' => ($candidate['existing_partner_id'] ?? null) === null,
+            'EXISTING', 'MEVCUT' => ($candidate['existing_partner_id'] ?? null) !== null && count($candidate['difference_summary'] ?? []) === 0,
+            'CHANGED', 'UPDATE', 'GUNCELLENECEK' => ($candidate['existing_partner_id'] ?? null) !== null && count($candidate['difference_summary'] ?? []) > 0,
+            'REVIEW_REQUIRED', 'KONTROL_GEREKLI' => ($candidate['status'] ?? null) === 'review_required',
+            default => $this->normalizedText($candidate['status'] ?? null) === $status,
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function annotateSearchMatch(array $candidate, string $search): array
+    {
+        $candidate['matched_child_cari_codes'] = [];
+        $candidate['search_match'] = null;
+
+        if ($search === '') {
+            return $candidate;
+        }
+
+        $parentFields = [
+            $candidate['mikro_cari_kodu'] ?? null,
+            $candidate['mikro_cari_unvan'] ?? null,
+            $candidate['display_name'] ?? null,
+            $candidate['cari_grup_kodu'] ?? null,
+            $candidate['responsibility_code'] ?? null,
+            $candidate['temsilci_kodu'] ?? null,
+            $candidate['phone'] ?? null,
+            $candidate['email'] ?? null,
+            $candidate['city'] ?? null,
+            $candidate['district'] ?? null,
+            $candidate['tax_no'] ?? null,
+        ];
+
+        if (str_contains($this->normalizedText(implode(' ', array_filter($parentFields))), $search)) {
+            $candidate['search_match'] = 'parent';
+        }
+
+        $matchedChildren = [];
+
+        foreach ($candidate['child_cari_accounts'] ?? [] as $child) {
+            $childText = $this->normalizedText(implode(' ', array_filter([
+                $child['mikro_cari_kodu'] ?? null,
+                $child['mikro_cari_unvan'] ?? null,
+                $child['display_name'] ?? null,
+                $child['cari_usage_type'] ?? null,
+            ])));
+
+            if (str_contains($childText, $search)) {
+                $matchedChildren[] = (string) ($child['mikro_cari_kodu'] ?? '');
+            }
+        }
+
+        $candidate['matched_child_cari_codes'] = array_values(array_filter($matchedChildren));
+
+        if (($candidate['search_match'] ?? null) === null && $candidate['matched_child_cari_codes'] !== []) {
+            $candidate['search_match'] = 'child';
+        }
+
+        return $candidate;
     }
 
     /**
