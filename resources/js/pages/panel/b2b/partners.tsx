@@ -273,6 +273,8 @@ export default function B2BPartnersPage() {
   const [selectedCariCandidates, setSelectedCariCandidates] = useState<Record<string, CariControlCandidate>>({})
   const [candidateCapabilitySelections, setCandidateCapabilitySelections] = useState<Record<string, PartnerType[]>>({})
   const skipNextCariSearchEffect = useRef(false)
+  const cariControlRequestId = useRef(0)
+  const cariControlAbortController = useRef<AbortController | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
@@ -432,9 +434,19 @@ export default function B2BPartnersPage() {
     }))
   }
 
+  const closeCariControlModal = useCallback(() => {
+    cariControlRequestId.current += 1
+    cariControlAbortController.current?.abort()
+    setCariControlOpen(false)
+  }, [])
+
   const runCariControl = useCallback(async (options: { search?: string; resetSelection?: boolean } = {}) => {
+    const requestId = ++cariControlRequestId.current
+    cariControlAbortController.current?.abort()
+    const abortController = new AbortController()
+    cariControlAbortController.current = abortController
+
     setCariChecking(true)
-    setCariControl(null)
 
     if (options.resetSelection) {
       setSelectedCariCodes([])
@@ -467,9 +479,20 @@ export default function B2BPartnersPage() {
       const response = await fetch(`/api/b2b/cari-control${params.toString() ? `?${params.toString()}` : ''}`, {
         credentials: 'same-origin',
         headers: { Accept: 'application/json' },
+        signal: abortController.signal,
       })
+
+      if (requestId !== cariControlRequestId.current) {
+        return
+      }
+
       const payload = await response.json().catch(() => null)
       const fallbackMessage = response.ok ? 'Cari kontrol sonucu alındı.' : 'Cari adayları alınamadı. Gateway hatası varsa ekranda hata olarak gösterilir.'
+
+      if (requestId !== cariControlRequestId.current) {
+        return
+      }
+
       const nextControl = {
         ...payload,
         status: payload?.status ?? (response.ok ? 'ok' : 'error'),
@@ -481,13 +504,23 @@ export default function B2BPartnersPage() {
       )
       setCandidateCapabilitySelections((current) => ({ ...nextSelections, ...current }))
       setCariControl(nextControl)
-    } catch {
+    } catch (searchError) {
+      if (searchError instanceof DOMException && searchError.name === 'AbortError') {
+        return
+      }
+
+      if (requestId !== cariControlRequestId.current) {
+        return
+      }
+
       setCariControl({
         status: 'error',
         message: 'Cari adayları alınamadı. Gateway bağlantısı veya oturum durumunu kontrol edin.',
       })
     } finally {
-      setCariChecking(false)
+      if (requestId === cariControlRequestId.current) {
+        setCariChecking(false)
+      }
     }
   }, [cariCapabilityFilter, cariSearch, cariStatusFilter, filters.mikro_cari_kodu, filters.search])
 
@@ -514,6 +547,24 @@ export default function B2BPartnersPage() {
 
     return () => window.clearTimeout(timer)
   }, [cariCapabilityFilter, cariControlOpen, cariSearch, cariStatusFilter, runCariControl])
+
+  useEffect(() => {
+    if (!cariControlOpen) {
+      return undefined
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeCariControlModal()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [cariControlOpen, closeCariControlModal])
 
   const toggleCariCandidate = (candidate: CariControlCandidate) => {
     const mikroCariKodu = candidate.mikro_cari_kodu
@@ -721,8 +772,15 @@ export default function B2BPartnersPage() {
           </div>
         )}
 
-        {cariControl && cariControlOpen && (
-          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/40 px-4 py-8">
+        {cariControlOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/40 px-4 py-8"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                closeCariControlModal()
+              }
+            }}
+          >
           <section className="w-full max-w-6xl rounded-2xl border border-amber-200 bg-amber-50/95 p-4 text-sm text-amber-950 shadow-2xl">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
@@ -732,8 +790,8 @@ export default function B2BPartnersPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-800">{cariControl.status}</span>
-                <Button type="button" variant="outline" onClick={() => setCariControlOpen(false)}>Kapat</Button>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-800">{cariControl?.status ?? 'Kontrol ediliyor...'}</span>
+                <Button type="button" variant="outline" onClick={closeCariControlModal}>Kapat</Button>
               </div>
             </div>
 
