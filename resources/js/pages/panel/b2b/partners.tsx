@@ -34,6 +34,12 @@ type Partner = {
   linked_technician_name: string | null
   linked_technician_phone: string | null
   child_cari_accounts?: CariControlChildAccount[]
+  metadata?: {
+    child_cari_accounts?: unknown
+    shipping_profile?: {
+      child_account_mapping?: unknown
+    }
+  }
   invoice_usage_note?: string | null
   users_count?: number
   active_users_count?: number
@@ -107,6 +113,11 @@ type CariControlCandidate = {
   child_cari_accounts?: CariControlChildAccount[]
   matched_child_cari_codes?: string[]
   search_match?: 'parent' | 'child' | null
+}
+
+type PartnerChildAccountDisplay = {
+  code: string
+  usageTypeLabel: string
 }
 
 type CariControlChildAccount = {
@@ -195,6 +206,133 @@ const partnerTypeLabel = (type: PartnerType) => {
   return 'Satıcı'
 }
 
+const partnerStatusBadgeClass = (active: boolean) => {
+  return active
+    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+    : 'bg-rose-50 text-rose-700 border border-rose-100'
+}
+
+const normalizeText = (value: string) => value.normalize('NFD').replace(/\p{M}/gu, '')
+
+const childCariUsageTypeToLabel = (rawUsageType: string | null | undefined): string | null => {
+  if (!rawUsageType) {
+    return null
+  }
+
+  const normalized = normalizeText(rawUsageType.toLowerCase())
+
+  if (normalized === 'consignment') {
+    return 'Konsinye'
+  }
+
+  if (normalized === 'showroom') {
+    return 'Teşhir'
+  }
+
+  if (normalized === 'project') {
+    return 'Proje'
+  }
+
+  return null
+}
+
+const childCariUsageLabelFromCode = (code: string | null | undefined): string | null => {
+  const suffix = code?.split('.').pop()?.trim() ?? ''
+  const normalized = normalizeText(suffix.toUpperCase())
+
+  if (normalized.includes('KONSINYE')) {
+    return 'Konsinye'
+  }
+
+  if (normalized.includes('TESHIR')) {
+    return 'Teşhir'
+  }
+
+  if (normalized.includes('PROJE')) {
+    return 'Proje'
+  }
+
+  return null
+}
+
+const normalizeChildCariSourceCode = (account: unknown): string | null => {
+  if (account === null || typeof account !== 'object') {
+    return null
+  }
+
+  const value = account as { mikro_cari_kodu?: unknown, code?: unknown }
+  const fromPrimary = typeof value.mikro_cari_kodu === 'string' ? value.mikro_cari_kodu : typeof value.code === 'string' ? value.code : null
+
+  if (!fromPrimary) {
+    return null
+  }
+
+  return fromPrimary.trim()
+}
+
+const normalizeChildCariUsageType = (account: unknown): string | null => {
+  if (account === null || typeof account !== 'object') {
+    return null
+  }
+
+  const value = account as { usage_type?: unknown, cari_usage_type?: unknown }
+  const usageType = typeof value.usage_type === 'string'
+    ? value.usage_type
+    : typeof value.cari_usage_type === 'string'
+      ? value.cari_usage_type
+      : null
+
+  return usageType?.trim() ?? null
+}
+
+const partnerChildCariAccounts = (partner: Partner): PartnerChildAccountDisplay[] => {
+  const metadata = partner.metadata as { child_cari_accounts?: unknown } | null
+  const shippingProfile = metadata?.shipping_profile as { child_account_mapping?: unknown } | undefined
+  const allChildAccounts: unknown[] = [
+    ...(partner.child_cari_accounts ?? []),
+    ...(Array.isArray(metadata?.child_cari_accounts) ? metadata.child_cari_accounts : []),
+    ...(Array.isArray(shippingProfile?.child_account_mapping) ? shippingProfile.child_account_mapping : []),
+  ]
+
+  const mapped = allChildAccounts
+    .map((account) => {
+      const code = normalizeChildCariSourceCode(account)
+
+      if (!code) {
+        return null
+      }
+
+      const usageType = normalizeChildCariUsageType(account)
+      const usageTypeLabel = childCariUsageTypeToLabel(usageType)
+        ?? childCariUsageLabelFromCode(code)
+        ?? 'Alt cari'
+
+      return {
+        code,
+        usageTypeLabel,
+      }
+    })
+    .filter((account): account is PartnerChildAccountDisplay => Boolean(account))
+    .filter((account, index, array) => array.findIndex((item) => item.code === account.code) === index)
+
+  const order = {
+    Konsinye: 0,
+    Teşhir: 1,
+    Proje: 2,
+  } as const
+
+  return mapped.sort((left, right) => {
+    const leftOrder = order[left.usageTypeLabel as keyof typeof order] ?? 99
+    const rightOrder = order[right.usageTypeLabel as keyof typeof order] ?? 99
+
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder
+    }
+
+    return left.code.localeCompare(right.code)
+  })
+}
+
 const partnerCapabilities = (partner: Partner): PartnerType[] => {
   const capabilities = partner.capabilities?.filter((capability): capability is PartnerType => ['dealer', 'locksmith', 'manufacturer', 'seller'].includes(capability)) ?? []
 
@@ -242,6 +380,51 @@ const primaryPartnerType = (capabilities: PartnerType[]): PartnerType => {
   }
 
   return 'seller'
+}
+
+const partnerCardAccentClass = (capabilities: PartnerType[]) => {
+  const primary = primaryPartnerType(capabilities)
+  const hasMultipleRoles = capabilities.length > 1
+
+  if (hasMultipleRoles) {
+    return 'border-slate-200 bg-gradient-to-br from-white via-slate-100/55 to-white hover:border-slate-300'
+  }
+
+  if (primary === 'dealer') {
+    return 'border-sky-200 bg-sky-50/60 hover:border-sky-300 hover:shadow-blue-100/80'
+  }
+
+  if (primary === 'locksmith') {
+    return 'border-emerald-200 bg-emerald-50/50 hover:border-emerald-300 hover:shadow-emerald-100/80'
+  }
+
+  if (primary === 'manufacturer') {
+    return 'border-violet-200 bg-violet-50/55 hover:border-violet-300 hover:shadow-violet-100/80'
+  }
+
+  return 'border-amber-200 bg-amber-50/45 hover:border-amber-300 hover:shadow-amber-100/80'
+}
+
+const partnerActionButtonClass = (variant: 'detail' | 'edit' | 'users' | 'danger' | 'success') => {
+  const base = 'h-9 w-full rounded-lg border text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2'
+
+  if (variant === 'edit') {
+    return `${base} border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100 focus-visible:ring-sky-300`
+  }
+
+  if (variant === 'users') {
+    return `${base} border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 focus-visible:ring-indigo-300`
+  }
+
+  if (variant === 'danger') {
+    return `${base} border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100 focus-visible:ring-rose-300`
+  }
+
+  if (variant === 'success') {
+    return `${base} border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:ring-emerald-300`
+  }
+
+  return `${base} border-slate-300 bg-white text-slate-700 hover:bg-slate-50 focus-visible:ring-slate-300`
 }
 
 const candidateCapabilities = (candidate: CariControlCandidate): PartnerType[] => {
@@ -1054,21 +1237,43 @@ export default function B2BPartnersPage() {
               <div className="grid gap-3">
                 {partners.map((partner) => {
                   const capabilities = partnerCapabilities(partner)
+                  const childCariAccounts = partnerChildCariAccounts(partner)
+                  const visibleChildCariAccounts = childCariAccounts.slice(0, 3)
+                  const hiddenChildCariCount = childCariAccounts.length - visibleChildCariAccounts.length
 
                   return (
-                    <article key={partner.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 transition hover:border-blue-200 hover:bg-blue-50/30">
-                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <article
+                      key={partner.id}
+                      className={`min-w-0 rounded-2xl p-4 transition shadow-sm ${partnerCardAccentClass(capabilities)} hover:shadow-md`}
+                    >
+                      <div className="flex min-w-0 flex-col gap-4">
                         <div className="min-w-0 space-y-2">
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="text-base font-semibold text-slate-950">{partner.display_name}</h3>
                             {capabilityChips(capabilities)}
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${partner.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                            <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${partnerStatusBadgeClass(partner.active)}`}>
                               {partner.active ? 'Aktif' : 'Pasif'}
                             </span>
                           </div>
-                          <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-600">
+                          <div className="grid min-w-0 gap-x-5 gap-y-2 text-sm text-slate-600 sm:grid-cols-2">
                             <span><strong className="text-slate-800">Kod:</strong> {partner.partner_code}</span>
                             <span><strong className="text-slate-800">Cari:</strong> {partner.mikro_cari_kodu ?? '-'}</span>
+                            {childCariAccounts.length > 0 && (
+                              <div className="min-w-0 sm:col-span-2">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Alt cariler</div>
+                                <ul className="mt-1 grid gap-1 text-xs">
+                                  {visibleChildCariAccounts.map((child) => (
+                                    <li key={child.code} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-slate-600">
+                                      <span className="font-semibold text-slate-800">{child.usageTypeLabel}:</span>
+                                      <span className="ml-1 inline-block max-w-full truncate align-middle">{child.code}</span>
+                                    </li>
+                                  ))}
+                                  {hiddenChildCariCount > 0 && (
+                                    <li className="text-slate-500">+{hiddenChildCariCount} alt cari</li>
+                                  )}
+                                </ul>
+                              </div>
+                            )}
                             <span><strong className="text-slate-800">Telefon:</strong> {partner.phone ?? '-'}</span>
                             <span><strong className="text-slate-800">E-posta:</strong> {partner.email ?? '-'}</span>
                             <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
@@ -1094,21 +1299,27 @@ export default function B2BPartnersPage() {
                             </div>
                           )}
                         </div>
-                        <div className="flex flex-wrap gap-2 lg:justify-end">
-                          <Button type="button" size="sm" variant="outline" onClick={() => startEdit(partner, 'detail')}>Detay</Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => startEdit(partner)}>Düzenle</Button>
+                        <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-4">
+                          <Button type="button" className={partnerActionButtonClass('detail')} variant="outline" onClick={() => startEdit(partner, 'detail')}>Detay</Button>
+                          <Button type="button" className={partnerActionButtonClass('edit')} variant="outline" onClick={() => startEdit(partner)}>Düzenle</Button>
                           <Button
                             type="button"
-                            size="sm"
                             variant="outline"
+                            className={partnerActionButtonClass('users')}
                             onClick={() => {
                               window.location.href = '/panel/b2b/users'
                             }}
                           >
                             Kullanıcılar
                           </Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => void toggleActive(partner)} disabled={saving}>
-                            {partner.active ? 'Pasif' : 'Aktif'}
+                          <Button
+                            type="button"
+                            className={partnerActionButtonClass(partner.active ? 'danger' : 'success')}
+                            variant="outline"
+                            onClick={() => void toggleActive(partner)}
+                            disabled={saving}
+                          >
+                            {partner.active ? 'Pasif yap' : 'Aktif yap'}
                           </Button>
                         </div>
                       </div>
