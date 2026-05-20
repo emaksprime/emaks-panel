@@ -281,6 +281,13 @@ export default function B2BPartnersPage() {
   const hasLocksmithForm = form.capabilities.includes('locksmith')
   const hasMikroForm = form.capabilities.some((capability) => ['dealer', 'manufacturer', 'seller'].includes(capability))
   const cariCandidates = useMemo(() => cariControl?.candidates ?? cariControl?.items ?? [], [cariControl])
+  const cariControlStatus = cariControl?.status ?? 'idle'
+  const cariControlMeta = (cariControl as (CariControlState & { meta?: Record<string, unknown> }) | null)?.meta ?? {}
+  const queryContract = cariControl?.query_contract
+  const existingSources = cariControl?.existing_sources ?? []
+  const sourceUsed = cariControl?.source_used ?? '-'
+  const excludedOnlineRetailCount = cariControl?.excluded_online_retail_count ?? 0
+  const actionsEnabled = Boolean(cariControl?.actions_enabled)
   const selectedCariItems = useMemo(
     () => selectedCariCodes.map((code) => selectedCariCandidates[code]).filter((candidate): candidate is CariControlCandidate => Boolean(candidate)),
     [selectedCariCandidates, selectedCariCodes],
@@ -515,7 +522,7 @@ export default function B2BPartnersPage() {
 
       setCariControl({
         status: 'error',
-        message: 'Cari adayları alınamadı. Gateway bağlantısı veya oturum durumunu kontrol edin.',
+        message: 'Cari kontrol sırasında hata oluştu. Lütfen tekrar deneyin.',
       })
     } finally {
       if (requestId === cariControlRequestId.current) {
@@ -790,19 +797,19 @@ export default function B2BPartnersPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-800">{cariControl?.status ?? 'Kontrol ediliyor...'}</span>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-800">{cariControlStatus}</span>
                 <Button type="button" variant="outline" onClick={closeCariControlModal}>Kapat</Button>
               </div>
             </div>
 
-            {cariControl.query_contract && (
+            {queryContract && (
               <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.45fr)]">
                 <div className="rounded-xl border border-amber-200 bg-white p-3">
                   <div className="text-sm font-semibold text-slate-900">Sorgu sözleşmesi</div>
-                  <p className="mt-1 text-slate-600">{cariControl.query_contract.document_path}</p>
-                  <p className="mt-2 text-xs font-medium text-slate-500">Mod: {cariControl.query_contract.mode}</p>
+                  <p className="mt-1 text-slate-600">{queryContract.document_path}</p>
+                  <p className="mt-2 text-xs font-medium text-slate-500">Mod: {queryContract.mode}</p>
                   <div className="mt-3 grid gap-2">
-                    {(cariControl.query_contract.discovery_queries ?? []).map((query) => (
+                    {(queryContract.discovery_queries ?? []).map((query) => (
                       <details key={query.key} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                         <summary className="cursor-pointer text-sm font-semibold text-slate-700">{query.title}</summary>
                         <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-xs text-slate-50">{query.sql}</pre>
@@ -813,10 +820,10 @@ export default function B2BPartnersPage() {
                 <div className="rounded-xl border border-amber-200 bg-white p-3">
                   <div className="text-sm font-semibold text-slate-900">Mevcut kaynak envanteri</div>
                   <div className="mt-3 grid gap-2">
-                    {(cariControl.existing_sources ?? []).length === 0 ? (
+                    {existingSources.length === 0 ? (
                       <p className="text-slate-600">B2B için onaylı cari kaynağı bulunamadı.</p>
                     ) : (
-                      (cariControl.existing_sources ?? []).map((source) => (
+                      existingSources.map((source) => (
                         <div key={source.code} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                           <div className="font-semibold text-slate-800">{source.code}</div>
                           <div className="text-xs text-slate-500">{source.name} · {source.db_type} · {source.active ? 'aktif' : 'pasif'}</div>
@@ -835,10 +842,23 @@ export default function B2BPartnersPage() {
                   <div className="text-sm font-semibold text-slate-900">Cari adayları</div>
                   <p className="mt-1 text-slate-600">Aday gelirse kullanıcı seçer; partner açma/güncelleme/rol ekleme otomatik çalışmaz.</p>
                 </div>
-                <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates()} disabled={saving || !cariControl.actions_enabled || selectedCariCodes.length === 0}>
+                <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates()} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0}>
                   Seçili adayları işle
                 </Button>
               </div>
+
+              {cariControlStatus === 'error' && (
+                <div className="mt-2 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                  Cari kontrol sırasında hata oluştu. Lütfen tekrar deneyin.
+                </div>
+              )}
+
+              {Object.keys(cariControlMeta).length > 0 ? (
+                <details className="mt-2 text-xs text-slate-600">
+                  <summary className="cursor-pointer">Teknik detay</summary>
+                  <pre className="mt-1 max-h-24 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">{JSON.stringify(cariControlMeta, null, 2)}</pre>
+                </details>
+              ) : null}
 
               <form
                 className="mt-3 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_auto_auto]"
@@ -896,9 +916,9 @@ export default function B2BPartnersPage() {
               </form>
 
               <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-600">
-                <span>Kaynak: {cariControl.source_used ?? '-'}</span>
+                <span>Kaynak: {sourceUsed}</span>
                 <span>{cariCandidates.length} aday bulundu</span>
-                <span>Online perakende hariç: {cariControl.excluded_online_retail_count ?? 0}</span>
+                <span>Online perakende hariç: {excludedOnlineRetailCount}</span>
               </div>
 
               {cariChecking && (
@@ -942,7 +962,7 @@ export default function B2BPartnersPage() {
                         className="mt-1"
                         checked={selectedCariCodes.includes(candidate.mikro_cari_kodu)}
                         onChange={() => toggleCariCandidate(candidate)}
-                        disabled={!cariControl.actions_enabled}
+                        disabled={!actionsEnabled}
                       />
                       <div className="min-w-0 flex-1">
                         <span className="block font-semibold text-slate-900">{candidate.display_name ?? candidate.mikro_cari_unvan ?? candidate.mikro_cari_kodu}</span>
@@ -977,7 +997,7 @@ export default function B2BPartnersPage() {
                                 type="checkbox"
                                 checked={(candidateCapabilitySelections[candidate.mikro_cari_kodu] ?? candidateCapabilities(candidate)).includes(capability)}
                                 onChange={() => toggleCandidateCapability(candidate.mikro_cari_kodu, capability)}
-                                disabled={!cariControl.actions_enabled}
+                                disabled={!actionsEnabled}
                               />
                               {partnerTypeLabel(capability)}
                             </span>
