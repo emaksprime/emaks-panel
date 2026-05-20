@@ -329,6 +329,42 @@ Suggested API routes:
 - `GET /api/partner/stock`
 - `GET /api/partner/service-jobs`
 
+## Route Notes / Go-live Smoke Routes
+
+Current application routes for go-live smoke checks:
+
+- Technical Service route in this app: `/technical-service`
+- Do not use `/panel/technical-service`; it returns 404 in current app routing.
+- B2B Partner Directory route: `/panel/b2b/partners`
+
+Current B2B API routes:
+
+- `GET /api/b2b/partners`
+- `GET /api/b2b/partners/{partner}`
+- `POST /api/b2b/partners`
+- `PATCH /api/b2b/partners/{partner}`
+- `PATCH /api/b2b/partners/{partner}/active`
+- `GET /api/b2b/locksmith-technicians`
+
+Go-live smoke checklist:
+
+- `/technical-service` opens.
+- Technical Service detail modal opens.
+- Payment resolver paid override works.
+- No contradictory payment blocker appears when payment is paid.
+- `/panel/b2b/partners` opens.
+- Dealer and locksmith partner records are listed.
+- Entity scope 403 check passes for unauthorized partner detail.
+- B2B navigation/menu metadata seeded.
+- `B2BPartnerPermissionSeeder` ran.
+- `php artisan optimize:clear` ran.
+
+Red-zone note for this checklist:
+
+- B2B Phase 1/2 does not include Mikro datasource integration.
+- Cari/stok/siparis live datasource integration remains separate red-zone review.
+- `PanelDataSourcesSeeder`, `PanelKnownWorkflowDataSourcesSeeder`, `query_template`, `allowed_params`, `connection_meta` must not be touched in this route checklist task.
+
 Page metadata notes:
 
 - Add B2B pages through `panel.pages`, `panel.resources`, `panel.page_menu`, and role permissions.
