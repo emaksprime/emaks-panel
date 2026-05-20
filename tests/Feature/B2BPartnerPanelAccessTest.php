@@ -3,7 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerUserAccess;
+use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
@@ -167,6 +169,48 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertTrue($service->canAccessScope($user, $partner, 'manage', 'update'));
         $this->assertFalse($service->canAccessScope($user, $partner, 'manage', 'approve'));
         $this->assertTrue($service->canAccessScope($user, $partner, 'technical_service', 'approve'));
+    }
+
+    public function test_b2b_partner_user_relations_resolve_without_sqlite_foreign_keys(): void
+    {
+        $user = $this->partnerUser();
+        $creator = $this->userWithRole('partner_creator');
+        $partner = $this->partner(['partner_type' => B2BPartner::TYPE_LOCKSMITH]);
+
+        $access = $this->grantPartnerAccess($user, $partner, 'technical_service', [
+            'created_by' => $creator->id,
+        ]);
+        $profile = B2BPartnerUserProfile::query()->create([
+            'user_id' => $user->id,
+            'partner_id' => $partner->id,
+            'title' => 'Servis Yetkilisi',
+            'phone' => '+905551111112',
+            'active' => true,
+        ]);
+        $auditLog = B2BPartnerAuditLog::query()->create([
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'action' => 'b2b.partner.test_relation',
+            'subject_type' => B2BPartner::class,
+            'subject_id' => $partner->id,
+        ]);
+
+        $this->assertInstanceOf(User::class, $access->user);
+        $this->assertTrue($access->user->is($user));
+        $this->assertInstanceOf(B2BPartner::class, $access->partner);
+        $this->assertTrue($access->partner->is($partner));
+        $this->assertInstanceOf(User::class, $access->creator);
+        $this->assertTrue($access->creator->is($creator));
+
+        $this->assertInstanceOf(User::class, $profile->user);
+        $this->assertTrue($profile->user->is($user));
+        $this->assertInstanceOf(B2BPartner::class, $profile->partner);
+        $this->assertTrue($profile->partner->is($partner));
+
+        $this->assertInstanceOf(User::class, $auditLog->user);
+        $this->assertTrue($auditLog->user->is($user));
+        $this->assertInstanceOf(B2BPartner::class, $auditLog->partner);
+        $this->assertTrue($auditLog->partner->is($partner));
     }
 
     public function test_b2b_permission_seeder_is_idempotent(): void
