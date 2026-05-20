@@ -302,20 +302,56 @@ function normalizeFilterText(value: string): string {
         .replace(/ı/g, 'i');
 }
 
-function numberValue(row: ApiRow, key: string): number {
-    const value = row[key];
-
+function parseNumericValue(value: unknown): number {
     if (typeof value === 'number') {
         return Number.isFinite(value) ? value : 0;
     }
 
-    const parsed = Number(
-        String(value ?? '')
-            .replace(/\./g, '')
-            .replace(',', '.'),
-    );
+    const raw = String(value ?? '')
+        .trim()
+        .replace(/\s/g, '')
+        .replace(/\u00a0/g, '');
+
+    if (!raw) {
+        return 0;
+    }
+
+    const cleaned = raw.replace(/[^\d,.-]/g, '');
+
+    if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === ',') {
+        return 0;
+    }
+
+    const hasComma = cleaned.includes(',');
+    const hasDot = cleaned.includes('.');
+    let normalized = cleaned;
+
+    if (hasComma && hasDot) {
+        const lastComma = cleaned.lastIndexOf(',');
+        const lastDot = cleaned.lastIndexOf('.');
+        const decimalSeparator = lastComma > lastDot ? ',' : '.';
+        const groupSeparator = decimalSeparator === ',' ? '.' : ',';
+
+        normalized = cleaned
+            .replace(new RegExp(`\\${groupSeparator}`, 'g'), '')
+            .replace(decimalSeparator, '.');
+    } else if (hasComma) {
+        normalized = /^-?\d{1,3}(,\d{3})+$/.test(cleaned)
+            ? cleaned.replace(/,/g, '')
+            : cleaned.replace(',', '.');
+    } else if (hasDot) {
+        normalized = /^-?\d{1,3}(\.\d{3})+$/.test(cleaned)
+            ? cleaned.replace(/\./g, '')
+            : cleaned;
+    }
+
+    const parsed = Number(normalized);
 
     return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function numberValue(row: ApiRow, key: string): number {
+    return parseNumericValue(row[key]);
 }
 
 function booleanValue(row: ApiRow, key: string): boolean {

@@ -222,4 +222,64 @@ class AdminUserManagementTest extends TestCase
         $this->assertStringContainsString('Dar yetkiyi sabitle', $component);
         $this->assertStringContainsString('rol fallback fazladan alan açamaz', $component);
     }
+
+    public function test_accounting_finance_resource_is_grouped_in_admin_users_response(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+
+        $resources = collect($this->actingAs($admin)
+            ->getJson('/api/admin/users')
+            ->assertOk()
+            ->json('resources'));
+
+        $accountingResource = $resources->firstWhere('code', 'accounting_finance_resmi_stok_kontrol');
+
+        $this->assertNotNull($accountingResource);
+        $this->assertSame('Muhasebe / Finans', $accountingResource['group']);
+    }
+
+    public function test_admin_users_group_order_and_select_all_include_accounting_finance(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
+
+        $this->assertMatchesRegularExpression(
+            "/'Proforma',\\s*'Muhasebe \\/ Finans',\\s*'Sistem Yönetimi'/",
+            $component,
+        );
+        $this->assertStringContainsString('access: data.resources.map((resource) => resource.code)', $component);
+
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $selectAllAccess = collect($this->actingAs($admin)
+            ->getJson('/api/admin/users')
+            ->assertOk()
+            ->json('resources'))
+            ->pluck('code')
+            ->values()
+            ->all();
+
+        $this->assertContains('accounting_finance_resmi_stok_kontrol', $selectAllAccess);
+    }
+
+    public function test_accounting_finance_number_parser_prevents_42_dot_00_becoming_4200(): void
+    {
+        $component = file_get_contents(resource_path('js/pages/panel/accounting-finance/resmi-stok-kontrol.tsx')) ?: '';
+
+        $this->assertStringContainsString('function parseNumericValue(value: unknown): number', $component);
+        $this->assertStringContainsString("const hasComma = cleaned.includes(',');", $component);
+        $this->assertStringContainsString("const hasDot = cleaned.includes('.');", $component);
+        $this->assertStringContainsString('const decimalSeparator = lastComma > lastDot', $component);
+        $this->assertMatchesRegularExpression(
+            '/function numberValue\(row: ApiRow, key: string\): number\s*{\s*return parseNumericValue\(row\[key\]\);\s*}/',
+            $component,
+        );
+
+        preg_match(
+            '/function numberValue\(row: ApiRow, key: string\): number\s*{(?P<body>[\s\S]*?)\n}/',
+            $component,
+            $matches,
+        );
+
+        $this->assertNotEmpty($matches['body'] ?? null);
+        $this->assertStringNotContainsString("replace(/\\./g, '')", $matches['body']);
+    }
 }
