@@ -12,6 +12,7 @@ type AbilityKey = 'can_view' | 'can_create' | 'can_update' | 'can_approve'
 type Partner = {
   id: number
   partner_type: PartnerType
+  capabilities?: PartnerType[]
   partner_code: string
   display_name: string
   city: string | null
@@ -47,7 +48,7 @@ type UserOption = {
 type PartnerFilters = {
   search: string
   partner_type: '' | PartnerType
-  active: ''
+  active: '' | '1' | '0'
 }
 
 type UserForm = {
@@ -96,6 +97,21 @@ const emptyForm = (): UserForm => ({
 })
 
 const partnerTypeLabel = (type: PartnerType) => (type === 'dealer' ? 'Bayi' : 'Çilingir')
+
+const partnerCapabilities = (partner: Partner): PartnerType[] => {
+  const capabilities = partner.capabilities?.filter((capability): capability is PartnerType => capability === 'dealer' || capability === 'locksmith') ?? []
+
+  return capabilities.length > 0 ? capabilities : [partner.partner_type]
+}
+
+const capabilityChips = (partner: Partner) => partnerCapabilities(partner).map((capability) => (
+  <span
+    key={capability}
+    className={`rounded-full px-2 py-1 text-[11px] font-semibold ${capability === 'dealer' ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}
+  >
+    {partnerTypeLabel(capability)}
+  </span>
+))
 
 const locationLabel = (partner: Partner) => {
   const parts = [partner.city, partner.district].filter(Boolean)
@@ -364,7 +380,7 @@ export default function B2BPartnerUsersPage() {
               <option value="dealer">Bayiler</option>
               <option value="locksmith">Çilingirler</option>
             </select>
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={filters.active} onChange={(event) => setFilters((current) => ({ ...current, active: event.target.value }))}>
+            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={filters.active} onChange={(event) => setFilters((current) => ({ ...current, active: event.target.value as PartnerFilters['active'] }))}>
               <option value="">Aktif/Pasif</option>
               <option value="1">Aktif</option>
               <option value="0">Pasif</option>
@@ -399,9 +415,9 @@ export default function B2BPartnerUsersPage() {
                       <div className="text-sm font-semibold text-slate-900">{partner.display_name}</div>
                       <div className="text-xs text-slate-500">{partner.partner_code}</div>
                     </div>
-                    <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${partner.partner_type === 'dealer' ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                      {partnerTypeLabel(partner.partner_type)}
-                    </span>
+                    <div className="flex flex-wrap justify-end gap-1">
+                      {capabilityChips(partner)}
+                    </div>
                   </div>
                   <div className="mt-2 text-xs text-slate-500">{locationLabel(partner)}</div>
                 </button>

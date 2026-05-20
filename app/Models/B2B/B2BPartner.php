@@ -51,27 +51,78 @@ class B2BPartner extends Model
 
     public function scopeDealer(Builder $query): Builder
     {
-        return $query->where('partner_type', self::TYPE_DEALER);
+        return $query->whereHas('activeCapabilities', function (Builder $query): void {
+            $query->where('capability', self::TYPE_DEALER);
+        });
     }
 
     public function scopeLocksmith(Builder $query): Builder
     {
-        return $query->where('partner_type', self::TYPE_LOCKSMITH);
+        return $query->whereHas('activeCapabilities', function (Builder $query): void {
+            $query->where('capability', self::TYPE_LOCKSMITH);
+        });
     }
 
     public function isDealer(): bool
     {
-        return $this->partner_type === self::TYPE_DEALER;
+        return $this->hasCapability(self::TYPE_DEALER);
     }
 
     public function isLocksmith(): bool
     {
-        return $this->partner_type === self::TYPE_LOCKSMITH;
+        return $this->hasCapability(self::TYPE_LOCKSMITH);
+    }
+
+    public function hasCapability(string $capability): bool
+    {
+        if ($this->relationLoaded('capabilities')) {
+            return $this->capabilities
+                ->where('capability', $capability)
+                ->where('active', true)
+                ->isNotEmpty();
+        }
+
+        return $this->activeCapabilities()
+            ->where('capability', $capability)
+            ->exists();
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function capabilityCodes(): array
+    {
+        if ($this->relationLoaded('capabilities')) {
+            $capabilities = $this->capabilities
+                ->where('active', true)
+                ->pluck('capability')
+                ->values()
+                ->all();
+
+            return count($capabilities) > 0 ? $capabilities : [$this->partner_type];
+        }
+
+        $capabilities = $this->activeCapabilities()
+            ->pluck('capability')
+            ->values()
+            ->all();
+
+        return count($capabilities) > 0 ? $capabilities : [$this->partner_type];
     }
 
     public function technician(): BelongsTo
     {
         return $this->belongsTo(TechnicalServiceTechnician::class, 'technical_service_technician_id');
+    }
+
+    public function capabilities(): HasMany
+    {
+        return $this->hasMany(B2BPartnerCapability::class, 'partner_id');
+    }
+
+    public function activeCapabilities(): HasMany
+    {
+        return $this->capabilities()->where('active', true);
     }
 
     public function access(): HasMany

@@ -11,6 +11,7 @@ type FormMode = 'create' | 'edit' | 'detail'
 type Partner = {
   id: number
   partner_type: PartnerType
+  capabilities?: PartnerType[]
   partner_code: string
   display_name: string
   mikro_cari_kodu: string | null
@@ -25,6 +26,8 @@ type Partner = {
   technical_service_technician_id: number | null
   linked_technician_name: string | null
   linked_technician_phone: string | null
+  users_count?: number
+  active_users_count?: number
 }
 
 type TechnicianOption = {
@@ -39,7 +42,7 @@ type TechnicianOption = {
 }
 
 type PartnerForm = {
-  partner_type: PartnerType
+  capabilities: PartnerType[]
   partner_code: string
   display_name: string
   mikro_cari_kodu: string
@@ -57,13 +60,18 @@ type PartnerForm = {
 type Filters = {
   search: string
   partner_type: '' | PartnerType
-  active: ''
+  active: '' | '1' | '0'
   city: string
   mikro_cari_kodu: string
 }
 
+type CariControlState = {
+  status: string
+  message: string
+}
+
 const emptyForm: PartnerForm = {
-  partner_type: 'dealer',
+  capabilities: ['dealer'],
   partner_code: '',
   display_name: '',
   mikro_cari_kodu: '',
@@ -88,14 +96,31 @@ const emptyFilters: Filters = {
 
 const partnerTypeLabel = (type: PartnerType) => (type === 'dealer' ? 'Bayi' : 'Çilingir')
 
+const partnerCapabilities = (partner: Partner): PartnerType[] => {
+  const capabilities = partner.capabilities?.filter((capability): capability is PartnerType => capability === 'dealer' || capability === 'locksmith') ?? []
+
+  return capabilities.length > 0 ? capabilities : [partner.partner_type]
+}
+
+const capabilityChips = (capabilities: PartnerType[]) => capabilities.map((capability) => (
+  <span
+    key={capability}
+    className={`rounded-full px-2.5 py-1 text-xs font-semibold ${capability === 'dealer' ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}
+  >
+    {partnerTypeLabel(capability)}
+  </span>
+))
+
 const locationLabel = (city: string | null, district: string | null) => {
   const parts = [city, district].filter(Boolean)
 
   return parts.length > 0 ? parts.join(' / ') : '-'
 }
 
+const selectedTechnician = (technicians: TechnicianOption[], id: string) => technicians.find((item) => String(item.id) === id) ?? null
+
 const selectedTechnicianLabel = (technicians: TechnicianOption[], id: string) => {
-  const technician = technicians.find((item) => String(item.id) === id)
+  const technician = selectedTechnician(technicians, id)
 
   if (!technician) {
     return null
@@ -103,6 +128,8 @@ const selectedTechnicianLabel = (technicians: TechnicianOption[], id: string) =>
 
   return `${technician.name}${technician.phone ? ` · ${technician.phone}` : ''}`
 }
+
+const primaryPartnerType = (capabilities: PartnerType[]): PartnerType => (capabilities.includes('dealer') ? 'dealer' : 'locksmith')
 
 export default function B2BPartnersPage() {
   const [partners, setPartners] = useState<Partner[]>([])
@@ -115,18 +142,22 @@ export default function B2BPartnersPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [technicianLoading, setTechnicianLoading] = useState(false)
+  const [cariChecking, setCariChecking] = useState(false)
+  const [cariControl, setCariControl] = useState<CariControlState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
-  const hasLocksmithForm = form.partner_type === 'locksmith'
+  const cariControlAvailable = false
+  const hasDealerForm = form.capabilities.includes('dealer')
+  const hasLocksmithForm = form.capabilities.includes('locksmith')
   const activeFilterText = useMemo(() => {
     if (filters.partner_type === 'dealer') {
-return 'Bayiler'
-}
+      return 'Bayiler'
+    }
 
     if (filters.partner_type === 'locksmith') {
-return 'Çilingirler'
-}
+      return 'Çilingirler'
+    }
 
     return 'Tümü'
   }, [filters.partner_type])
@@ -201,7 +232,7 @@ return 'Çilingirler'
   const startEdit = (partner: Partner, mode: FormMode = 'edit') => {
     setEditingPartner(partner)
     setForm({
-      partner_type: partner.partner_type,
+      capabilities: partnerCapabilities(partner),
       partner_code: partner.partner_code ?? '',
       display_name: partner.display_name ?? '',
       mikro_cari_kodu: partner.mikro_cari_kodu ?? '',
@@ -221,13 +252,63 @@ return 'Çilingirler'
   }
 
   const updateForm = <K extends keyof PartnerForm>(key: K, value: PartnerForm[K]) => {
-    setForm((current) => {
-      if (key === 'partner_type' && value === 'dealer') {
-        return { ...current, partner_type: value, technical_service_technician_id: '' }
-      }
+    setForm((current) => ({ ...current, [key]: value }))
+  }
 
-      return { ...current, [key]: value }
+  const toggleCapability = (capability: PartnerType) => {
+    setForm((current) => {
+      const nextCapabilities = current.capabilities.includes(capability)
+        ? current.capabilities.filter((item) => item !== capability)
+        : [...current.capabilities, capability]
+      const normalizedCapabilities = nextCapabilities.length > 0 ? nextCapabilities : current.capabilities
+
+      return {
+        ...current,
+        capabilities: normalizedCapabilities,
+        technical_service_technician_id: normalizedCapabilities.includes('locksmith') ? current.technical_service_technician_id : '',
+      }
     })
+  }
+
+  const selectTechnician = (technicianId: string) => {
+    const technician = selectedTechnician(technicians, technicianId)
+
+    setForm((current) => ({
+      ...current,
+      technical_service_technician_id: technicianId,
+      display_name: technician && current.display_name.trim() === '' ? technician.name : current.display_name,
+      phone: technician && current.phone.trim() === '' ? technician.phone ?? '' : current.phone,
+      city: technician && current.city.trim() === '' ? technician.city ?? '' : current.city,
+      district: technician && current.district.trim() === '' ? technician.district ?? '' : current.district,
+      mikro_cari_kodu: technician && current.mikro_cari_kodu.trim() === '' ? technician.mikro_cari_kodu ?? '' : current.mikro_cari_kodu,
+      mikro_cari_unvan: technician && current.mikro_cari_unvan.trim() === '' ? technician.mikro_cari_adi ?? '' : current.mikro_cari_unvan,
+    }))
+  }
+
+  const runCariControl = async () => {
+    setCariChecking(true)
+    setCariControl(null)
+    setError(null)
+
+    try {
+      const response = await fetch('/api/b2b/cari-control', {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      })
+      const payload = await response.json().catch(() => null)
+      const fallbackMessage = response.ok ? 'Cari kontrol sonucu alındı.' : 'Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.'
+      setCariControl({
+        status: payload?.status ?? (response.ok ? 'ok' : 'datasource_required'),
+        message: payload?.message ?? fallbackMessage,
+      })
+    } catch {
+      setCariControl({
+        status: 'datasource_required',
+        message: 'Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.',
+      })
+    } finally {
+      setCariChecking(false)
+    }
   }
 
   const submitPartner = async () => {
@@ -238,6 +319,7 @@ return 'Çilingirler'
     try {
       const payload = {
         ...form,
+        partner_type: primaryPartnerType(form.capabilities),
         technical_service_technician_id: form.technical_service_technician_id === '' ? null : Number(form.technical_service_technician_id),
       }
       const path = editingPartner ? `/api/b2b/partners/${editingPartner.id}` : '/api/b2b/partners'
@@ -255,6 +337,21 @@ return 'Çilingirler'
       })
       setEditingPartner(savedPartner)
       setFormMode('edit')
+      setForm({
+        capabilities: partnerCapabilities(savedPartner),
+        partner_code: savedPartner.partner_code ?? '',
+        display_name: savedPartner.display_name ?? '',
+        mikro_cari_kodu: savedPartner.mikro_cari_kodu ?? '',
+        mikro_cari_unvan: savedPartner.mikro_cari_unvan ?? '',
+        cari_grup_kodu: savedPartner.cari_grup_kodu ?? '',
+        responsibility_code: savedPartner.responsibility_code ?? '',
+        phone: savedPartner.phone ?? '',
+        email: savedPartner.email ?? '',
+        city: savedPartner.city ?? '',
+        district: savedPartner.district ?? '',
+        active: savedPartner.active,
+        technical_service_technician_id: savedPartner.technical_service_technician_id ? String(savedPartner.technical_service_technician_id) : '',
+      })
       setMessage(editingPartner ? 'Partner güncellendi.' : 'Partner oluşturuldu.')
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Partner kaydedilemedi.')
@@ -295,14 +392,24 @@ return 'Çilingirler'
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <Heading
             title="B2B Partner Yönetimi"
-            description="Bayi ve çilingir partner kayıtları, manuel Mikro cari bilgileri ve teknik servis usta bağlantıları."
+            description="Bayi ve çilingir partner rolleri, manuel Mikro cari bağlantısı ve teknik servis usta eşleştirmesi."
           />
-          <Button type="button" onClick={startCreate}>Yeni Partner</Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" onClick={() => void runCariControl()} disabled={!cariControlAvailable || cariChecking}>
+              {cariChecking ? 'Kontrol ediliyor...' : 'Cari Kontrol'}
+            </Button>
+            <Button type="button" onClick={startCreate}>Yeni Partner</Button>
+          </div>
         </div>
+        {!cariControlAvailable && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.
+          </div>
+        )}
 
-        {(error || message) && (
-          <div className={`rounded-xl border px-4 py-3 text-sm ${error ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
-            {error ?? message}
+        {(error || message || cariControl) && (
+          <div className={`rounded-xl border px-4 py-3 text-sm ${error ? 'border-rose-200 bg-rose-50 text-rose-700' : cariControl ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+            {error ?? cariControl?.message ?? message}
           </div>
         )}
 
@@ -323,7 +430,7 @@ return 'Çilingirler'
 
           <div className="mt-4 grid gap-3 md:grid-cols-5">
             <Input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Ara: kod, ad, cari" />
-            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={filters.active} onChange={(event) => setFilters((current) => ({ ...current, active: event.target.value }))}>
+            <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={filters.active} onChange={(event) => setFilters((current) => ({ ...current, active: event.target.value as Filters['active'] }))}>
               <option value="">Aktif/Pasif</option>
               <option value="1">Aktif</option>
               <option value="0">Pasif</option>
@@ -338,75 +445,67 @@ return 'Çilingirler'
         </section>
 
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(420px,0.65fr)]">
-          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-100 text-sm">
-                <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-4 py-3">Tip</th>
-                    <th className="px-4 py-3">Partner Kodu</th>
-                    <th className="px-4 py-3">Ad / Ünvan</th>
-                    <th className="px-4 py-3">Mikro Cari</th>
-                    <th className="px-4 py-3">Şehir / İlçe</th>
-                    <th className="px-4 py-3">Bağlı Usta</th>
-                    <th className="px-4 py-3">Aktif</th>
-                    <th className="px-4 py-3">İşlem</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {partners.length === 0 && (
-                    <tr>
-                      <td className="px-4 py-8 text-center text-slate-500" colSpan={8}>
-                        Kayıt bulunamadı.
-                      </td>
-                    </tr>
-                  )}
-                  {partners.map((partner) => (
-                    <tr key={partner.id} className="align-top hover:bg-slate-50/70">
-                      <td className="px-4 py-3">
-                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${partner.partner_type === 'dealer' ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                          {partnerTypeLabel(partner.partner_type)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 font-semibold text-slate-800">{partner.partner_code}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-semibold text-slate-900">{partner.display_name}</div>
-                        <div className="text-xs text-slate-500">{partner.phone ?? '-'}</div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-slate-800">{partner.mikro_cari_kodu ?? '-'}</div>
-                        <div className="max-w-[220px] truncate text-xs text-slate-500">{partner.mikro_cari_unvan ?? '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-slate-700">{locationLabel(partner.city, partner.district)}</td>
-                      <td className="px-4 py-3">
-                        {partner.partner_type === 'locksmith' ? (
-                          <div>
-                            <div className="font-medium text-slate-800">{partner.linked_technician_name ?? 'Bağlı usta yok'}</div>
-                            <div className="text-xs text-slate-500">{partner.linked_technician_phone ?? ''}</div>
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            {partners.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                Kayıt bulunamadı.
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {partners.map((partner) => {
+                  const capabilities = partnerCapabilities(partner)
+
+                  return (
+                    <article key={partner.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 transition hover:border-blue-200 hover:bg-blue-50/30">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-base font-semibold text-slate-950">{partner.display_name}</h3>
+                            {capabilityChips(capabilities)}
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${partner.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                              {partner.active ? 'Aktif' : 'Pasif'}
+                            </span>
                           </div>
-                        ) : (
-                          <span className="text-xs text-slate-500">Bayi için kullanılmaz</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${partner.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                          {partner.active ? 'Aktif' : 'Pasif'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-2">
+                          <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-600">
+                            <span><strong className="text-slate-800">Kod:</strong> {partner.partner_code}</span>
+                            <span><strong className="text-slate-800">Cari:</strong> {partner.mikro_cari_kodu ?? '-'}</span>
+                            <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
+                            <span><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
+                          </div>
+                          <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Mikro cari ünvanı</span>
+                              <span className="line-clamp-1">{partner.mikro_cari_unvan ?? '-'}</span>
+                            </div>
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Bağlı usta</span>
+                              <span className="line-clamp-1">{capabilities.includes('locksmith') ? partner.linked_technician_name ?? 'Teknik servis ustası bağlı değil' : '-'}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2 lg:justify-end">
                           <Button type="button" size="sm" variant="outline" onClick={() => startEdit(partner, 'detail')}>Detay</Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => startEdit(partner)}>Düzenle</Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              window.location.href = '/panel/b2b/users'
+                            }}
+                          >
+                            Kullanıcılar
+                          </Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => void toggleActive(partner)} disabled={saving}>
                             {partner.active ? 'Pasif' : 'Aktif'}
                           </Button>
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
           </section>
 
           <aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -414,85 +513,96 @@ return 'Çilingirler'
               <h3 className="text-base font-semibold text-slate-900">
                 {formMode === 'create' ? 'Yeni Partner' : formMode === 'detail' ? 'Partner Detayı' : 'Partner Düzenle'}
               </h3>
-              <p className="mt-1 text-sm text-slate-500">Mikro cari bağlantısı bu fazda manuel girilir. Gerçek Mikro arama entegrasyonu sonraki fazda bağlanacak.</p>
+              <p className="mt-1 text-sm text-slate-500">Mikro cari bağlantısı manuel veya cari kontrolünden alınır. Bu işlem Mikro'da yeni cari oluşturmaz.</p>
             </div>
 
-            <div className="grid gap-3">
-              <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                Partner tipi
-                <select
-                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
-                  value={form.partner_type}
-                  onChange={(event) => updateForm('partner_type', event.target.value as PartnerType)}
-                  disabled={formMode === 'detail'}
-                >
-                  <option value="dealer">Bayi</option>
-                  <option value="locksmith">Çilingir</option>
-                </select>
-              </label>
+            <div className="grid gap-4">
+              <section className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 text-sm font-semibold text-slate-800">Roller</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {(['dealer', 'locksmith'] as const).map((capability) => (
+                    <label key={capability} className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${form.capabilities.includes(capability) ? 'border-blue-200 bg-white text-blue-700' : 'border-slate-200 bg-white text-slate-600'}`}>
+                      <input
+                        type="checkbox"
+                        checked={form.capabilities.includes(capability)}
+                        onChange={() => toggleCapability(capability)}
+                        disabled={formMode === 'detail'}
+                      />
+                      {capability === 'dealer' ? 'Bayi kanalı' : 'Çilingir / servis kanalı'}
+                    </label>
+                  ))}
+                </div>
+              </section>
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Partner kodu
-                  <Input value={form.partner_code} onChange={(event) => updateForm('partner_code', event.target.value)} disabled={formMode === 'detail'} />
+              <section className="grid gap-3 rounded-xl border border-slate-200 p-3">
+                <div className="text-sm font-semibold text-slate-800">Temel bilgiler</div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Partner kodu
+                    <Input value={form.partner_code} onChange={(event) => updateForm('partner_code', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Görünen ad
+                    <Input value={form.display_name} onChange={(event) => updateForm('display_name', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Telefon
+                    <Input value={form.phone} onChange={(event) => updateForm('phone', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    E-posta
+                    <Input value={form.email} onChange={(event) => updateForm('email', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    İl
+                    <Input value={form.city} onChange={(event) => updateForm('city', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    İlçe
+                    <Input value={form.district} onChange={(event) => updateForm('district', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                </div>
+                <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={form.active} onChange={(event) => updateForm('active', event.target.checked)} disabled={formMode === 'detail'} />
+                  Aktif partner
                 </label>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Görünen ad
-                  <Input value={form.display_name} onChange={(event) => updateForm('display_name', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-              </div>
+              </section>
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Mikro cari kodu
-                  <Input value={form.mikro_cari_kodu} onChange={(event) => updateForm('mikro_cari_kodu', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Mikro cari ünvanı
-                  <Input value={form.mikro_cari_unvan} onChange={(event) => updateForm('mikro_cari_unvan', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-              </div>
+              {hasDealerForm && (
+                <section className="grid gap-3 rounded-xl border border-sky-100 bg-sky-50/60 p-3">
+                  <div>
+                    <div className="text-sm font-semibold text-sky-900">Mikro cari bağlantısı</div>
+                    <p className="mt-1 text-xs text-sky-700">Manuel girilir veya cari kontrolünden alınır; Mikro'da cari oluşturmaz ya da güncellemez.</p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                      Mikro cari kodu
+                      <Input value={form.mikro_cari_kodu} onChange={(event) => updateForm('mikro_cari_kodu', event.target.value)} disabled={formMode === 'detail'} />
+                    </label>
+                    <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                      Mikro cari ünvanı
+                      <Input value={form.mikro_cari_unvan} onChange={(event) => updateForm('mikro_cari_unvan', event.target.value)} disabled={formMode === 'detail'} />
+                    </label>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                      Cari grup kodu
+                      <Input value={form.cari_grup_kodu} onChange={(event) => updateForm('cari_grup_kodu', event.target.value)} disabled={formMode === 'detail'} />
+                    </label>
+                    <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                      Sorumluluk kodu
+                      <Input value={form.responsibility_code} onChange={(event) => updateForm('responsibility_code', event.target.value)} disabled={formMode === 'detail'} />
+                    </label>
+                  </div>
+                </section>
+              )}
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Cari grup kodu
-                  <Input value={form.cari_grup_kodu} onChange={(event) => updateForm('cari_grup_kodu', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Sorumluluk kodu
-                  <Input value={form.responsibility_code} onChange={(event) => updateForm('responsibility_code', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Telefon
-                  <Input value={form.phone} onChange={(event) => updateForm('phone', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  E-posta
-                  <Input value={form.email} onChange={(event) => updateForm('email', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  İl
-                  <Input value={form.city} onChange={(event) => updateForm('city', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  İlçe
-                  <Input value={form.district} onChange={(event) => updateForm('district', event.target.value)} disabled={formMode === 'detail'} />
-                </label>
-              </div>
-
-              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
-                <input type="checkbox" checked={form.active} onChange={(event) => updateForm('active', event.target.checked)} disabled={formMode === 'detail'} />
-                Aktif partner
-              </label>
-
-              {hasLocksmithForm ? (
-                <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
+              {hasLocksmithForm && (
+                <section className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
                   <label className="grid gap-1 text-sm font-semibold text-emerald-900">
                     Teknik Servis Ustası
                     <div className="flex gap-2">
@@ -504,7 +614,7 @@ return 'Çilingirler'
                     <select
                       className="mt-2 h-10 rounded-md border border-emerald-200 bg-white px-3 text-sm"
                       value={form.technical_service_technician_id}
-                      onChange={(event) => updateForm('technical_service_technician_id', event.target.value)}
+                      onChange={(event) => selectTechnician(event.target.value)}
                       disabled={formMode === 'detail'}
                     >
                       <option value="">Usta bağlantısı yok</option>
@@ -520,12 +630,28 @@ return 'Çilingirler'
                       Bağlı usta: {selectedTechnicianLabel(technicians, form.technical_service_technician_id) ?? editingPartner?.linked_technician_name}
                     </div>
                   )}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                  Teknik servis ustası bağlantısı bayi için kullanılmaz.
-                </div>
+                  {!form.technical_service_technician_id && (
+                    <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      Teknik servis ustası bağlı değil. Bu partner portal/yetki kaydı olarak durur; çilingir işleri için mevcut usta kaydına bağlanmalıdır.
+                    </div>
+                  )}
+                </section>
               )}
+
+              <section className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                <div className="font-semibold text-slate-800">Kullanıcılar</div>
+                <p className="mt-1">Bu partner için {editingPartner?.active_users_count ?? 0} aktif / {editingPartner?.users_count ?? 0} toplam kullanıcı tanımı var.</p>
+                <Button
+                  type="button"
+                  className="mt-3"
+                  variant="outline"
+                  onClick={() => {
+                    window.location.href = '/panel/b2b/users'
+                  }}
+                >
+                  Kullanıcıları yönet
+                </Button>
+              </section>
 
               <div className="flex flex-wrap justify-end gap-2 pt-2">
                 {formMode !== 'create' && <Button type="button" variant="outline" onClick={startCreate}>Yeni kayıt</Button>}

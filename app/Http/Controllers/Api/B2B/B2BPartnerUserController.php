@@ -463,6 +463,7 @@ class B2BPartnerUserController extends Controller
         return [
             'id' => $partner->id,
             'partner_type' => $partner->partner_type,
+            'capabilities' => $partner->capabilityCodes(),
             'partner_code' => $partner->partner_code,
             'display_name' => $partner->display_name,
             'mikro_cari_kodu' => $partner->mikro_cari_kodu,

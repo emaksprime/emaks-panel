@@ -60,6 +60,12 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('partners', [B2BPartnerController::class, 'store'])
                     ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
                     ->name('api.b2b.partners.store');
+                Route::get('cari-control', [B2BPartnerController::class, 'cariControl'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.cari-control.index');
+                Route::post('cari-control/import', [B2BPartnerController::class, 'importCariControl'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.cari-control.import');
                 Route::get('users/search', [B2BPartnerUserController::class, 'searchUsers'])
                     ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
                     ->name('api.b2b.users.search');
@@ -78,6 +84,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::patch('partners/{partner}/active', [B2BPartnerController::class, 'updateActive'])
                     ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
                     ->name('api.b2b.partners.active');
+                Route::patch('partners/{partner}/capabilities', [B2BPartnerController::class, 'updateCapabilities'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
+                    ->name('api.b2b.partners.capabilities');
                 Route::patch('partners/{partner}', [B2BPartnerController::class, 'update'])
                     ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
                     ->name('api.b2b.partners.update');

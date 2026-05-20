@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
+use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\MenuGroup;
@@ -296,6 +297,86 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('partner.linked_technician_name', 'Locksmith Partner Usta');
     }
 
+    public function test_partner_can_have_dealer_and_locksmith_capabilities_on_single_record(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Multi Role Usta']);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_code' => 'MULTI-ROLE-001',
+                'display_name' => 'Bayi ve Ã‡ilingir Partner',
+                'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                'technical_service_technician_id' => $technician->id,
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('partner.partner_code', 'MULTI-ROLE-001')
+            ->assertJsonPath('partner.capabilities.0', B2BPartner::TYPE_DEALER)
+            ->assertJsonPath('partner.capabilities.1', B2BPartner::TYPE_LOCKSMITH)
+            ->assertJsonPath('partner.technical_service_technician_id', $technician->id);
+
+        $partner = B2BPartner::query()->where('partner_code', 'MULTI-ROLE-001')->firstOrFail();
+        $this->assertDatabaseHas('b2b_partner_capabilities', [
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_DEALER,
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_capabilities', [
+            'partner_id' => $partner->id,
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+    }
+
+    public function test_partner_requires_at_least_one_capability(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_type' => null,
+                'capabilities' => [],
+                'partner_code' => 'NO-CAPABILITY',
+            ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('capabilities');
+    }
+
+    public function test_same_active_technician_cannot_be_linked_to_two_active_locksmith_partners(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Tek Usta']);
+        $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'technical_service_technician_id' => $technician->id,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+                'partner_code' => 'DUPLICATE-TECH',
+                'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'technical_service_technician_id' => $technician->id,
+            ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('technical_service_technician_id');
+    }
+
+    public function test_same_mikro_cari_code_cannot_create_duplicate_active_partner(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->partner(['mikro_cari_kodu' => 'CR-DUPLICATE']);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners', $this->partnerPayload([
+                'partner_code' => 'DUPLICATE-CARI',
+                'mikro_cari_kodu' => 'CR-DUPLICATE',
+            ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('mikro_cari_kodu');
+    }
+
     public function test_create_dealer_with_technician_id_fails(): void
     {
         $admin = $this->userWithRole('admin', true);
@@ -456,6 +537,179 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'items')
             ->assertJsonPath('items.0.partner_code', 'FILTER-DEALER');
+    }
+
+    public function test_partner_list_filters_by_dealer_and_locksmith_capabilities(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $dealerOnly = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'partner_code' => 'CAP-DEALER',
+            'display_name' => 'Cap Dealer',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $locksmithOnly = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'CAP-LOCKSMITH',
+            'display_name' => 'Cap Locksmith',
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $multiRole = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'partner_code' => 'CAP-MULTI',
+            'display_name' => 'Cap Multi',
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+        ]);
+
+        $dealerIds = collect($this->actingAs($admin)
+            ->getJson('/api/b2b/partners?partner_type=dealer')
+            ->assertOk()
+            ->json('items'))
+            ->pluck('id')
+            ->all();
+
+        $locksmithIds = collect($this->actingAs($admin)
+            ->getJson('/api/b2b/partners?partner_type=locksmith')
+            ->assertOk()
+            ->json('items'))
+            ->pluck('id')
+            ->all();
+
+        $this->assertContains($dealerOnly->id, $dealerIds);
+        $this->assertContains($multiRole->id, $dealerIds);
+        $this->assertNotContains($locksmithOnly->id, $dealerIds);
+
+        $this->assertContains($locksmithOnly->id, $locksmithIds);
+        $this->assertContains($multiRole->id, $locksmithIds);
+        $this->assertNotContains($dealerOnly->id, $locksmithIds);
+    }
+
+    public function test_entity_scope_works_with_multi_capability_partner(): void
+    {
+        $user = $this->partnerUser();
+        $multiRole = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'display_name' => 'Visible Multi',
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'display_name' => 'Hidden Locksmith',
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $this->grantPartnerAccess($user, $multiRole, 'technical_service');
+
+        $this->actingAs($user)
+            ->getJson('/api/b2b/partners?partner_type=locksmith')
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $multiRole->id)
+            ->assertJsonPath('items.0.capabilities.0', B2BPartner::TYPE_DEALER)
+            ->assertJsonPath('items.0.capabilities.1', B2BPartner::TYPE_LOCKSMITH);
+    }
+
+    public function test_partner_response_includes_user_counts(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner();
+        B2BPartnerUserProfile::query()->create([
+            'partner_id' => $partner->id,
+            'user_id' => $this->userWithRole('active_partner_profile')->id,
+            'active' => true,
+        ]);
+        B2BPartnerUserProfile::query()->create([
+            'partner_id' => $partner->id,
+            'user_id' => $this->userWithRole('inactive_partner_profile')->id,
+            'active' => false,
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson("/api/b2b/partners/{$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('partner.users_count', 2)
+            ->assertJsonPath('partner.active_users_count', 1);
+    }
+
+    public function test_cari_control_returns_datasource_required_without_red_zone_source(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control')
+            ->assertStatus(503)
+            ->assertJsonPath('status', 'datasource_required')
+            ->assertJsonPath('actions_enabled', false);
+    }
+
+    public function test_partner_directory_ui_uses_multi_role_cards_without_horizontal_scroll(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/b2b/partners.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('Bayi kanalı', $source);
+        $this->assertStringContainsString('Çilingir / servis kanalı', $source);
+        $this->assertStringContainsString("Mikro'da yeni cari oluşturmaz", $source);
+        $this->assertStringContainsString('Kullanıcı:', $source);
+        $this->assertStringNotContainsString('overflow-x-auto', $source);
+        $this->assertStringNotContainsString('Bayi için kullanılmaz', $source);
+    }
+
+    public function test_import_selected_cari_creates_partner_with_selected_capabilities(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/import', [
+                'items' => [[
+                    'mikro_cari_kodu' => 'CR-IMPORT-001',
+                    'display_name' => 'Cari Import Partner',
+                    'mikro_cari_unvan' => 'Cari Import Ãœnvan',
+                    'city' => 'Ankara',
+                    'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'created');
+
+        $partner = B2BPartner::query()->where('mikro_cari_kodu', 'CR-IMPORT-001')->firstOrFail();
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->capabilityCodes());
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.imported_from_cari',
+        ]);
+    }
+
+    public function test_import_existing_mikro_cari_adds_capability_instead_of_duplicate_partner(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'mikro_cari_kodu' => 'CR-MERGE-001',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/import', [
+                'items' => [[
+                    'mikro_cari_kodu' => 'CR-MERGE-001',
+                    'display_name' => 'Cari Merge Partner',
+                    'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'updated')
+            ->assertJsonPath('items.0.partner_id', $partner->id);
+
+        $this->assertSame(1, B2BPartner::query()->where('mikro_cari_kodu', 'CR-MERGE-001')->count());
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->fresh()->capabilityCodes());
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.updated_from_cari',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.capability_added',
+        ]);
     }
 
     public function test_super_admin_assigns_existing_user_to_dealer_partner(): void
@@ -727,8 +981,10 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         $sequence = B2BPartner::query()->count() + 1;
         $type = $attributes['partner_type'] ?? B2BPartner::TYPE_DEALER;
+        $capabilities = $attributes['capabilities'] ?? [$type];
+        unset($attributes['capabilities']);
 
-        return B2BPartner::query()->create(array_merge([
+        $partner = B2BPartner::query()->create(array_merge([
             'partner_type' => $type,
             'partner_code' => sprintf('%s-%03d', strtoupper((string) $type), $sequence),
             'display_name' => 'Test Partner '.$sequence,
@@ -738,6 +994,16 @@ class B2BPartnerPanelAccessTest extends TestCase
             'district' => 'Kadıköy',
             'active' => true,
         ], $attributes));
+
+        foreach (array_unique($capabilities) as $capability) {
+            B2BPartnerCapability::query()->create([
+                'partner_id' => $partner->id,
+                'capability' => $capability,
+                'active' => true,
+            ]);
+        }
+
+        return $partner->load('capabilities');
     }
 
     /**

@@ -37,13 +37,38 @@ class B2BPartnerAccessService
         return $this->canManagePartnerType($user, $partnerType);
     }
 
+    /**
+     * @param  array<int, string>  $capabilities
+     */
+    public function canManageCapabilities(User $user, array $capabilities): bool
+    {
+        if ($this->isSuperAdmin($user)) {
+            return true;
+        }
+
+        if ($this->panelAccess->userCanAccess($user, 'b2b.manage')) {
+            return true;
+        }
+
+        $capabilities = collect($capabilities)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($capabilities->isEmpty()) {
+            return false;
+        }
+
+        return $capabilities->every(fn (string $capability): bool => $this->canManagePartnerType($user, $capability));
+    }
+
     public function canUpdatePartner(User $user, B2BPartner $partner): bool
     {
         if ($this->isSuperAdmin($user)) {
             return true;
         }
 
-        return $this->canManagePartnerType($user, (string) $partner->partner_type)
+        return $this->canManageCapabilities($user, $partner->capabilityCodes())
             && $this->canManagePartner($user, $partner);
     }
 
@@ -94,10 +119,12 @@ class B2BPartnerAccessService
 
     public function visiblePartnerQuery(User $user, ?string $partnerType = null): Builder
     {
-        $query = B2BPartner::query()->with('technician');
+        $query = B2BPartner::query()->with(['technician', 'capabilities']);
 
         if ($partnerType !== null && trim($partnerType) !== '') {
-            $query->where('partner_type', $partnerType);
+            $query->whereHas('activeCapabilities', function (Builder $query) use ($partnerType): void {
+                $query->where('capability', $partnerType);
+            });
         }
 
         if ($this->isSuperAdmin($user)) {
