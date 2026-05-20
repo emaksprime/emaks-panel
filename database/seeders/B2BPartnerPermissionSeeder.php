@@ -165,6 +165,11 @@ class B2BPartnerPermissionSeeder extends Seeder
                 );
             }
         }
+
+        RoleResourcePermission::query()
+            ->whereIn('role_code', array_keys($this->roleDefaults()))
+            ->whereNotIn('resource_code', collect($this->roleDefaults())->flatten()->unique()->all())
+            ->delete();
     }
 
     /**
@@ -208,7 +213,6 @@ class B2BPartnerPermissionSeeder extends Seeder
     {
         return [
             'b2b_manager' => [
-                'dashboard',
                 'b2b.view',
                 'b2b.manage',
                 'b2b.dealers.view',
@@ -227,7 +231,6 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'b2b.partner_users.manage',
             ],
             'b2b_dealer' => [
-                'dashboard',
                 'b2b.view',
                 'b2b.dealers.view',
                 'b2b.orders.view',
@@ -235,21 +238,18 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'b2b.finance.view',
             ],
             'b2b_locksmith' => [
-                'dashboard',
                 'b2b.view',
                 'b2b.locksmiths.view',
                 'b2b.technical_service.view',
                 'b2b.finance.view',
             ],
             'b2b_manufacturer' => [
-                'dashboard',
                 'b2b.view',
                 'b2b.manufacturers.view',
                 'b2b.stock.view',
                 'b2b.finance.view',
             ],
             'b2b_seller' => [
-                'dashboard',
                 'b2b.view',
                 'b2b.sellers.view',
                 'b2b.orders.view',

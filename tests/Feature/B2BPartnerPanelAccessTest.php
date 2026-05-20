@@ -302,6 +302,24 @@ class B2BPartnerPanelAccessTest extends TestCase
             'resource_code' => 'b2b.sellers.view',
             'can_view' => true,
         ]);
+
+        foreach (['b2b_dealer', 'b2b_locksmith', 'b2b_manufacturer', 'b2b_seller'] as $roleCode) {
+            $resourceCodes = RoleResourcePermission::query()
+                ->where('role_code', $roleCode)
+                ->pluck('resource_code')
+                ->all();
+
+            $this->assertNotContains('dashboard', $resourceCodes);
+            $this->assertNotContains('sales_main', $resourceCodes);
+            $this->assertNotContains('sales_main_all', $resourceCodes);
+            $this->assertNotContains('sales_online', $resourceCodes);
+            $this->assertNotContains('sales_bayi', $resourceCodes);
+            $this->assertNotContains('stock', $resourceCodes);
+            $this->assertNotContains('stock_all', $resourceCodes);
+            $this->assertNotContains('orders', $resourceCodes);
+            $this->assertNotContains('orders_alinan', $resourceCodes);
+            $this->assertNotContains('orders_verilen', $resourceCodes);
+        }
     }
 
     public function test_create_dealer_partner_works(): void
@@ -842,7 +860,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('candidates.1.suggested_capabilities.0', B2BPartner::TYPE_LOCKSMITH)
             ->assertJsonPath('candidates.2.suggested_capabilities.0', B2BPartner::TYPE_MANUFACTURER);
 
-        Http::assertSentCount(1);
+        Http::assertSentCount(4);
     }
 
     public function test_cari_control_search_groups_child_cari_accounts_under_parent_candidate(): void
@@ -997,6 +1015,8 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'cari_il' => 'Ankara',
                     'cari_ilce' => 'Cankaya',
                     'cari_adres1' => 'Detail Mahallesi',
+                    'vergi_no' => '1234567890',
+                    'vergi_dairesi' => 'Cankaya VD',
                 ]],
             ]),
         ]);
@@ -1019,6 +1039,11 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('Ankara', $partner->city);
         $this->assertSame('Cankaya', $partner->district);
         $this->assertSame('Detail Mahallesi', $partner->metadata['address']);
+        $this->assertSame('1234567890', $partner->metadata['tax_no']);
+        $this->assertSame('Cankaya VD', $partner->metadata['tax_office']);
+        $this->assertSame('Detail Mahallesi', $partner->metadata['invoice_profile']['invoice_address']);
+        $this->assertSame('detail@example.test', $partner->metadata['invoice_profile']['email']);
+        $this->assertSame('Detail Mahallesi', $partner->metadata['shipping_profile']['address']);
 
         Http::fake([
             'https://n8n.test/*' => Http::response([
@@ -1097,6 +1122,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString("'B2B'", $adminSource);
         $this->assertStringContainsString('applyRoleDefaults', $adminSource);
         $this->assertStringContainsString('Rol seçilince varsayılan izinler otomatik işaretlenir', $adminSource);
+        $this->assertStringContainsString('şirket içi satış/stok/sipariş ekranlarını açmaz', $adminSource);
         $this->assertStringContainsString('Partner Kullanıcıları ekranından yönetilir', $adminSource);
     }
 
@@ -1140,12 +1166,25 @@ class B2BPartnerPanelAccessTest extends TestCase
                     'display_name' => 'BAHATTİN ÖZBEK',
                     'mikro_cari_unvan' => 'BAHATTİN ÖZBEK',
                     'phone' => '+905551112233',
+                    'email' => 'bahattin@example.test',
                     'city' => 'Ankara',
+                    'district' => 'Cankaya',
+                    'address' => 'Bayi Mahallesi No:1',
+                    'tax_no' => '9988776655',
+                    'tax_office' => 'Ankara VD',
                     'child_cari_accounts' => [[
                         'mikro_cari_kodu' => '320.ÇLG.06.002.KONSINYE',
                         'mikro_cari_unvan' => 'BAHATTİN ÖZBEK KONSINYE',
                         'usage_type' => 'consignment',
                         'invoice_usage_note' => 'Konsinye siparisi/faturasi icin bu alt cari hesabi kullanilacak.',
+                    ], [
+                        'mikro_cari_kodu' => '320.ÇLG.06.002.TESHIR',
+                        'mikro_cari_unvan' => 'BAHATTİN ÖZBEK TESHIR',
+                        'usage_type' => 'showroom',
+                    ], [
+                        'mikro_cari_kodu' => '320.ÇLG.06.002.PROJE',
+                        'mikro_cari_unvan' => 'BAHATTİN ÖZBEK PROJE',
+                        'usage_type' => 'project',
                     ]],
                 ]],
             ])
@@ -1162,6 +1201,12 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('b2b_dealer', $user->role_code);
         $this->assertTrue((bool) $user->force_password_change);
         $this->assertSame('consignment', $partner->metadata['child_cari_accounts'][0]['usage_type']);
+        $this->assertSame('Bayi Mahallesi No:1', $partner->metadata['address']);
+        $this->assertSame('9988776655', $partner->metadata['invoice_profile']['tax_no']);
+        $this->assertSame('Ankara VD', $partner->metadata['invoice_profile']['tax_office']);
+        $this->assertSame('320.ÇLG.06.002.KONSINYE', $partner->metadata['shipping_profile']['consignment_cari_kodu']);
+        $this->assertSame('320.ÇLG.06.002.TESHIR', $partner->metadata['shipping_profile']['showroom_cari_kodu']);
+        $this->assertSame('320.ÇLG.06.002.PROJE', $partner->metadata['shipping_profile']['project_cari_kodu']);
 
         $this->assertDatabaseHas('b2b_partner_user_profiles', [
             'partner_id' => $partner->id,

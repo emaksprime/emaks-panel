@@ -24,6 +24,10 @@ type Partner = {
   city: string | null
   district: string | null
   address?: string | null
+  tax_no?: string | null
+  tax_office?: string | null
+  invoice_profile?: Record<string, string | null>
+  shipping_profile?: Record<string, string | null>
   source_field_missing?: string[]
   active: boolean
   technical_service_technician_id: number | null
@@ -66,6 +70,7 @@ type PartnerForm = {
   email: string
   city: string
   district: string
+  address: string
   active: boolean
   technical_service_technician_id: string
 }
@@ -88,6 +93,9 @@ type CariControlCandidate = {
   email?: string | null
   city?: string | null
   district?: string | null
+  address?: string | null
+  tax_no?: string | null
+  tax_office?: string | null
   suggested_capabilities?: PartnerType[]
   capabilities?: PartnerType[]
   selected_capabilities?: PartnerType[]
@@ -158,6 +166,7 @@ const emptyForm: PartnerForm = {
   email: '',
   city: '',
   district: '',
+  address: '',
   active: true,
   technical_service_technician_id: '',
 }
@@ -379,6 +388,7 @@ export default function B2BPartnersPage() {
       email: partner.email ?? '',
       city: partner.city ?? '',
       district: partner.district ?? '',
+      address: partner.address ?? '',
       active: partner.active,
       technical_service_technician_id: partner.technical_service_technician_id ? String(partner.technical_service_technician_id) : '',
     })
@@ -416,6 +426,7 @@ export default function B2BPartnersPage() {
       phone: technician && current.phone.trim() === '' ? technician.phone ?? '' : current.phone,
       city: technician && current.city.trim() === '' ? technician.city ?? '' : current.city,
       district: technician && current.district.trim() === '' ? technician.district ?? '' : current.district,
+      address: technician && current.address.trim() === '' ? technician.address ?? '' : current.address,
       mikro_cari_kodu: technician && current.mikro_cari_kodu.trim() === '' ? technician.mikro_cari_kodu ?? technician.cari_code ?? '' : current.mikro_cari_kodu,
       mikro_cari_unvan: technician && current.mikro_cari_unvan.trim() === '' ? technician.mikro_cari_adi ?? technician.cari_title ?? '' : current.mikro_cari_unvan,
     }))
@@ -638,6 +649,7 @@ export default function B2BPartnersPage() {
         email: savedPartner.email ?? '',
         city: savedPartner.city ?? '',
         district: savedPartner.district ?? '',
+        address: savedPartner.address ?? '',
         active: savedPartner.active,
         technical_service_technician_id: savedPartner.technical_service_technician_id ? String(savedPartner.technical_service_technician_id) : '',
       })
@@ -879,6 +891,9 @@ export default function B2BPartnersPage() {
                         <span className="mt-1 block text-xs text-slate-500">
                           {candidate.mikro_cari_kodu} · {candidate.city ?? '-'} / {candidate.district ?? '-'} · {candidate.status_label ?? candidate.status ?? 'Kontrol gerekli'}
                         </span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                          Tel: {candidate.phone ?? '-'} · E-posta: {candidate.email ?? '-'} · Adres: {candidate.address ?? 'Mikro kaynağından gelmedi'}
+                        </span>
                         {(candidate.child_cari_accounts ?? []).length > 0 && (
                           <div className="mt-2 grid gap-1">
                             {(candidate.child_cari_accounts ?? []).map((child) => {
@@ -977,10 +992,11 @@ export default function B2BPartnersPage() {
                             <span><strong className="text-slate-800">Kod:</strong> {partner.partner_code}</span>
                             <span><strong className="text-slate-800">Cari:</strong> {partner.mikro_cari_kodu ?? '-'}</span>
                             <span><strong className="text-slate-800">Telefon:</strong> {partner.phone ?? '-'}</span>
+                            <span><strong className="text-slate-800">E-posta:</strong> {partner.email ?? '-'}</span>
                             <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
                             <span><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
                           </div>
-                          <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+                          <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-3">
                             <div className="rounded-xl bg-white px-3 py-2">
                               <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Mikro cari ünvanı</span>
                               <span className="line-clamp-1">{partner.mikro_cari_unvan ?? '-'}</span>
@@ -989,7 +1005,16 @@ export default function B2BPartnersPage() {
                               <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Bağlı usta</span>
                               <span className="line-clamp-1">{capabilities.includes('locksmith') ? partner.linked_technician_name ?? 'Teknik servis ustası bağlı değil' : '-'}</span>
                             </div>
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Açık adres</span>
+                              <span className="line-clamp-1">{partner.address ?? 'Mikro kaynağından gelmedi'}</span>
+                            </div>
                           </div>
+                          {(partner.source_field_missing ?? []).length > 0 && (
+                            <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                              Mikro kaynağından adres/telefon gelmedi: {(partner.source_field_missing ?? []).join(', ')}
+                            </div>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-2 lg:justify-end">
                           <Button type="button" size="sm" variant="outline" onClick={() => startEdit(partner, 'detail')}>Detay</Button>
@@ -1074,6 +1099,15 @@ export default function B2BPartnersPage() {
                     <Input value={form.district} onChange={(event) => updateForm('district', event.target.value)} disabled={formMode === 'detail'} />
                   </label>
                 </div>
+                <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                  Açık adres
+                  <textarea
+                    className="min-h-[76px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-normal outline-none transition focus:border-slate-400"
+                    value={form.address}
+                    onChange={(event) => updateForm('address', event.target.value)}
+                    disabled={formMode === 'detail'}
+                  />
+                </label>
                 <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
                   <input type="checkbox" checked={form.active} onChange={(event) => updateForm('active', event.target.checked)} disabled={formMode === 'detail'} />
                   Aktif partner

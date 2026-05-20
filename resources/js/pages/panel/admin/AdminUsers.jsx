@@ -509,7 +509,7 @@ export default function AdminUsers() {
                                 ))}
                             </select>
                             <span className="text-xs font-medium text-slate-500">
-                                Rol seçilince varsayılan izinler otomatik işaretlenir. B2B partner bazlı entity yetkileri Partner Kullanıcıları ekranından yönetilir.
+                                Rol seçilince varsayılan izinler otomatik işaretlenir. B2B rolleri şirket içi satış/stok/sipariş ekranlarını açmaz; partner bazlı entity yetkileri Partner Kullanıcıları ekranından yönetilir.
                             </span>
                         </label>
 

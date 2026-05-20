@@ -109,6 +109,7 @@ class B2BCariControlService
             'district' => $this->nullableString($candidate['district'] ?? null),
             'address' => $this->nullableString($candidate['address'] ?? null),
             'tax_no' => $this->nullableString($candidate['tax_no'] ?? null),
+            'tax_office' => $this->nullableString($candidate['tax_office'] ?? null),
             'suggested_capabilities' => $this->normalizeCapabilities($candidate['suggested_capabilities'] ?? $candidate['capabilities'] ?? []),
             'status' => $this->nullableString($candidate['status'] ?? null) ?? 'review_required',
             'raw_source' => $candidate,
@@ -304,10 +305,38 @@ class B2BCariControlService
             ->values()
             ->all();
 
+        $candidates = $this->enrichListCandidates($candidates);
+
         return [
             'candidates' => $candidates,
             'excluded_online_retail_count' => $excludedOnlineRetailCount,
         ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $candidates
+     * @return array<int, array<string, mixed>>
+     */
+    private function enrichListCandidates(array $candidates): array
+    {
+        if ($this->detailSources()->isEmpty()) {
+            return $candidates;
+        }
+
+        return collect($candidates)
+            ->map(function (array $candidate): array {
+                if ($this->missingCandidateFields($candidate) !== []) {
+                    $detail = $this->detailCandidate($candidate);
+
+                    if ($detail !== null) {
+                        $candidate = $this->mergeCandidateDetail($candidate, $detail);
+                    }
+                }
+
+                return $this->withSourceFieldMissingMeta($candidate);
+            })
+            ->values()
+            ->all();
     }
 
     /**
@@ -535,7 +564,9 @@ class B2BCariControlService
             $candidate['email'] ?? null,
             $candidate['city'] ?? null,
             $candidate['district'] ?? null,
+            $candidate['address'] ?? null,
             $candidate['tax_no'] ?? null,
+            $candidate['tax_office'] ?? null,
         ];
 
         if (str_contains($this->normalizedText(implode(' ', array_filter($parentFields))), $search)) {
@@ -613,7 +644,8 @@ class B2BCariControlService
         $city = $this->value($row, ['cari_il', 'il', 'city', 'sehir', 'şehir']);
         $district = $this->value($row, ['cari_ilce', 'ilce', 'ilçe', 'district']);
         $address = $this->value($row, ['cari_adres', 'cari_adres1', 'cari_adres2', 'adres', 'address']);
-        $taxNo = $this->value($row, ['tax_no', 'vergi_no', 'vkn', 'tckn']);
+        $taxNo = $this->value($row, ['tax_no', 'vergi_no', 'vkn', 'tckn', 'cari_vdaire_no', 'cari_VergiKimlikNo', 'cari_VergiNo', 'vergi_kimlik_no', 'tc_kimlik_no']);
+        $taxOffice = $this->value($row, ['tax_office', 'vergi_dairesi', 'cari_vdaire_adi', 'cari_VergiDairesi', 'vergi_daire']);
         $normalizedCode = $this->normalizedText($code);
         $existingPartner = $existingPartners[$normalizedCode] ?? null;
         $technician = $techniciansByCari[$normalizedCode] ?? null;
@@ -654,6 +686,7 @@ class B2BCariControlService
             'district' => $district,
             'address' => $address,
             'tax_no' => $taxNo,
+            'tax_office' => $taxOffice,
             'raw_source' => $row,
             'suggested_capabilities' => $suggestedCapabilities,
             'capabilities' => $suggestedCapabilities,
@@ -916,7 +949,7 @@ class B2BCariControlService
      */
     private function missingCandidateFields(array $candidate): array
     {
-        return collect(['phone', 'email', 'city', 'district', 'address'])
+        return collect(['phone', 'email', 'city', 'district', 'address', 'tax_no', 'tax_office'])
             ->filter(fn (string $field): bool => $this->nullableString($candidate[$field] ?? null) === null)
             ->values()
             ->all();
@@ -953,6 +986,7 @@ class B2BCariControlService
             'district',
             'address',
             'tax_no',
+            'tax_office',
         ] as $field) {
             if ($this->nullableString($candidate[$field] ?? null) === null && $this->nullableString($detail[$field] ?? null) !== null) {
                 $candidate[$field] = $detail[$field];

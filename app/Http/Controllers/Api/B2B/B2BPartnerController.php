@@ -80,6 +80,7 @@ class B2BPartnerController extends Controller
         $partner = DB::transaction(function () use ($writePayload, $capabilities, $request, $user): B2BPartner {
             $partner = B2BPartner::query()->create($writePayload);
             $this->syncCapabilities($partner, $capabilities, $request, $user->id, []);
+            $this->applyPartnerFormMetadata($partner, $request->all());
 
             $this->writeAuditLog(
                 $partner,
@@ -113,6 +114,7 @@ class B2BPartnerController extends Controller
             $partner->fill($writePayload);
             $partner->save();
             $this->syncCapabilities($partner, $capabilities, $request, $user->id, $oldCapabilities);
+            $this->applyPartnerFormMetadata($partner, $data);
             $partner->refresh();
 
             $this->writeAuditLog(
@@ -550,9 +552,13 @@ class B2BPartnerController extends Controller
                 'confidence' => $candidate['confidence'] ?? null,
             ],
             'address' => $this->nullableString($candidate['address'] ?? null),
+            'tax_no' => $this->nullableString($candidate['tax_no'] ?? null),
+            'tax_office' => $this->nullableString($candidate['tax_office'] ?? null),
             'raw_source_summary' => $this->rawSourceSummary($candidate),
             'source_field_missing' => $candidate['source_field_missing'] ?? null,
             'child_cari_accounts' => $children,
+            'invoice_profile' => $this->invoiceProfileMetadata($candidate),
+            'shipping_profile' => $this->shippingProfileMetadata($candidate, $children),
             'invoice_usage_note' => $children === [] ? null : 'Konsinye/teshir/proje siparislerinde fatura cari kodu ilgili alt cari hesabindan secilecektir. Bu fazda siparis/fatura logic degistirilmedi.',
         ], fn (mixed $value): bool => $value !== null && $value !== []);
     }
@@ -572,7 +578,54 @@ class B2BPartnerController extends Controller
             'city_present' => $this->nullableString($candidate['city'] ?? null) !== null,
             'district_present' => $this->nullableString($candidate['district'] ?? null) !== null,
             'address_present' => $this->nullableString($candidate['address'] ?? null) !== null,
+            'tax_no_present' => $this->nullableString($candidate['tax_no'] ?? null) !== null,
+            'tax_office_present' => $this->nullableString($candidate['tax_office'] ?? null) !== null,
+            'source_field_missing' => $candidate['source_field_missing'] ?? [],
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function invoiceProfileMetadata(array $candidate): array
+    {
+        return array_filter([
+            'cari_kodu' => $this->nullableString($candidate['mikro_cari_kodu'] ?? null),
+            'cari_unvan' => $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
+                ?? $this->nullableString($candidate['display_name'] ?? null),
+            'tax_no' => $this->nullableString($candidate['tax_no'] ?? null),
+            'tax_office' => $this->nullableString($candidate['tax_office'] ?? null),
+            'invoice_address' => $this->nullableString($candidate['address'] ?? null),
+            'city' => $this->nullableString($candidate['city'] ?? null),
+            'district' => $this->nullableString($candidate['district'] ?? null),
+            'email' => $this->nullableString($candidate['email'] ?? null),
+        ], fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, array<string, mixed>>  $children
+     * @return array<string, mixed>
+     */
+    private function shippingProfileMetadata(array $candidate, array $children): array
+    {
+        $childMap = collect($children)
+            ->mapWithKeys(fn (array $child): array => [
+                (string) ($child['usage_type'] ?? '') => $this->nullableString($child['mikro_cari_kodu'] ?? null),
+            ]);
+
+        return array_filter([
+            'shipping_name' => $this->nullableString($candidate['display_name'] ?? null)
+                ?? $this->nullableString($candidate['mikro_cari_unvan'] ?? null),
+            'phone' => $this->nullableString($candidate['phone'] ?? null),
+            'address' => $this->nullableString($candidate['address'] ?? null),
+            'city' => $this->nullableString($candidate['city'] ?? null),
+            'district' => $this->nullableString($candidate['district'] ?? null),
+            'consignment_cari_kodu' => $childMap->get('consignment'),
+            'showroom_cari_kodu' => $childMap->get('showroom'),
+            'project_cari_kodu' => $childMap->get('project'),
+        ], fn (mixed $value): bool => $value !== null && $value !== '');
     }
 
     /**
@@ -586,8 +639,12 @@ class B2BPartnerController extends Controller
             ->map(fn (array $child): array => [
                 'mikro_cari_kodu' => $this->nullableString($child['mikro_cari_kodu'] ?? null),
                 'mikro_cari_unvan' => $this->nullableString($child['mikro_cari_unvan'] ?? null),
+                'display_name' => $this->nullableString($child['display_name'] ?? null),
                 'usage_type' => $this->nullableString($child['usage_type'] ?? null),
+                'cari_usage_type' => $this->nullableString($child['cari_usage_type'] ?? null),
                 'invoice_usage_note' => $this->nullableString($child['invoice_usage_note'] ?? null),
+                'status' => $this->nullableString($child['status'] ?? null),
+                'status_label' => $this->nullableString($child['status_label'] ?? null),
             ])
             ->filter(fn (array $child): bool => $child['mikro_cari_kodu'] !== null)
             ->values()
@@ -1073,6 +1130,35 @@ class B2BPartnerController extends Controller
     }
 
     /**
+     * @param  array<string, mixed>  $data
+     */
+    private function applyPartnerFormMetadata(B2BPartner $partner, array $data): void
+    {
+        $metadata = is_array($partner->metadata) ? $partner->metadata : [];
+
+        if (! empty($data['technical_service_technician_id'])) {
+            $technician = TechnicalServiceTechnician::query()->find($data['technical_service_technician_id']);
+
+            if ($technician) {
+                $metadata = [
+                    ...$metadata,
+                    ...$this->technicianMetadata($technician),
+                ];
+            }
+        }
+
+        $address = $this->nullableString($data['address'] ?? null);
+
+        if ($address !== null) {
+            $metadata['address'] = $address;
+        }
+
+        if ($metadata !== (is_array($partner->metadata) ? $partner->metadata : [])) {
+            $partner->forceFill(['metadata' => $metadata])->save();
+        }
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function mergeTechnicianMetadata(B2BPartner $partner, TechnicalServiceTechnician $technician): array
@@ -1176,6 +1262,7 @@ class B2BPartnerController extends Controller
             'email' => ['nullable', 'email', 'max:255'],
             'city' => ['nullable', 'string', 'max:128'],
             'district' => ['nullable', 'string', 'max:128'],
+            'address' => ['nullable', 'string', 'max:1024'],
             'active' => ['sometimes', 'boolean'],
             'technical_service_technician_id' => [
                 'nullable',
@@ -1508,8 +1595,12 @@ class B2BPartnerController extends Controller
             'linked_technician_city' => $partner->technician?->city,
             'linked_technician_mikro_cari_kodu' => $partner->technician?->mikro_cari_kodu ?? $partner->technician?->cari_code,
             'address' => is_array($partner->metadata) ? ($partner->metadata['address'] ?? null) : null,
+            'tax_no' => is_array($partner->metadata) ? ($partner->metadata['tax_no'] ?? null) : null,
+            'tax_office' => is_array($partner->metadata) ? ($partner->metadata['tax_office'] ?? null) : null,
             'source_field_missing' => is_array($partner->metadata) ? ($partner->metadata['source_field_missing'] ?? []) : [],
             'child_cari_accounts' => is_array($partner->metadata) ? ($partner->metadata['child_cari_accounts'] ?? []) : [],
+            'invoice_profile' => is_array($partner->metadata) ? ($partner->metadata['invoice_profile'] ?? []) : [],
+            'shipping_profile' => is_array($partner->metadata) ? ($partner->metadata['shipping_profile'] ?? []) : [],
             'invoice_usage_note' => is_array($partner->metadata) ? ($partner->metadata['invoice_usage_note'] ?? null) : null,
             'users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->count(),
             'active_users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->where('active', true)->count(),
