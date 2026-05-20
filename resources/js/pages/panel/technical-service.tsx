@@ -319,11 +319,35 @@ function isMountPaymentAccepted(result: MikroMountCheckResult | null | undefined
 
 function hasMountPaymentReceived(request: ServiceRequest | null | undefined): boolean {
   const saleAndPayment = request?.saleAndPayment
+  const canonicalPayment = saleAndPayment?.payment_status
 
   return Boolean(
-    saleAndPayment?.mount_payment_received
+    canonicalPayment?.is_paid
+    || saleAndPayment?.mount_payment_received
     || saleAndPayment?.mount_payment_status === 'paid'
     || saleAndPayment?.extra_mount_payment?.status === 'paid'
+  )
+}
+
+function requiresCanonicalMountPayment(request: ServiceRequest | null | undefined): boolean {
+  const canonicalPayment = request?.saleAndPayment?.payment_status
+
+  if (canonicalPayment) {
+    return Boolean(canonicalPayment.requires_payment && !canonicalPayment.is_paid)
+  }
+
+  const saleAndPayment = request?.saleAndPayment
+
+  return Boolean(
+    !hasMountPaymentReceived(request)
+    && (
+      saleAndPayment?.mount_payment_status === 'pending'
+      || saleAndPayment?.mount_payment_status === 'failed'
+      || saleAndPayment?.mount_payment_status === 'cancelled'
+      || saleAndPayment?.mount_payment_status === 'skipped_multi_product'
+      || saleAndPayment?.sale_mount_status === 'montaj_haric'
+      || saleAndPayment?.sale_mount_label === 'Montaj Hariç'
+    )
   )
 }
 
@@ -1581,7 +1605,11 @@ export function TechnicalServiceOperationCenter() {
   const assignmentTotalTechnicianCostLabel = assignmentTotalTechnicianCostAmount !== null
     ? formatMoneyLabel(assignmentTotalTechnicianCostAmount)
     : 'Belirlenmedi'
-  const effectiveMountPaymentMissing = modalRequest?.serviceType === 'Montaj' && isMountPaymentMissing(mikroMountCheck)
+  const effectiveMountPaymentMissing = Boolean(
+    modalRequest?.serviceType === 'Montaj'
+    && isMountPaymentMissing(mikroMountCheck)
+    && requiresCanonicalMountPayment(modalRequest),
+  )
   const mountPaymentAccepted = modalRequest?.serviceType === 'Montaj' && isMountPaymentAccepted(mikroMountCheck)
   const mountExclusionAckRequired = requiresMountExclusionAcknowledgement(modalRequest)
   const mountExclusionAckComplete = !mountExclusionAckRequired
@@ -2758,7 +2786,7 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
-    const paymentOverrideRequired = effectiveMountPaymentMissing || mountExclusionAckRequired
+    const paymentOverrideRequired = !hasMountPaymentReceived(modalRequest) && (effectiveMountPaymentMissing || mountExclusionAckRequired)
 
     if (paymentOverrideRequired && !assignOverrideWithoutPayment) {
       setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')

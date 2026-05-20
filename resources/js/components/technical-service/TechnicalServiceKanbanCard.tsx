@@ -160,8 +160,15 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     }
   }
   const qrSourceChannel = request.qrSource?.source_channel ?? request.channel
+  const canonicalPaymentStatus = request.saleAndPayment?.payment_status ?? null
   const mountPaymentStatus = request.saleAndPayment?.mount_payment_status
   const mountPaymentLabel = request.saleAndPayment?.mount_payment_label ?? ''
+  const mountPaymentPaid = Boolean(
+    canonicalPaymentStatus?.is_paid
+    || request.saleAndPayment?.mount_payment_received
+    || mountPaymentStatus === 'paid'
+    || mountPaymentLabel === 'Montaj ödemesi alındı',
+  )
   const currentSerialState = request.qrSource?.current_serial_state
   const selectedInvoiceSerialCount = request.invoiceSerials?.selected_serials?.length ?? 0
   const extraSelectedSerialCount = Math.max(0, selectedInvoiceSerialCount - 1)
@@ -248,7 +255,7 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     addBadge({ label: 'Gizli seri var', tone: 'amber', icon: 'warning', important: true })
   }
 
-  if (mountPaymentStatus === 'paid' || mountPaymentLabel === 'Montaj ödemesi alındı') {
+  if (mountPaymentPaid) {
     addBadge({ label: 'Montaj ödemesi alındı', tone: 'green', icon: 'paid', important: true })
   }
 

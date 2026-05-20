@@ -1241,19 +1241,20 @@ class TechnicalServiceWorkflowService
     private function saleAndPaymentPayload(TechnicalServiceRequest $request): array
     {
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
-        $paymentSummary = $this->mountPaymentSummaryPayload($request, $extraPayment);
+        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
 
         return [
             'sale_mount_status' => $request->sale_mount_status,
             'sale_mount_label' => $this->saleMountLabel($request->sale_mount_status),
             'mount_payment_status' => $request->mount_payment_status,
             'mount_payment_label' => $request->mount_payment_label ?? $this->mountPaymentLabel($request->mount_payment_status, $request->sale_mount_status),
-            'mount_payment_received' => $paymentSummary['received'],
-            'payment_stage_label' => $paymentSummary['stage_label'],
-            'paid_amount' => $paymentSummary['amount'],
+            'mount_payment_received' => $paymentStatus['is_paid'],
+            'payment_stage_label' => $paymentStatus['stage_label'],
+            'paid_amount' => $paymentStatus['amount'],
             'payment_reference' => $request->mount_payment_reference,
             'payment_provider' => $request->mount_payment_provider,
-            'paid_at' => $this->dateTimeString($request->mount_payment_paid_at),
+            'paid_at' => $paymentStatus['paid_at'] ?? $this->dateTimeString($request->mount_payment_paid_at),
+            'payment_status' => $paymentStatus,
             'extra_mount_payment' => $extraPayment,
             'technician_earning_message' => $this->technicianEarningMessagePayload($request),
         ];
@@ -1261,22 +1262,16 @@ class TechnicalServiceWorkflowService
 
     public function mountPaymentReceived(TechnicalServiceRequest $request): bool
     {
-        $context = is_array($request->qr_context_payload) ? $request->qr_context_payload : [];
-        $extraPayment = $this->latestExtraMountPaymentPayload($request);
-
-        return $request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_PAID
-            || ($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
-            || Arr::get($context, 'mount_payment_status') === TechnicalServiceMountSession::PAYMENT_PAID
-            || Arr::get($context, 'payment_status') === TechnicalServiceMountSession::PAYMENT_PAID
-            || Arr::get($context, 'payment.status') === TechnicalServiceMountSession::PAYMENT_PAID
-            || Arr::get($context, 'sale_and_payment.mount_payment_status') === TechnicalServiceMountSession::PAYMENT_PAID;
+        return (bool) app(TechnicalServicePaymentStatusResolver::class)->resolve($request)['is_paid'];
     }
 
     public function requiresMountExclusionAcknowledgement(TechnicalServiceRequest $request): bool
     {
+        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+
         return $request->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC
             && $this->hasMultiProductMountRequest($request)
-            && ! $this->mountPaymentReceived($request);
+            && ! (bool) $paymentStatus['is_paid'];
     }
 
     /**

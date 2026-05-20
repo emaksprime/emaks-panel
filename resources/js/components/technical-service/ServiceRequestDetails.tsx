@@ -1025,17 +1025,35 @@ export function ServiceRequestDetails({
   const setOperationInfoOpen = (open: boolean) => {
     setOperationInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const canonicalPaymentStatus = saleAndPayment?.payment_status ?? null
+  const canonicalPaymentRequiresPayment = Boolean(canonicalPaymentStatus?.requires_payment && !canonicalPaymentStatus?.is_paid)
   const mountPaymentReceived = Boolean(
-    saleAndPayment?.mount_payment_received
+    canonicalPaymentStatus?.is_paid
+    || saleAndPayment?.mount_payment_received
     || saleAndPayment?.mount_payment_status === 'paid'
     || extraMountPayment?.status === 'paid',
   )
-  const mountPaymentStageLabel = displayOrEmpty(saleAndPayment?.payment_stage_label, mountPaymentReceived ? 'Ödeme onaylandı' : 'Montaj ödemesi henüz alınmadı')
-  const mountPaymentAmountLabel = typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
-    ? formatMoneyValue(saleAndPayment.paid_amount)
-    : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
-      ? formatMoneyValue(extraMountPayment.amount)
-      : '-'
+  const mountPaymentStageLabel = displayOrEmpty(
+    canonicalPaymentStatus?.stage_label ?? saleAndPayment?.payment_stage_label,
+    mountPaymentReceived ? 'Ödeme onaylandı' : canonicalPaymentRequiresPayment ? 'Montaj ödemesi henüz alınmadı' : 'Montaj ödemesi gerekmiyor',
+  )
+  const mountPaymentAmountLabel = typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
+    ? formatMoneyValue(canonicalPaymentStatus.amount)
+    : typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
+      ? formatMoneyValue(saleAndPayment.paid_amount)
+      : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
+        ? formatMoneyValue(extraMountPayment.amount)
+        : '-'
+  const mountPaymentHeaderLabel = mountPaymentReceived
+    ? `Montaj ödeme: ${mountPaymentStageLabel}`
+    : canonicalPaymentRequiresPayment
+      ? 'Montaj ödeme: Alınmadı'
+      : `Montaj ödeme: ${mountPaymentStageLabel}`
+  const mountPaymentDetailLabel = mountPaymentReceived
+    ? 'Montaj ödemesi alındı'
+    : canonicalPaymentRequiresPayment
+      ? 'Montaj ödemesi henüz alınmadı'
+      : mountPaymentStageLabel
   const mountExclusionAcknowledgement = operationControl.mount_exclusion_acknowledgement ?? null
   const mountExclusionAckRequired = Boolean(
     mountExclusionAcknowledgement?.required
@@ -1061,7 +1079,11 @@ export function ServiceRequestDetails({
     || !canSubmitAssign
     || !onAssignSelectedTechnician
   const resolvedSaleMountLabel = saleAndPayment?.sale_mount_label ?? mikroMountCheck?.montaj_durumu ?? '-'
-  const resolvedMountPaymentLabel = saleAndPayment?.mount_payment_label ?? mountPaymentLabel
+  const resolvedMountPaymentLabel = mountPaymentReceived
+    ? mountPaymentStageLabel
+    : canonicalPaymentRequiresPayment
+      ? saleAndPayment?.mount_payment_label ?? mountPaymentStageLabel
+      : mountPaymentStageLabel
   const paidExtraCustomerAmount = extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
     ? extraMountPayment.amount
     : 0
@@ -1304,8 +1326,8 @@ export function ServiceRequestDetails({
     operationControl.door_photos_checked === 'compatible'
       ? { title: 'Kapı görselleri kontrolü', status: 'Tamamlandı', message: 'Kapı görselleri uygun işaretlendi.' }
       : { title: 'Kapı görselleri kontrolü', status: 'Engelleyici hata', message: 'Kapı görselleri kontrol edilmedi.' },
-    mountPaymentReceived || operationControl.payment_checked === 'yes'
-      ? { title: 'Montaj ödeme kontrolü', status: 'Tamamlandı', message: mountPaymentReceived ? mountPaymentStageLabel : 'Ödeme kontrolü tamamlandı.' }
+    mountPaymentReceived || !canonicalPaymentRequiresPayment || operationControl.payment_checked === 'yes'
+      ? { title: 'Montaj ödeme kontrolü', status: 'Tamamlandı', message: mountPaymentReceived ? mountPaymentStageLabel : canonicalPaymentRequiresPayment ? 'Ödeme kontrolü tamamlandı.' : mountPaymentStageLabel }
       : mountExclusionAckRequired
         ? { title: 'Montaj ödeme kontrolü', status: 'Kontrol gerekli', message: 'Montaj hariç çoklu ürün onayı gerekiyor.' }
         : { title: 'Montaj ödeme kontrolü', status: 'Engelleyici hata', message: 'Montaj ödeme durumu net değil.' },
@@ -1378,7 +1400,7 @@ export function ServiceRequestDetails({
     },
     {
       label: 'Ödeme',
-      value: mountPaymentReceived ? 'Alındı' : mountExclusionAckRequired ? 'Bekleniyor' : 'Gerekmez',
+      value: mountPaymentReceived ? 'Alındı' : canonicalPaymentRequiresPayment || mountExclusionAckRequired ? 'Bekleniyor' : 'Gerekmez',
       tone: mountPaymentReceived ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800',
     },
     {
@@ -1400,7 +1422,7 @@ export function ServiceRequestDetails({
   const slaDueLabel = dateTimeOrEmpty(request.slaDueAt, 'SLA hedefi yok')
   const slaTitle = `${slaStatusDescription(request.slaStatus)}. SLA hedefi: ${slaDueLabel}`
   const handleWorkflowAction = (action: string) => {
-    if (action === 'assign_technician') {
+    if (action === 'assign_technician' || action === 'select_technician') {
       if (isAssignmentBlocked) {
         return
       }
@@ -1524,7 +1546,7 @@ export function ServiceRequestDetails({
           <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-3 text-sm sm:grid-cols-3">
             <div>
               <p className="text-[13px] font-medium text-slate-500">Montaj ödeme durumu</p>
-              <p className="mt-1 font-semibold text-slate-950">{mountPaymentReceived ? `Montaj ödeme: ${mountPaymentStageLabel}` : 'Montaj ödeme: Alınmadı'}</p>
+              <p className="mt-1 font-semibold text-slate-950">{mountPaymentHeaderLabel}</p>
             </div>
             <div>
               <p className="text-[13px] font-medium text-slate-500">Ödeme tutarı</p>
@@ -1533,7 +1555,7 @@ export function ServiceRequestDetails({
             <div>
               <p className="text-[13px] font-medium text-slate-500">Çoklu ürün</p>
               <p className="mt-1 font-semibold text-slate-950">
-                {hasMultiProductRequest ? mountPaymentReceived ? 'Çoklu ürün ödemesi takipte' : 'Ödeme operasyon tarafından netleştirilecek' : 'Yok'}
+                {hasMultiProductRequest ? mountPaymentReceived ? 'Çoklu ürün ödemesi takipte' : canonicalPaymentRequiresPayment ? 'Ödeme operasyon tarafından netleştirilecek' : mountPaymentStageLabel : 'Yok'}
               </p>
             </div>
           </div>
@@ -1557,7 +1579,8 @@ export function ServiceRequestDetails({
                 onClick={() => {
                   const action = nextActionPayload.primary_action
 
-                  if (action === 'assign_technician') {
+                  if (action === 'assign_technician' || action === 'select_technician') {
+                    setAssignmentInfoOpen(true)
                     void onAssignSelectedTechnician?.()
 
                     return
@@ -1601,15 +1624,17 @@ export function ServiceRequestDetails({
               >
                 {nextActionPayload.primary_action === 'assign_technician'
                   ? hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'
-                  : nextActionPayload.primary_action === 'review_photos'
-                    ? 'Kontrole Git'
-                    : nextActionPayload.primary_action === 'create_payment_link'
-                      ? 'Ödeme Linki Oluştur'
-                      : nextActionPayload.primary_action === 'copy_payment_link'
-                        ? 'Linki Kopyala'
-                        : nextActionPayload.primary_action === 'plan_appointment'
-                          ? 'Randevu Planla'
-                          : 'Aksiyonu Aç'}
+                  : nextActionPayload.primary_action === 'select_technician'
+                    ? 'Usta Seç'
+                    : nextActionPayload.primary_action === 'review_photos'
+                      ? 'Kontrole Git'
+                      : nextActionPayload.primary_action === 'create_payment_link'
+                        ? 'Ödeme Linki Oluştur'
+                        : nextActionPayload.primary_action === 'copy_payment_link'
+                          ? 'Linki Kopyala'
+                          : nextActionPayload.primary_action === 'plan_appointment'
+                            ? 'Randevu Planla'
+                            : 'Aksiyonu Aç'}
               </Button>
             ) : null}
           </div>
@@ -1684,11 +1709,11 @@ export function ServiceRequestDetails({
             <MiniMetric label="Fatura No" value={displayOrEmpty(documentInfo?.invoice_display_no, '-')} />
             <MiniMetric label="İrsaliye No" value={displayOrEmpty(documentInfo?.dispatch_display_no, '-')} />
             <MiniMetric label="Sipariş No" value={displayOrEmpty(documentInfo?.order_display_no, '-')} />
-            <MiniMetric label="Montaj ödeme durumu" value={mountPaymentReceived ? 'Montaj ödemesi alındı' : 'Montaj ödemesi henüz alınmadı'} />
+            <MiniMetric label="Montaj ödeme durumu" value={mountPaymentDetailLabel} />
             <MiniMetric label="Ödeme aşaması" value={mountPaymentStageLabel} />
             <MiniMetric label="Ödeme tutarı" value={mountPaymentAmountLabel} />
             {hasMultiProductRequest ? (
-              <MiniMetric label="Çoklu ürün ödeme durumu" value={mountPaymentReceived ? 'Ödeme onaylandı' : 'Ödeme operasyon tarafından netleştirilecek'} />
+              <MiniMetric label="Çoklu ürün ödeme durumu" value={mountPaymentReceived ? 'Ödeme onaylandı' : canonicalPaymentRequiresPayment ? 'Ödeme operasyon tarafından netleştirilecek' : mountPaymentStageLabel} />
             ) : null}
           </div>
         </DetailPanel>

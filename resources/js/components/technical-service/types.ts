@@ -91,8 +91,21 @@ export type ServiceRequestSaleAndPayment = {
   payment_reference?: string | null
   payment_provider?: string | null
   paid_at?: string | null
+  payment_status?: ServiceRequestPaymentStatus | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
+}
+
+export type ServiceRequestPaymentStatus = {
+  is_paid?: boolean
+  requires_payment?: boolean
+  source?: string | null
+  stage_label?: string | null
+  amount?: number | null
+  paid_at?: string | null
+  pending_payment_id?: number | string | null
+  latest_payment_id?: number | string | null
+  message?: string | null
 }
 
 export type ServiceRequestExtraMountPayment = {

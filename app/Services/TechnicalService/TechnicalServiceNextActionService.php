@@ -2,11 +2,8 @@
 
 namespace App\Services\TechnicalService;
 
-use App\Models\TechnicalServiceMountPayment;
-use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRouteQuote;
-use Illuminate\Support\Arr;
 
 class TechnicalServiceNextActionService
 {
@@ -16,7 +13,7 @@ class TechnicalServiceNextActionService
     public function forRequest(TechnicalServiceRequest $request): array
     {
         $operation = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
-        $payment = $this->latestExtraPayment($request);
+        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
 
         if (($operation['door_photos_checked'] ?? null) !== 'compatible') {
             return $this->payload(
@@ -29,34 +26,27 @@ class TechnicalServiceNextActionService
             );
         }
 
-        if ($payment instanceof TechnicalServiceMountPayment && $payment->status === TechnicalServiceMountPayment::STATUS_PENDING) {
-            return $this->payload(
-                'payment_pending',
-                'Ödeme bekleniyor',
-                sprintf('%s %s ödeme linki gönderildi. Ödeme tamamlanınca servis atanabilir.', number_format((float) $payment->amount, 2, ',', '.'), $payment->currency),
-                'warning',
-                'copy_payment_link',
-                true,
-                ['send_payment_whatsapp']
-            );
-        }
+        if (! (bool) $paymentStatus['is_paid'] && (bool) $paymentStatus['requires_payment']) {
+            if (filled($paymentStatus['pending_payment_id'])) {
+                $amount = is_numeric($paymentStatus['amount'] ?? null)
+                    ? number_format((float) $paymentStatus['amount'], 2, ',', '.').' TRY'
+                    : 'Montaj';
 
-        if ($this->requiresMountExclusionAcknowledgement($request)) {
-            return $this->payload(
-                'mount_exclusion_ack_required',
-                'Montaj hariç çoklu ürün onayı gerekiyor',
-                'Montaj ödemesi alınmadığı için operasyon onayı ve kısa açıklama tamamlanmalı.',
-                'warning',
-                'acknowledge_mount_exclusion',
-                true
-            );
-        }
+                return $this->payload(
+                    'payment_pending',
+                    'Ödeme linki gönderildi, ödeme bekleniyor',
+                    sprintf('%s ödeme linki gönderildi. Ödeme tamamlanınca servis atanabilir.', $amount),
+                    'warning',
+                    'copy_payment_link',
+                    true,
+                    ['send_payment_whatsapp']
+                );
+            }
 
-        if ($this->paymentRequired($request) && ! $this->mountPaymentReceived($request)) {
             return $this->payload(
                 'payment_required',
-                'Montaj ödemesini kontrol et',
-                'Ödeme alınmadıysa müşteriye ödeme linki gönderilmelidir.',
+                'Montaj ödemesi bekleniyor',
+                'Montaj ödemesi alınmadan servis ataması yapılamaz. Ödeme alınmışsa talep ödeme kaydı kontrol edilmeli.',
                 'warning',
                 'create_payment_link',
                 true
@@ -69,18 +59,7 @@ class TechnicalServiceNextActionService
                 'Usta seç',
                 'Uygun usta seçildikten sonra yol ücreti otomatik hesaplanır.',
                 'info',
-                'assign_technician',
-                true
-            );
-        }
-
-        if (! $this->hasCalculatedRouteQuote($request)) {
-            return $this->payload(
-                'route_fee_missing',
-                'Yol ücretini kontrol et',
-                'Seçili usta için yol ücreti henüz hesaplanmadı.',
-                'warning',
-                'calculate_route_fee',
+                'select_technician',
                 true
             );
         }
@@ -88,8 +67,8 @@ class TechnicalServiceNextActionService
         if (! in_array($request->workflow_status, ['Usta Onayı Bekleyen', 'Planlı', 'Yolda', 'Sahada', 'Tamamlandı'], true)) {
             return $this->payload(
                 'assign_technician',
-                'Servis atanabilir',
-                'Kontroller tamamlandı. Seçili ustaya servis ataması yapılabilir.',
+                'Servis ata',
+                'Usta seçildi, servis ataması yapılabilir.',
                 'success',
                 'assign_technician',
                 false
@@ -103,6 +82,17 @@ class TechnicalServiceNextActionService
                 'Servis atandı. Ustanın işi kabul etmesi bekleniyor.',
                 'info',
                 null,
+                false
+            );
+        }
+
+        if (! $this->hasCalculatedRouteQuote($request)) {
+            return $this->payload(
+                'route_fee_missing',
+                'Yol ücretini kontrol et',
+                'Seçili usta için yol ücreti henüz hesaplanmadı.',
+                'warning',
+                'calculate_route_fee',
                 false
             );
         }
@@ -142,71 +132,6 @@ class TechnicalServiceNextActionService
             'secondary_actions' => array_values($secondaryActions),
             'blocking' => $blocking,
         ];
-    }
-
-    private function latestExtraPayment(TechnicalServiceRequest $request): ?TechnicalServiceMountPayment
-    {
-        if ($request->mount_session_id === null) {
-            return null;
-        }
-
-        return TechnicalServiceMountPayment::query()
-            ->where('technical_service_mount_session_id', $request->mount_session_id)
-            ->where('technical_service_request_id', $request->id)
-            ->latest('id')
-            ->get()
-            ->first(function (TechnicalServiceMountPayment $payment): bool {
-                $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-
-                return ($payload['source'] ?? null) === 'operation_extra_mount_fee';
-            });
-    }
-
-    private function mountPaymentReceived(TechnicalServiceRequest $request): bool
-    {
-        $context = is_array($request->qr_context_payload) ? $request->qr_context_payload : [];
-        $payment = $this->latestExtraPayment($request);
-
-        return $request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_PAID
-            || ($payment instanceof TechnicalServiceMountPayment && $payment->status === TechnicalServiceMountPayment::STATUS_PAID)
-            || Arr::get($context, 'mount_payment_status') === TechnicalServiceMountSession::PAYMENT_PAID
-            || Arr::get($context, 'payment.status') === TechnicalServiceMountSession::PAYMENT_PAID;
-    }
-
-    private function requiresMountExclusionAcknowledgement(TechnicalServiceRequest $request): bool
-    {
-        $operation = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
-        $ack = is_array($operation['mount_exclusion_acknowledgement'] ?? null)
-            ? $operation['mount_exclusion_acknowledgement']
-            : [];
-
-        return $request->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC
-            && $this->hasMultiProductRequest($request)
-            && ! $this->mountPaymentReceived($request)
-            && ! (bool) ($ack['acknowledged'] ?? false);
-    }
-
-    private function paymentRequired(TechnicalServiceRequest $request): bool
-    {
-        return in_array($request->mount_payment_status, [
-            TechnicalServiceMountSession::PAYMENT_PENDING,
-            TechnicalServiceMountSession::PAYMENT_FAILED,
-            TechnicalServiceMountSession::PAYMENT_CANCELLED,
-        ], true);
-    }
-
-    private function hasMultiProductRequest(TechnicalServiceRequest $request): bool
-    {
-        if ($request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT) {
-            return true;
-        }
-
-        return $request->requestSerials()
-            ->where(function ($query): void {
-                $query->where('customer_selected', true)
-                    ->orWhere('operation_added', true);
-            })
-            ->count() > 1;
     }
 
     private function hasCalculatedRouteQuote(TechnicalServiceRequest $request): bool

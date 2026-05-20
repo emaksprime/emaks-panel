@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
@@ -11,6 +13,7 @@ use App\Models\TechnicalServiceMountSession;
 use App\Models\User;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MountRequestSubmitService;
+use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -314,6 +317,190 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
             ->assertJsonPath('request.operation_control.mount_exclusion_acknowledgement.required', false)
             ->assertJsonPath('request.sale_and_payment.mount_payment_received', true);
+    }
+
+    public function test_payment_resolver_uses_paid_operation_payment_over_mikro_excluded_signal(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $this->addSelectedSerial($request, 'SN-SECOND', false);
+        $session = $this->mountSessionForRequest($request);
+
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3000,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'reason' => 'route_fee',
+            ],
+        ]);
+
+        $resolved = app(TechnicalServicePaymentStatusResolver::class)->resolve($request->fresh());
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertTrue($resolved['is_paid']);
+        $this->assertFalse($resolved['requires_payment']);
+        $this->assertSame('operation_payment_link', $resolved['source']);
+        $this->assertSame(3000.0, $resolved['amount']);
+        $this->assertSame($payment->id, $resolved['latest_payment_id']);
+        $this->assertTrue($payload['sale_and_payment']['mount_payment_received']);
+        $this->assertTrue($payload['sale_and_payment']['payment_status']['is_paid']);
+        $this->assertFalse($payload['operation_control']['mount_exclusion_acknowledgement']['required']);
+        $this->assertSame([], $payload['assignment_blockers']['messages']);
+    }
+
+    public function test_payment_resolver_uses_paid_serial_payload_over_mikro_excluded_signal(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $request->requestSerials()->create([
+            'mrn' => $request->mrn,
+            'serial_number' => 'SN-PAID',
+            'product_name' => 'Test Ürün',
+            'customer_selected' => true,
+            'customer_visible' => true,
+            'customer_selectable' => true,
+            'is_primary' => false,
+            'is_returned' => false,
+            'color_status' => 'green',
+            'source_payload' => [
+                'mount_payment_status' => TechnicalServiceMountPayment::STATUS_PAID,
+                'mount_status_label' => 'Montaj Dahil',
+            ],
+        ]);
+
+        $resolved = app(TechnicalServicePaymentStatusResolver::class)->resolve($request->fresh());
+
+        $this->assertTrue($resolved['is_paid']);
+        $this->assertFalse($resolved['requires_payment']);
+        $this->assertSame('request_serial_payload', $resolved['source']);
+    }
+
+    public function test_payment_resolver_keeps_unpaid_mikro_excluded_signal_as_payment_required(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $this->addSelectedSerial($request, 'SN-SECOND', false);
+
+        $resolved = app(TechnicalServicePaymentStatusResolver::class)->resolve($request->fresh());
+
+        $this->assertFalse($resolved['is_paid']);
+        $this->assertTrue($resolved['requires_payment']);
+        $this->assertSame('mikro_initial_sale', $resolved['source']);
+    }
+
+    public function test_paid_operation_payment_skips_mount_exclusion_acknowledgement_on_assign(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Operasyon Ödemeli Usta',
+            'phone' => '+905551111117',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Müşteri Onayı Bekleyen',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $this->addSelectedSerial($request, 'SN-SECOND', false);
+        $session = $this->mountSessionForRequest($request);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3000,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'reason' => 'route_fee',
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 12,
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.operation_control.mount_exclusion_acknowledgement.required', false)
+            ->assertJsonPath('request.sale_and_payment.mount_payment_received', true)
+            ->assertJsonPath('request.sale_and_payment.payment_status.is_paid', true);
+    }
+
+    public function test_next_action_does_not_block_paid_payment_and_returns_assign_action(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Aksiyon Ustası',
+            'phone' => '+905551111118',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'workflow_status' => 'Müşteri Onayı Bekleyen',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $this->addSelectedSerial($request, 'SN-SECOND', false);
+        $session = $this->mountSessionForRequest($request);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3000,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'reason' => 'route_fee',
+            ],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame('assign_technician', $payload['next_action_payload']['code']);
+        $this->assertSame('assign_technician', $payload['next_action_payload']['primary_action']);
+        $this->assertStringNotContainsString('alınmadığı', $payload['next_action_payload']['description']);
     }
 
     public function test_operation_control_patch_persists_and_unlocks_assignment(): void
@@ -1232,5 +1419,32 @@ class TechnicalServiceWorkflowTest extends TestCase
             'is_current_latest_sale' => true,
             'color_status' => 'green',
         ]);
+    }
+
+    private function mountSessionForRequest(TechnicalServiceRequest $request): TechnicalServiceMountSession
+    {
+        ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => $request->serial_number,
+            'product_name' => $request->product_name,
+            'product_model' => $request->product_model,
+            'brand' => $request->brand,
+        ]);
+
+        $session = TechnicalServiceMountSession::query()->create([
+            'technical_service_qr_link_id' => $link->id,
+            'session_token_hash' => TechnicalServiceMountSession::hashSessionToken('session-'.$request->id.'-'.uniqid()),
+            'serial_number' => $request->serial_number,
+            'sale_mount_status' => $request->sale_mount_status ?? TechnicalServiceMountSession::SALE_UNKNOWN,
+            'mount_payment_status' => $request->mount_payment_status,
+            'decision_status' => TechnicalServiceMountSession::DECISION_SUBMITTED,
+            'context_payload' => [],
+        ]);
+
+        $request->forceFill([
+            'qr_link_id' => $link->id,
+            'mount_session_id' => $session->id,
+        ])->save();
+
+        return $session;
     }
 }
