@@ -210,6 +210,23 @@ const capabilityChips = (capabilities: PartnerType[]) => capabilities.map((capab
   </span>
 ))
 
+type PartnerActionTone = 'detail' | 'edit' | 'users' | 'toggle'
+
+const partnerCardActionButtonClass = (tone: PartnerActionTone, active = false) => {
+  const base = 'w-full min-w-0 h-9 px-3 py-0 text-sm font-semibold shadow-none transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent'
+  const style = tone === 'detail'
+    ? 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 focus-visible:ring-slate-300'
+    : tone === 'edit'
+      ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 focus-visible:ring-blue-300'
+      : tone === 'users'
+        ? 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 focus-visible:ring-indigo-300'
+        : active
+          ? 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 focus-visible:ring-rose-300'
+          : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:ring-emerald-300'
+
+  return `${base} ${style} border`
+}
+
 const locationLabel = (city: string | null, district: string | null) => {
   const parts = [city, district].filter(Boolean)
 
@@ -1057,22 +1074,22 @@ export default function B2BPartnersPage() {
 
                   return (
                     <article key={partner.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 transition hover:border-blue-200 hover:bg-blue-50/30">
-                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0 space-y-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="text-base font-semibold text-slate-950">{partner.display_name}</h3>
+                      <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1 space-y-2">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <h3 className="min-w-0 truncate text-base font-semibold text-slate-950">{partner.display_name}</h3>
                             {capabilityChips(capabilities)}
                             <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${partner.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                               {partner.active ? 'Aktif' : 'Pasif'}
                             </span>
                           </div>
-                          <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-600">
-                            <span><strong className="text-slate-800">Kod:</strong> {partner.partner_code}</span>
-                            <span><strong className="text-slate-800">Cari:</strong> {partner.mikro_cari_kodu ?? '-'}</span>
-                            <span><strong className="text-slate-800">Telefon:</strong> {partner.phone ?? '-'}</span>
-                            <span><strong className="text-slate-800">E-posta:</strong> {partner.email ?? '-'}</span>
-                            <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
-                            <span><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
+                          <div className="grid min-w-0 gap-x-5 gap-y-1 text-sm text-slate-600 sm:grid-cols-2">
+                            <span className="min-w-0 truncate"><strong className="text-slate-800">Kod:</strong> {partner.partner_code}</span>
+                            <span className="min-w-0 truncate"><strong className="text-slate-800">Cari:</strong> {partner.mikro_cari_kodu ?? '-'}</span>
+                            <span className="min-w-0 truncate"><strong className="text-slate-800">Telefon:</strong> {partner.phone ?? '-'}</span>
+                            <span className="min-w-0 truncate"><strong className="text-slate-800">E-posta:</strong> {partner.email ?? '-'}</span>
+                            <span className="min-w-0 truncate"><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
+                            <span className="min-w-0 truncate"><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
                           </div>
                           <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-3">
                             <div className="rounded-xl bg-white px-3 py-2">
@@ -1094,21 +1111,29 @@ export default function B2BPartnersPage() {
                             </div>
                           )}
                         </div>
-                        <div className="flex flex-wrap gap-2 lg:justify-end">
-                          <Button type="button" size="sm" variant="outline" onClick={() => startEdit(partner, 'detail')}>Detay</Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => startEdit(partner)}>Düzenle</Button>
+                        <div className="grid w-full shrink-0 grid-cols-2 gap-2 lg:w-[18rem]">
+                          <Button type="button" className={partnerCardActionButtonClass('detail')} onClick={() => startEdit(partner, 'detail')}>
+                            Detay
+                          </Button>
+                           <Button type="button" className={partnerCardActionButtonClass('edit')} onClick={() => startEdit(partner)}>
+                             Düzenle
+                           </Button>
                           <Button
                             type="button"
-                            size="sm"
-                            variant="outline"
+                            className={partnerCardActionButtonClass('users')}
                             onClick={() => {
                               window.location.href = '/panel/b2b/users'
                             }}
                           >
                             Kullanıcılar
                           </Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => void toggleActive(partner)} disabled={saving}>
-                            {partner.active ? 'Pasif' : 'Aktif'}
+                          <Button
+                            type="button"
+                            className={partnerCardActionButtonClass('toggle', partner.active)}
+                            onClick={() => void toggleActive(partner)}
+                            disabled={saving}
+                          >
+                            {partner.active ? 'Pasif yap' : 'Aktif yap'}
                           </Button>
                         </div>
                       </div>
