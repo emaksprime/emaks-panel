@@ -3,11 +3,14 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Models\B2B\B2BPartnerUserAccess;
+use App\Models\B2B\B2BPartnerUserProfile;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Hash;
@@ -49,6 +52,16 @@ class User extends Authenticatable
     public function role(): BelongsTo
     {
         return $this->belongsTo(Role::class, 'role_code', 'code');
+    }
+
+    public function b2bPartnerAccess(): HasMany
+    {
+        return $this->hasMany(B2BPartnerUserAccess::class, 'user_id');
+    }
+
+    public function b2bPartnerProfiles(): HasMany
+    {
+        return $this->hasMany(B2BPartnerUserProfile::class, 'user_id');
     }
 
     public function getNameAttribute(): string

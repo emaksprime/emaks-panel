@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\NavigationController;
+use App\Http\Controllers\Api\B2B\B2BPartnerController;
 use App\Http\Controllers\Api\PageConfigController;
 use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\PageDataController;
@@ -49,6 +50,15 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 ->middleware(['panel.access:support', 'panel.access:support_activation_query'])
                 ->name('api.support.activation.search');
         });
+
+        Route::prefix('b2b')
+            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view')
+            ->group(function () {
+                Route::get('partners', [B2BPartnerController::class, 'index'])
+                    ->name('api.b2b.partners.index');
+                Route::get('partners/{partner}', [B2BPartnerController::class, 'show'])
+                    ->name('api.b2b.partners.show');
+            });
 
         Route::prefix('technical-service')->group(function () {
             Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])
