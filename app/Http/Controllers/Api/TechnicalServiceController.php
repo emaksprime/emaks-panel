@@ -755,6 +755,53 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        if ($this->workflowService->requiresMountExclusionAcknowledgement($technicalServiceRequest)) {
+            $mountExclusionNote = trim((string) ($payload['mount_exclusion_note'] ?? ''));
+            $errors = [];
+
+            if (! (bool) ($payload['mount_exclusion_acknowledged'] ?? false)) {
+                $errors['mount_exclusion_acknowledged'] = 'Montaj hariç çoklu ürün onayı zorunludur.';
+            }
+
+            if (mb_strlen($mountExclusionNote) < 5) {
+                $errors['mount_exclusion_note'] = 'Montaj hariç çoklu ürün onayı için açıklama girin.';
+            }
+
+            if ($errors !== []) {
+                throw ValidationException::withMessages($errors);
+            }
+
+            $operationControl = is_array($technicalServiceRequest->operation_control_payload)
+                ? $technicalServiceRequest->operation_control_payload
+                : [];
+            $operationControl['mount_exclusion_acknowledgement'] = [
+                'required' => true,
+                'payment_received' => false,
+                'acknowledged' => true,
+                'note' => $mountExclusionNote,
+                'acknowledged_at' => now()->toISOString(),
+                'acknowledged_by_user_id' => $request->user()?->id,
+            ];
+
+            $technicalServiceRequest->forceFill([
+                'operation_control_payload' => $operationControl,
+                'operation_control_checked_by_user_id' => $request->user()?->id,
+                'operation_control_checked_at' => now(),
+            ])->save();
+
+            $technicalServiceRequest->events()->create([
+                'event_type' => 'mount_exclusion_acknowledged',
+                'title' => 'Montaj hariç çoklu ürün operasyon onayı alındı.',
+                'note' => $mountExclusionNote,
+                'from_status' => $technicalServiceRequest->workflow_status,
+                'to_status' => $technicalServiceRequest->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'mount_exclusion_acknowledged' => true,
+                ],
+            ]);
+        }
+
         $technicianPayload = [
             'technical_service_technician_id' => $technician?->id,
             'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),

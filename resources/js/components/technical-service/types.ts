@@ -74,6 +74,9 @@ export type ServiceRequestSaleAndPayment = {
   sale_mount_label?: string | null
   mount_payment_status?: string | null
   mount_payment_label?: string | null
+  mount_payment_received?: boolean
+  payment_stage_label?: string | null
+  paid_amount?: number | null
   payment_reference?: string | null
   payment_provider?: string | null
   paid_at?: string | null
@@ -125,11 +128,21 @@ export type ServiceRequestOperationControl = {
   note?: string | null
   checked_by_user_id?: number | string | null
   checked_at?: string | null
+  mount_exclusion_acknowledgement?: {
+    required?: boolean
+    payment_received?: boolean
+    acknowledged?: boolean
+    note?: string | null
+    acknowledged_at?: string | null
+    acknowledged_by_user_id?: number | string | null
+  } | null
 }
 
 export type ServiceRequestAssignmentBlockers = {
   payment_check_required?: boolean
   door_photo_check_required?: boolean
+  mount_exclusion_ack_required?: boolean
+  mount_payment_received?: boolean
   messages?: string[]
 }
 

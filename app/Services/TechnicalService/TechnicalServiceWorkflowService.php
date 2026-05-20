@@ -1240,17 +1240,76 @@ class TechnicalServiceWorkflowService
     private function saleAndPaymentPayload(TechnicalServiceRequest $request): array
     {
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
+        $paymentSummary = $this->mountPaymentSummaryPayload($request, $extraPayment);
 
         return [
             'sale_mount_status' => $request->sale_mount_status,
             'sale_mount_label' => $this->saleMountLabel($request->sale_mount_status),
             'mount_payment_status' => $request->mount_payment_status,
             'mount_payment_label' => $request->mount_payment_label ?? $this->mountPaymentLabel($request->mount_payment_status, $request->sale_mount_status),
+            'mount_payment_received' => $paymentSummary['received'],
+            'payment_stage_label' => $paymentSummary['stage_label'],
+            'paid_amount' => $paymentSummary['amount'],
             'payment_reference' => $request->mount_payment_reference,
             'payment_provider' => $request->mount_payment_provider,
             'paid_at' => $this->dateTimeString($request->mount_payment_paid_at),
             'extra_mount_payment' => $extraPayment,
             'technician_earning_message' => $this->technicianEarningMessagePayload($request),
+        ];
+    }
+
+    public function mountPaymentReceived(TechnicalServiceRequest $request): bool
+    {
+        $context = is_array($request->qr_context_payload) ? $request->qr_context_payload : [];
+        $extraPayment = $this->latestExtraMountPaymentPayload($request);
+
+        return $request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_PAID
+            || ($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
+            || Arr::get($context, 'mount_payment_status') === TechnicalServiceMountSession::PAYMENT_PAID
+            || Arr::get($context, 'payment_status') === TechnicalServiceMountSession::PAYMENT_PAID
+            || Arr::get($context, 'payment.status') === TechnicalServiceMountSession::PAYMENT_PAID
+            || Arr::get($context, 'sale_and_payment.mount_payment_status') === TechnicalServiceMountSession::PAYMENT_PAID;
+    }
+
+    public function requiresMountExclusionAcknowledgement(TechnicalServiceRequest $request): bool
+    {
+        return $request->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC
+            && $this->hasMultiProductMountRequest($request)
+            && ! $this->mountPaymentReceived($request);
+    }
+
+    /**
+     * @param array<string, mixed>|null $extraPayment
+     * @return array{received:bool,stage_label:string,amount:float|null}
+     */
+    private function mountPaymentSummaryPayload(TechnicalServiceRequest $request, ?array $extraPayment): array
+    {
+        if (($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID) {
+            $reason = (string) ($extraPayment['reason'] ?? '');
+
+            return [
+                'received' => true,
+                'stage_label' => $reason === 'multi_product' ? 'Çoklu ürün ek ödemesi alındı' : 'Operasyon ödeme linkiyle ödeme alındı',
+                'amount' => isset($extraPayment['amount']) ? (float) $extraPayment['amount'] : null,
+            ];
+        }
+
+        if ($request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_PAID) {
+            return [
+                'received' => true,
+                'stage_label' => $request->mount_payment_provider === 'fake'
+                    ? 'Ödeme onaylandı'
+                    : 'Form üzerinden ödeme alındı',
+                'amount' => $this->customerAmountForService($request->service_type),
+            ];
+        }
+
+        return [
+            'received' => false,
+            'stage_label' => $request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT
+                ? 'Çoklu ürün ödeme operasyon tarafından netleştirilecek'
+                : 'Montaj ödemesi henüz alınmadı',
+            'amount' => null,
         ];
     }
 
@@ -1482,7 +1541,7 @@ class TechnicalServiceWorkflowService
     {
         $payload = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
 
-        return array_replace([
+        $result = array_replace([
             'payment_checked' => 'unreviewed',
             'address_checked' => 'unreviewed',
             'door_photos_checked' => 'unreviewed',
@@ -1496,6 +1555,23 @@ class TechnicalServiceWorkflowService
             'checked_by_user_id' => $request->operation_control_checked_by_user_id,
             'checked_at' => $this->dateTimeString($request->operation_control_checked_at),
         ]);
+        $acknowledgement = is_array($result['mount_exclusion_acknowledgement'] ?? null)
+            ? $result['mount_exclusion_acknowledgement']
+            : [];
+
+        $result['mount_exclusion_acknowledgement'] = array_replace([
+            'required' => false,
+            'payment_received' => false,
+            'acknowledged' => false,
+            'note' => null,
+            'acknowledged_at' => null,
+            'acknowledged_by_user_id' => null,
+        ], $acknowledgement, [
+            'required' => $this->requiresMountExclusionAcknowledgement($request),
+            'payment_received' => $this->mountPaymentReceived($request),
+        ]);
+
+        return $result;
     }
 
     /**
@@ -1559,6 +1635,7 @@ class TechnicalServiceWorkflowService
         $messages = [];
         $paymentRequired = ($operationControl['payment_checked'] ?? 'unreviewed') !== 'yes';
         $doorPhotoRequired = ($operationControl['door_photos_checked'] ?? 'unreviewed') !== 'compatible';
+        $mountExclusionAckRequired = $this->requiresMountExclusionAcknowledgement($request);
 
         if ($paymentRequired) {
             $messages[] = 'Usta atanamaz. Önce ödeme kontrolünü tamamlayın.';
@@ -1571,8 +1648,24 @@ class TechnicalServiceWorkflowService
         return [
             'payment_check_required' => $paymentRequired,
             'door_photo_check_required' => $doorPhotoRequired,
+            'mount_exclusion_ack_required' => $mountExclusionAckRequired,
+            'mount_payment_received' => $this->mountPaymentReceived($request),
             'messages' => $messages,
         ];
+    }
+
+    private function hasMultiProductMountRequest(TechnicalServiceRequest $request): bool
+    {
+        $context = is_array($request->qr_context_payload) ? $request->qr_context_payload : [];
+        $serialCount = $request->relationLoaded('requestSerials')
+            ? $request->requestSerials->count()
+            : $request->requestSerials()->count();
+
+        return $request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT
+            || $serialCount > 1
+            || (bool) Arr::get($context, 'multiple_products')
+            || (bool) Arr::get($context, 'multi_product')
+            || (string) Arr::get($context, 'customer_entry_mode') === TechnicalServiceMountSession::ENTRY_MULTI_PRODUCT_WITHOUT_PAYMENT;
     }
 
     /**

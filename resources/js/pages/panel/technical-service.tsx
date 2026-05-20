@@ -316,6 +316,33 @@ function isMountPaymentAccepted(result: MikroMountCheckResult | null | undefined
   return result?.montaj_durumu === 'Montaj Dahil' || result?.montaj_durumu === 'Montaj Sonradan Dahil'
 }
 
+function hasMountPaymentReceived(request: ServiceRequest | null | undefined): boolean {
+  const saleAndPayment = request?.saleAndPayment
+
+  return Boolean(
+    saleAndPayment?.mount_payment_received
+    || saleAndPayment?.mount_payment_status === 'paid'
+    || saleAndPayment?.extra_mount_payment?.status === 'paid'
+  )
+}
+
+function requiresMountExclusionAcknowledgement(request: ServiceRequest | null | undefined): boolean {
+  if (!request || request.serviceType !== 'Montaj') {
+    return false
+  }
+
+  const saleAndPayment = request.saleAndPayment
+  const isMountExcluded = saleAndPayment?.sale_mount_status === 'montaj_haric'
+    || saleAndPayment?.sale_mount_label === 'Montaj Hariç'
+  const isMultiProduct = Boolean(
+    request.invoiceSerials?.has_multi_product
+    || request.saleAndPayment?.mount_payment_status === 'skipped_multi_product'
+    || (request.invoiceSerials?.all_invoice_serials?.length ?? 0) > 1
+  )
+
+  return isMountExcluded && isMultiProduct && !hasMountPaymentReceived(request)
+}
+
 function normalizeSearchText(value: string | null | undefined): string {
   return normalizeTechnicalServiceText(value)
     .replace(/[-\s\p{Punctuation}]+/gu, '')
@@ -1499,6 +1526,9 @@ export function TechnicalServiceOperationCenter() {
     : 'Belirlenmedi'
   const effectiveMountPaymentMissing = modalRequest?.serviceType === 'Montaj' && isMountPaymentMissing(mikroMountCheck)
   const mountPaymentAccepted = modalRequest?.serviceType === 'Montaj' && isMountPaymentAccepted(mikroMountCheck)
+  const mountExclusionAckRequired = requiresMountExclusionAcknowledgement(modalRequest)
+  const mountExclusionAckComplete = !mountExclusionAckRequired
+    || (assignOverrideWithoutPayment && assignOverrideReason.trim().length >= 5)
   const assignmentBlockerMessages = modalRequest?.assignmentBlockers?.messages ?? []
   const hasAssignmentBlockers = assignmentBlockerMessages.length > 0
   const assignmentRouteRoundTripKm = typeof assignmentRouteQuote?.round_trip_distance_km === 'number'
@@ -1532,7 +1562,8 @@ export function TechnicalServiceOperationCenter() {
     !assignLoading &&
     assignTechnicianOption &&
     (assignTechnicianOption !== 'other' || assignOtherTechnician.trim()) &&
-    !hasAssignmentBlockers
+    !hasAssignmentBlockers &&
+    mountExclusionAckComplete
   )
   const technicianMatches = technicians
     .map((technician) => technicianMatchInfo(technician, modalRequest))
@@ -2670,13 +2701,15 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
-    if (effectiveMountPaymentMissing && !assignOverrideWithoutPayment) {
+    const paymentOverrideRequired = effectiveMountPaymentMissing || mountExclusionAckRequired
+
+    if (paymentOverrideRequired && !assignOverrideWithoutPayment) {
       setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
 
       return
     }
 
-    if (effectiveMountPaymentMissing && assignOverrideReason.trim().length < 5) {
+    if (paymentOverrideRequired && assignOverrideReason.trim().length < 5) {
       setAssignError('Atama nedeni en az 5 karakter olmalıdır.')
 
       return
@@ -2706,9 +2739,11 @@ export function TechnicalServiceOperationCenter() {
             : { technical_service_technician_id: assignTechnicianOption }),
           route_quote_id: assignmentRouteQuote?.id ?? null,
           travel_round_trip_km: parsedTravelRoundTripKm,
-          mount_payment_missing: effectiveMountPaymentMissing,
-          override_without_payment: effectiveMountPaymentMissing ? assignOverrideWithoutPayment : false,
-          override_reason: effectiveMountPaymentMissing ? assignOverrideReason.trim() || null : null,
+          mount_payment_missing: paymentOverrideRequired,
+          override_without_payment: paymentOverrideRequired ? assignOverrideWithoutPayment : false,
+          override_reason: paymentOverrideRequired ? assignOverrideReason.trim() || null : null,
+          mount_exclusion_acknowledged: mountExclusionAckRequired ? assignOverrideWithoutPayment : false,
+          mount_exclusion_note: mountExclusionAckRequired ? assignOverrideReason.trim() || null : null,
           note: assignNote || null,
         }),
       })
@@ -4237,6 +4272,11 @@ export function TechnicalServiceOperationCenter() {
                     technicianEarningMessageError={technicianEarningMessageError}
                     assignLoading={assignLoading}
                     canSubmitAssign={canSubmitAssign}
+                    assignError={assignError}
+                    mountExclusionAcknowledged={assignOverrideWithoutPayment}
+                    mountExclusionNote={assignOverrideReason}
+                    onMountExclusionAcknowledgedChange={setAssignOverrideWithoutPayment}
+                    onMountExclusionNoteChange={setAssignOverrideReason}
                     onTechnicianSelect={(technicianId) => {
                       setAssignTechnicianOption(technicianId)
                       setRouteQuoteError(null)

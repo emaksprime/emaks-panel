@@ -23,6 +23,8 @@ class AssignTechnicalServiceRequest extends FormRequest
             'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
             'travel_round_trip_km' => ['required_without:route_quote_id', 'nullable', 'numeric', 'min:0'],
             'mount_payment_missing' => ['nullable', 'boolean'],
+            'mount_exclusion_acknowledged' => ['nullable', 'boolean'],
+            'mount_exclusion_note' => ['nullable', 'string', 'max:2000'],
             'appointment_time_slot' => ['nullable', 'string', 'in:10:00 - 12:00,12:00 - 14:00,14:00 - 16:00,16:00 - 18:00'],
             'override_without_payment' => ['nullable', 'boolean'],
             'override_reason' => ['required_if:override_without_payment,true', 'nullable', 'string', 'min:5', 'max:2000'],

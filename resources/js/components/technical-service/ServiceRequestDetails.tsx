@@ -105,6 +105,11 @@ type ServiceRequestDetailsProps = {
   technicianEarningMessageError?: string | null
   assignLoading?: boolean
   canSubmitAssign?: boolean
+  assignError?: string | null
+  mountExclusionAcknowledged?: boolean
+  mountExclusionNote?: string
+  onMountExclusionAcknowledgedChange?: (checked: boolean) => void
+  onMountExclusionNoteChange?: (note: string) => void
   onTechnicianSelect?: (technicianId: string, estimatedRoundTripKm?: number | null) => void
   onRouteQuoteCalculate?: () => void | Promise<void>
   onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
@@ -231,6 +236,21 @@ const routeQuoteMessage = (message: string | null | undefined): string => {
   }
 
   return displayOrEmpty(message, 'Yol ücreti hesaplanamadı')
+}
+
+type OperationStepStatus = 'Tamamlandı' | 'Bekliyor' | 'Kontrol gerekli' | 'Engelleyici hata'
+
+const operationStepTone = (status: OperationStepStatus): string => {
+  switch (status) {
+    case 'Tamamlandı':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-900'
+    case 'Engelleyici hata':
+      return 'border-rose-200 bg-rose-50 text-rose-900'
+    case 'Kontrol gerekli':
+      return 'border-amber-200 bg-amber-50 text-amber-900'
+    default:
+      return 'border-slate-200 bg-white text-slate-700'
+  }
 }
 
 const whatsappHrefForPhone = (phone: string | null | undefined): string => {
@@ -795,6 +815,11 @@ export function ServiceRequestDetails({
   technicianEarningMessageError = null,
   assignLoading = false,
   canSubmitAssign = false,
+  assignError = null,
+  mountExclusionAcknowledged = false,
+  mountExclusionNote = '',
+  onMountExclusionAcknowledgedChange,
+  onMountExclusionNoteChange,
   onTechnicianSelect,
   onRouteQuoteCalculate,
   onRouteQuoteManualSave,
@@ -826,7 +851,7 @@ export function ServiceRequestDetails({
     setInvoiceSerialsOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [productInfoOpenByRequest, setProductInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const productInfoOpen = productInfoOpenByRequest[request.id] ?? false
+  const productInfoOpen = productInfoOpenByRequest[request.id] ?? true
   const setProductInfoOpen = (open: boolean) => {
     setProductInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -987,6 +1012,28 @@ export function ServiceRequestDetails({
   const setOperationInfoOpen = (open: boolean) => {
     setOperationInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const mountPaymentReceived = Boolean(
+    saleAndPayment?.mount_payment_received
+    || saleAndPayment?.mount_payment_status === 'paid'
+    || extraMountPayment?.status === 'paid',
+  )
+  const mountPaymentStageLabel = displayOrEmpty(saleAndPayment?.payment_stage_label, mountPaymentReceived ? 'Ödeme onaylandı' : 'Montaj ödemesi henüz alınmadı')
+  const mountPaymentAmountLabel = typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
+    ? formatMoneyValue(saleAndPayment.paid_amount)
+    : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
+      ? formatMoneyValue(extraMountPayment.amount)
+      : '-'
+  const mountExclusionAcknowledgement = operationControl.mount_exclusion_acknowledgement ?? null
+  const mountExclusionAckRequired = Boolean(
+    mountExclusionAcknowledgement?.required
+    || (
+      (saleAndPayment?.sale_mount_status === 'montaj_haric' || saleAndPayment?.sale_mount_label === 'Montaj Hariç')
+      && hasMultiProductRequest
+      && !mountPaymentReceived
+    ),
+  )
+  const mountExclusionAckComplete = !mountExclusionAckRequired
+    || (mountExclusionAcknowledged && mountExclusionNote.trim().length >= 5)
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
   const assignmentUiBlockerMessages = [
     operationControl.payment_checked === 'yes' ? null : 'Önce ödeme kontrolünü tamamlayın.',
@@ -997,9 +1044,9 @@ export function ServiceRequestDetails({
   const assignmentSubmitDisabled = assignLoading
     || !selectedTechnicianId
     || isAssignmentBlocked
+    || !mountExclusionAckComplete
     || !canSubmitAssign
     || !onAssignSelectedTechnician
-
   const resolvedSaleMountLabel = saleAndPayment?.sale_mount_label ?? mikroMountCheck?.montaj_durumu ?? '-'
   const resolvedMountPaymentLabel = saleAndPayment?.mount_payment_label ?? mountPaymentLabel
   const paidExtraCustomerAmount = extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
@@ -1240,6 +1287,38 @@ export function ServiceRequestDetails({
   }
   const whatsappHref = whatsappHrefForPhone(request.phone)
   const approvalState = technicianApprovalState(request, events)
+  const operationSteps: Array<{ title: string, status: OperationStepStatus, message: string }> = [
+    operationControl.door_photos_checked === 'compatible'
+      ? { title: 'Kapı görselleri kontrolü', status: 'Tamamlandı', message: 'Kapı görselleri uygun işaretlendi.' }
+      : { title: 'Kapı görselleri kontrolü', status: 'Engelleyici hata', message: 'Kapı görselleri kontrol edilmedi.' },
+    mountPaymentReceived || operationControl.payment_checked === 'yes'
+      ? { title: 'Montaj ödeme kontrolü', status: 'Tamamlandı', message: mountPaymentReceived ? mountPaymentStageLabel : 'Ödeme kontrolü tamamlandı.' }
+      : mountExclusionAckRequired
+        ? { title: 'Montaj ödeme kontrolü', status: 'Kontrol gerekli', message: 'Montaj hariç çoklu ürün onayı gerekiyor.' }
+        : { title: 'Montaj ödeme kontrolü', status: 'Engelleyici hata', message: 'Montaj ödeme durumu net değil.' },
+    operationControl.schedule_update_required === 'no' || Boolean(request.scheduledAt || request.scheduledDate)
+      ? { title: 'Müşteri/randevu kontrolü', status: 'Tamamlandı', message: 'Randevu kontrolü tamamlandı.' }
+      : { title: 'Müşteri/randevu kontrolü', status: 'Bekliyor', message: 'Randevu veya müşteri dönüşü bekliyor.' },
+    selectedTechnician
+      ? { title: 'Usta seçimi', status: 'Tamamlandı', message: `${selectedTechnician.name} seçildi.` }
+      : { title: 'Usta seçimi', status: 'Bekliyor', message: 'Usta seçimi bekliyor.' },
+    hasActiveRouteQuote
+      ? { title: 'Yol ücreti kontrolü', status: 'Tamamlandı', message: 'Usta seçildi, yol ücreti hesaplandı.' }
+      : selectedTechnician
+        ? { title: 'Yol ücreti kontrolü', status: 'Kontrol gerekli', message: 'Seçili usta için yol ücreti bekliyor.' }
+        : { title: 'Yol ücreti kontrolü', status: 'Bekliyor', message: 'Önce usta seçilmeli.' },
+    !assignmentSubmitDisabled
+      ? { title: 'Servis atama', status: 'Tamamlandı', message: 'Servis atanabilir.' }
+      : { title: 'Servis atama', status: 'Bekliyor', message: combinedAssignmentBlockerMessages[0] ?? (mountExclusionAckRequired && !mountExclusionAckComplete ? 'Montaj hariç çoklu ürün onayı gerekiyor.' : 'Atama koşulları tamamlanmalı.') },
+    approvalState.title.toLocaleLowerCase('tr-TR').includes('bek')
+      ? { title: 'Usta onayı bekleme', status: 'Bekliyor', message: 'Usta onayı bekleniyor.' }
+      : hasAssignedTechnician
+        ? { title: 'Usta onayı bekleme', status: 'Tamamlandı', message: approvalState.title }
+        : { title: 'Usta onayı bekleme', status: 'Bekliyor', message: 'Servis atanınca takip edilecek.' },
+    request.status === 'Tamamlandı'
+      ? { title: 'Tamamlama / saha süreci', status: 'Tamamlandı', message: 'Saha süreci tamamlandı.' }
+      : { title: 'Tamamlama / saha süreci', status: 'Bekliyor', message: 'Saha tamamlaması bekliyor.' },
+  ]
   const sortedEvents = [...events].sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
   const workflowActions = Object.entries(request.allowedWorkflowActions ?? {})
   const footerWorkflowActions = [...workflowActions].sort(([leftKey, leftAction], [rightKey, rightAction]) => {
@@ -1404,9 +1483,43 @@ export function ServiceRequestDetails({
             {hasMultiProductRequest ? <Badge variant="warning">Çoklu ürün talebi</Badge> : null}
             {routeFeeNeedsApproval ? <Badge variant="warning">Yol ücreti onayı gerekli</Badge> : null}
           </div>
+          <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-3 text-sm sm:grid-cols-3">
+            <div>
+              <p className="text-[13px] font-medium text-slate-500">Montaj ödeme durumu</p>
+              <p className="mt-1 font-semibold text-slate-950">{mountPaymentReceived ? `Montaj ödeme: ${mountPaymentStageLabel}` : 'Montaj ödeme: Alınmadı'}</p>
+            </div>
+            <div>
+              <p className="text-[13px] font-medium text-slate-500">Ödeme tutarı</p>
+              <p className="mt-1 font-semibold text-slate-950">{mountPaymentAmountLabel}</p>
+            </div>
+            <div>
+              <p className="text-[13px] font-medium text-slate-500">Çoklu ürün</p>
+              <p className="mt-1 font-semibold text-slate-950">
+                {hasMultiProductRequest ? mountPaymentReceived ? 'Çoklu ürün ödemesi takipte' : 'Ödeme operasyon tarafından netleştirilecek' : 'Yok'}
+              </p>
+            </div>
+          </div>
           {priorityUpdateError ? (
             <p className="mt-2 text-xs font-medium text-rose-700">{priorityUpdateError}</p>
           ) : null}
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:p-5">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.08em] text-slate-700 sm:text-base">Sıradaki Operasyon Adımları</p>
+            <p className="mt-1 text-sm text-slate-600">Atama öncesi eksik kalan adımlar ve sıradaki aksiyonlar.</p>
+          </div>
+          <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            {operationSteps.map((step, index) => (
+              <div key={step.title} className={['rounded-2xl border p-3 text-sm', operationStepTone(step.status)].join(' ')}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-semibold">{index + 1}. {step.title}</p>
+                  <span className="shrink-0 rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-semibold">{step.status}</span>
+                </div>
+                <p className="mt-2 leading-5">{step.message}</p>
+              </div>
+            ))}
+          </div>
         </section>
 
         {serialQueryOpen ? (
@@ -1456,6 +1569,12 @@ export function ServiceRequestDetails({
             <MiniMetric label="Fatura No" value={displayOrEmpty(documentInfo?.invoice_display_no, '-')} />
             <MiniMetric label="İrsaliye No" value={displayOrEmpty(documentInfo?.dispatch_display_no, '-')} />
             <MiniMetric label="Sipariş No" value={displayOrEmpty(documentInfo?.order_display_no, '-')} />
+            <MiniMetric label="Montaj ödeme durumu" value={mountPaymentReceived ? 'Montaj ödemesi alındı' : 'Montaj ödemesi henüz alınmadı'} />
+            <MiniMetric label="Ödeme aşaması" value={mountPaymentStageLabel} />
+            <MiniMetric label="Ödeme tutarı" value={mountPaymentAmountLabel} />
+            {hasMultiProductRequest ? (
+              <MiniMetric label="Çoklu ürün ödeme durumu" value={mountPaymentReceived ? 'Ödeme onaylandı' : 'Ödeme operasyon tarafından netleştirilecek'} />
+            ) : null}
           </div>
         </DetailPanel>
 
@@ -1729,6 +1848,48 @@ export function ServiceRequestDetails({
                 {hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
+            {mountPaymentReceived ? (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+                <p className="font-semibold">Montaj ödemesi alındı. Servis ataması yapılabilir.</p>
+                <p className="mt-1">{mountPaymentStageLabel}{mountPaymentAmountLabel !== '-' ? ` · Alınan ödeme: ${mountPaymentAmountLabel}` : ''}</p>
+              </div>
+            ) : null}
+            {mountExclusionAckRequired ? (
+              <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <div>
+                  <p className="font-semibold">Montaj hariç / çoklu ürün onayı</p>
+                  <p className="mt-1 text-amber-900">Bu onay tamamlanmadan servis atanamaz.</p>
+                </div>
+                <label className="flex items-start gap-2 font-semibold">
+                  <input
+                    type="checkbox"
+                    checked={mountExclusionAcknowledged}
+                    onChange={(event) => onMountExclusionAcknowledgedChange?.(event.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-amber-300 text-amber-700 focus:ring-amber-500"
+                  />
+                  <span>Bu işte montaj ödemesi henüz alınmadı; operasyon onayıyla servis ataması yapılacak.</span>
+                </label>
+                <label className="grid gap-1 font-semibold">
+                  Açıklama
+                  <textarea
+                    value={mountExclusionNote}
+                    onChange={(event) => onMountExclusionNoteChange?.(event.target.value)}
+                    placeholder="Ödeme/montaj durumu notu girin. Örn: Çoklu ürün talebi, ödeme operasyon tarafından takip edilecek."
+                    className="min-h-20 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                  />
+                </label>
+                {!mountExclusionAckComplete ? (
+                  <p className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs font-semibold text-amber-900">
+                    Checkbox işaretlenmeli ve açıklama girilmelidir.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {assignError ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">
+                {assignError}
+              </div>
+            ) : null}
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">

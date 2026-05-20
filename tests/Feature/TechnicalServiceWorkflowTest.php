@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
+use App\Models\TechnicalServiceMountSession;
 use App\Models\User;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MountRequestSubmitService;
@@ -199,6 +200,120 @@ class TechnicalServiceWorkflowTest extends TestCase
             'event_type' => 'technician_updated',
             'title' => 'Usta bilgisi güncellendi',
         ]);
+    }
+
+    public function test_mount_excluded_multi_product_assignment_requires_acknowledgement(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Çoklu Ürün Ustası',
+            'phone' => '+905551111114',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Müşteri Onayı Bekleyen',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $this->addSelectedSerial($request, 'SN-SECOND', false);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 12,
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors([
+                'mount_exclusion_acknowledged',
+                'mount_exclusion_note',
+            ]);
+    }
+
+    public function test_mount_excluded_multi_product_assignment_persists_acknowledgement(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Onaylı Çoklu Ürün Ustası',
+            'phone' => '+905551111115',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Müşteri Onayı Bekleyen',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $this->addSelectedSerial($request, 'SN-SECOND', false);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 12,
+                'mount_exclusion_acknowledged' => true,
+                'mount_exclusion_note' => 'Çoklu ürün talebi, ödeme operasyon tarafından takip edilecek.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.operation_control.mount_exclusion_acknowledgement.acknowledged', true)
+            ->assertJsonPath('request.operation_control.mount_exclusion_acknowledgement.note', 'Çoklu ürün talebi, ödeme operasyon tarafından takip edilecek.');
+
+        $request->refresh();
+
+        $this->assertTrue($request->operation_control_payload['mount_exclusion_acknowledgement']['acknowledged'] ?? false);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'mount_exclusion_acknowledged',
+            'title' => 'Montaj hariç çoklu ürün operasyon onayı alındı.',
+        ]);
+    }
+
+    public function test_mount_excluded_multi_product_assignment_skips_acknowledgement_when_payment_paid(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Ödemeli Çoklu Ürün Ustası',
+            'phone' => '+905551111116',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Müşteri Onayı Bekleyen',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_provider' => 'fake',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $this->addSelectedSerial($request, 'SN-MAIN');
+        $this->addSelectedSerial($request, 'SN-SECOND', false);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 12,
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.operation_control.mount_exclusion_acknowledgement.required', false)
+            ->assertJsonPath('request.sale_and_payment.mount_payment_received', true);
     }
 
     public function test_operation_control_patch_persists_and_unlocks_assignment(): void
@@ -977,6 +1092,15 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Kapı Ön Yüzü',
             'Satış montaj durumu',
             'Montaj ödeme durumu',
+            'Montaj hariç / çoklu ürün onayı',
+            'Bu işte montaj ödemesi henüz alınmadı; operasyon onayıyla servis ataması yapılacak.',
+            'Bu onay tamamlanmadan servis atanamaz.',
+            'Sıradaki Operasyon Adımları',
+            'Kapı görselleri kontrolü',
+            'Montaj ödeme kontrolü',
+            'Servis atanabilir',
+            'Ödeme aşaması',
+            'Ödeme tutarı',
             'Ödeme referansı',
             'Faturadaki diğer serileri gör',
             'Talep edilen seriler',
@@ -1091,5 +1215,21 @@ class TechnicalServiceWorkflowTest extends TestCase
         }
 
         return $request;
+    }
+
+    private function addSelectedSerial(TechnicalServiceRequest $request, string $serialNumber, bool $primary = true): TechnicalServiceRequestSerial
+    {
+        return $request->requestSerials()->create([
+            'mrn' => $request->mrn,
+            'serial_number' => $serialNumber,
+            'product_name' => 'Test Ürün',
+            'customer_selected' => true,
+            'customer_visible' => true,
+            'customer_selectable' => true,
+            'is_primary' => $primary,
+            'is_returned' => false,
+            'is_current_latest_sale' => true,
+            'color_status' => 'green',
+        ]);
     }
 }
