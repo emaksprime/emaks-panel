@@ -831,6 +831,7 @@ class TechnicalServiceWorkflowService
         $payload['door_photos'] = $this->doorPhotoPayload($request);
         $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
+        $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request);
 
         if ($includeHistory) {
             if ($this->auditLogTableAvailable()) {
@@ -1366,6 +1367,7 @@ class TechnicalServiceWorkflowService
             'provider_reference' => $payment->provider_reference,
             'paid_at' => $this->dateTimeString($payment->paid_at),
             'reason' => $payload['reason'] ?? null,
+            'purpose' => $payload['purpose'] ?? $payload['reason'] ?? null,
             'note' => $payload['note'] ?? null,
             'selected_serial_ids' => is_array($payload['selected_serial_ids'] ?? null)
                 ? array_values($payload['selected_serial_ids'])

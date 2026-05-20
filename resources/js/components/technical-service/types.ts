@@ -44,6 +44,17 @@ export type ServiceRequest = {
   doorPhotos?: ServiceRequestDoorPhoto[]
   routeFeeConfig?: ServiceRequestRouteFeeConfig | null
   routeQuote?: ServiceRequestRouteQuote | null
+  nextActionPayload?: ServiceRequestNextAction | null
+}
+
+export type ServiceRequestNextAction = {
+  code?: string | null
+  title?: string | null
+  description?: string | null
+  severity?: 'warning' | 'success' | 'danger' | 'info' | string | null
+  primary_action?: string | null
+  secondary_actions?: string[]
+  blocking?: boolean
 }
 
 export type ServiceRequestRouteFeeConfig = {
@@ -94,6 +105,7 @@ export type ServiceRequestExtraMountPayment = {
   provider_reference?: string | null
   paid_at?: string | null
   reason?: string | null
+  purpose?: string | null
   note?: string | null
   selected_serial_ids?: Array<number | string>
 }

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceQrLinkController;
+use App\Http\Controllers\PublicMountPaymentController;
 use App\Http\Controllers\PublicMountRequestController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -26,6 +27,12 @@ Route::post('mount-request/{token}/submit', [PublicMountRequestController::class
     ->name('mount-request.submit');
 Route::get('mount-payment/fake/{payment}/approve', [PublicMountRequestController::class, 'approveFakePayment'])
     ->name('mount-payment.fake.approve');
+Route::get('mount-payment/{token}', [PublicMountPaymentController::class, 'show'])
+    ->where('token', '[^/]+')
+    ->name('mount-payment.show');
+Route::post('mount-payment/{token}/fake-approve', [PublicMountPaymentController::class, 'approve'])
+    ->where('token', '[^/]+')
+    ->name('mount-payment.fake-token.approve');
 
 Route::middleware(['auth', 'panel.session'])
     ->prefix('api/technical-service')
@@ -42,6 +49,12 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('requests/{technicalServiceRequest}/payments/extra-mount-fee', [TechnicalServiceController::class, 'createExtraMountFeePayment'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.extra-mount-fee');
+        Route::post('requests/{technicalServiceRequest}/payments/mount-extra-payment', [TechnicalServiceController::class, 'createExtraMountFeePayment'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.payments.mount-extra-payment');
+        Route::get('requests/{technicalServiceRequest}/payments/{payment}/status', [TechnicalServiceController::class, 'mountPaymentStatus'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.payments.status');
         Route::patch('requests/{technicalServiceRequest}/operation-control', [TechnicalServiceController::class, 'updateOperationControl'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.operation-control');

@@ -12,6 +12,8 @@ use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\MountSessionEnrichmentService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
+use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
+use App\Services\Payments\PaymentProviderManager;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -63,6 +65,7 @@ class PublicMountRequestController extends Controller
             'payment' => $payment instanceof TechnicalServiceMountPayment ? [
                 'amount' => number_format((float) $payment->amount, 2, '.', ''),
                 'currency' => $payment->currency,
+                'payment_url' => $payment->payment_url,
                 'fake_approve_url' => $this->fakePaymentEnabled()
                     ? route('mount-payment.fake.approve', ['payment' => $payment, 'token' => $token])
                     : null,
@@ -146,7 +149,7 @@ class PublicMountRequestController extends Controller
         ]);
     }
 
-    public function createFakePayment(string $token): RedirectResponse
+    public function createFakePayment(string $token, PaymentProviderManager $paymentProviderManager): RedirectResponse
     {
         abort_unless($this->fakePaymentEnabled(), 404);
 
@@ -155,14 +158,18 @@ class PublicMountRequestController extends Controller
         $payment = $this->latestPayment($session);
 
         if (! $payment instanceof TechnicalServiceMountPayment || $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
-            TechnicalServiceMountPayment::query()->create([
+            $payment = TechnicalServiceMountPayment::query()->create([
                 'technical_service_mount_session_id' => $session->id,
-                'provider' => 'fake',
-                'provider_reference' => 'fake-'.hash('sha256', $session->id.'|'.microtime(true)),
+                'provider' => config('payments.provider', 'fake'),
                 'status' => TechnicalServiceMountPayment::STATUS_PENDING,
                 'amount' => 3500,
                 'currency' => 'TRY',
+                'raw_payload' => [
+                    'source' => 'public_mount_payment',
+                    'purpose' => 'service_payment',
+                ],
             ]);
+            $paymentProviderManager->createPayment($payment);
         }
 
         $session->forceFill([
@@ -258,23 +265,18 @@ class PublicMountRequestController extends Controller
         ]);
     }
 
-    public function approveFakePayment(Request $request, TechnicalServiceMountPayment $payment): RedirectResponse
+    public function approveFakePayment(
+        Request $request,
+        TechnicalServiceMountPayment $payment,
+        TechnicalServicePaymentSettlementService $settlementService
+    ): RedirectResponse
     {
         abort_unless($this->fakePaymentEnabled(), 404);
         abort_unless($payment->provider === 'fake', 404);
 
-        $payment->forceFill([
-            'status' => TechnicalServiceMountPayment::STATUS_PAID,
-            'paid_at' => $payment->paid_at ?? now(),
-        ])->save();
-
-        $session = $payment->session;
-        $session->forceFill([
-            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
-            'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT,
-            'decision_status' => TechnicalServiceMountSession::DECISION_FORM_OPEN,
-        ])->save();
-        $this->applyExtraMountPaymentApproval($payment);
+        $settlementService->markPaid($payment, [
+            'source' => 'fake_approve_route',
+        ]);
 
         $token = $request->query('token');
 

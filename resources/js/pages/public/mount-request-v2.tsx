@@ -61,6 +61,7 @@ type Actions = {
 type Payment = {
     amount: string;
     currency: string;
+    payment_url?: string | null;
     fake_approve_url?: string | null;
 };
 
@@ -1026,6 +1027,14 @@ export default function MountRequestV2({
                                             >
                                                 {actions.multi_product_label ?? 'Birden fazla ürün için montaj talebim var'}
                                             </Link>
+                                        )}
+                                        {payment?.payment_url && (
+                                            <a
+                                                href={payment.payment_url}
+                                                className="rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-semibold text-blue-900 shadow-sm hover:bg-blue-50"
+                                            >
+                                                Ödeme sayfasını aç
+                                            </a>
                                         )}
                                         {payment?.fake_approve_url && (
                                             <a

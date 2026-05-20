@@ -24,6 +24,7 @@ use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Services\Payments\PaymentProviderManager;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -417,14 +418,12 @@ class TechnicalServiceController extends Controller
         ]));
     }
 
-    public function createExtraMountFeePayment(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    public function createExtraMountFeePayment(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        PaymentProviderManager $paymentProviderManager
+    ): JsonResponse
     {
-        if (! app()->environment(['local', 'testing'])) {
-            throw ValidationException::withMessages([
-                'payment' => 'Ek ödeme linki için ödeme sağlayıcı entegrasyonu tanımlı değil.',
-            ]);
-        }
-
         $validated = $request->validate([
             'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
             'technician_id' => ['required', 'integer', 'exists:technical_service_technicians,id'],
@@ -433,6 +432,7 @@ class TechnicalServiceController extends Controller
             'amount' => ['required', 'numeric', 'gt:0'],
             'currency' => ['nullable', 'string', 'size:3'],
             'reason' => ['nullable', 'string', 'in:route_fee,montage_difference,multi_product,manual_extra'],
+            'purpose' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,route_fee,montage_difference,multi_product,manual_extra'],
             'note' => ['nullable', 'string', 'max:2000'],
         ]);
 
@@ -459,25 +459,34 @@ class TechnicalServiceController extends Controller
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
             'technical_service_request_id' => $technicalServiceRequest->id,
-            'provider' => 'fake',
-            'provider_reference' => 'fake-extra-'.hash('sha256', $technicalServiceRequest->id.'|'.microtime(true)),
+            'provider' => $paymentProviderManager->providerName(),
+            'provider_reference' => null,
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => round((float) $validated['amount'], 2),
             'currency' => $currency,
             'raw_payload' => [
                 'source' => 'operation_extra_mount_fee',
+                'provider_environment' => $paymentProviderManager->environment(),
                 'technical_service_request_id' => $technicalServiceRequest->id,
                 'mrn' => $technicalServiceRequest->mrn,
                 'route_quote_id' => $validated['route_quote_id'] ?? null,
                 'technician_id' => (int) $validated['technician_id'],
                 'selected_serial_ids' => $validSerialIds->all(),
-                'reason' => $validated['reason'] ?? 'route_fee',
+                'reason' => $validated['reason'] ?? $validated['purpose'] ?? 'route_fee',
+                'purpose' => $validated['purpose'] ?? $validated['reason'] ?? 'mount_extra',
                 'note' => $validated['note'] ?? null,
             ],
         ]);
-        $payment->forceFill([
-            'payment_url' => route('mount-payment.fake.approve', ['payment' => $payment]),
-        ])->save();
+        try {
+            $paymentProviderManager->createPayment($payment);
+        } catch (Throwable $exception) {
+            $payment->delete();
+
+            throw ValidationException::withMessages([
+                'payment' => $exception->getMessage(),
+            ]);
+        }
+        $payment = $payment->refresh();
 
         $technicalServiceRequest->forceFill([
             'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
@@ -518,6 +527,26 @@ class TechnicalServiceController extends Controller
             ],
             'request' => $requestPayload,
         ], 201);
+    }
+
+    public function mountPaymentStatus(
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceMountPayment $payment
+    ): JsonResponse {
+        abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        return response()->json([
+            'ok' => true,
+            'payment' => [
+                'id' => $payment->id,
+                'status' => $payment->status,
+                'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'payment_url' => $payment->payment_url,
+                'paid_at' => $payment->paid_at?->toISOString(),
+            ],
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
     }
 
     public function recheckInvoiceSerials(

@@ -471,6 +471,69 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame($request->id, $payment->raw_payload['technical_service_request_id']);
         $this->assertSame([$serial->id], $payment->raw_payload['selected_serial_ids']);
         $this->assertNotEmpty($payment->payment_url);
+        $this->assertStringContainsString('/mount-payment/', $payment->payment_url);
+        $this->assertStringNotContainsString('/mount-payment/fake/', $payment->payment_url);
+        $this->assertSame('fake', $payment->provider);
+        $this->assertSame('local', $payment->raw_payload['provider_environment']);
+    }
+
+    public function test_payment_status_endpoint_returns_fresh_request_and_next_action(): void
+    {
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $request->forceFill([
+            'operation_control_payload' => [
+                'door_photos_checked' => 'compatible',
+            ],
+        ])->save();
+        $technician = $this->technicianWithLocation();
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 150,
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertCreated();
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->actingAs($user)
+            ->getJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/status")
+            ->assertOk()
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->assertJsonPath('request.id', $request->id)
+            ->assertJsonPath('request.next_action_payload.code', 'payment_pending')
+            ->assertJsonPath('request.next_action_payload.primary_action', 'copy_payment_link');
+
+        $this->assertSame($response->json('payment.payment_url'), $payment->payment_url);
+    }
+
+    public function test_iyzico_provider_without_keys_returns_safe_validation_error(): void
+    {
+        config([
+            'payments.provider' => 'iyzico_sandbox',
+            'payments.iyzico.api_key' => null,
+            'payments.iyzico.secret_key' => null,
+        ]);
+
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 150,
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertJsonValidationErrors('payment');
+
+        $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
     }
 
     public function test_extra_mount_fee_payment_rejects_zero_amount(): void
@@ -704,7 +767,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Ücrete tabi km',
             'Tahmini yol ücreti',
             'route-quote',
-            'payments/extra-mount-fee',
+            'payments/mount-extra-payment',
             'handleExtraMountPaymentCreate',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);

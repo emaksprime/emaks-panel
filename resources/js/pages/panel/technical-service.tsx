@@ -147,6 +147,7 @@ type ApiTechnicalServiceRequest = {
   cancellation_reason?: string | null
   workflow_status?: string | null
   next_action?: string | null
+  next_action_payload?: ServiceRequest['nextActionPayload'] | null
   sla_due_at?: string | null
   sla_status?: string | null
   allowed_workflow_actions?: Record<string, { label: string, target: string }> | null
@@ -771,6 +772,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     cancellationReason: request.cancellation_reason ?? null,
     workflowStatus: request.workflow_status ?? null,
     nextAction: request.next_action ?? null,
+    nextActionPayload: request.next_action_payload ?? null,
     slaDueAt: request.sla_due_at ?? null,
     slaStatus: request.sla_status ?? null,
     allowedWorkflowActions: request.allowed_workflow_actions ?? null,
@@ -1095,6 +1097,61 @@ export function TechnicalServiceOperationCenter() {
       document.removeEventListener('visibilitychange', refreshVisibleRequests)
     }
   }, [loadRequests])
+
+  useEffect(() => {
+    const request = selectedDetailRequest
+    const payment = request?.saleAndPayment?.extra_mount_payment
+
+    if (!request?.id || !payment?.id || payment.status !== 'pending') {
+      return
+    }
+
+    const requestId = String(request.id)
+    const paymentId = String(payment.id)
+    let cancelled = false
+
+    const refreshPaymentStatus = async () => {
+      try {
+        const response = await apiRequest(`/api/technical-service/requests/${requestId}/payments/${paymentId}/status`)
+
+        if (cancelled || String(selectedId ?? '') !== requestId || !response.request) {
+          return
+        }
+
+        const updatedRequest = mapApiRequest(response.request)
+
+        if (String(updatedRequest.id) !== requestId) {
+          return
+        }
+
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((item) => (
+            item.id === updatedRequest.id ? updatedRequest : item
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+        })
+      } catch {
+        // Polling is intentionally quiet; explicit create/assign actions still surface errors.
+      }
+    }
+
+    const interval = window.setInterval(refreshPaymentStatus, 3000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [
+    preserveDetailScroll,
+    selectedId,
+    selectedDetailRequest,
+    selectedDetailRequest?.id,
+    selectedDetailRequest?.saleAndPayment?.extra_mount_payment?.id,
+    selectedDetailRequest?.saleAndPayment?.extra_mount_payment?.status,
+  ])
 
   useEffect(() => {
     void Promise.resolve().then(loadTechnicians)
@@ -2607,7 +2664,7 @@ export function TechnicalServiceOperationCenter() {
     setExtraPaymentCreateError(null)
 
     try {
-      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/extra-mount-fee`, {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/mount-extra-payment`, {
         method: 'POST',
         body: JSON.stringify(payload),
       })

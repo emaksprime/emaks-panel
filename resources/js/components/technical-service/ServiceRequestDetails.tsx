@@ -253,6 +253,19 @@ const operationStepTone = (status: OperationStepStatus): string => {
   }
 }
 
+const nextActionTone = (severity: string | null | undefined): string => {
+  switch (severity) {
+    case 'success':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-950'
+    case 'danger':
+      return 'border-rose-200 bg-rose-50 text-rose-950'
+    case 'warning':
+      return 'border-amber-200 bg-amber-50 text-amber-950'
+    default:
+      return 'border-blue-200 bg-blue-50 text-blue-950'
+  }
+}
+
 const whatsappHrefForPhone = (phone: string | null | undefined): string => {
   let digits = String(phone ?? '').replace(/\D/g, '')
 
@@ -1354,6 +1367,31 @@ export function ServiceRequestDetails({
   const documentStatusLabel = displayOrEmpty(request.documentStatus, 'Belge yüklenmedi')
   const closureApprovalLabel = displayOrEmpty(request.customerClosureApprovalStatus, 'Kapanış onayı yok')
   const nextActionLabel = displayOrEmpty(request.nextAction, 'Sıradaki aksiyon tanımlı değil')
+  const nextActionPayload = request.nextActionPayload
+  const nextActionTitle = displayOrEmpty(nextActionPayload?.title, nextActionLabel)
+  const nextActionDescription = displayOrEmpty(nextActionPayload?.description, 'Operasyon akışı için sıradaki adım bekleniyor.')
+  const compactControlChips = [
+    {
+      label: 'Görseller',
+      value: operationControl.door_photos_checked === 'compatible' ? 'Tamam' : 'Kontrol gerekli',
+      tone: operationControl.door_photos_checked === 'compatible' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-rose-200 bg-rose-50 text-rose-800',
+    },
+    {
+      label: 'Ödeme',
+      value: mountPaymentReceived ? 'Alındı' : mountExclusionAckRequired ? 'Bekleniyor' : 'Gerekmez',
+      tone: mountPaymentReceived ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800',
+    },
+    {
+      label: 'Usta',
+      value: hasAssignedTechnician ? (approvalState.title.toLocaleLowerCase('tr-TR').includes('bek') ? 'Onay bekliyor' : 'Seçildi') : 'Seçilmedi',
+      tone: hasAssignedTechnician ? 'border-blue-200 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-700',
+    },
+    {
+      label: 'Randevu',
+      value: request.scheduledAt || request.scheduledDate ? 'Planlandı' : 'Bekliyor',
+      tone: request.scheduledAt || request.scheduledDate ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-700',
+    },
+  ]
   const notesLabel = displayOrEmpty(request.notes, 'Talep notu girilmedi')
   const currentStatusLabel = statusDisplayLabel(request)
   const currentPriorityLabel = priorityDisplayLabel(request.priority)
@@ -1504,22 +1542,99 @@ export function ServiceRequestDetails({
           ) : null}
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:p-5">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.08em] text-slate-700 sm:text-base">Sıradaki Operasyon Adımları</p>
-            <p className="mt-1 text-sm text-slate-600">Atama öncesi eksik kalan adımlar ve sıradaki aksiyonlar.</p>
+        <section className={['rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(nextActionPayload?.severity)].join(' ')}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] opacity-70">Sıradaki Operasyon Aksiyonu</p>
+              <h3 className="mt-1 text-lg font-bold">{nextActionTitle}</h3>
+              <p className="mt-1 max-w-3xl text-sm leading-6 opacity-90">{nextActionDescription}</p>
+            </div>
+            {nextActionPayload?.primary_action ? (
+              <Button
+                type="button"
+                size="sm"
+                variant={nextActionPayload.blocking ? 'default' : 'outline'}
+                onClick={() => {
+                  const action = nextActionPayload.primary_action
+
+                  if (action === 'assign_technician') {
+                    void onAssignSelectedTechnician?.()
+
+                    return
+                  }
+
+                  if (action === 'copy_payment_link') {
+                    void navigator.clipboard?.writeText(extraMountPayment?.payment_url ?? '')
+
+                    return
+                  }
+
+                  if (action === 'create_payment_link') {
+                    setRouteFeeEditorOpen(true)
+                    setAssignmentInfoOpen(true)
+
+                    return
+                  }
+
+                  if (action === 'calculate_route_fee') {
+                    void onRouteQuoteCalculate?.()
+
+                    return
+                  }
+
+                  if (action === 'review_photos') {
+                    setOperationInfoOpen(true)
+
+                    return
+                  }
+
+                  if (action === 'acknowledge_mount_exclusion') {
+                    setAssignmentInfoOpen(true)
+
+                    return
+                  }
+
+                  if (action === 'plan_appointment') {
+                    onSchedule?.()
+                  }
+                }}
+              >
+                {nextActionPayload.primary_action === 'assign_technician'
+                  ? hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'
+                  : nextActionPayload.primary_action === 'review_photos'
+                    ? 'Kontrole Git'
+                    : nextActionPayload.primary_action === 'create_payment_link'
+                      ? 'Ödeme Linki Oluştur'
+                      : nextActionPayload.primary_action === 'copy_payment_link'
+                        ? 'Linki Kopyala'
+                        : nextActionPayload.primary_action === 'plan_appointment'
+                          ? 'Randevu Planla'
+                          : 'Aksiyonu Aç'}
+              </Button>
+            ) : null}
           </div>
-          <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-            {operationSteps.map((step, index) => (
-              <div key={step.title} className={['rounded-2xl border p-3 text-sm', operationStepTone(step.status)].join(' ')}>
-                <div className="flex items-start justify-between gap-2">
-                  <p className="font-semibold">{index + 1}. {step.title}</p>
-                  <span className="shrink-0 rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-semibold">{step.status}</span>
-                </div>
-                <p className="mt-2 leading-5">{step.message}</p>
-              </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {compactControlChips.map((chip) => (
+              <span key={chip.label} className={['inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold', chip.tone].join(' ')}>
+                <span className="opacity-70">{chip.label}:</span>
+                <span>{chip.value}</span>
+              </span>
             ))}
           </div>
+          <details className="mt-3 rounded-2xl border border-white/60 bg-white/50 p-3 text-sm">
+            <summary className="cursor-pointer font-semibold">Teknik detaylar</summary>
+            <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {operationSteps.map((step, index) => (
+                <div key={step.title} className={['rounded-2xl border p-3 text-sm', operationStepTone(step.status)].join(' ')}>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-semibold">{index + 1}. {step.title}</p>
+                    <span className="shrink-0 rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-semibold">{step.status}</span>
+                  </div>
+                  <p className="mt-2 leading-5">{step.message}</p>
+                </div>
+              ))}
+            </div>
+          </details>
         </section>
 
         {serialQueryOpen ? (
