@@ -2,6 +2,8 @@
 
 namespace App\Services\B2B;
 
+use App\Models\B2B\B2BCariSnapshot;
+use App\Models\B2B\B2BCariSnapshotRun;
 use App\Models\B2B\B2BPartner;
 use App\Models\DataSource;
 use App\Models\TechnicalServiceTechnician;
@@ -36,6 +38,7 @@ class B2BCariControlService
         'PAZARYERI',
         'PAZAR YERI',
         'MARKETPLACE',
+        'INTERNET',
     ];
 
     private const CHILD_CARI_USAGE_SUFFIXES = [
@@ -56,34 +59,73 @@ class B2BCariControlService
     {
         $inventory = $this->sourceInventory();
         $source = $this->candidateSource();
+        $refresh = (bool) ($filters['refresh'] ?? false);
+        $snapshot = $this->snapshotResponse($filters, $inventory);
+
+        if (! $refresh && $snapshot['snapshot_total'] > 0 && ($snapshot['candidates'] !== [] || $this->nullableString($filters['search'] ?? null) === '' || ! $source)) {
+            return $snapshot;
+        }
 
         if (! $source) {
-            return $this->contractRequiredResponse($inventory, 'Cari adaylari icin uygun aktif SELECT-only data source bulunamadi.');
+            return $snapshot['snapshot_total'] > 0
+                ? $snapshot
+                : $this->errorResponse($inventory, 'Cari adaylari icin uygun aktif SELECT-only data source bulunamadi.');
         }
+
+        $run = B2BCariSnapshotRun::query()->create([
+            'source_code' => $source->code,
+            'status' => 'running',
+            'started_at' => now(),
+            'metadata' => [
+                'filters' => collect($filters)->except(['password', 'token', 'secret'])->all(),
+            ],
+        ]);
 
         try {
             $result = $this->gateway->run($source->code, $this->gatewayFilters($filters), $source);
         } catch (RuntimeException $exception) {
-            return $this->contractRequiredResponse(
-                $inventory,
-                'Cari adaylari gateway uzerinden alinamadi: '.$exception->getMessage(),
-                $source->code,
-            );
+            $this->finishSnapshotRun($run, 'failed', [
+                'error_message' => $exception->getMessage(),
+            ]);
+
+            return $snapshot['snapshot_total'] > 0
+                ? [
+                    ...$snapshot,
+                    'message' => 'Gateway hatasi nedeniyle son PostgreSQL cari snapshot adaylari gosteriliyor: '.$exception->getMessage(),
+                    'gateway_error' => $exception->getMessage(),
+                ]
+                : $this->errorResponse($inventory, 'Cari adaylari gateway uzerinden alinamadi: '.$exception->getMessage(), $source->code);
         }
 
-        $normalized = $this->normalizeRows($result['rows'], $filters, $source->code);
+        $normalizationFilters = [
+            ...$filters,
+            'include_review_required' => true,
+            'offset' => 0,
+            'limit' => max((int) ($filters['limit'] ?? 100), 250),
+        ];
+        $normalized = $this->normalizeRows($result['rows'], $normalizationFilters, $source->code);
+        $snapshotCounts = $this->persistSnapshots($normalized['candidates'], $source->code);
+        $this->finishSnapshotRun($run, 'success', [
+            'total_received' => count($result['rows']),
+            'total_normalized' => count($normalized['candidates']),
+            'excluded_online_retail_count' => $normalized['excluded_online_retail_count'],
+            'new_count' => $snapshotCounts['new_count'],
+            'changed_count' => $snapshotCounts['changed_count'],
+            'matched_count' => $snapshotCounts['matched_count'],
+            'metadata' => [
+                'gateway_meta' => $result['meta'],
+                'filters' => collect($filters)->except(['password', 'token', 'secret'])->all(),
+            ],
+        ]);
+
+        $snapshot = $this->snapshotResponse($filters, $inventory, $source->code, $result['meta'], $run->id);
 
         return [
-            'status' => 'ok',
-            'message' => 'Cari adaylari gateway uzerinden alindi. Otomatik partner acilmaz; secili adaylar islenir.',
-            'candidates' => $normalized['candidates'],
-            'items' => $normalized['candidates'],
-            'excluded_online_retail_count' => $normalized['excluded_online_retail_count'],
+            ...$snapshot,
+            'message' => 'Cari adaylari gateway uzerinden alindi ve PostgreSQL snapshot guncellendi. Otomatik partner acilmaz; secili adaylar islenir.',
             'source_used' => $source->code,
-            'source_inventory' => $inventory,
-            'existing_sources' => $inventory,
             'gateway_meta' => $result['meta'],
-            'actions_enabled' => true,
+            'snapshot_run_id' => $run->id,
         ];
     }
 
@@ -156,6 +198,23 @@ class B2BCariControlService
             ->unique()
             ->values()
             ->all();
+    }
+
+    public function markSnapshotLinkedToPartner(B2BPartner $partner): void
+    {
+        $code = $this->nullableString($partner->mikro_cari_kodu);
+
+        if ($code === null) {
+            return;
+        }
+
+        B2BCariSnapshot::query()
+            ->where('base_mikro_cari_kodu', $code)
+            ->update([
+                'existing_partner_id' => $partner->id,
+                'candidate_status' => 'matched',
+                'last_seen_at' => now(),
+            ]);
     }
 
     /**
@@ -323,9 +382,12 @@ class B2BCariControlService
             return $candidates;
         }
 
+        $enrichedCount = 0;
+
         return collect($candidates)
-            ->map(function (array $candidate): array {
-                if ($this->missingCandidateFields($candidate) !== []) {
+            ->map(function (array $candidate) use (&$enrichedCount): array {
+                if ($this->missingCandidateFields($candidate) !== [] && $enrichedCount < 25) {
+                    $enrichedCount++;
                     $detail = $this->detailCandidate($candidate);
 
                     if ($detail !== null) {
@@ -337,6 +399,336 @@ class B2BCariControlService
             })
             ->values()
             ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @param  array<int, array<string, mixed>>  $inventory
+     * @param  array<string, mixed>  $gatewayMeta
+     * @return array<string, mixed>
+     */
+    private function snapshotResponse(array $filters, array $inventory, ?string $sourceCode = null, array $gatewayMeta = [], ?int $runId = null): array
+    {
+        $requestedCapability = $this->nullableString($filters['capability'] ?? null);
+        $requestedStatus = $this->nullableString($filters['status'] ?? null);
+        $cityFilter = $this->normalizedText($filters['city'] ?? null);
+        $search = $this->normalizedText($filters['search'] ?? null);
+        $offset = max(0, (int) ($filters['offset'] ?? 0));
+        $limit = min(250, max(1, (int) ($filters['limit'] ?? 100)));
+        $existingPartners = $this->existingPartnerMap();
+
+        $rows = B2BCariSnapshot::query()
+            ->where('candidate_status', '!=', 'excluded')
+            ->orderBy('base_mikro_cari_kodu')
+            ->limit(1000)
+            ->get()
+            ->map(fn (B2BCariSnapshot $snapshot): array => $this->candidateFromSnapshot($snapshot, $existingPartners))
+            ->unique('mikro_cari_kodu')
+            ->values();
+
+        $snapshotTotal = $rows->count();
+        $filtered = $rows
+            ->filter(function (array $candidate) use ($requestedStatus): bool {
+                if ($requestedStatus === null) {
+                    return ($candidate['existing_partner_id'] ?? null) === null;
+                }
+
+                return true;
+            })
+            ->filter(function (array $candidate) use ($requestedCapability): bool {
+                if ($requestedCapability === null) {
+                    return true;
+                }
+
+                return in_array($requestedCapability, $candidate['suggested_capabilities'] ?? [], true);
+            })
+            ->filter(fn (array $candidate): bool => $this->matchesStatusFilter($candidate, $requestedStatus))
+            ->filter(function (array $candidate) use ($cityFilter): bool {
+                if ($cityFilter === '') {
+                    return true;
+                }
+
+                return str_contains($this->normalizedText($candidate['city'] ?? null), $cityFilter);
+            })
+            ->map(fn (array $candidate): array => $this->annotateSearchMatch($candidate, $search))
+            ->filter(fn (array $candidate): bool => $search === '' || ($candidate['search_match'] ?? null) !== null)
+            ->slice($offset, $limit)
+            ->values()
+            ->all();
+
+        $latestRun = B2BCariSnapshotRun::query()->latest('id')->first();
+
+        return [
+            'status' => 'ok',
+            'message' => $snapshotTotal > 0
+                ? 'Cari adaylari PostgreSQL snapshot uzerinden gosteriliyor. Otomatik partner acilmaz; secili adaylar islenir.'
+                : 'Cari snapshot bos. Gateway uzerinden SELECT-only cari adaylari cekilecek.',
+            'candidates' => $filtered,
+            'items' => $filtered,
+            'excluded_online_retail_count' => (int) ($latestRun?->excluded_online_retail_count ?? 0),
+            'source_used' => $sourceCode ?? $latestRun?->source_code ?? 'snapshot',
+            'source_inventory' => $inventory,
+            'existing_sources' => $inventory,
+            'gateway_meta' => $gatewayMeta,
+            'snapshot_run_id' => $runId ?? $latestRun?->id,
+            'snapshot_total' => $snapshotTotal,
+            'snapshot_counts' => [
+                'new' => $rows->where('status', 'new')->count(),
+                'matched' => $rows->where('status', 'matched')->count(),
+                'changed' => $rows->where('status', 'changed')->count(),
+                'review_required' => $rows->where('status', 'review_required')->count(),
+            ],
+            'actions_enabled' => true,
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $candidates
+     * @return array{new_count: int, changed_count: int, matched_count: int}
+     */
+    private function persistSnapshots(array $candidates, string $sourceCode): array
+    {
+        $existingPartners = $this->existingPartnerMap();
+        $counts = [
+            'new_count' => 0,
+            'changed_count' => 0,
+            'matched_count' => 0,
+        ];
+
+        foreach ($candidates as $candidate) {
+            $code = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
+
+            if ($code === null) {
+                continue;
+            }
+
+            $existingPartner = $existingPartners[$this->normalizedText($code)] ?? null;
+            $differenceSummary = $existingPartner ? $this->differenceSummary($existingPartner, $candidate) : [];
+            $status = $this->snapshotStatus($candidate, $existingPartner, $differenceSummary);
+            $counts[$status.'_count'] = ($counts[$status.'_count'] ?? 0) + 1;
+            $candidate['existing_partner_id'] = $existingPartner?->id;
+            $candidate['difference_summary'] = $differenceSummary;
+            $candidate['status'] = $status;
+            $candidate['status_label'] = $this->snapshotStatusLabel($status);
+            $candidate['review_required'] = $status === 'review_required';
+            $children = $this->normalizeChildCariAccountsInput($candidate['child_cari_accounts'] ?? []);
+            $candidate['child_cari_accounts'] = $children;
+            $invoiceProfile = $this->invoiceProfileForSnapshot($candidate, $children);
+            $shippingProfile = $this->shippingProfileForSnapshot($candidate, $children);
+            $payload = $this->snapshotRawPayload($candidate);
+
+            B2BCariSnapshot::query()->updateOrCreate(
+                [
+                    'source_code' => $sourceCode,
+                    'base_mikro_cari_kodu' => $code,
+                ],
+                [
+                    'mikro_cari_kodu' => $code,
+                    'mikro_cari_unvan' => $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
+                        ?? $this->nullableString($candidate['display_name'] ?? null),
+                    'normalized_unvan' => $this->normalizedText($candidate['mikro_cari_unvan'] ?? $candidate['display_name'] ?? null),
+                    'cari_grup_kodu' => $this->nullableString($candidate['cari_grup_kodu'] ?? null),
+                    'responsibility_code' => $this->nullableString($candidate['responsibility_code'] ?? null),
+                    'temsilci_kodu' => $this->nullableString($candidate['temsilci_kodu'] ?? null),
+                    'phone' => $this->nullableString($candidate['phone'] ?? null),
+                    'email' => $this->nullableString($candidate['email'] ?? null),
+                    'city' => $this->nullableString($candidate['city'] ?? null),
+                    'district' => $this->nullableString($candidate['district'] ?? null),
+                    'address' => $this->nullableString($candidate['address'] ?? null),
+                    'tax_no' => $this->nullableString($candidate['tax_no'] ?? null),
+                    'tax_office' => $this->nullableString($candidate['tax_office'] ?? null),
+                    'suggested_capabilities' => $this->normalizeCapabilities($candidate['suggested_capabilities'] ?? []),
+                    'child_cari_accounts' => $children,
+                    'invoice_profile' => $invoiceProfile,
+                    'shipping_profile' => $shippingProfile,
+                    'raw_payload' => $payload,
+                    'payload_hash' => hash('sha256', json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
+                    'existing_partner_id' => $existingPartner?->id,
+                    'candidate_status' => $status,
+                    'review_reason' => $status === 'review_required' ? $this->nullableString($candidate['review_reason'] ?? null) : null,
+                    'last_seen_at' => now(),
+                ],
+            );
+        }
+
+        return [
+            'new_count' => $counts['new_count'] ?? 0,
+            'changed_count' => $counts['changed_count'] ?? 0,
+            'matched_count' => $counts['matched_count'] ?? 0,
+        ];
+    }
+
+    /**
+     * @param  array<string, B2BPartner>  $existingPartners
+     * @return array<string, mixed>
+     */
+    private function candidateFromSnapshot(B2BCariSnapshot $snapshot, array $existingPartners): array
+    {
+        $candidate = [
+            'mikro_cari_kodu' => $snapshot->base_mikro_cari_kodu,
+            'mikro_cari_unvan' => $snapshot->mikro_cari_unvan,
+            'display_name' => $snapshot->mikro_cari_unvan ?: $snapshot->base_mikro_cari_kodu,
+            'cari_grup_kodu' => $snapshot->cari_grup_kodu,
+            'responsibility_code' => $snapshot->responsibility_code,
+            'temsilci_kodu' => $snapshot->temsilci_kodu,
+            'srm_merkezi' => $snapshot->responsibility_code,
+            'phone' => $snapshot->phone,
+            'email' => $snapshot->email,
+            'city' => $snapshot->city,
+            'district' => $snapshot->district,
+            'address' => $snapshot->address,
+            'tax_no' => $snapshot->tax_no,
+            'tax_office' => $snapshot->tax_office,
+            'suggested_capabilities' => $snapshot->suggested_capabilities ?? [],
+            'capabilities' => $snapshot->suggested_capabilities ?? [],
+            'confidence' => data_get($snapshot->raw_payload, 'confidence', 0.82),
+            'child_cari_accounts' => $snapshot->child_cari_accounts ?? [],
+            'invoice_profile' => $snapshot->invoice_profile ?? [],
+            'shipping_profile' => $snapshot->shipping_profile ?? [],
+            'source_used' => $snapshot->source_code,
+            'source_field_missing' => data_get($snapshot->raw_payload, 'source_field_missing', []),
+            'raw_source' => $snapshot->raw_payload,
+        ];
+        $existingPartner = $existingPartners[$this->normalizedText($snapshot->base_mikro_cari_kodu)] ?? null;
+        $differenceSummary = $existingPartner ? $this->differenceSummary($existingPartner, $candidate) : [];
+        $status = $this->snapshotStatus($candidate + ['status' => $snapshot->candidate_status], $existingPartner, $differenceSummary);
+        $candidate['existing_partner_id'] = $existingPartner?->id ?? $snapshot->existing_partner_id;
+        $candidate['difference_summary'] = $differenceSummary;
+        $candidate['status'] = $status;
+        $candidate['status_label'] = $this->snapshotStatusLabel($status);
+        $candidate['review_required'] = $status === 'review_required';
+        $candidate['matched_child_cari_codes'] = [];
+        $candidate['search_match'] = null;
+
+        return $this->withSourceFieldMissingMeta($candidate);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, string>  $differenceSummary
+     */
+    private function snapshotStatus(array $candidate, ?B2BPartner $existingPartner, array $differenceSummary): string
+    {
+        if (($candidate['status'] ?? null) === 'review_required' || ($candidate['candidate_status'] ?? null) === 'review_required') {
+            return 'review_required';
+        }
+
+        if ($existingPartner) {
+            return $differenceSummary === [] ? 'matched' : 'changed';
+        }
+
+        return 'new';
+    }
+
+    private function snapshotStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'new' => 'Yeni',
+            'matched' => 'Mevcut',
+            'changed' => 'Guncellenecek',
+            'review_required' => 'Kontrol gerekli',
+            default => 'Aday',
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, array<string, mixed>>  $children
+     * @return array<string, mixed>
+     */
+    private function invoiceProfileForSnapshot(array $candidate, array $children): array
+    {
+        return array_filter([
+            'cari_kodu' => $this->nullableString($candidate['mikro_cari_kodu'] ?? null),
+            'cari_unvan' => $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
+                ?? $this->nullableString($candidate['display_name'] ?? null),
+            'tax_no' => $this->nullableString($candidate['tax_no'] ?? null),
+            'tax_office' => $this->nullableString($candidate['tax_office'] ?? null),
+            'invoice_address' => $this->nullableString($candidate['address'] ?? null),
+            'city' => $this->nullableString($candidate['city'] ?? null),
+            'district' => $this->nullableString($candidate['district'] ?? null),
+            'email' => $this->nullableString($candidate['email'] ?? null),
+            'child_account_mapping' => $this->childAccountMapping($children),
+        ], fn (mixed $value): bool => $value !== null && $value !== [] && $value !== '');
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, array<string, mixed>>  $children
+     * @return array<string, mixed>
+     */
+    private function shippingProfileForSnapshot(array $candidate, array $children): array
+    {
+        return array_filter([
+            'shipping_name' => $this->nullableString($candidate['display_name'] ?? null)
+                ?? $this->nullableString($candidate['mikro_cari_unvan'] ?? null),
+            'phone' => $this->nullableString($candidate['phone'] ?? null),
+            'address' => $this->nullableString($candidate['address'] ?? null),
+            'city' => $this->nullableString($candidate['city'] ?? null),
+            'district' => $this->nullableString($candidate['district'] ?? null),
+            'child_account_mapping' => $this->childAccountMapping($children),
+            'consignment_cari_kodu' => data_get($this->childAccountMapping($children), 'consignment'),
+            'showroom_cari_kodu' => data_get($this->childAccountMapping($children), 'showroom'),
+            'project_cari_kodu' => data_get($this->childAccountMapping($children), 'project'),
+        ], fn (mixed $value): bool => $value !== null && $value !== [] && $value !== '');
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $children
+     * @return array<string, string>
+     */
+    private function childAccountMapping(array $children): array
+    {
+        return collect($children)
+            ->filter(fn (array $child): bool => $this->nullableString($child['usage_type'] ?? null) !== null && $this->nullableString($child['mikro_cari_kodu'] ?? null) !== null)
+            ->mapWithKeys(fn (array $child): array => [
+                (string) $child['usage_type'] => (string) $child['mikro_cari_kodu'],
+            ])
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function snapshotRawPayload(array $candidate): array
+    {
+        return collect($candidate)
+            ->except(['raw_source'])
+            ->put('raw_source', $candidate['raw_source'] ?? null)
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function finishSnapshotRun(B2BCariSnapshotRun $run, string $status, array $attributes = []): void
+    {
+        $run->forceFill([
+            'status' => $status,
+            'finished_at' => now(),
+            ...$attributes,
+        ])->save();
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $inventory
+     * @return array<string, mixed>
+     */
+    private function errorResponse(array $inventory, string $message, ?string $sourceCode = null): array
+    {
+        return [
+            'status' => 'error',
+            'message' => $message,
+            'candidates' => [],
+            'items' => [],
+            'excluded_online_retail_count' => 0,
+            'source_used' => $sourceCode,
+            'source_inventory' => $inventory,
+            'existing_sources' => $inventory,
+            'snapshot_total' => B2BCariSnapshot::query()->count(),
+            'actions_enabled' => false,
+        ];
     }
 
     /**
@@ -845,6 +1237,10 @@ class B2BCariControlService
     private function nullableString(mixed $value): ?string
     {
         if ($value === null) {
+            return null;
+        }
+
+        if (is_array($value) || is_object($value)) {
             return null;
         }
 

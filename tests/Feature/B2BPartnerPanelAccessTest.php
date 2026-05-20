@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerCapability;
+use App\Models\B2B\B2BCariSnapshot;
+use App\Models\B2B\B2BCariSnapshotRun;
 use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\DataSource;
@@ -797,17 +799,15 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('partner.active_users_count', 1);
     }
 
-    public function test_cari_control_returns_query_contract_when_gateway_source_is_unavailable(): void
+    public function test_cari_control_returns_error_when_gateway_source_is_unavailable_and_no_snapshot(): void
     {
         $admin = $this->userWithRole('admin', true);
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control')
             ->assertOk()
-            ->assertJsonPath('status', 'query_contract_required')
+            ->assertJsonPath('status', 'error')
             ->assertJsonPath('actions_enabled', false)
-            ->assertJsonPath('query_contract.document_path', 'docs/b2b-mikro-cari-control-query-contract.md')
-            ->assertJsonPath('query_contract.mode', 'select_only_discovery')
             ->assertJsonCount(0, 'items');
     }
 
@@ -861,6 +861,26 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('candidates.2.suggested_capabilities.0', B2BPartner::TYPE_MANUFACTURER);
 
         Http::assertSentCount(4);
+        $this->assertSame(1, B2BCariSnapshotRun::query()->where('source_code', 'customers_list')->where('status', 'success')->count());
+        $this->assertSame(3, B2BCariSnapshot::query()->count());
+        $this->assertDatabaseHas('b2b_cari_snapshots', [
+            'base_mikro_cari_kodu' => '120.BAYI.001',
+            'candidate_status' => 'new',
+        ]);
+
+        Http::fake(function (): void {
+            throw new \RuntimeException('Gateway should not be called when snapshot is available.');
+        });
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?include_review_required=1')
+            ->assertOk()
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonPath('snapshot_total', 3)
+            ->assertJsonCount(3, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '120.BAYI.001');
+
+        Http::assertNothingSent();
     }
 
     public function test_cari_control_search_groups_child_cari_accounts_under_parent_candidate(): void

@@ -235,6 +235,7 @@ class B2BPartnerController extends Controller
             'status' => ['nullable', 'string', Rule::in(['new', 'existing', 'changed', 'review_required', 'candidate'])],
             'city' => ['nullable', 'string', 'max:128'],
             'include_review_required' => ['nullable', 'boolean'],
+            'refresh' => ['nullable', 'boolean'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:250'],
             'offset' => ['nullable', 'integer', 'min:0'],
         ]);
@@ -451,6 +452,7 @@ class B2BPartnerController extends Controller
             $partner->forceFill(['partner_type' => $this->primaryPartnerType($mergedCapabilities)])->save();
             $this->syncCapabilities($partner, $mergedCapabilities, $request, $userId, $oldCapabilities);
             $partner->refresh();
+            $this->cariControlService->markSnapshotLinkedToPartner($partner);
             $this->writeAuditLog($partner, $request, 'b2b.partner.capability_added', $oldValues, $this->auditPayload($partner), $userId);
             $defaultUser = $this->ensureDefaultDealerUser($partner, $mergedCapabilities, $candidate, $request, $userId);
 
@@ -474,6 +476,7 @@ class B2BPartnerController extends Controller
 
         $partner->save();
         $partner->refresh();
+        $this->cariControlService->markSnapshotLinkedToPartner($partner);
         $this->writeAuditLog($partner, $request, 'b2b.partner.updated_from_cari', $oldValues, $this->auditPayload($partner), $userId);
         $defaultUser = $action === 'import'
             ? $this->ensureDefaultDealerUser($partner, $partner->capabilityCodes(), $candidate, $request, $userId)
@@ -506,6 +509,7 @@ class B2BPartnerController extends Controller
             'metadata' => $metadata,
         ]);
         $this->syncCapabilities($partner, $capabilities, $request, $userId, []);
+        $this->cariControlService->markSnapshotLinkedToPartner($partner);
         $this->writeAuditLog($partner, $request, 'b2b.partner.imported_from_cari', null, $this->auditPayload($partner), $userId);
         $defaultUser = $this->ensureDefaultDealerUser($partner, $capabilities, $candidate, $request, $userId);
 
@@ -533,6 +537,7 @@ class B2BPartnerController extends Controller
             'email' => $this->nullableString($candidate['email'] ?? null) ?? $partner?->email,
             'city' => $this->nullableString($candidate['city'] ?? null) ?? $partner?->city,
             'district' => $this->nullableString($candidate['district'] ?? null) ?? $partner?->district,
+            'address' => $this->nullableString($candidate['address'] ?? null) ?? $partner?->address,
         ];
     }
 
@@ -1102,6 +1107,7 @@ class B2BPartnerController extends Controller
             'phone' => $this->nullableString($technician->phone) ?? $partner?->phone,
             'city' => $this->nullableString($technician->city) ?? $partner?->city,
             'district' => $this->nullableString($technician->district) ?? $partner?->district,
+            'address' => $this->nullableString($technician->address) ?? $this->nullableString($technician->cari_address) ?? $partner?->address,
         ];
     }
 
@@ -1326,6 +1332,7 @@ class B2BPartnerController extends Controller
             'email' => $this->nullableString($data['email'] ?? null),
             'city' => $this->nullableString($data['city'] ?? null),
             'district' => $this->nullableString($data['district'] ?? null),
+            'address' => $this->nullableString($data['address'] ?? null),
             'active' => array_key_exists('active', $data) ? (bool) $data['active'] : true,
             'technical_service_technician_id' => in_array(B2BPartner::TYPE_LOCKSMITH, $data['capabilities'], true)
                 ? ($data['technical_service_technician_id'] ?? null)
@@ -1509,6 +1516,7 @@ class B2BPartnerController extends Controller
                 'email',
                 'city',
                 'district',
+                'address',
                 'active',
                 'technical_service_technician_id',
             ]),
@@ -1594,7 +1602,7 @@ class B2BPartnerController extends Controller
             'linked_technician_phone' => $partner->technician?->phone,
             'linked_technician_city' => $partner->technician?->city,
             'linked_technician_mikro_cari_kodu' => $partner->technician?->mikro_cari_kodu ?? $partner->technician?->cari_code,
-            'address' => is_array($partner->metadata) ? ($partner->metadata['address'] ?? null) : null,
+            'address' => $partner->address ?? (is_array($partner->metadata) ? ($partner->metadata['address'] ?? null) : null),
             'tax_no' => is_array($partner->metadata) ? ($partner->metadata['tax_no'] ?? null) : null,
             'tax_office' => is_array($partner->metadata) ? ($partner->metadata['tax_office'] ?? null) : null,
             'source_field_missing' => is_array($partner->metadata) ? ($partner->metadata['source_field_missing'] ?? []) : [],

@@ -469,10 +469,10 @@ export default function B2BPartnersPage() {
         headers: { Accept: 'application/json' },
       })
       const payload = await response.json().catch(() => null)
-      const fallbackMessage = response.ok ? 'Cari kontrol sonucu alındı.' : 'Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.'
+      const fallbackMessage = response.ok ? 'Cari kontrol sonucu alındı.' : 'Cari adayları alınamadı. Gateway hatası varsa ekranda hata olarak gösterilir.'
       const nextControl = {
         ...payload,
-        status: payload?.status ?? (response.ok ? 'ok' : 'datasource_required'),
+        status: payload?.status ?? (response.ok ? 'ok' : 'error'),
         message: payload?.message ?? fallbackMessage,
       }
       const nextCandidates = nextControl.candidates ?? nextControl.items ?? []
@@ -483,8 +483,8 @@ export default function B2BPartnersPage() {
       setCariControl(nextControl)
     } catch {
       setCariControl({
-        status: 'datasource_required',
-        message: 'Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.',
+        status: 'error',
+        message: 'Cari adayları alınamadı. Gateway bağlantısı veya oturum durumunu kontrol edin.',
       })
     } finally {
       setCariChecking(false)
@@ -728,7 +728,7 @@ export default function B2BPartnersPage() {
               <div>
                 <h2 className="text-base font-semibold">Cari Kontrol</h2>
                 <p className="mt-1 max-w-4xl text-amber-800">
-                  Mikro cari sorgusu uydurulmaz. Onaylı SELECT-only n8n keşif çıktısı gelmeden otomatik partner açılmaz.
+                  Gateway üzerinden SELECT-only cari adayları çekilir, PostgreSQL snapshot üzerinden listelenir. Otomatik partner açılmaz.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -873,7 +873,7 @@ export default function B2BPartnersPage() {
 
               {cariCandidates.length === 0 && cariSearch.trim() === '' ? (
                 <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-slate-600">
-                  Aday verisi yok. n8n üzerinden SELECT-only keşif sonucu onaylanıp bu sözleşmeye uygun aday listesi gelmeden kayıt açılmaz.
+                  Aday verisi yok. Gateway hata verdiyse durum hata olarak görünür; kayıt açmak için önce listeden cari adayı gelmelidir.
                 </div>
               ) : cariCandidates.length > 0 ? (
                 <div className="mt-3 grid gap-2">

@@ -42,6 +42,7 @@ class B2BPartner extends Model
         'email',
         'city',
         'district',
+        'address',
         'active',
         'technical_service_technician_id',
         'metadata',
