@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\B2B\B2BPartnerController;
+use App\Http\Controllers\Api\B2B\B2BPartnerUserController;
 use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\PageConfigController;
@@ -52,15 +53,26 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         });
 
         Route::prefix('b2b')
-            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view')
+            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.partner_users.manage')
             ->group(function () {
                 Route::get('partners', [B2BPartnerController::class, 'index'])
                     ->name('api.b2b.partners.index');
                 Route::post('partners', [B2BPartnerController::class, 'store'])
                     ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage')
                     ->name('api.b2b.partners.store');
+                Route::get('users/search', [B2BPartnerUserController::class, 'searchUsers'])
+                    ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
+                    ->name('api.b2b.users.search');
                 Route::get('locksmith-technicians', [B2BPartnerController::class, 'locksmithTechnicians'])
                     ->name('api.b2b.locksmith-technicians.index');
+                Route::get('partners/{partner}/users', [B2BPartnerUserController::class, 'index'])
+                    ->name('api.b2b.partner-users.index');
+                Route::post('partners/{partner}/users', [B2BPartnerUserController::class, 'store'])
+                    ->name('api.b2b.partner-users.store');
+                Route::patch('partners/{partner}/users/{user}', [B2BPartnerUserController::class, 'update'])
+                    ->name('api.b2b.partner-users.update');
+                Route::delete('partners/{partner}/users/{user}', [B2BPartnerUserController::class, 'destroy'])
+                    ->name('api.b2b.partner-users.destroy');
                 Route::get('partners/{partner}', [B2BPartnerController::class, 'show'])
                     ->name('api.b2b.partners.show');
                 Route::patch('partners/{partner}/active', [B2BPartnerController::class, 'updateActive'])
@@ -201,6 +213,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view')->name('b2b.partners');
+
+    Route::get('panel/b2b/users', fn () => Inertia::render('panel/b2b/users', [
+        'page' => [
+            'title' => 'B2B Partner Kullanıcıları',
+            'slug' => 'b2b_partner_users',
+            'routePath' => '/panel/b2b/users',
+            'component' => 'panel/b2b/users',
+            'layoutType' => 'module',
+            'description' => 'Mevcut panel kullanıcılarını B2B partner kayıtlarına bağlama ve yetkilendirme',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:b2b.manage,b2b.partner_users.manage')->name('b2b.users');
 
     Route::get('technical-service/serial-query', fn () => Inertia::render('panel/technical-service-serial-query', [
         'page' => [

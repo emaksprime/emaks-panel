@@ -64,6 +64,34 @@ class B2BPartnerAccessService
         };
     }
 
+    public function canManagePartnerUsers(User $user, B2BPartner $partner): bool
+    {
+        if ($this->isSuperAdmin($user)) {
+            return true;
+        }
+
+        $hasPanelAccess = $this->panelAccess->userCanAccess($user, 'b2b.view')
+            || $this->panelAccess->userCanAccess($user, 'b2b.manage')
+            || $this->panelAccess->userCanAccess($user, 'b2b.partner_users.manage');
+
+        if (! $hasPanelAccess) {
+            return false;
+        }
+
+        return $this->canAccessScope($user, $partner, 'users', 'update')
+            || $this->canAccessScope($user, $partner, 'manage', 'update');
+    }
+
+    public function canSearchPanelUsers(User $user): bool
+    {
+        if ($this->isSuperAdmin($user)) {
+            return true;
+        }
+
+        return $this->panelAccess->userCanAccess($user, 'b2b.manage')
+            || $this->panelAccess->userCanAccess($user, 'b2b.partner_users.manage');
+    }
+
     public function visiblePartnerQuery(User $user, ?string $partnerType = null): Builder
     {
         $query = B2BPartner::query()->with('technician');

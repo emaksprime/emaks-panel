@@ -20,6 +20,7 @@ class B2BPartnerPermissionSeeder extends Seeder
         });
 
         $this->upsertPartnerDirectoryPage();
+        $this->upsertPartnerUsersPage();
     }
 
     /**
@@ -79,6 +80,47 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'label' => 'Partner Yönetimi',
                 'icon' => 'building-2',
                 'sort_order' => 84,
+                'is_visible' => true,
+            ],
+        );
+    }
+
+    private function upsertPartnerUsersPage(): void
+    {
+        $group = MenuGroup::query()->updateOrCreate(
+            ['code' => 'b2b'],
+            [
+                'name' => 'B2B',
+                'icon' => 'building-2',
+                'menu_order' => 84,
+                'active' => true,
+            ],
+        );
+
+        $page = Page::query()->updateOrCreate(
+            ['code' => 'b2b_partner_users'],
+            [
+                'resource_code' => 'b2b.partner_users.manage',
+                'name' => 'B2B Partner Kullanıcıları',
+                'route' => '/panel/b2b/users',
+                'component' => 'panel/b2b/users',
+                'layout_type' => 'module',
+                'icon' => 'users',
+                'description' => 'Partner kullanıcı atama ve yetki matrisi',
+                'page_order' => 85,
+                'active' => true,
+            ],
+        );
+
+        PageMenu::query()->updateOrCreate(
+            [
+                'menu_group_id' => $group->id,
+                'page_id' => $page->id,
+            ],
+            [
+                'label' => 'Partner Kullanıcıları',
+                'icon' => 'users',
+                'sort_order' => 85,
                 'is_visible' => true,
             ],
         );

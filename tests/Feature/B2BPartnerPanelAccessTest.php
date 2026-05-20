@@ -241,9 +241,13 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(count($codes), Resource::query()->whereIn('code', $codes)->count());
         $this->assertSame(1, Resource::query()->where('code', 'b2b.view')->count());
         $this->assertSame(1, Page::query()->where('code', 'b2b_partners')->count());
+        $this->assertSame(1, Page::query()->where('code', 'b2b_partner_users')->count());
         $this->assertSame(1, MenuGroup::query()->where('code', 'b2b')->count());
         $this->assertSame(1, PageMenu::query()
             ->where('page_id', Page::query()->where('code', 'b2b_partners')->value('id'))
+            ->count());
+        $this->assertSame(1, PageMenu::query()
+            ->where('page_id', Page::query()->where('code', 'b2b_partner_users')->value('id'))
             ->count());
     }
 
@@ -454,6 +458,239 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('items.0.partner_code', 'FILTER-DEALER');
     }
 
+    public function test_super_admin_assigns_existing_user_to_dealer_partner(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $targetUser = $this->userWithRole('dealer_staff');
+        $partner = $this->partner(['partner_type' => B2BPartner::TYPE_DEALER]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/users", [
+                'user_id' => $targetUser->id,
+                'title' => 'Bayi Yetkilisi',
+                'phone' => '+905551112233',
+                'active' => true,
+                'scopes' => $this->scopePayload('view', ['can_view' => true]),
+            ])
+            ->assertCreated()
+            ->assertJsonPath('items.0.user_id', $targetUser->id)
+            ->assertJsonPath('items.0.profile_title', 'Bayi Yetkilisi')
+            ->assertJsonPath('items.0.scopes.view.can_view', true);
+
+        $this->assertDatabaseHas('b2b_partner_user_profiles', [
+            'partner_id' => $partner->id,
+            'user_id' => $targetUser->id,
+            'title' => 'Bayi Yetkilisi',
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $targetUser->id,
+            'access_scope' => 'view',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'subject_id' => $targetUser->id,
+            'action' => 'b2b.partner_user.assigned',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'subject_id' => $targetUser->id,
+            'action' => 'b2b.partner_user.profile_updated',
+        ]);
+    }
+
+    public function test_partner_user_scope_update_writes_old_new_audit_and_updates_access_service(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $targetUser = $this->userWithRole('partner_staff');
+        $partner = $this->partner(['partner_type' => B2BPartner::TYPE_DEALER]);
+        $this->grantPartnerAccess($targetUser, $partner, 'view', ['can_view' => true]);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/b2b/partners/{$partner->id}/users/{$targetUser->id}", [
+                'title' => 'Operasyon',
+                'phone' => '+905550000001',
+                'active' => true,
+                'scopes' => [
+                    ...$this->scopePayload('view', ['can_view' => true]),
+                    ...$this->scopePayload('users', [
+                        'can_view' => true,
+                        'can_update' => true,
+                        'can_approve' => true,
+                    ]),
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.scopes.users.can_update', true)
+            ->assertJsonPath('items.0.scopes.users.can_approve', true);
+
+        $service = app(B2BPartnerAccessService::class);
+
+        $this->assertTrue($service->canViewPartner($targetUser, $partner));
+        $this->assertTrue($service->canAccessScope($targetUser, $partner, 'users', 'update'));
+        $this->assertTrue($service->canAccessScope($targetUser, $partner, 'users', 'approve'));
+
+        $auditLog = B2BPartnerAuditLog::query()
+            ->where('partner_id', $partner->id)
+            ->where('subject_id', $targetUser->id)
+            ->where('action', 'b2b.partner_user.access_updated')
+            ->latest('id')
+            ->firstOrFail();
+
+        $this->assertSame($targetUser->id, $auditLog->new_values['user_id']);
+        $this->assertArrayHasKey('view', $auditLog->old_values['scopes']);
+        $this->assertArrayHasKey('users', $auditLog->new_values['scopes']);
+    }
+
+    public function test_revoke_partner_user_disables_access_without_hard_delete(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $targetUser = $this->userWithRole('revoked_partner_user');
+        $partner = $this->partner();
+        $this->grantPartnerAccess($targetUser, $partner, 'view', ['can_view' => true]);
+        B2BPartnerUserProfile::query()->create([
+            'partner_id' => $partner->id,
+            'user_id' => $targetUser->id,
+            'active' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->deleteJson("/api/b2b/partners/{$partner->id}/users/{$targetUser->id}")
+            ->assertOk()
+            ->assertJsonPath('items.0.profile_active', false)
+            ->assertJsonPath('items.0.scopes.view.can_view', false);
+
+        $this->assertFalse(app(B2BPartnerAccessService::class)->canViewPartner($targetUser, $partner));
+        $this->assertDatabaseHas('b2b_partner_user_profiles', [
+            'partner_id' => $partner->id,
+            'user_id' => $targetUser->id,
+            'active' => false,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $targetUser->id,
+            'access_scope' => 'view',
+            'can_view' => false,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'subject_id' => $targetUser->id,
+            'action' => 'b2b.partner_user.revoked',
+        ]);
+    }
+
+    public function test_unscoped_user_cannot_view_partner_users_by_url_manipulation(): void
+    {
+        $user = $this->partnerUser();
+        $visiblePartner = $this->partner(['display_name' => 'Visible']);
+        $hiddenPartner = $this->partner(['display_name' => 'Hidden']);
+        $this->grantPartnerAccess($user, $visiblePartner, 'view');
+
+        $this->actingAs($user)
+            ->getJson("/api/b2b/partners/{$hiddenPartner->id}/users")
+            ->assertForbidden();
+    }
+
+    public function test_scoped_partner_manager_only_manages_own_partner_users(): void
+    {
+        $manager = $this->partnerUser();
+        $targetUser = $this->userWithRole('dealer_target_user');
+        $ownDealer = $this->partner(['partner_type' => B2BPartner::TYPE_DEALER]);
+        $otherDealer = $this->partner(['partner_type' => B2BPartner::TYPE_DEALER]);
+        $this->grantPartnerAccess($manager, $ownDealer, 'users', [
+            'can_view' => true,
+            'can_update' => true,
+        ]);
+
+        $this->actingAs($manager)
+            ->postJson("/api/b2b/partners/{$ownDealer->id}/users", [
+                'user_id' => $targetUser->id,
+                'active' => true,
+                'scopes' => $this->scopePayload('view', ['can_view' => true]),
+            ])
+            ->assertCreated();
+
+        $this->actingAs($manager)
+            ->postJson("/api/b2b/partners/{$otherDealer->id}/users", [
+                'user_id' => $targetUser->id,
+                'active' => true,
+                'scopes' => $this->scopePayload('view', ['can_view' => true]),
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_locksmith_scoped_manager_only_manages_own_locksmith_users(): void
+    {
+        $manager = $this->partnerUser();
+        $targetUser = $this->userWithRole('locksmith_target_user');
+        $ownLocksmith = $this->partner(['partner_type' => B2BPartner::TYPE_LOCKSMITH]);
+        $otherLocksmith = $this->partner(['partner_type' => B2BPartner::TYPE_LOCKSMITH]);
+        $this->grantPartnerAccess($manager, $ownLocksmith, 'users', [
+            'can_view' => true,
+            'can_update' => true,
+        ]);
+
+        $this->actingAs($manager)
+            ->postJson("/api/b2b/partners/{$ownLocksmith->id}/users", [
+                'user_id' => $targetUser->id,
+                'active' => true,
+                'scopes' => $this->scopePayload('technical_service', ['can_view' => true]),
+            ])
+            ->assertCreated();
+
+        $this->actingAs($manager)
+            ->postJson("/api/b2b/partners/{$otherLocksmith->id}/users", [
+                'user_id' => $targetUser->id,
+                'active' => true,
+                'scopes' => $this->scopePayload('technical_service', ['can_view' => true]),
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_global_partner_user_permission_without_entity_scope_cannot_manage_partner_users(): void
+    {
+        $manager = $this->userWithRole('global_partner_user_manager');
+        $targetUser = $this->userWithRole('unscoped_target_user');
+        $partner = $this->partner();
+        $this->grantPanelResource('global_partner_user_manager', 'b2b.partner_users.manage');
+
+        $this->actingAs($manager)
+            ->getJson("/api/b2b/partners/{$partner->id}/users")
+            ->assertForbidden();
+
+        $this->actingAs($manager)
+            ->postJson("/api/b2b/partners/{$partner->id}/users", [
+                'user_id' => $targetUser->id,
+                'active' => true,
+                'scopes' => $this->scopePayload('view', ['can_view' => true]),
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_user_search_requires_manage_permission_and_does_not_return_secrets(): void
+    {
+        $manager = $this->userWithRole('user_search_manager');
+        $this->grantPanelResource('user_search_manager', 'b2b.partner_users.manage');
+        $targetUser = $this->userWithRole('searchable_user');
+
+        $response = $this->actingAs($manager)
+            ->getJson('/api/b2b/users/search?search=searchable')
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.user_id', $targetUser->id);
+
+        $response->assertJsonMissingPath('items.0.password_hash');
+        $response->assertJsonMissingPath('items.0.password');
+        $response->assertJsonMissingPath('items.0.remember_token');
+        $response->assertJsonMissingPath('items.0.two_factor_secret');
+
+        $this->actingAs($this->partnerUser())
+            ->getJson('/api/b2b/users/search?search=searchable')
+            ->assertForbidden();
+    }
+
     private function partnerUser(): User
     {
         $user = $this->userWithRole('partner_user');
@@ -575,5 +812,21 @@ class B2BPartnerPanelAccessTest extends TestCase
             'active' => true,
             'technical_service_technician_id' => null,
         ], $overrides);
+    }
+
+    /**
+     * @param  array<string, bool>  $overrides
+     * @return array<int, array<string, mixed>>
+     */
+    private function scopePayload(string $scope, array $overrides = []): array
+    {
+        return [[
+            'access_scope' => $scope,
+            'can_view' => false,
+            'can_create' => false,
+            'can_update' => false,
+            'can_approve' => false,
+            ...$overrides,
+        ]];
     }
 }
