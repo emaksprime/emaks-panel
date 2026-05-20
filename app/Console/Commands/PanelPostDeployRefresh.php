@@ -51,8 +51,12 @@ class PanelPostDeployRefresh extends Command
 
     private function handleSourceRefresh(string $sourceCode): int
     {
-        $this->runStep("PanelKnownWorkflowDataSourcesSeeder source [{$sourceCode}]", function () use ($sourceCode): void {
-            $refreshed = app(PanelKnownWorkflowDataSourcesSeeder::class)->refreshSource($sourceCode);
+        $this->runStep("Panel datasource source [{$sourceCode}]", function () use ($sourceCode): void {
+            $refreshed = app(PanelDataSourcesSeeder::class)->refreshSource($sourceCode);
+
+            if (! $refreshed) {
+                $refreshed = app(PanelKnownWorkflowDataSourcesSeeder::class)->refreshSource($sourceCode);
+            }
 
             if (! $refreshed) {
                 throw new RuntimeException("Unsupported datasource source [{$sourceCode}].");

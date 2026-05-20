@@ -185,6 +185,80 @@ class SalesCariGroupPermissionsTest extends TestCase
         }
     }
 
+    public function test_sales_main_dashboard_scoped_post_deploy_refresh_rewrites_legacy_template_only(): void
+    {
+        $protectedSnapshots = $this->sourceSnapshots(['stock_dashboard', 'orders_alinan', 'orders_verilen']);
+
+        DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail()->forceFill([
+            'query_template' => "SELECT N'legacy-sales-main' AS value",
+            'allowed_params' => ['date_from', 'date_to'],
+        ])->save();
+
+        $this->artisan('panel:post-deploy-refresh', [
+            '--source' => 'sales_main_dashboard',
+        ])->assertExitCode(0);
+
+        $source = DataSource::query()->where('code', 'sales_main_dashboard')->firstOrFail();
+        $queryTemplate = (string) $source->query_template;
+
+        $this->assertContains('allowed_cari_group_codes', $source->allowed_params);
+        $this->assertContains('denied_cari_group_codes', $source->allowed_params);
+        $this->assertStringContainsString('allowed_cari_group_codes', $queryTemplate);
+        $this->assertStringContainsString('denied_cari_group_codes', $queryTemplate);
+        $this->assertStringContainsString('ch.cari_grup_kodu', $queryTemplate);
+        $this->assertStringContainsString('STRING_SPLIT', $queryTemplate);
+        $this->assertSourceSnapshotsSame($protectedSnapshots);
+    }
+
+    public function test_sales_known_workflow_sources_support_scoped_post_deploy_refresh_without_touching_stock_or_orders(): void
+    {
+        $protectedSnapshots = $this->sourceSnapshots(['stock_dashboard', 'orders_alinan', 'orders_verilen']);
+
+        foreach (['sales_online_perakende_detail', 'sales_bayi_proje_detail', 'sales_customer_search'] as $sourceCode) {
+            DataSource::query()->where('code', $sourceCode)->firstOrFail()->forceFill([
+                'query_template' => "SELECT N'legacy-{$sourceCode}' AS value",
+                'allowed_params' => ['date_from'],
+            ])->save();
+
+            $this->artisan('panel:post-deploy-refresh', [
+                '--source' => $sourceCode,
+            ])->assertExitCode(0);
+        }
+
+        foreach (['sales_online_perakende_detail', 'sales_bayi_proje_detail', 'sales_customer_search'] as $sourceCode) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+            $queryTemplate = (string) $source->query_template;
+
+            $this->assertContains('allowed_cari_group_codes', $source->allowed_params);
+            $this->assertContains('denied_cari_group_codes', $source->allowed_params);
+            $this->assertStringContainsString('allowed_cari_group_codes', $queryTemplate);
+            $this->assertStringContainsString('denied_cari_group_codes', $queryTemplate);
+            $this->assertStringContainsString('STRING_SPLIT', $queryTemplate);
+            $this->assertStringContainsString('cari_grup_kodu', $queryTemplate);
+        }
+
+        $this->assertSourceSnapshotsSame($protectedSnapshots);
+    }
+
+    public function test_stock_dashboard_scoped_post_deploy_refresh_is_unsupported_and_does_not_change_protected_sources(): void
+    {
+        $protectedSnapshots = $this->sourceSnapshots(['stock_dashboard', 'orders_alinan', 'orders_verilen']);
+
+        try {
+            $this->artisan('panel:post-deploy-refresh', [
+                '--source' => 'stock_dashboard',
+            ]);
+
+            $this->fail('Expected unsupported datasource source exception.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('Unsupported datasource source [stock_dashboard].', $exception->getMessage());
+        }
+
+        $this->assertFalse(app(PanelDataSourcesSeeder::class)->refreshSource('stock_dashboard'));
+        $this->assertFalse(app(PanelKnownWorkflowDataSourcesSeeder::class)->refreshSource('stock_dashboard'));
+        $this->assertSourceSnapshotsSame($protectedSnapshots);
+    }
+
     public function test_admin_users_ui_exposes_cari_group_permission_inputs(): void
     {
         $component = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
@@ -192,6 +266,39 @@ class SalesCariGroupPermissionsTest extends TestCase
         $this->assertStringContainsString('Cari Grup Kodu Yetkileri', $component);
         $this->assertStringContainsString('allowed_cari_groups', $component);
         $this->assertStringContainsString('denied_cari_groups', $component);
+    }
+
+    /**
+     * @param  list<string>  $sourceCodes
+     * @return array<string, array{query_template: string|null, allowed_params: array<int, string>|null}>
+     */
+    private function sourceSnapshots(array $sourceCodes): array
+    {
+        $snapshots = [];
+
+        foreach ($sourceCodes as $sourceCode) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+
+            $snapshots[$sourceCode] = [
+                'query_template' => $source->query_template,
+                'allowed_params' => $source->allowed_params,
+            ];
+        }
+
+        return $snapshots;
+    }
+
+    /**
+     * @param  array<string, array{query_template: string|null, allowed_params: array<int, string>|null}>  $snapshots
+     */
+    private function assertSourceSnapshotsSame(array $snapshots): void
+    {
+        foreach ($snapshots as $sourceCode => $snapshot) {
+            $source = DataSource::query()->where('code', $sourceCode)->firstOrFail();
+
+            $this->assertSame($snapshot['query_template'], $source->query_template, "{$sourceCode} query_template changed.");
+            $this->assertSame($snapshot['allowed_params'], $source->allowed_params, "{$sourceCode} allowed_params changed.");
+        }
     }
 
     private function grantCariGroupPermission(User $user, string $code, string $mode): void

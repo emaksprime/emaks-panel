@@ -9,14 +9,49 @@ class PanelDataSourcesSeeder extends Seeder
 {
     public function run(): void
     {
-        $connectionMeta = [
-            'driver' => 'n8n_json',
-            'method' => 'POST',
-            'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
-            'response_rows_key' => 'rows',
-            'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
-            'sql_policy' => 'unchanged',
-        ];
+        $connectionMeta = $this->connectionMeta();
+
+        $this->upsertSalesMainDashboard();
+
+        foreach ($this->metadataOnlySources() as $index => $source) {
+            DataSource::query()->updateOrCreate(
+                ['code' => $source['code']],
+                [
+                    'name' => $source['name'],
+                    'db_type' => 'n8n_json',
+                    'query_template' => '',
+                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
+                    'connection_meta' => [
+                        ...$connectionMeta,
+                        'query_status' => 'missing',
+                        'reference' => $source['reference'],
+                    ],
+                    'preview_payload' => [
+                        'mode' => 'query_missing',
+                        'message' => 'Gercek sorgu PrimeCRM referansindan dogrulanip Admin > Veri Kaynaklari ekranindan eklenecek.',
+                    ],
+                    'active' => true,
+                    'sort_order' => 30 + $index,
+                    'description' => $source['description'],
+                ],
+            );
+        }
+    }
+
+    public function refreshSource(string $sourceCode): bool
+    {
+        if ($sourceCode !== 'sales_main_dashboard') {
+            return false;
+        }
+
+        $this->upsertSalesMainDashboard();
+
+        return true;
+    }
+
+    private function upsertSalesMainDashboard(): void
+    {
+        $connectionMeta = $this->connectionMeta();
 
         DataSource::query()->updateOrCreate(
             ['code' => 'sales_main_dashboard'],
@@ -532,30 +567,21 @@ SQL_SALES_MAIN_DASHBOARD,
                 'description' => 'Ana satış yönetimi için eski çalışan Sales TEST sorgusu.',
             ],
         );
+    }
 
-        foreach ($this->metadataOnlySources() as $index => $source) {
-            DataSource::query()->updateOrCreate(
-                ['code' => $source['code']],
-                [
-                    'name' => $source['name'],
-                    'db_type' => 'n8n_json',
-                    'query_template' => '',
-                    'allowed_params' => ['date_from', 'date_to', 'grain', 'detail_type', 'scope_key', 'rep_code', 'search', 'page', 'bypass_cache'],
-                    'connection_meta' => [
-                        ...$connectionMeta,
-                        'query_status' => 'missing',
-                        'reference' => $source['reference'],
-                    ],
-                    'preview_payload' => [
-                        'mode' => 'query_missing',
-                        'message' => 'Gercek sorgu PrimeCRM referansindan dogrulanip Admin > Veri Kaynaklari ekranindan eklenecek.',
-                    ],
-                    'active' => true,
-                    'sort_order' => 30 + $index,
-                    'description' => $source['description'],
-                ],
-            );
-        }
+    /**
+     * @return array<string, mixed>
+     */
+    private function connectionMeta(): array
+    {
+        return [
+            'driver' => 'n8n_json',
+            'method' => 'POST',
+            'endpoint_url' => 'https://hook.emaksprime.com.tr/webhook/panel-data-source-run-v1',
+            'response_rows_key' => 'rows',
+            'source_workflow' => 'PANEL - MSSQL Gateway - DataSource Runner v1',
+            'sql_policy' => 'unchanged',
+        ];
     }
 
     /**
