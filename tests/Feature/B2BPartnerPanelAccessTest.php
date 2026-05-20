@@ -250,6 +250,33 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(1, PageMenu::query()
             ->where('page_id', Page::query()->where('code', 'b2b_partner_users')->value('id'))
             ->count());
+        $this->assertDatabaseHas('panel.roles', [
+            'code' => 'b2b_manager',
+            'name' => 'B2B Yönetici',
+        ]);
+        $this->assertDatabaseHas('panel.roles', [
+            'code' => 'b2b_dealer',
+            'name' => 'B2B Bayi',
+        ]);
+        $this->assertDatabaseHas('panel.roles', [
+            'code' => 'b2b_locksmith',
+            'name' => 'B2B Çilingir',
+        ]);
+        $this->assertDatabaseHas('panel.role_resource_permissions', [
+            'role_code' => 'b2b_manager',
+            'resource_code' => 'b2b.partner_users.manage',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('panel.role_resource_permissions', [
+            'role_code' => 'b2b_dealer',
+            'resource_code' => 'b2b.dealers.view',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('panel.role_resource_permissions', [
+            'role_code' => 'b2b_locksmith',
+            'resource_code' => 'b2b.technical_service.view',
+            'can_view' => true,
+        ]);
     }
 
     public function test_create_dealer_partner_works(): void
@@ -630,15 +657,29 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('partner.active_users_count', 1);
     }
 
-    public function test_cari_control_returns_datasource_required_without_red_zone_source(): void
+    public function test_cari_control_returns_query_contract_without_red_zone_source(): void
     {
         $admin = $this->userWithRole('admin', true);
 
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control')
-            ->assertStatus(503)
-            ->assertJsonPath('status', 'datasource_required')
-            ->assertJsonPath('actions_enabled', false);
+            ->assertOk()
+            ->assertJsonPath('status', 'query_contract_required')
+            ->assertJsonPath('actions_enabled', false)
+            ->assertJsonPath('query_contract.document_path', 'docs/b2b-mikro-cari-control-query-contract.md')
+            ->assertJsonPath('query_contract.mode', 'select_only_discovery')
+            ->assertJsonCount(0, 'items');
+    }
+
+    public function test_cari_control_query_contract_doc_contains_select_only_discovery_contract(): void
+    {
+        $contract = file_get_contents(base_path('docs/b2b-mikro-cari-control-query-contract.md')) ?: '';
+
+        $this->assertStringContainsString('SELECT TABLE_SCHEMA, TABLE_NAME', $contract);
+        $this->assertStringContainsString('INFORMATION_SCHEMA.TABLES', $contract);
+        $this->assertStringContainsString('INFORMATION_SCHEMA.COLUMNS', $contract);
+        $this->assertStringContainsString('Aday verisi gelmeden partner olusturma veya guncelleme yapilmaz.', $contract);
+        $this->assertStringContainsString('MSSQL tarafinda INSERT/UPDATE/DELETE/DROP/TRUNCATE yoktur.', $contract);
     }
 
     public function test_partner_directory_ui_uses_multi_role_cards_without_horizontal_scroll(): void
@@ -652,6 +693,20 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Kullanıcı:', $source);
         $this->assertStringNotContainsString('overflow-x-auto', $source);
         $this->assertStringNotContainsString('Bayi için kullanılmaz', $source);
+    }
+
+    public function test_cari_control_and_admin_role_preset_ui_contracts_exist(): void
+    {
+        $partnerSource = file_get_contents(resource_path('js/pages/panel/b2b/partners.tsx')) ?: '';
+        $adminSource = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
+
+        $this->assertStringContainsString('Sorgu sözleşmesi', $partnerSource);
+        $this->assertStringContainsString('Seçili adayları işle', $partnerSource);
+        $this->assertStringNotContainsString('const cariControlAvailable = false', $partnerSource);
+        $this->assertStringContainsString("'B2B'", $adminSource);
+        $this->assertStringContainsString('applyRoleDefaults', $adminSource);
+        $this->assertStringContainsString('Rol seçilince varsayılan izinler otomatik işaretlenir', $adminSource);
+        $this->assertStringContainsString('Partner Kullanıcıları ekranından yönetilir', $adminSource);
     }
 
     public function test_import_selected_cari_creates_partner_with_selected_capabilities(): void

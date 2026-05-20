@@ -7,6 +7,7 @@ use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerUserProfile;
+use App\Models\DataSource;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\B2B\B2BPartnerAccessService;
 use Illuminate\Database\Eloquent\Builder;
@@ -217,12 +218,36 @@ class B2BPartnerController extends Controller
             403,
         );
 
+        $search = trim((string) $request->query('search', ''));
+        $existingSources = $this->existingCariSources();
+
         return response()->json([
-            'status' => 'datasource_required',
-            'message' => 'Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.',
+            'status' => 'query_contract_required',
+            'message' => 'Mikro cari adayları için SELECT-only sorgu sözleşmesi hazır. Mevcut cari kaynakları n8n/data_source zincirine bağlı; onaylı aday verisi gelmeden otomatik partner açılmaz.',
+            'search' => $search,
             'items' => [],
+            'existing_sources' => $existingSources,
+            'query_contract' => [
+                'document_path' => 'docs/b2b-mikro-cari-control-query-contract.md',
+                'mode' => 'select_only_discovery',
+                'discovery_queries' => $this->cariDiscoveryQueries(),
+                'candidate_schema' => [
+                    'mikro_cari_kodu',
+                    'display_name',
+                    'mikro_cari_unvan',
+                    'cari_grup_kodu',
+                    'responsibility_code',
+                    'phone',
+                    'email',
+                    'city',
+                    'district',
+                    'suggested_capabilities',
+                    'status',
+                    'status_label',
+                ],
+            ],
             'actions_enabled' => false,
-        ], 503);
+        ]);
     }
 
     public function importCariControl(Request $request): JsonResponse
@@ -235,6 +260,7 @@ class B2BPartnerController extends Controller
             'items.*.cari_grup_kodu' => ['nullable', 'string', 'max:128'],
             'items.*.responsibility_code' => ['nullable', 'string', 'max:128'],
             'items.*.phone' => ['nullable', 'string', 'max:64'],
+            'items.*.email' => ['nullable', 'email', 'max:255'],
             'items.*.city' => ['nullable', 'string', 'max:128'],
             'items.*.district' => ['nullable', 'string', 'max:128'],
             'items.*.capabilities' => ['required', 'array', 'min:1'],
@@ -265,6 +291,7 @@ class B2BPartnerController extends Controller
                             'cari_grup_kodu' => $this->nullableString($item['cari_grup_kodu'] ?? null) ?? $partner->cari_grup_kodu,
                             'responsibility_code' => $this->nullableString($item['responsibility_code'] ?? null) ?? $partner->responsibility_code,
                             'phone' => $this->nullableString($item['phone'] ?? null) ?? $partner->phone,
+                            'email' => $this->nullableString($item['email'] ?? null) ?? $partner->email,
                             'city' => $this->nullableString($item['city'] ?? null) ?? $partner->city,
                             'district' => $this->nullableString($item['district'] ?? null) ?? $partner->district,
                         ])->save();
@@ -283,6 +310,7 @@ class B2BPartnerController extends Controller
                         'cari_grup_kodu' => $this->nullableString($item['cari_grup_kodu'] ?? null),
                         'responsibility_code' => $this->nullableString($item['responsibility_code'] ?? null),
                         'phone' => $this->nullableString($item['phone'] ?? null),
+                        'email' => $this->nullableString($item['email'] ?? null),
                         'city' => $this->nullableString($item['city'] ?? null),
                         'district' => $this->nullableString($item['district'] ?? null),
                         'active' => true,
@@ -564,6 +592,58 @@ class B2BPartnerController extends Controller
             ->where('mikro_cari_kodu', $mikroCariKodu)
             ->when($currentPartner, fn (Builder $query): Builder => $query->whereKeyNot($currentPartner->id))
             ->exists();
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function existingCariSources(): array
+    {
+        return DB::table((new DataSource)->getTable())
+            ->whereIn('code', [
+                'cari_bilgi_dashboard',
+                'cari_list',
+                'customers_list',
+                'customer_detail',
+                'sales_customer_search',
+                'proforma_customer_search',
+            ])
+            ->orderBy('code')
+            ->get(['code', 'name', 'db_type', 'active'])
+            ->map(fn (object $source): array => [
+                'code' => (string) $source->code,
+                'name' => (string) $source->name,
+                'db_type' => (string) $source->db_type,
+                'active' => (bool) $source->active,
+                'usable_for_b2b_cari_control' => false,
+                'reason' => 'Mevcut kaynak n8n/data_source zincirine bağlı; B2B cari kontrol için ayrı SELECT-only sözleşme onayı gerekir.',
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array<int, array<string, string>>
+     */
+    private function cariDiscoveryQueries(): array
+    {
+        return [
+            [
+                'key' => 'find_cari_tables',
+                'title' => 'Cari benzeri tabloları bul',
+                'sql' => "SELECT TABLE_SCHEMA, TABLE_NAME\nFROM INFORMATION_SCHEMA.TABLES\nWHERE TABLE_NAME LIKE '%CARI%'\nORDER BY TABLE_SCHEMA, TABLE_NAME;",
+            ],
+            [
+                'key' => 'find_cari_columns',
+                'title' => 'Cari kolonlarını bul',
+                'sql' => "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE\nFROM INFORMATION_SCHEMA.COLUMNS\nWHERE TABLE_NAME LIKE '%CARI%'\nORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION;",
+            ],
+            [
+                'key' => 'sample_cari_hesaplar',
+                'title' => 'CARI_HESAPLAR örnek satır',
+                'sql' => "SELECT TOP 20\n    cari_kod,\n    cari_unvan1,\n    cari_unvan2,\n    cari_grup_kodu,\n    cari_temsilci_kodu,\n    cari_srm_merkezi,\n    cari_CepTel,\n    cari_EMail,\n    cari_il,\n    cari_ilce\nFROM CARI_HESAPLAR\nORDER BY cari_kod;",
+            ],
+        ];
     }
 
     private function nullableString(mixed $value): ?string

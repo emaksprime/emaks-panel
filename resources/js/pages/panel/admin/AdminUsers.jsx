@@ -31,6 +31,7 @@ const groupOrder = [
     'Stok Yönetimi',
     'Sipariş Yönetimi',
     'Teknik Servis',
+    'B2B',
     'Müşteri Yönetimi',
     'Proforma',
     'Sistem Yönetimi',
@@ -135,6 +136,19 @@ export default function AdminUsers() {
     const selectedRoleIsSuperAdmin = Boolean(selectedRole?.is_super_admin ?? selectedRole?.isSuperAdmin);
     const activeResourceCodes = data.resources.map((resource) => resource.code);
     const roleAllowedResources = new Set(data.rolePermissions?.[form.role_code] ?? []);
+
+    const applyRoleDefaults = (roleCode) => {
+        const activeCodes = new Set(activeResourceCodes);
+        const defaults = (data.rolePermissions?.[roleCode] ?? []).filter((code) => activeCodes.has(code));
+
+        setForm((current) => ({
+            ...current,
+            role_code: roleCode,
+            access: defaults,
+            denied_access: [],
+            strict_access: false,
+        }));
+    };
 
     const save = async (event) => {
         event.preventDefault();
@@ -486,7 +500,7 @@ export default function AdminUsers() {
                             <select
                                 className="rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none transition focus:border-slate-400"
                                 value={form.role_code}
-                                onChange={(event) => setForm({ ...form, role_code: event.target.value })}
+                                onChange={(event) => applyRoleDefaults(event.target.value)}
                             >
                                 {data.roles.map((role) => (
                                     <option key={role.code} value={role.code}>
@@ -494,6 +508,9 @@ export default function AdminUsers() {
                                     </option>
                                 ))}
                             </select>
+                            <span className="text-xs font-medium text-slate-500">
+                                Rol seçilince varsayılan izinler otomatik işaretlenir. B2B partner bazlı entity yetkileri Partner Kullanıcıları ekranından yönetilir.
+                            </span>
                         </label>
 
                         <label className="grid gap-2 text-sm font-semibold text-slate-700">

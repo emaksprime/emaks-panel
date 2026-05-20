@@ -65,9 +65,50 @@ type Filters = {
   mikro_cari_kodu: string
 }
 
+type CariControlCandidate = {
+  mikro_cari_kodu: string
+  display_name?: string | null
+  mikro_cari_unvan?: string | null
+  cari_grup_kodu?: string | null
+  responsibility_code?: string | null
+  phone?: string | null
+  email?: string | null
+  city?: string | null
+  district?: string | null
+  suggested_capabilities?: PartnerType[]
+  capabilities?: PartnerType[]
+  status?: string | null
+  status_label?: string | null
+}
+
+type CariControlSource = {
+  code: string
+  name: string
+  db_type: string
+  active: boolean
+  usable_for_b2b_cari_control: boolean
+  reason: string
+}
+
+type CariControlQuery = {
+  key: string
+  title: string
+  sql: string
+}
+
 type CariControlState = {
   status: string
   message: string
+  search?: string
+  items?: CariControlCandidate[]
+  existing_sources?: CariControlSource[]
+  query_contract?: {
+    document_path: string
+    mode: string
+    discovery_queries?: CariControlQuery[]
+    candidate_schema?: string[]
+  }
+  actions_enabled?: boolean
 }
 
 const emptyForm: PartnerForm = {
@@ -131,6 +172,13 @@ const selectedTechnicianLabel = (technicians: TechnicianOption[], id: string) =>
 
 const primaryPartnerType = (capabilities: PartnerType[]): PartnerType => (capabilities.includes('dealer') ? 'dealer' : 'locksmith')
 
+const candidateCapabilities = (candidate: CariControlCandidate): PartnerType[] => {
+  const capabilities = (candidate.capabilities ?? candidate.suggested_capabilities ?? [])
+    .filter((capability): capability is PartnerType => capability === 'dealer' || capability === 'locksmith')
+
+  return capabilities.length > 0 ? capabilities : ['dealer']
+}
+
 export default function B2BPartnersPage() {
   const [partners, setPartners] = useState<Partner[]>([])
   const [filters, setFilters] = useState<Filters>(emptyFilters)
@@ -144,10 +192,10 @@ export default function B2BPartnersPage() {
   const [technicianLoading, setTechnicianLoading] = useState(false)
   const [cariChecking, setCariChecking] = useState(false)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
+  const [selectedCariCodes, setSelectedCariCodes] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
-  const cariControlAvailable = false
   const hasDealerForm = form.capabilities.includes('dealer')
   const hasLocksmithForm = form.capabilities.includes('locksmith')
   const activeFilterText = useMemo(() => {
@@ -288,16 +336,26 @@ export default function B2BPartnersPage() {
   const runCariControl = async () => {
     setCariChecking(true)
     setCariControl(null)
+    setSelectedCariCodes([])
     setError(null)
+    setMessage(null)
 
     try {
-      const response = await fetch('/api/b2b/cari-control', {
+      const search = (filters.mikro_cari_kodu || filters.search).trim()
+      const params = new URLSearchParams()
+
+      if (search !== '') {
+        params.set('search', search)
+      }
+
+      const response = await fetch(`/api/b2b/cari-control${params.toString() ? `?${params.toString()}` : ''}`, {
         credentials: 'same-origin',
         headers: { Accept: 'application/json' },
       })
       const payload = await response.json().catch(() => null)
       const fallbackMessage = response.ok ? 'Cari kontrol sonucu alındı.' : 'Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.'
       setCariControl({
+        ...payload,
         status: payload?.status ?? (response.ok ? 'ok' : 'datasource_required'),
         message: payload?.message ?? fallbackMessage,
       })
@@ -308,6 +366,47 @@ export default function B2BPartnersPage() {
       })
     } finally {
       setCariChecking(false)
+    }
+  }
+
+  const toggleCariCandidate = (mikroCariKodu: string) => {
+    setSelectedCariCodes((current) => (
+      current.includes(mikroCariKodu)
+        ? current.filter((code) => code !== mikroCariKodu)
+        : [...current, mikroCariKodu]
+    ))
+  }
+
+  const importSelectedCariCandidates = async () => {
+    const candidates = (cariControl?.items ?? []).filter((candidate) => selectedCariCodes.includes(candidate.mikro_cari_kodu))
+
+    if (candidates.length === 0) {
+      setError('Partner oluşturmak veya güncellemek için en az bir cari adayı seçin.')
+
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const payload = await apiRequest('/api/b2b/cari-control/import', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: candidates.map((candidate) => ({
+            ...candidate,
+            capabilities: candidateCapabilities(candidate),
+          })),
+        }),
+      })
+      setSelectedCariCodes([])
+      setMessage(`${payload.items?.length ?? candidates.length} cari adayı işlendi.`)
+      await loadPartners()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Cari adayları işlenemedi.')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -395,22 +494,103 @@ export default function B2BPartnersPage() {
             description="Bayi ve çilingir partner rolleri, manuel Mikro cari bağlantısı ve teknik servis usta eşleştirmesi."
           />
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" variant="outline" onClick={() => void runCariControl()} disabled={!cariControlAvailable || cariChecking}>
+            <Button type="button" variant="outline" onClick={() => void runCariControl()} disabled={cariChecking}>
               {cariChecking ? 'Kontrol ediliyor...' : 'Cari Kontrol'}
             </Button>
             <Button type="button" onClick={startCreate}>Yeni Partner</Button>
           </div>
         </div>
-        {!cariControlAvailable && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Cari kontrol için mevcut cari datasource bağlantısı gerekiyor. Yeni datasource red-zone review ister.
-          </div>
-        )}
-
         {(error || message || cariControl) && (
           <div className={`rounded-xl border px-4 py-3 text-sm ${error ? 'border-rose-200 bg-rose-50 text-rose-700' : cariControl ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
             {error ?? cariControl?.message ?? message}
           </div>
+        )}
+
+        {cariControl && (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-950 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-base font-semibold">Cari Kontrol</h2>
+                <p className="mt-1 max-w-4xl text-amber-800">
+                  Mikro cari sorgusu uydurulmaz. Onaylı SELECT-only n8n keşif çıktısı gelmeden otomatik partner açılmaz.
+                </p>
+              </div>
+              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-800">{cariControl.status}</span>
+            </div>
+
+            {cariControl.query_contract && (
+              <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.45fr)]">
+                <div className="rounded-xl border border-amber-200 bg-white p-3">
+                  <div className="text-sm font-semibold text-slate-900">Sorgu sözleşmesi</div>
+                  <p className="mt-1 text-slate-600">{cariControl.query_contract.document_path}</p>
+                  <p className="mt-2 text-xs font-medium text-slate-500">Mod: {cariControl.query_contract.mode}</p>
+                  <div className="mt-3 grid gap-2">
+                    {(cariControl.query_contract.discovery_queries ?? []).map((query) => (
+                      <details key={query.key} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                        <summary className="cursor-pointer text-sm font-semibold text-slate-700">{query.title}</summary>
+                        <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-xs text-slate-50">{query.sql}</pre>
+                      </details>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-amber-200 bg-white p-3">
+                  <div className="text-sm font-semibold text-slate-900">Mevcut kaynak envanteri</div>
+                  <div className="mt-3 grid gap-2">
+                    {(cariControl.existing_sources ?? []).length === 0 ? (
+                      <p className="text-slate-600">B2B için onaylı cari kaynağı bulunamadı.</p>
+                    ) : (
+                      (cariControl.existing_sources ?? []).map((source) => (
+                        <div key={source.code} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                          <div className="font-semibold text-slate-800">{source.code}</div>
+                          <div className="text-xs text-slate-500">{source.name} · {source.db_type} · {source.active ? 'aktif' : 'pasif'}</div>
+                          <div className="mt-1 text-xs text-amber-700">{source.reason}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 rounded-xl border border-amber-200 bg-white p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">Cari adayları</div>
+                  <p className="mt-1 text-slate-600">Aday gelirse kullanıcı seçer; partner açma/güncelleme/rol ekleme otomatik çalışmaz.</p>
+                </div>
+                <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates()} disabled={saving || !cariControl.actions_enabled || selectedCariCodes.length === 0}>
+                  Seçili adayları işle
+                </Button>
+              </div>
+
+              {(cariControl.items ?? []).length === 0 ? (
+                <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-slate-600">
+                  Aday verisi yok. n8n üzerinden SELECT-only keşif sonucu onaylanıp bu sözleşmeye uygun aday listesi gelmeden kayıt açılmaz.
+                </div>
+              ) : (
+                <div className="mt-3 grid gap-2">
+                  {(cariControl.items ?? []).map((candidate) => (
+                    <label key={candidate.mikro_cari_kodu} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={selectedCariCodes.includes(candidate.mikro_cari_kodu)}
+                        onChange={() => toggleCariCandidate(candidate.mikro_cari_kodu)}
+                        disabled={!cariControl.actions_enabled}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-semibold text-slate-900">{candidate.display_name ?? candidate.mikro_cari_unvan ?? candidate.mikro_cari_kodu}</span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                          {candidate.mikro_cari_kodu} · {candidate.city ?? '-'} / {candidate.district ?? '-'} · {candidate.status_label ?? candidate.status ?? 'Kontrol gerekli'}
+                        </span>
+                        <span className="mt-2 flex flex-wrap gap-1">{capabilityChips(candidateCapabilities(candidate))}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
         )}
 
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">

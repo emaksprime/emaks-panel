@@ -318,6 +318,7 @@ class AdminController extends Controller
     {
         return match (true) {
             $code === 'data_sources' => 'Veri Kaynakları',
+            str_starts_with($code, 'b2b') => 'B2B',
             str_starts_with($code, 'sales_') || $code === 'sales_main' => 'Satış Yönetimi',
             str_starts_with($code, 'stock') => 'Stok Yönetimi',
             str_starts_with($code, 'orders') => 'Sipariş Yönetimi',

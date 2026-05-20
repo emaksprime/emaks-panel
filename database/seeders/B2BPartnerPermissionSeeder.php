@@ -6,6 +6,8 @@ use App\Models\MenuGroup;
 use App\Models\Page;
 use App\Models\PageMenu;
 use App\Models\Resource;
+use App\Models\Role;
+use App\Models\RoleResourcePermission;
 use Illuminate\Database\Seeder;
 
 class B2BPartnerPermissionSeeder extends Seeder
@@ -21,6 +23,7 @@ class B2BPartnerPermissionSeeder extends Seeder
 
         $this->upsertPartnerDirectoryPage();
         $this->upsertPartnerUsersPage();
+        $this->upsertB2BRoles();
     }
 
     /**
@@ -124,5 +127,102 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'is_visible' => true,
             ],
         );
+    }
+
+    private function upsertB2BRoles(): void
+    {
+        foreach ($this->roles() as $role) {
+            Role::query()->updateOrCreate(
+                ['code' => $role['code']],
+                [
+                    'name' => $role['name'],
+                    'description' => $role['description'],
+                    'is_super_admin' => false,
+                ],
+            );
+        }
+
+        $availableResources = Resource::query()
+            ->whereIn('code', collect($this->roleDefaults())->flatten()->unique()->all())
+            ->pluck('code')
+            ->all();
+
+        foreach ($this->roleDefaults() as $roleCode => $resourceCodes) {
+            foreach (array_intersect($resourceCodes, $availableResources) as $resourceCode) {
+                RoleResourcePermission::query()->updateOrCreate(
+                    [
+                        'role_code' => $roleCode,
+                        'resource_code' => $resourceCode,
+                    ],
+                    [
+                        'can_view' => true,
+                        'can_execute' => false,
+                    ],
+                );
+            }
+        }
+    }
+
+    /**
+     * @return array<int, array{code: string, name: string, description: string}>
+     */
+    private function roles(): array
+    {
+        return [
+            [
+                'code' => 'b2b_manager',
+                'name' => 'B2B Yönetici',
+                'description' => 'B2B partner, cari bağlantısı ve partner kullanıcı yönetimi.',
+            ],
+            [
+                'code' => 'b2b_dealer',
+                'name' => 'B2B Bayi',
+                'description' => 'Bayi partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
+            ],
+            [
+                'code' => 'b2b_locksmith',
+                'name' => 'B2B Çilingir',
+                'description' => 'Çilingir/servis partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    private function roleDefaults(): array
+    {
+        return [
+            'b2b_manager' => [
+                'dashboard',
+                'b2b.view',
+                'b2b.manage',
+                'b2b.dealers.view',
+                'b2b.dealers.manage',
+                'b2b.locksmiths.view',
+                'b2b.locksmiths.manage',
+                'b2b.orders.view',
+                'b2b.orders.manage',
+                'b2b.stock.view',
+                'b2b.finance.view',
+                'b2b.technical_service.view',
+                'b2b.partner_users.manage',
+            ],
+            'b2b_dealer' => [
+                'dashboard',
+                'b2b.view',
+                'b2b.dealers.view',
+                'b2b.orders.view',
+                'b2b.stock.view',
+                'b2b.finance.view',
+            ],
+            'b2b_locksmith' => [
+                'dashboard',
+                'b2b.view',
+                'b2b.locksmiths.view',
+                'b2b.technical_service.view',
+                'b2b.finance.view',
+            ],
+        ];
     }
 }
