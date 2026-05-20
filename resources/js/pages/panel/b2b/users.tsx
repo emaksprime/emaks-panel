@@ -408,13 +408,13 @@ export default function B2BPartnerUsersPage() {
           </div>
         </section>
 
-        <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)_420px]">
-          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-4 py-3">
               <h2 className="text-base font-semibold text-slate-900">Partner seç</h2>
               <p className="text-sm text-slate-500">{partners.length} kayıt</p>
             </div>
-            <div className="max-h-[680px] overflow-y-auto p-3">
+            <div className="max-h-[680px] overflow-x-hidden overflow-y-auto p-3">
               {partners.length === 0 && <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">Partner bulunamadı.</div>}
               {partners.map((partner) => (
                 <button
@@ -441,16 +441,17 @@ export default function B2BPartnerUsersPage() {
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,430px)]">
+            <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Atanmış kullanıcılar</h2>
                 <p className="text-sm text-slate-500">{selectedPartner ? selectedPartner.display_name : 'Partner seçilmedi'}</p>
               </div>
-              <Input className="md:max-w-xs" value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="Kullanıcı ara" />
+              <Input className="w-full min-w-0 md:max-w-xs" value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="Kullanıcı ara" />
             </div>
 
-            <div className="p-4">
+              <div className="p-4">
               <div className="grid gap-3 text-sm">
                 {(usersLoading || filteredPartnerUsers.length === 0) && (
                   <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-slate-500">
@@ -458,11 +459,11 @@ export default function B2BPartnerUsersPage() {
                   </div>
                 )}
                 {filteredPartnerUsers.map((user) => (
-                  <article key={user.user_id} className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 hover:bg-slate-50 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-                    <div>
-                      <div className="font-semibold text-slate-900">{user.name}</div>
-                      <div className="text-xs text-slate-500">{user.email}</div>
-                      <div className="text-xs text-slate-400">{user.role_code ?? '-'}</div>
+                  <article key={user.user_id} className="min-w-0 grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 hover:bg-slate-50 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-slate-900">{user.name}</div>
+                      <div className="truncate text-xs text-slate-500">{user.email}</div>
+                      <div className="truncate text-xs text-slate-400">{user.role_code ?? '-'}</div>
                     </div>
                     <div>
                       <div className="font-medium text-slate-800">{user.profile_title ?? '-'}</div>
@@ -490,7 +491,7 @@ export default function B2BPartnerUsersPage() {
             </div>
           </section>
 
-          <aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <aside className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:sticky md:top-4">
             <div className="mb-4">
               <h3 className="text-base font-semibold text-slate-900">{editingUserId ? 'Yetki düzenle' : 'Kullanıcı ata'}</h3>
               <p className="mt-1 text-sm text-slate-500">Scope satırları partner bazlıdır. Frontend filtresi güvenlik değildir; backend her isteği entity scope ile kontrol eder.</p>
@@ -500,11 +501,11 @@ export default function B2BPartnerUsersPage() {
               {!editingUserId && (
                 <label className="grid gap-1 text-sm font-semibold text-slate-700">
                   Kullanıcı seç
-                  <div className="flex gap-2">
-                    <Input value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="Ad, e-posta veya rol" />
-                    <Button type="button" variant="outline" onClick={() => void searchPanelUsers()}>Ara</Button>
-                  </div>
-                  <select className="mt-2 h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={form.user_id} onChange={(event) => setForm((current) => ({ ...current, user_id: event.target.value }))}>
+                   <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                     <Input className="w-full min-w-0" value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="Ad, e-posta veya rol" />
+                     <Button type="button" variant="outline" onClick={() => void searchPanelUsers()}>Ara</Button>
+                   </div>
+                   <select className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={form.user_id} onChange={(event) => setForm((current) => ({ ...current, user_id: event.target.value }))}>
                     <option value="">Panel kullanıcısı seçin</option>
                     {userOptions.map((user) => (
                       <option key={user.user_id} value={user.user_id}>{userSummary(user)}</option>
@@ -535,7 +536,7 @@ export default function B2BPartnerUsersPage() {
                 Partner profili aktif
               </label>
 
-              <div className="rounded-xl border border-slate-200 p-3">
+                <div className="overflow-x-hidden rounded-xl border border-slate-200 p-3">
                 <div className="grid gap-3 text-sm">
                   {scopeRows.map((scope) => (
                     <div key={scope.key} className="grid gap-3 rounded-xl bg-slate-50 p-3">
@@ -543,16 +544,16 @@ export default function B2BPartnerUsersPage() {
                         <div className="font-semibold text-slate-800">{scope.label}</div>
                         <div className="text-xs text-slate-500">{scope.hint}</div>
                       </div>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {abilityColumns.map((ability) => (
-                          <label key={ability.key} className="inline-flex items-center gap-2 rounded-lg bg-white px-3 py-2">
+                       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                         {abilityColumns.map((ability) => (
+                           <label key={ability.key} className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-white px-3 py-2">
                             <input
                               type="checkbox"
                               checked={form.scopes[scope.key][ability.key]}
                               onChange={(event) => setScopeAbility(scope.key, ability.key, event.target.checked)}
                               aria-label={`${scope.label} ${ability.label}`}
                             />
-                            <span className="text-xs font-semibold text-slate-600">{ability.label}</span>
+                             <span className="truncate text-xs font-semibold text-slate-600">{ability.label}</span>
                           </label>
                         ))}
                       </div>
@@ -561,14 +562,17 @@ export default function B2BPartnerUsersPage() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap justify-end gap-2 pt-2">
-                {editingUserId && <Button type="button" variant="outline" onClick={resetForm}>Yeni atama</Button>}
-                <Button type="button" onClick={() => void submitUserAccess()} disabled={saving || !selectedPartnerId}>
-                  {saving ? 'Kaydediliyor...' : 'Kaydet'}
-                </Button>
-              </div>
+               <div className="sticky bottom-0 z-10 pt-2">
+                 <div className="flex flex-wrap justify-end gap-2">
+                   {editingUserId && <Button type="button" variant="outline" onClick={resetForm}>Yeni atama</Button>}
+                   <Button type="button" onClick={() => void submitUserAccess()} disabled={saving || !selectedPartnerId}>
+                     {saving ? 'Kaydediliyor...' : 'Kaydet'}
+                   </Button>
+                 </div>
+               </div>
             </div>
-          </aside>
+            </aside>
+          </div>
         </div>
       </div>
     </>
