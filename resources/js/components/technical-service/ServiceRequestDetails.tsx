@@ -116,8 +116,9 @@ type ServiceRequestDetailsProps = {
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
-  onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
+  onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
+  onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
 }
 
@@ -844,6 +845,7 @@ export function ServiceRequestDetails({
   onAssignSelectedTechnician,
   onPartnerAppointmentProposalApprove,
   onPartnerAppointmentProposalReject,
+  onPartnerCompletionApprove,
   onAssignmentOfferUpdate,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
@@ -908,6 +910,8 @@ export function ServiceRequestDetails({
   const [earningMessageText, setEarningMessageText] = useState('')
   const [earningMessageUrl, setEarningMessageUrl] = useState('')
   const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
+  const [appointmentSelectedSlotByAction, setAppointmentSelectedSlotByAction] = useState<Record<string, number>>({})
+  const [completionReviewNote, setCompletionReviewNote] = useState('')
   const [offerLaborInput, setOfferLaborInput] = useState('')
   const [offerRouteInput, setOfferRouteInput] = useState('')
   const [offerNoteInput, setOfferNoteInput] = useState('')
@@ -918,6 +922,8 @@ export function ServiceRequestDetails({
   const partnerPortalActions = request.partnerPortalActions ?? []
   const openAppointmentProposals = partnerPortalActions.filter((action) => action.action === 'appointment_proposed' && action.status === 'ops_review')
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
+  const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
+  const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
   const assignmentOffer = request.assignmentOffer ?? null
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
   const selectedTechnicianIdString = selectedTechnicianId ? String(selectedTechnicianId) : null
@@ -2044,26 +2050,60 @@ export function ServiceRequestDetails({
                 {assignError}
               </div>
             ) : null}
-            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || assignmentOffer) ? (
+            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0 || assignmentOffer) ? (
               <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
                 <div>
                   <p className="font-semibold">Çilingir Portal Aksiyonları</p>
                   <p className="mt-1 text-xs text-blue-800">Portal gönderimleri core iş akışını bypass etmez; operasyon onayı burada verilir.</p>
                 </div>
                 {openAppointmentProposals.map((action) => {
-                  const proposal = (action.payload?.proposal ?? {}) as Record<string, unknown>
-                  const proposalLabel = [proposal.proposed_date, proposal.slot_label].filter(Boolean).join(' · ')
+                  const slots = Array.isArray(action.payload?.slots)
+                    ? action.payload.slots as Array<Record<string, unknown>>
+                    : []
+                  const legacyProposal = (action.payload?.proposal ?? {}) as Record<string, unknown>
+                  const proposalRows = slots.length > 0
+                    ? slots
+                    : [legacyProposal].filter((slot) => Object.keys(slot).length > 0)
+                  const selectedSlotIndex = appointmentSelectedSlotByAction[String(action.id)] ?? 0
 
                   return (
                     <div key={String(action.id)} className="grid gap-2 rounded-xl border border-blue-100 bg-white p-3">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
                           <p className="font-semibold text-slate-950">Usta randevu önerisi</p>
-                          <p className="mt-1 text-xs text-slate-600">{proposalLabel || 'Öneri detayı yok'}</p>
+                          <p className="mt-1 text-xs text-slate-600">Operasyon bir saat aralığını seçip randevuyu onaylar.</p>
                           {action.note ? <p className="mt-1 text-xs text-slate-500">{action.note}</p> : null}
                         </div>
                         <Badge variant="warning">Operasyon onayı bekliyor</Badge>
                       </div>
+                      {proposalRows.length > 0 ? (
+                        <div className="grid gap-2">
+                          {proposalRows.map((slot, slotIndex) => {
+                            const date = String(slot.date ?? slot.proposed_date ?? '')
+                            const start = String(slot.start_time ?? '')
+                            const end = String(slot.end_time ?? '')
+                            const legacyLabel = String(slot.slot_label ?? '')
+                            const label = [date, start && end ? `${start} - ${end}` : legacyLabel].filter(Boolean).join(' · ')
+
+                            return (
+                              <label key={`${action.id}-${slotIndex}`} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+                                <input
+                                  type="radio"
+                                  name={`appointment-proposal-${action.id}`}
+                                  checked={selectedSlotIndex === slotIndex}
+                                  onChange={() => setAppointmentSelectedSlotByAction((current) => ({
+                                    ...current,
+                                    [String(action.id)]: slotIndex,
+                                  }))}
+                                />
+                                <span>{label || 'Randevu seçeneği'}</span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">Öneri detayı yok.</p>
+                      )}
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
                         Onay / revize notu
                         <Input value={appointmentReviewNote} onChange={(event) => setAppointmentReviewNote(event.target.value)} placeholder="Müşteri ve usta mesajına eklenecek operasyon notu" />
@@ -2072,7 +2112,7 @@ export function ServiceRequestDetails({
                         <Button type="button" variant="outline" onClick={() => void onPartnerAppointmentProposalReject?.(action.id, { note: appointmentReviewNote || 'Randevu önerisi revize istendi.', status: 'revision_requested' })}>
                           Revize iste
                         </Button>
-                        <Button type="button" onClick={() => void onPartnerAppointmentProposalApprove?.(action.id, { note: appointmentReviewNote || null })}>
+                        <Button type="button" onClick={() => void onPartnerAppointmentProposalApprove?.(action.id, { note: appointmentReviewNote || null, selected_slot_index: selectedSlotIndex })}>
                           Randevuyu onayla
                         </Button>
                       </div>
@@ -2083,6 +2123,37 @@ export function ServiceRequestDetails({
                   <div key={String(action.id)} className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-rose-900">
                     <p className="font-semibold">Usta işi reddetti</p>
                     <p className="mt-1 text-xs">{String(action.payload?.reason_label ?? action.note ?? 'Neden belirtilmedi')}</p>
+                  </div>
+                ))}
+                {supportRequests.slice(0, 3).map((action) => (
+                  <div key={String(action.id)} className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-amber-950">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-semibold">Yedek parça / ek talep</p>
+                        <p className="mt-1 text-xs">{String(action.payload?.description ?? action.note ?? 'Açıklama yok')}</p>
+                      </div>
+                      <Badge variant="warning">Operasyon incelemede</Badge>
+                    </div>
+                  </div>
+                ))}
+                {completionSubmissions.slice(0, 2).map((action) => (
+                  <div key={String(action.id)} className="grid gap-2 rounded-xl border border-violet-100 bg-violet-50 p-3 text-violet-950">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-semibold">Son kontrol bekliyor</p>
+                        <p className="mt-1 text-xs">{String(action.note ?? 'Usta tamamlama gönderdi; core workflow operasyon onayı bekliyor.')}</p>
+                      </div>
+                      <Badge variant="warning">Tamamlama onayı</Badge>
+                    </div>
+                    <label className="grid gap-1 text-xs font-semibold text-violet-900">
+                      Son kontrol notu
+                      <Input value={completionReviewNote} onChange={(event) => setCompletionReviewNote(event.target.value)} placeholder="Operasyon son kontrol notu" />
+                    </label>
+                    <div className="flex justify-end">
+                      <Button type="button" variant="outline" onClick={() => void onPartnerCompletionApprove?.(action.id, { note: completionReviewNote || null })}>
+                        Core workflow ile tamamla
+                      </Button>
+                    </div>
                   </div>
                 ))}
                 {assignmentOffer ? (

@@ -103,6 +103,9 @@ type ServiceJob = {
   portal_actions: Array<{ id?: number, action: string, status: string, note: string | null, payload?: Record<string, unknown>, created_at: string | null }>
   appointment_proposal: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   rejection: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  support_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  customer_otp_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  completion_submission: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   assignment_offer: {
     id: number
     labor_amount: number
@@ -120,7 +123,18 @@ type ServiceJob = {
     total_amount: number
     status: string | null
   }
-  kanban_column: 'new_jobs' | 'appointment_confirmed' | 'revisit' | 'completed'
+  completion_requirements: {
+    door_photos_required: number
+    door_photos_uploaded: number
+    photos_ready: boolean
+    customer_confirmation_ready: boolean
+    checklist_required: boolean
+    ops_final_check_required: boolean
+  }
+  badges: string[]
+  card_priority: number
+  card_tone: 'blue' | 'green' | 'amber' | 'slate' | 'violet' | 'rose'
+  kanban_column: 'new_jobs' | 'appointment_confirmed' | 'revisit' | 'final_check' | 'completed'
   can_accept: boolean
   can_request_revisit: boolean
   can_submit_completion: boolean
@@ -132,7 +146,7 @@ type ServiceJob = {
 type ServiceJobColumn = {
   key: ServiceJob['kanban_column']
   label: string
-  tone: 'blue' | 'green' | 'amber' | 'slate'
+  tone: 'blue' | 'green' | 'amber' | 'slate' | 'violet' | 'rose'
   count: number
   jobs: ServiceJob[]
 }
@@ -156,6 +170,19 @@ type EarningRow = {
     line_total: number
     status: string
   }>
+}
+
+type PendingEarningRow = {
+  id: number
+  mrn: string | null
+  scheduled_at: string | null
+  labor_amount: number
+  travel_fee_amount: number
+  line_total: number
+  status: string
+  offer_status: string | null
+  city: string | null
+  district: string | null
 }
 
 type PartnerPortalProps = {
@@ -192,6 +219,26 @@ type PartnerPortalProps = {
     earnings: {
       status: string
       rows: EarningRow[]
+      pending?: {
+        rows: PendingEarningRow[]
+        summary: {
+          job_count: number
+          labor_total: number
+          travel_fee_total: number
+          grand_total: number
+        }
+        note?: string
+      }
+      completed?: {
+        rows: EarningRow[]
+        summary: {
+          job_count: number
+          labor_total: number
+          travel_fee_total: number
+          grand_total: number
+        }
+        note?: string
+      }
       summary: {
         job_count: number
         labor_total: number
@@ -546,6 +593,7 @@ const serviceJobColumns: Array<Omit<ServiceJobColumn, 'count' | 'jobs'>> = [
   { key: 'new_jobs', label: 'Yeni işler', tone: 'blue' },
   { key: 'appointment_confirmed', label: 'Randevu onaylandı', tone: 'green' },
   { key: 'revisit', label: 'Tekrar ziyaret', tone: 'amber' },
+  { key: 'final_check', label: 'Son kontrol bekliyor', tone: 'violet' },
   { key: 'completed', label: 'Tamamlanan işler', tone: 'slate' },
 ]
 
@@ -553,7 +601,18 @@ const columnToneClass = (tone: ServiceJobColumn['tone']) => ({
   blue: 'border-blue-100 bg-blue-50 text-blue-800',
   green: 'border-emerald-100 bg-emerald-50 text-emerald-800',
   amber: 'border-amber-100 bg-amber-50 text-amber-800',
+  violet: 'border-violet-100 bg-violet-50 text-violet-800',
+  rose: 'border-rose-100 bg-rose-50 text-rose-800',
   slate: 'border-slate-200 bg-slate-50 text-slate-700',
+}[tone])
+
+const cardToneClass = (tone: ServiceJob['card_tone']) => ({
+  blue: 'border-blue-200 bg-blue-50/80',
+  green: 'border-emerald-200 bg-emerald-50/80',
+  amber: 'border-amber-200 bg-amber-50/80',
+  violet: 'border-violet-200 bg-violet-50/80',
+  rose: 'border-rose-200 bg-rose-50/80',
+  slate: 'border-slate-200 bg-white',
 }[tone])
 
 const actionLabel = (action: string) => ({
@@ -562,8 +621,26 @@ const actionLabel = (action: string) => ({
   job_rejected: 'İş reddedildi',
   revisit_requested: 'Tekrar ziyaret istendi',
   completion_submitted: 'Tamamlama gönderildi',
+  customer_otp_requested: 'Müşteri onayı istendi',
+  support_requested: 'Ek talep',
   note_added: 'Not eklendi',
 }[action] ?? action)
+
+const tomorrowDateValue = () => {
+  const date = new Date()
+  date.setDate(date.getDate() + 1)
+
+  return date.toISOString().slice(0, 10)
+}
+
+const appointmentSlotLabels = (payload: Record<string, unknown> | undefined) => {
+  const slots = Array.isArray(payload?.slots) ? payload.slots : []
+
+  return slots
+    .filter((slot): slot is Record<string, unknown> => typeof slot === 'object' && slot !== null)
+    .map((slot) => String(slot.label ?? [slot.date, `${slot.start_time ?? ''}-${slot.end_time ?? ''}`].filter(Boolean).join(' ')))
+    .filter(Boolean)
+}
 
 const requiredChecklist = [
   ['customer_contacted', 'Müşteri ile iletişim kuruldu'],
@@ -582,7 +659,9 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
   const [message, setMessage] = useState<string | null>(null)
   const selectedJob = selectedJobId === null ? null : jobs.find((job) => job.id === selectedJobId) ?? null
   const columns = serviceJobColumns.map((column) => {
-    const columnJobs = jobs.filter((job) => job.kanban_column === column.key)
+    const columnJobs = jobs
+      .filter((job) => job.kanban_column === column.key)
+      .sort((a, b) => (a.card_priority - b.card_priority) || String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? '')))
 
     return { ...column, count: columnJobs.length, jobs: columnJobs }
   })
@@ -616,7 +695,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                   key={job.id}
                   type="button"
                   onClick={() => openJob(job)}
-                  className={`w-full rounded-xl border bg-white p-3 text-left shadow-sm transition hover:border-slate-300 ${selectedJob?.id === job.id ? 'border-slate-900' : 'border-white'}`}
+                  className={`w-full rounded-xl border p-3 text-left shadow-sm transition hover:border-slate-300 ${cardToneClass(job.card_tone)} ${selectedJob?.id === job.id ? 'ring-2 ring-slate-900' : ''}`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <span className="font-semibold text-slate-950">{job.mrn}</span>
@@ -625,6 +704,13 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                   <p className="mt-2 text-sm font-medium text-slate-800">{job.customer_name ?? 'Müşteri'}</p>
                   <p className="mt-1 text-xs text-slate-500">{[job.city, job.district].filter(Boolean).join(' / ') || '-'}</p>
                   <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
+                  {job.badges.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {job.badges.map((badge) => (
+                        <span key={badge} className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-semibold text-slate-700">{badge}</span>
+                      ))}
+                    </div>
+                  )}
                 </button>
               ))}
             </div>
@@ -632,9 +718,9 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
         ))}
       </section>
       {selectedJob && detailOpen && (
-        <div className="fixed inset-0 z-50 overflow-hidden bg-slate-950/40">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/40 p-0 sm:p-4">
           <div className="absolute inset-0" onClick={() => setDetailOpen(false)} />
-          <div className="absolute inset-x-0 bottom-0 top-8 flex min-h-0 flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl md:inset-y-0 md:left-auto md:right-0 md:top-0 md:w-[760px] md:rounded-none">
+          <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-5xl flex-col overflow-hidden bg-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100vh-2rem)] sm:rounded-3xl">
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4">
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">İş detayı</p>
@@ -649,7 +735,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                 ×
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 pb-24 sm:pb-4">
               <ServiceJobDetail
                 job={selectedJob}
                 readOnly={readOnly}
@@ -677,10 +763,7 @@ function ServiceJobDetail({
 }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [acceptNote, setAcceptNote] = useState('')
-  const [proposalDate, setProposalDate] = useState('')
-  const [proposalSlot, setProposalSlot] = useState('morning')
-  const [proposalStart, setProposalStart] = useState('')
-  const [proposalEnd, setProposalEnd] = useState('')
+  const [appointmentSlots, setAppointmentSlots] = useState([{ date: tomorrowDateValue(), start_time: '10:00', end_time: '11:00' }])
   const [proposalNote, setProposalNote] = useState('')
   const [revisitReason, setRevisitReason] = useState('')
   const [rejectReason, setRejectReason] = useState('not_available')
@@ -688,7 +771,16 @@ function ServiceJobDetail({
   const [completionNote, setCompletionNote] = useState('')
   const [completionResult, setCompletionResult] = useState('completed')
   const [note, setNote] = useState('')
+  const [photoFiles, setPhotoFiles] = useState<Record<string, File | null>>({})
+  const [otpNote, setOtpNote] = useState('')
+  const [supportType, setSupportType] = useState('spare_part')
+  const [supportDescription, setSupportDescription] = useState('')
+  const [supportProduct, setSupportProduct] = useState('')
+  const [supportQuantity, setSupportQuantity] = useState('')
   const checklist = Object.fromEntries(requiredChecklist.map(([key]) => [key, true]))
+  const photosReady = job.completion_requirements.photos_ready
+  const confirmationReady = job.completion_requirements.customer_confirmation_ready
+  const completionBlocked = !photosReady || !confirmationReady || completionNote.trim().length < 3
 
   const submitAction = async (action: string, payload: Record<string, unknown>, successMessage: string) => {
     if (readOnly) {
@@ -718,6 +810,76 @@ function ServiceJobDetail({
     }
   }
 
+  const updateAppointmentSlot = (index: number, patch: Partial<{ date: string, start_time: string, end_time: string }>) => {
+    setAppointmentSlots((current) => current.map((slot, slotIndex) => (slotIndex === index ? { ...slot, ...patch } : slot)))
+  }
+
+  const addAppointmentSlot = () => {
+    setAppointmentSlots((current) => (
+      current.length >= 3 ? current : [...current, { date: tomorrowDateValue(), start_time: '10:00', end_time: '11:00' }]
+    ))
+  }
+
+  const removeAppointmentSlot = (index: number) => {
+    setAppointmentSlots((current) => current.length <= 1 ? current : current.filter((_, slotIndex) => slotIndex !== index))
+  }
+
+  const submitPhotoUpload = async () => {
+    if (readOnly) {
+      onMessage('Önizleme modunda işlem yapılamaz.')
+
+      return
+    }
+
+    const entries = Object.entries(photoFiles).filter(([, file]) => file instanceof File)
+
+    if (entries.length === 0) {
+      onMessage('Yüklenecek fotoğraf seçin.')
+
+      return
+    }
+
+    const formData = new FormData()
+    entries.forEach(([field, file]) => {
+      if (file) {
+        formData.append(field, file)
+      }
+    })
+
+    setActionLoading('photos')
+    onMessage(null)
+
+    try {
+      const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
+      const response = await fetch(`/api/partner/service-jobs/${job.id}/photos`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          ...(token ? { 'X-CSRF-TOKEN': token } : {}),
+        },
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error('Fotoğraf yüklenemedi.')
+      }
+
+      const payload = await response.json() as { job?: ServiceJob }
+
+      if (payload.job) {
+        onJobUpdated(payload.job)
+      }
+
+      setPhotoFiles({})
+      onMessage('Fotoğraflar yüklendi.')
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Fotoğraf yüklenemedi.')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
   return (
     <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[minmax(0,1fr)_360px]">
       <div className="min-w-0">
@@ -726,6 +888,13 @@ function ServiceJobDetail({
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">İş detayı</p>
             <h2 className="mt-1 text-2xl font-semibold text-slate-950">{job.mrn}</h2>
             <p className="mt-1 text-sm text-slate-500">{job.service_stage_label ?? job.status_label ?? '-'}</p>
+            {job.badges.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {job.badges.map((badge) => (
+                  <span key={badge} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{badge}</span>
+                ))}
+              </div>
+            )}
           </div>
           {job.latest_partner_action && (
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
@@ -766,7 +935,13 @@ function ServiceJobDetail({
             {job.appointment_proposal ? (
               <div className="mt-3 rounded-xl bg-white/80 p-3 text-xs text-blue-900">
                 <p className="font-semibold">Randevu önerisi: {job.appointment_proposal.status}</p>
-                <p className="mt-1">{String((job.appointment_proposal.payload?.proposal as Record<string, unknown> | undefined)?.slot_label ?? '-')}</p>
+                <div className="mt-1 grid gap-1">
+                  {appointmentSlotLabels(job.appointment_proposal.payload).length === 0 ? (
+                    <p>-</p>
+                  ) : appointmentSlotLabels(job.appointment_proposal.payload).map((slot) => (
+                    <p key={slot}>{slot}</p>
+                  ))}
+                </div>
               </div>
             ) : (
               <p className="mt-2 text-sm text-blue-800">Henüz portal randevu önerisi yok.</p>
@@ -800,8 +975,13 @@ function ServiceJobDetail({
           <div className="rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fotoğraf / belge</p>
             <p className="mt-2 text-sm text-slate-700">Önce: {job.photo_counts.before} · Sonra: {job.photo_counts.after} · Genel: {job.photo_counts.general}</p>
+            <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+              <p className="font-semibold">Tamamlama şartı</p>
+              <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} kapı fotoğrafı yüklendi.</p>
+              <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri OTP/onay bekliyor.'}</p>
+            </div>
             {job.photos.length === 0 ? (
-              <p className="mt-3 text-sm text-slate-500">Mevcut fotoğraf kaydı yok. Fotoğraf yükleme sonraki portal fazında güçlendirilecek.</p>
+              <p className="mt-3 text-sm text-slate-500">Mevcut fotoğraf kaydı yok.</p>
             ) : (
               <div className="mt-3 grid gap-2">
                 {job.photos.map((photo) => (
@@ -809,6 +989,32 @@ function ServiceJobDetail({
                 ))}
               </div>
             )}
+            <div className="mt-3 grid gap-2">
+              {[
+                ['door_front_photo', 'Kapı ön yüzü'],
+                ['door_side_photo', 'Kapı yan yüzü'],
+                ['door_back_photo', 'Kapı arka yüzü'],
+              ].map(([field, label]) => (
+                <label key={field} className="grid gap-1 text-xs font-semibold text-slate-600">
+                  {label}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={readOnly}
+                    onChange={(event) => setPhotoFiles({ ...photoFiles, [field]: event.target.files?.[0] ?? null })}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  />
+                </label>
+              ))}
+              <button
+                type="button"
+                disabled={readOnly || actionLoading === 'photos' || Object.values(photoFiles).every((file) => !file)}
+                onClick={() => void submitPhotoUpload()}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Fotoğrafları yükle
+              </button>
+            </div>
           </div>
         </div>
         {job.portal_actions.length > 0 && (
@@ -836,28 +1042,32 @@ function ServiceJobDetail({
             </button>
           </ActionBox>
           <ActionBox title="Randevu öner">
-            <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalDate} onChange={(event) => setProposalDate(event.target.value)} disabled={readOnly} />
-            <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalSlot} onChange={(event) => setProposalSlot(event.target.value)} disabled={readOnly}>
-              <option value="morning">Öğleden önce</option>
-              <option value="afternoon">Öğleden sonra</option>
-              <option value="full_day">Tam gün / operasyon belirlesin</option>
-              <option value="custom">Özel saat aralığı</option>
-            </select>
-            {proposalSlot === 'custom' && (
-              <div className="grid gap-2 sm:grid-cols-2">
-                <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalStart} onChange={(event) => setProposalStart(event.target.value)} disabled={readOnly} />
-                <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalEnd} onChange={(event) => setProposalEnd(event.target.value)} disabled={readOnly} />
-              </div>
-            )}
+            <div className="grid gap-2">
+              {appointmentSlots.map((slot, index) => (
+                <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-500">Öneri {index + 1}</span>
+                    {appointmentSlots.length > 1 && (
+                      <button type="button" onClick={() => removeAppointmentSlot(index)} className="text-xs font-semibold text-rose-700" disabled={readOnly}>Kaldır</button>
+                    )}
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px_120px]">
+                    <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.date} onChange={(event) => updateAppointmentSlot(index, { date: event.target.value })} disabled={readOnly} />
+                    <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.start_time} onChange={(event) => updateAppointmentSlot(index, { start_time: event.target.value })} disabled={readOnly} />
+                    <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.end_time} onChange={(event) => updateAppointmentSlot(index, { end_time: event.target.value })} disabled={readOnly} />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button type="button" disabled={readOnly || appointmentSlots.length >= 3} onClick={addAppointmentSlot} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
+              Randevu saati ekle
+            </button>
             <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalNote} onChange={(event) => setProposalNote(event.target.value)} placeholder="Operasyona randevu notu" disabled={readOnly} />
             <button
               type="button"
-              disabled={readOnly || !proposalDate || (proposalSlot === 'custom' && (!proposalStart || !proposalEnd)) || actionLoading === 'appointment-proposal'}
+              disabled={readOnly || appointmentSlots.some((slot) => !slot.date || !slot.start_time || !slot.end_time || slot.end_time <= slot.start_time) || actionLoading === 'appointment-proposal'}
               onClick={() => void submitAction('appointment-proposal', {
-                proposed_date: proposalDate,
-                proposed_slot: proposalSlot,
-                proposed_time_start: proposalSlot === 'custom' ? proposalStart : null,
-                proposed_time_end: proposalSlot === 'custom' ? proposalEnd : null,
+                slots: appointmentSlots,
                 note: proposalNote || null,
               }, 'Randevu önerisi operasyona gönderildi.')}
               className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
@@ -870,14 +1080,15 @@ function ServiceJobDetail({
               <option value="not_available">Uygun değilim</option>
               <option value="region_not_suitable">Bölge uygun değil</option>
               <option value="time_not_suitable">Zaman uygun değil</option>
+              <option value="customer_unreachable">Müşteriyle iletişim kurulamadı</option>
               <option value="customer_disagreement">Müşteriyle anlaşamadım</option>
               <option value="other">Diğer</option>
             </select>
-            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectNote} onChange={(event) => setRejectNote(event.target.value)} placeholder={rejectReason === 'other' ? 'Reddetme notu zorunlu' : 'İsteğe bağlı not'} disabled={readOnly || !job.can_reject} />
+            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectNote} onChange={(event) => setRejectNote(event.target.value)} placeholder="Açıklama zorunlu" disabled={readOnly || !job.can_reject} />
             <button
               type="button"
-              disabled={readOnly || !job.can_reject || (rejectReason === 'other' && rejectNote.trim().length < 3) || actionLoading === 'reject'}
-              onClick={() => void submitAction('reject', { reason: rejectReason, note: rejectNote || null }, 'İş reddi operasyona gönderildi.')}
+              disabled={readOnly || !job.can_reject || rejectNote.trim().length < 3 || actionLoading === 'reject'}
+              onClick={() => void submitAction('reject', { reason: rejectReason, note: rejectNote }, 'İş reddi operasyona gönderildi.')}
               className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               İşi reddet
@@ -889,6 +1100,37 @@ function ServiceJobDetail({
               Tekrar ziyaret iste
             </button>
           </ActionBox>
+          <ActionBox title="Müşteri OTP / onay">
+            <textarea className="min-h-16 w-full rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Onay notu" disabled={readOnly} />
+            <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'Müşteri OTP/onay payloadı oluşturuldu.')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
+              OTP/onay iste
+            </button>
+          </ActionBox>
+          <ActionBox title="Yedek parça / ek talep">
+            <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportType} onChange={(event) => setSupportType(event.target.value)} disabled={readOnly}>
+              <option value="spare_part">Yedek parça</option>
+              <option value="extra_product">Ek ürün</option>
+              <option value="missing_info">Eksik bilgi</option>
+              <option value="customer_call">Müşteri aransın</option>
+              <option value="other">Diğer</option>
+            </select>
+            <input className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportProduct} onChange={(event) => setSupportProduct(event.target.value)} placeholder="Ürün/parça adı" disabled={readOnly} />
+            <input type="number" min={1} className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportQuantity} onChange={(event) => setSupportQuantity(event.target.value)} placeholder="Adet" disabled={readOnly} />
+            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportDescription} onChange={(event) => setSupportDescription(event.target.value)} placeholder="Açıklama zorunlu" disabled={readOnly} />
+            <button
+              type="button"
+              disabled={readOnly || supportDescription.trim().length < 3 || actionLoading === 'support-request'}
+              onClick={() => void submitAction('support-request', {
+                type: supportType,
+                description: supportDescription,
+                product_name: supportProduct || null,
+                quantity: supportQuantity ? Number(supportQuantity) : null,
+              }, 'Ek talep operasyona gönderildi.')}
+              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Ek talep gönder
+            </button>
+          </ActionBox>
           <ActionBox title="Tamamlamaya gönder">
             <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionResult} onChange={(event) => setCompletionResult(event.target.value)} disabled={readOnly || !job.can_submit_completion}>
               <option value="completed">Tamamlandı</option>
@@ -897,9 +1139,13 @@ function ServiceJobDetail({
               <option value="missing_info_or_photo">Eksik bilgi/fotoğraf</option>
               <option value="parts_pending">Parça/ürün bekleniyor</option>
             </select>
+            <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+              <p>{photosReady ? '3 fotoğraf hazır.' : '3 fotoğraf yüklenmeden tamamlamaya gönderilemez.'}</p>
+              <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
+            </div>
             <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İşlem notu" disabled={readOnly || !job.can_submit_completion} />
-            <button type="button" disabled={readOnly || !job.can_submit_completion || completionNote.trim().length < 3 || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, checklist, note: completionNote }, job.can_complete_directly ? 'İş tamamlandı.' : 'Tamamlama gönderimi operasyon onayına düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-              {job.can_complete_directly ? 'Tamamla' : 'Tamamlamaya gönder'}
+            <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, checklist, note: completionNote }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+              Tamamlamaya gönder
             </button>
           </ActionBox>
           <ActionBox title="Operasyona not">
@@ -924,17 +1170,42 @@ function ActionBox({ title, children }: { title: string, children: ReactNode }) 
 }
 
 function EarningsView({ earnings }: { earnings: PartnerPortalProps['partnerPortal']['earnings'] }) {
+  const pending = earnings.pending ?? { rows: [], summary: { job_count: 0, labor_total: 0, travel_fee_total: 0, grand_total: 0 } }
+  const completed = earnings.completed ?? { rows: earnings.rows, summary: earnings.summary }
+
   return (
     <div className="grid gap-5">
       <section className="grid gap-3 md:grid-cols-4">
-        <StatCard title="Tamamlanan iş" value={earnings.summary.job_count} hint="Dönem toplamı" />
-        <StatCard title="İşçilik" value={money.format(earnings.summary.labor_total)} hint="Hesaplanan" />
-        <StatCard title="Yol" value={money.format(earnings.summary.travel_fee_total)} hint="Hesaplanan" />
-        <StatCard title="Toplam" value={money.format(earnings.summary.grand_total)} hint="Hakediş" />
+        <StatCard title="Bekleyen iş" value={pending.summary.job_count} hint="Tahmini hakediş" />
+        <StatCard title="Bekleyen toplam" value={money.format(pending.summary.grand_total)} hint="Actual hakediş değildir" />
+        <StatCard title="Tamamlanan iş" value={completed.summary.job_count} hint="Teknik Servis hakedişi" />
+        <StatCard title="Tamamlanan toplam" value={money.format(completed.summary.grand_total)} hint="Hesaplanan" />
+      </section>
+      <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-950 shadow-sm">
+        <h2 className="text-lg font-semibold">Bekleyen hakedişler</h2>
+        <p className="mt-1 text-sm">Bu bölüm atama tekliflerinden gelen tahmini hakediştir; operasyon tamamlamayı onaylamadan actual hakediş sayılmaz.</p>
+        <div className="mt-4 grid gap-2">
+          {pending.rows.length === 0 && <EmptyState title="Bekleyen hakediş yok" message="Planlı veya son kontrol bekleyen teklif bulunmadı." />}
+          {pending.rows.map((row) => (
+            <div key={row.id} className="rounded-xl bg-white px-3 py-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-slate-950">{row.mrn ?? '-'}</span>
+                <span className="font-semibold text-slate-950">{money.format(row.line_total)}</span>
+              </div>
+              <div className="mt-1 text-slate-500">{[row.scheduled_at, row.city, row.district].filter(Boolean).join(' · ') || '-'}</div>
+              <div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-3">
+                <span>İşçilik: {money.format(row.labor_amount)}</span>
+                <span>Yol: {money.format(row.travel_fee_amount)}</span>
+                <span>Durum: {row.status}</span>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
       <section className="grid gap-3">
-        {earnings.rows.length === 0 && <EmptyState title="Hakediş kaydı yok" message="Teknik Servis hakediş dönemi oluştuğunda burada görünecek." />}
-        {earnings.rows.map((row) => (
+        <h2 className="text-lg font-semibold text-slate-950">Tamamlanan hakedişler</h2>
+        {completed.rows.length === 0 && <EmptyState title="Tamamlanan hakediş kaydı yok" message="Teknik Servis hakediş dönemi oluştuğunda burada görünecek." />}
+        {completed.rows.map((row) => (
           <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -960,7 +1231,6 @@ function EarningsView({ earnings }: { earnings: PartnerPortalProps['partnerPorta
     </div>
   )
 }
-
 function SettingsView({ partner, settings, message }: { partner: PartnerSummary, settings: PartnerPortalProps['partnerPortal']['settings'], message: string }) {
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">

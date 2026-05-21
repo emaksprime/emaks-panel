@@ -1203,6 +1203,17 @@ class TechnicalServiceController extends Controller
             'note' => $note !== '' ? $note : null,
         ]);
 
+        TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('status', [
+                TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            ])
+            ->update([
+                'status' => TechnicalServiceAssignmentOffer::STATUS_CANCELLED,
+                'updated_at' => now(),
+            ]);
+
         $offer = TechnicalServiceAssignmentOffer::query()->create([
             'technical_service_request_id' => $request->id,
             'technical_service_technician_id' => $technician->id,

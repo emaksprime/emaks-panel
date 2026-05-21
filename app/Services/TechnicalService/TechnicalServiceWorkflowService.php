@@ -439,14 +439,21 @@ class TechnicalServiceWorkflowService
             ];
         }
 
-        $target = filled($request->technical_service_technician_id) || filled($request->technician_name)
-            ? 'Usta Onayı Bekleyen'
+        $hasTechnician = filled($request->technical_service_technician_id) || filled($request->technician_name);
+        $approveTechnician = (bool) Arr::get($payload, 'approve_technician', false);
+        $target = $hasTechnician
+            ? ($approveTechnician ? 'Planlı' : 'Usta Onayı Bekleyen')
             : 'Randevu Planlandı';
 
         $current = $this->currentWorkflowStatus($request);
         if ($current !== $target && ! in_array($current, self::TERMINAL_STATUSES, true)) {
             $this->assertTransitionAllowed($current, $target);
             $request->workflow_status = $target;
+        }
+
+        if ($target === 'Planlı') {
+            $request->technician_approval_status = 'onayladı';
+            $request->technician_approved_at = $this->castDateTime($payload['technician_approved_at'] ?? now());
         }
 
         $this->applyDerivedState($request, $payload);

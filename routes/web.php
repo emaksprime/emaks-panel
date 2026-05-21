@@ -162,6 +162,15 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('service-jobs/{technicalServiceRequest}/reject', [PartnerServiceJobController::class, 'reject'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.reject');
+                Route::post('service-jobs/{technicalServiceRequest}/photos', [PartnerServiceJobController::class, 'uploadPhotos'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.photos');
+                Route::post('service-jobs/{technicalServiceRequest}/customer-otp-request', [PartnerServiceJobController::class, 'customerOtpRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.customer-otp-request');
+                Route::post('service-jobs/{technicalServiceRequest}/support-request', [PartnerServiceJobController::class, 'supportRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.support-request');
                 Route::post('service-jobs/{technicalServiceRequest}/request-revisit', [PartnerServiceJobController::class, 'requestRevisit'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.request-revisit');
@@ -219,6 +228,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/partner-appointment-proposals/{partnerJobAction}/reject', [TechnicalServicePartnerPortalOpsController::class, 'rejectAppointmentProposal'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.partner-appointment-proposals.reject');
+            Route::post('requests/{technicalServiceRequest}/partner-completions/{partnerJobAction}/approve', [TechnicalServicePartnerPortalOpsController::class, 'approveCompletionSubmission'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-completions.approve');
             Route::patch('requests/{technicalServiceRequest}/assignment-offers/{assignmentOffer}', [TechnicalServicePartnerPortalOpsController::class, 'updateAssignmentOffer'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.assignment-offers.update');

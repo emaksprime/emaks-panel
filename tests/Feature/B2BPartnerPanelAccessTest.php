@@ -2880,8 +2880,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('columns.1.count', 1)
             ->assertJsonPath('columns.2.key', 'revisit')
             ->assertJsonPath('columns.2.count', 1)
-            ->assertJsonPath('columns.3.key', 'completed')
-            ->assertJsonPath('columns.3.count', 1)
+            ->assertJsonPath('columns.3.key', 'final_check')
+            ->assertJsonPath('columns.3.count', 0)
+            ->assertJsonPath('columns.4.key', 'completed')
+            ->assertJsonPath('columns.4.count', 1)
             ->assertJsonMissing(['mrn' => 'MRN-KANBAN-CONTRACTED']);
 
         $this->actingAs($portalUser)
@@ -2918,6 +2920,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $completionJob = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-COMPLETE', [
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
+            'before_photo_count' => 3,
+            'after_photo_count' => 3,
+            'general_photo_count' => 3,
+            'customer_closure_approval_status' => 'onaylandi',
         ]);
         $otherJob = $this->serviceRequestForTechnician($otherTechnician, 'MRN-ACTION-FORBIDDEN', [
             'workflow_status' => 'Planlı',
@@ -2958,6 +2964,21 @@ class B2BPartnerPanelAccessTest extends TestCase
             'action' => TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
         ]);
 
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$revisitJob->id}/support-request", [
+                'type' => 'spare_part',
+                'description' => 'Yedek kilit parcasi gerekiyor.',
+                'product_name' => 'Kilit parcasi',
+                'quantity' => 1,
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $revisitJob->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]);
+
         $checklist = [
             'customer_contacted' => true,
             'address_confirmed' => true,
@@ -2974,7 +2995,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
-            ->assertJsonPath('job.kanban_column', 'completed');
+            ->assertJsonPath('job.kanban_column', 'final_check');
         $this->assertDatabaseHas('technical_service_partner_job_actions', [
             'technical_service_request_id' => $completionJob->id,
             'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
@@ -3028,8 +3049,10 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
-                'proposed_date' => '2026-05-25',
-                'proposed_slot' => 'morning',
+                'slots' => [
+                    ['date' => '2026-05-25', 'start_time' => '10:00', 'end_time' => '11:00'],
+                    ['date' => '2026-05-25', 'start_time' => '15:00', 'end_time' => '16:00'],
+                ],
                 'note' => 'Sabah uygunum.',
             ])
             ->assertOk()
@@ -3225,14 +3248,27 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'Doğrudan tamamlanabilir şartlar sağlandı.',
             ])
             ->assertOk()
-            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
-            ->assertJsonPath('job.workflow_status', 'Tamamlandı');
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'final_check');
 
         $this->assertDatabaseHas('technical_service_partner_job_actions', [
             'technical_service_request_id' => $job->id,
             'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
-            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
         ]);
+
+        $action = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
+            ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-completions/{$action->id}/approve", [
+                'note' => 'Operasyon son kontrolü tamamladı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'applied')
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı');
     }
 
     public function test_partner_portal_users_stay_out_of_internal_panel_routes(): void

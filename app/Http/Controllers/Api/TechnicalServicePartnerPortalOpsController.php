@@ -30,18 +30,19 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         $validated = $request->validate([
             'scheduled_date' => ['nullable', 'date'],
             'scheduled_time' => ['nullable', 'date_format:H:i'],
+            'selected_slot_index' => ['nullable', 'integer', 'min:0', 'max:2'],
             'note' => ['nullable', 'string', 'max:2000'],
         ]);
 
         $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
             $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
-            $proposal = is_array($payload['proposal'] ?? null) ? $payload['proposal'] : $payload;
-            $scheduledDate = $validated['scheduled_date'] ?? ($proposal['proposed_date'] ?? null);
-            $scheduledTime = $validated['scheduled_time'] ?? $this->slotStartTime((string) ($proposal['proposed_slot'] ?? ''), $proposal);
+            $slot = $this->selectedAppointmentSlot($payload, (int) ($validated['selected_slot_index'] ?? 0));
+            $scheduledDate = $validated['scheduled_date'] ?? ($slot['date'] ?? null);
+            $scheduledTime = $validated['scheduled_time'] ?? ($slot['start_time'] ?? null);
 
             if (! is_string($scheduledDate) || $scheduledDate === '' || ! is_string($scheduledTime) || $scheduledTime === '') {
                 throw ValidationException::withMessages([
-                    'scheduled_date' => 'Onay için randevu tarihi ve saati gereklidir.',
+                    'scheduled_date' => 'Onay iÃ§in randevu tarihi ve saati gereklidir.',
                 ]);
             }
 
@@ -49,22 +50,25 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $job = $this->workflow->updateSchedule($technicalServiceRequest, [
                 'scheduled_date' => $scheduledDate,
                 'scheduled_time' => $scheduledTime,
+                'approve_technician' => true,
+                'technician_approved_at' => now(),
                 'note' => $validated['note'] ?? 'Partner portal randevu önerisi onaylandı.',
             ], $request->user());
 
-            if ($job->workflow_status !== 'Planlı') {
+            if (! in_array($job->workflow_status, ['Planlı', 'PlanlÄ±'], true)) {
                 $job = $this->workflow->transition($job, 'Planlı', [
                     'technician_approved_at' => now(),
                     'note' => $validated['note'] ?? 'Partner portal randevu önerisi operasyon tarafından onaylandı.',
                 ], $request->user(), 'partner_appointment_approved');
             }
 
-            $messages = $this->appointmentApprovalMessages($job->refresh(), $proposal);
+            $messages = $this->appointmentApprovalMessages($job->refresh(), $slot);
             $payload['approval'] = [
                 'approved_at' => now()->toISOString(),
                 'approved_by_user_id' => $request->user()?->id,
                 'scheduled_date' => $scheduledDate,
                 'scheduled_time' => $scheduledTime,
+                'selected_slot' => $slot,
                 'note' => $validated['note'] ?? null,
                 'messages' => $messages,
             ];
@@ -75,14 +79,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
             $job->events()->create([
                 'event_type' => 'partner_appointment_approved',
-                'title' => 'Partner portal randevu önerisi onaylandı',
+                'title' => 'Partner portal randevu Ã¶nerisi onaylandÄ±',
                 'note' => $validated['note'] ?? null,
                 'from_status' => $from,
                 'to_status' => $job->workflow_status,
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
                     'partner_job_action_id' => $partnerJobAction->id,
-                    'proposal' => $proposal,
+                    'proposal' => $slot,
                     'messages' => $messages,
                 ],
             ]);
@@ -131,8 +135,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ? 'partner_appointment_rejected'
                 : 'partner_appointment_revision_requested',
             'title' => $status === TechnicalServicePartnerJobAction::STATUS_REJECTED
-                ? 'Partner portal randevu önerisi reddedildi'
-                : 'Partner portal randevu önerisi revize istendi',
+                ? 'Partner portal randevu Ã¶nerisi reddedildi'
+                : 'Partner portal randevu Ã¶nerisi revize istendi',
             'note' => $validated['note'],
             'from_status' => $technicalServiceRequest->workflow_status,
             'to_status' => $technicalServiceRequest->workflow_status,
@@ -147,6 +151,60 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'status' => $status,
             'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
         ]);
+    }
+
+    public function approveCompletionSubmission(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePartnerJobAction $partnerJobAction,
+    ): JsonResponse {
+        abort_unless((int) $partnerJobAction->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        if ($partnerJobAction->action !== TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED) {
+            throw ValidationException::withMessages([
+                'partner_job_action' => 'Bu kayÃ„Â±t tamamlama gÃƒÂ¶nderimi deÃ„Å¸ildir.',
+            ]);
+        }
+
+        $validated = $request->validate([
+            'note' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
+            $from = $technicalServiceRequest->workflow_status;
+            $job = $this->workflow->updateFieldWorkflow($technicalServiceRequest, 'complete', [
+                'note' => $validated['note'] ?? 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.',
+            ], $request->user());
+            $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
+            $payload['ops_final_check'] = [
+                'approved_at' => now()->toISOString(),
+                'approved_by_user_id' => $request->user()?->id,
+                'note' => $validated['note'] ?? null,
+            ];
+            $partnerJobAction->forceFill([
+                'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                'payload' => $payload,
+            ])->save();
+
+            $job->events()->create([
+                'event_type' => 'partner_completion_approved',
+                'title' => 'Partner portal tamamlama gÃƒÂ¶nderimi onaylandÃ„Â±',
+                'note' => $validated['note'] ?? null,
+                'from_status' => $from,
+                'to_status' => $job->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'partner_job_action_id' => $partnerJobAction->id,
+                ],
+            ]);
+
+            return [
+                'status' => 'applied',
+                'request' => $this->workflow->serialize($job->refresh(), true),
+            ];
+        });
+
+        return response()->json($result);
     }
 
     public function updateAssignmentOffer(
@@ -190,7 +248,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         $technicalServiceRequest->events()->create([
             'event_type' => 'assignment_offer_revised',
-            'title' => 'Usta hakediş bilgisi revize edildi',
+            'title' => 'Usta hakediÅŸ bilgisi revize edildi',
             'note' => $validated['note'] ?? null,
             'from_status' => $technicalServiceRequest->workflow_status,
             'to_status' => $technicalServiceRequest->workflow_status,
@@ -215,24 +273,52 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         abort_unless((int) $action->technical_service_request_id === (int) $request->id, 404);
         if ($action->action !== TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED) {
             throw ValidationException::withMessages([
-                'partner_job_action' => 'Bu kayıt randevu önerisi değildir.',
+                'partner_job_action' => 'Bu kayÄ±t randevu Ã¶nerisi deÄŸildir.',
             ]);
         }
     }
 
     /**
-     * @param  array<string, mixed>  $proposal
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
      */
-    private function slotStartTime(string $slot, array $proposal): string
+    private function selectedAppointmentSlot(array $payload, int $index): array
     {
-        if ($slot === 'custom' && is_string($proposal['proposed_time_start'] ?? null)) {
-            return substr((string) $proposal['proposed_time_start'], 0, 5);
+        $slots = is_array($payload['slots'] ?? null) ? array_values($payload['slots']) : [];
+
+        if ($slots === [] && is_array($payload['proposal'] ?? null)) {
+            $proposal = $payload['proposal'];
+            $slots[] = [
+                'date' => $proposal['proposed_date'] ?? null,
+                'start_time' => $proposal['proposed_time_start'] ?? $this->legacySlotStartTime((string) ($proposal['proposed_slot'] ?? '')),
+                'end_time' => $proposal['proposed_time_end'] ?? $this->legacySlotEndTime((string) ($proposal['proposed_slot'] ?? '')),
+                'label' => $proposal['slot_label'] ?? null,
+            ];
         }
 
+        if (! isset($slots[$index]) || ! is_array($slots[$index])) {
+            throw ValidationException::withMessages([
+                'selected_slot_index' => 'Onaylanacak randevu saati bulunamadÃ„Â±.',
+            ]);
+        }
+
+        return $slots[$index];
+    }
+
+    private function legacySlotStartTime(string $slot): string
+    {
         return match ($slot) {
-            'morning' => '10:00',
             'afternoon' => '14:00',
             default => '10:00',
+        };
+    }
+
+    private function legacySlotEndTime(string $slot): string
+    {
+        return match ($slot) {
+            'morning' => '12:00',
+            'afternoon' => '16:00',
+            default => '18:00',
         };
     }
 
@@ -242,7 +328,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
      */
     private function appointmentApprovalMessages(TechnicalServiceRequest $request, array $proposal): array
     {
-        $slotText = $this->slotText((string) ($proposal['proposed_slot'] ?? ''), $proposal);
+        $slotText = $this->slotTextFromRange((string) ($proposal['start_time'] ?? ''), (string) ($proposal['end_time'] ?? ''));
+        $timeRange = trim((string) ($proposal['start_time'] ?? '').' - '.(string) ($proposal['end_time'] ?? ''));
         $assignmentOffer = $request->latestAssignmentOffer;
         $technician = $request->technicianRecord;
 
@@ -253,8 +340,9 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'mrn' => $request->mrn,
                 'product_model' => collect([$request->product_name, $request->product_model])->filter()->implode(' / '),
                 'appointment_date' => $request->scheduled_date?->toDateString(),
+                'appointment_time_range' => $timeRange !== '-' ? $timeRange : null,
                 'slot_text' => $slotText,
-                'message_text' => trim("{$request->mrn} numaralı servisiniz {$request->scheduled_date?->format('d.m.Y')} tarihinde {$slotText} için planlandı. Emaks Prime operasyon ekibi."),
+                'message_text' => trim("{$request->mrn} numaralÄ± servisiniz {$request->scheduled_date?->format('d.m.Y')} tarihinde {$slotText} iÃ§in planlandÄ±. Emaks Prime operasyon ekibi."),
             ],
             'technician' => [
                 'channel' => 'system_payload',
@@ -266,6 +354,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'address' => $request->location_formatted_address ?: $request->service_address,
                 'maps_link' => $this->mapsLink($request, $request->location_formatted_address ?: $request->service_address),
                 'appointment_date' => $request->scheduled_date?->toDateString(),
+                'appointment_time_range' => $timeRange !== '-' ? $timeRange : null,
                 'slot_text' => $slotText,
                 'technician_id' => $technician?->id,
                 'technician_name' => $technician?->name,
@@ -276,17 +365,30 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         ];
     }
 
+    private function slotTextFromRange(string $start, string $end): string
+    {
+        if ($start >= '06:00' && $end <= '12:00') {
+            return 'öğleden önce';
+        }
+
+        if ($start >= '12:00' && $end <= '18:00') {
+            return 'öğleden sonra';
+        }
+
+        return 'belirlenen saat aralığında';
+    }
+
     /**
      * @param  array<string, mixed>  $proposal
      */
     private function slotText(string $slot, array $proposal): string
     {
         return match ($slot) {
-            'morning' => 'öğleden önce',
-            'afternoon' => 'öğleden sonra',
-            'full_day' => 'gün içinde',
-            'custom' => trim(($proposal['proposed_time_start'] ?? '').' - '.($proposal['proposed_time_end'] ?? '')) ?: 'özel saat',
-            default => 'gün içinde',
+            'morning' => 'Ã¶ÄŸleden Ã¶nce',
+            'afternoon' => 'Ã¶ÄŸleden sonra',
+            'full_day' => 'gÃ¼n iÃ§inde',
+            'custom' => trim(($proposal['proposed_time_start'] ?? '').' - '.($proposal['proposed_time_end'] ?? '')) ?: 'Ã¶zel saat',
+            default => 'gÃ¼n iÃ§inde',
         };
     }
 

@@ -23,6 +23,10 @@ class TechnicalServicePartnerJobAction extends Model
 
     public const ACTION_JOB_REJECTED = 'job_rejected';
 
+    public const ACTION_CUSTOMER_OTP_REQUESTED = 'customer_otp_requested';
+
+    public const ACTION_SUPPORT_REQUESTED = 'support_requested';
+
     public const STATUS_SUBMITTED = 'submitted';
 
     public const STATUS_APPLIED = 'applied';

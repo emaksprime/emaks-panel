@@ -2773,7 +2773,7 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handlePartnerAppointmentProposalApprove = async (actionId: number | string, payload?: { note?: string | null }) => {
+  const handlePartnerAppointmentProposalApprove = async (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => {
     if (!selectedId) {
       return
     }
@@ -2819,6 +2819,31 @@ export function TechnicalServiceOperationCenter() {
         ))
         setSelectedDetailRequest(updatedRequest)
       })
+    }
+  }
+
+  const handlePartnerCompletionApprove = async (actionId: number | string, payload?: { note?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/partner-completions/${actionId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+    if (updatedRequest) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+      await loadRequests({ silent: true, preserveSelection: true })
     }
   }
 
@@ -4513,6 +4538,7 @@ export function TechnicalServiceOperationCenter() {
                     onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}
+                    onPartnerCompletionApprove={handlePartnerCompletionApprove}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
                     extraPaymentCreateLoading={extraPaymentCreateLoading}
                     extraPaymentCreateError={extraPaymentCreateError}
