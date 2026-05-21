@@ -9,13 +9,16 @@ type ValidationMessage = {
 };
 
 const safeNotes = [
+    'Aynı depo içi raf transferleri Mikro’ya yazılmaz.',
+    'Raf lokasyonu Panel/PostgreSQL tarafında tutulur.',
+    'Mikro resmi depo/stok miktarı için kaynak olmaya devam eder.',
     'Bu ekran bu aşamada Mikro’ya veri yazmaz.',
-    'Çıkış rafı HGRP 2, giriş rafı HGRP 3 mantığı gerçek işlem aşamasında uygulanacak.',
     'Silme işlemi yapılmayacak; ileride iptal/ters işlem mantığı kurulacak.',
 ];
 
 export default function WarehouseTerminalRackTransfer() {
-    const sourceRackInputRef = useRef<HTMLInputElement | null>(null);
+    const warehouseNoInputRef = useRef<HTMLInputElement | null>(null);
+    const [warehouseNo, setWarehouseNo] = useState('');
     const [sourceRack, setSourceRack] = useState('');
     const [itemCode, setItemCode] = useState('');
     const [targetRack, setTargetRack] = useState('');
@@ -23,29 +26,46 @@ export default function WarehouseTerminalRackTransfer() {
     const [message, setMessage] = useState<ValidationMessage | null>(null);
 
     useEffect(() => {
-        sourceRackInputRef.current?.focus();
+        warehouseNoInputRef.current?.focus();
     }, []);
 
     const handleClear = () => {
+        setWarehouseNo('');
         setSourceRack('');
         setItemCode('');
         setTargetRack('');
         setStatus('Bekliyor');
         setMessage(null);
-        sourceRackInputRef.current?.focus();
+        warehouseNoInputRef.current?.focus();
     };
 
     const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
 
+        const normalizedWarehouseNo = warehouseNo.trim();
         const normalizedSourceRack = sourceRack.trim();
         const normalizedItemCode = itemCode.trim();
         const normalizedTargetRack = targetRack.trim();
 
+        if (!normalizedWarehouseNo) {
+            setStatus('Uyarı');
+            setMessage({ type: 'error', text: 'Depo no zorunludur.' });
+            warehouseNoInputRef.current?.focus();
+
+            return;
+        }
+
+        if (!/^\d+$/.test(normalizedWarehouseNo)) {
+            setStatus('Uyarı');
+            setMessage({ type: 'error', text: 'Depo no sayısal olmalıdır.' });
+            warehouseNoInputRef.current?.focus();
+
+            return;
+        }
+
         if (!normalizedSourceRack) {
             setStatus('Uyarı');
             setMessage({ type: 'error', text: 'Kaynak raf okutulmalı veya yazılmalı.' });
-            sourceRackInputRef.current?.focus();
 
             return;
         }
@@ -95,7 +115,7 @@ export default function WarehouseTerminalRackTransfer() {
                                     Raf Transferi
                                 </h1>
                                 <p className="mt-2 text-sm leading-6 text-slate-600 md:text-base">
-                                    Kaynak raf, ürün/seri ve hedef raf okutularak transfer hazırlığı yapılır.
+                                    Kaynak raf, ürün/seri ve hedef raf okutularak aynı depo içi raf transfer hazırlığı yapılır.
                                 </p>
                             </div>
                             <Link
@@ -110,9 +130,21 @@ export default function WarehouseTerminalRackTransfer() {
 
                     <form onSubmit={handleSubmit} className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-6">
                         <label className="grid gap-2 text-sm font-bold text-slate-800">
+                            Depo No
+                            <input
+                                ref={warehouseNoInputRef}
+                                value={warehouseNo}
+                                onChange={(event) => setWarehouseNo(event.target.value)}
+                                placeholder="Depo no yazın"
+                                inputMode="numeric"
+                                autoComplete="off"
+                                className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                            />
+                        </label>
+
+                        <label className="grid gap-2 text-sm font-bold text-slate-800">
                             Kaynak Raf
                             <input
-                                ref={sourceRackInputRef}
                                 value={sourceRack}
                                 onChange={(event) => setSourceRack(event.target.value)}
                                 placeholder="Kaynak raf okutun veya yazın"
@@ -179,6 +211,10 @@ export default function WarehouseTerminalRackTransfer() {
                         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-5">
                             <h2 className="text-base font-bold text-slate-950">İşlem özeti</h2>
                             <dl className="mt-4 grid gap-3 text-sm">
+                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                    <dt className="font-semibold text-slate-500">Depo No</dt>
+                                    <dd className="mt-1 break-words text-lg font-bold text-slate-950">{warehouseNo.trim() || '-'}</dd>
+                                </div>
                                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                                     <dt className="font-semibold text-slate-500">Kaynak Raf</dt>
                                     <dd className="mt-1 break-words text-lg font-bold text-slate-950">{sourceRack.trim() || '-'}</dd>
