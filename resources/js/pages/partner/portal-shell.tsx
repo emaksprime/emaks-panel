@@ -93,17 +93,39 @@ type ServiceJob = {
   next_action: string | null
   route_distance_summary: string | null
   payment_status_summary: string | null
+  maps_link: string | null
+  customer_tel_link: string | null
   checklist_status: string | null
   checklist_payload: Record<string, boolean>
   photo_counts: { before: number, after: number, general: number }
   photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null }>
-  latest_partner_action: { action: string, status: string, note: string | null, created_at: string | null } | null
-  portal_actions: Array<{ action: string, status: string, note: string | null, created_at: string | null }>
+  latest_partner_action: { action: string, status: string, note: string | null, payload?: Record<string, unknown>, created_at: string | null } | null
+  portal_actions: Array<{ id?: number, action: string, status: string, note: string | null, payload?: Record<string, unknown>, created_at: string | null }>
+  appointment_proposal: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  rejection: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  assignment_offer: {
+    id: number
+    labor_amount: number
+    route_fee_amount: number
+    total_amount: number
+    currency: string
+    status: string
+    note: string | null
+    sent_at: string | null
+    message_payload?: Record<string, unknown> | null
+  } | null
+  earning_summary: {
+    labor_amount: number
+    route_fee_amount: number
+    total_amount: number
+    status: string | null
+  }
   kanban_column: 'new_jobs' | 'appointment_confirmed' | 'revisit' | 'completed'
   can_accept: boolean
   can_request_revisit: boolean
   can_submit_completion: boolean
   can_complete_directly: boolean
+  can_reject: boolean
   updated_at: string | null
 }
 
@@ -536,6 +558,8 @@ const columnToneClass = (tone: ServiceJobColumn['tone']) => ({
 
 const actionLabel = (action: string) => ({
   accepted: 'Randevu onaylandı',
+  appointment_proposed: 'Randevu önerildi',
+  job_rejected: 'İş reddedildi',
   revisit_requested: 'Tekrar ziyaret istendi',
   completion_submitted: 'Tamamlama gönderildi',
   note_added: 'Not eklendi',
@@ -553,9 +577,10 @@ const requiredChecklist = [
 function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
   const initialJobs = useMemo(() => board.columns.flatMap((column) => column.jobs), [board.columns])
   const [jobs, setJobs] = useState<ServiceJob[]>(initialJobs)
-  const [selectedJobId, setSelectedJobId] = useState<number | null>(initialJobs[0]?.id ?? null)
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null
+  const selectedJob = selectedJobId === null ? null : jobs.find((job) => job.id === selectedJobId) ?? null
   const columns = serviceJobColumns.map((column) => {
     const columnJobs = jobs.filter((job) => job.kanban_column === column.key)
 
@@ -565,6 +590,11 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
   const updateJob = (job: ServiceJob) => {
     setJobs((current) => current.map((item) => (item.id === job.id ? job : item)))
     setSelectedJobId(job.id)
+  }
+
+  const openJob = (job: ServiceJob) => {
+    setSelectedJobId(job.id)
+    setDetailOpen(true)
   }
 
   return (
@@ -585,7 +615,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                 <button
                   key={job.id}
                   type="button"
-                  onClick={() => setSelectedJobId(job.id)}
+                  onClick={() => openJob(job)}
                   className={`w-full rounded-xl border bg-white p-3 text-left shadow-sm transition hover:border-slate-300 ${selectedJob?.id === job.id ? 'border-slate-900' : 'border-white'}`}
                 >
                   <div className="flex items-start justify-between gap-2">
@@ -601,13 +631,34 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
           </div>
         ))}
       </section>
-      {selectedJob && (
-        <ServiceJobDetail
-          job={selectedJob}
-          readOnly={readOnly}
-          onJobUpdated={updateJob}
-          onMessage={setMessage}
-        />
+      {selectedJob && detailOpen && (
+        <div className="fixed inset-0 z-50 overflow-hidden bg-slate-950/40">
+          <div className="absolute inset-0" onClick={() => setDetailOpen(false)} />
+          <div className="absolute inset-x-0 bottom-0 top-8 flex min-h-0 flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl md:inset-y-0 md:left-auto md:right-0 md:top-0 md:w-[760px] md:rounded-none">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">İş detayı</p>
+                <h2 className="mt-1 text-xl font-semibold text-slate-950">{selectedJob.mrn}</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetailOpen(false)}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
+                aria-label="İş detayını kapat"
+              >
+                ×
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+              <ServiceJobDetail
+                job={selectedJob}
+                readOnly={readOnly}
+                onJobUpdated={updateJob}
+                onMessage={setMessage}
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -626,7 +677,14 @@ function ServiceJobDetail({
 }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [acceptNote, setAcceptNote] = useState('')
+  const [proposalDate, setProposalDate] = useState('')
+  const [proposalSlot, setProposalSlot] = useState('morning')
+  const [proposalStart, setProposalStart] = useState('')
+  const [proposalEnd, setProposalEnd] = useState('')
+  const [proposalNote, setProposalNote] = useState('')
   const [revisitReason, setRevisitReason] = useState('')
+  const [rejectReason, setRejectReason] = useState('not_available')
+  const [rejectNote, setRejectNote] = useState('')
   const [completionNote, setCompletionNote] = useState('')
   const [completionResult, setCompletionResult] = useState('completed')
   const [note, setNote] = useState('')
@@ -677,8 +735,9 @@ function ServiceJobDetail({
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <InfoTile label="Müşteri" value={job.customer_name ?? '-'} />
-          <InfoTile label="Telefon" value={job.customer_phone ?? '-'} />
+          <InfoTile label="Telefon" value={job.customer_tel_link ? <a className="font-semibold text-blue-700 hover:underline" href={job.customer_tel_link}>{job.customer_phone ?? 'Ara'}</a> : job.customer_phone ?? '-'} />
           <InfoTile label="Adres" value={job.address_summary ?? '-'} />
+          <InfoTile label="Harita" value={job.maps_link ? <a className="font-semibold text-blue-700 hover:underline" href={job.maps_link} target="_blank" rel="noreferrer">Google Maps aç</a> : '-'} />
           <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
           <InfoTile label="Ürün" value={[job.product_name, job.model].filter(Boolean).join(' / ') || '-'} />
           <InfoTile label="Seri" value={job.serial_no ?? '-'} />
@@ -686,6 +745,44 @@ function ServiceJobDetail({
           <InfoTile label="Sonraki aksiyon" value={job.next_action ?? '-'} />
           <InfoTile label="Yol" value={job.route_distance_summary ?? '-'} />
           <InfoTile label="Ödeme" value={job.payment_status_summary ?? '-'} />
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-950">
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Hakediş</p>
+            {job.assignment_offer ? (
+              <div className="mt-3 grid gap-2">
+                <div className="flex justify-between gap-3"><span>İşçilik / montaj</span><strong>{money.format(job.assignment_offer.labor_amount)}</strong></div>
+                <div className="flex justify-between gap-3"><span>Yol</span><strong>{money.format(job.assignment_offer.route_fee_amount)}</strong></div>
+                <div className="flex justify-between gap-3 border-t border-emerald-200 pt-2"><span>Toplam</span><strong>{money.format(job.assignment_offer.total_amount)}</strong></div>
+                <p className="text-xs text-emerald-700">Durum: {job.assignment_offer.status}</p>
+                {job.assignment_offer.note && <p className="text-xs text-emerald-800">{job.assignment_offer.note}</p>}
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-emerald-800">Bu iş için hakediş bilgisi henüz gönderilmedi.</p>
+            )}
+          </div>
+          <div className="rounded-2xl bg-blue-50 p-4 text-sm text-blue-950">
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Randevu / bildirim</p>
+            {job.appointment_proposal ? (
+              <div className="mt-3 rounded-xl bg-white/80 p-3 text-xs text-blue-900">
+                <p className="font-semibold">Randevu önerisi: {job.appointment_proposal.status}</p>
+                <p className="mt-1">{String((job.appointment_proposal.payload?.proposal as Record<string, unknown> | undefined)?.slot_label ?? '-')}</p>
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-blue-800">Henüz portal randevu önerisi yok.</p>
+            )}
+            {job.rejection && (
+              <div className="mt-3 rounded-xl bg-rose-50 p-3 text-xs font-semibold text-rose-800">
+                İş reddi operasyona iletildi: {String(job.rejection.payload?.reason_label ?? job.rejection.note ?? '-')}
+              </div>
+            )}
+            {job.assignment_offer?.message_payload ? (
+              <div className="mt-3 rounded-xl bg-white/80 p-3 text-xs text-blue-900">
+                <p className="font-semibold">Son hakediş mesaj payload'ı hazır.</p>
+                <p className="mt-1">Canlı mesaj gönderimi yapılmadı; operasyon onayıyla kullanılır.</p>
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <div className="rounded-2xl bg-slate-50 p-4">
@@ -736,6 +833,54 @@ function ServiceJobDetail({
             <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={acceptNote} onChange={(event) => setAcceptNote(event.target.value)} placeholder="İsteğe bağlı not" disabled={readOnly || !job.can_accept} />
             <button type="button" disabled={readOnly || !job.can_accept || actionLoading === 'accept'} onClick={() => void submitAction('accept', { note: acceptNote }, 'Randevu onayı gönderildi.')} className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
               {job.can_accept ? 'Randevu onayla' : 'Bu iş onay beklemiyor'}
+            </button>
+          </ActionBox>
+          <ActionBox title="Randevu öner">
+            <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalDate} onChange={(event) => setProposalDate(event.target.value)} disabled={readOnly} />
+            <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalSlot} onChange={(event) => setProposalSlot(event.target.value)} disabled={readOnly}>
+              <option value="morning">Öğleden önce</option>
+              <option value="afternoon">Öğleden sonra</option>
+              <option value="full_day">Tam gün / operasyon belirlesin</option>
+              <option value="custom">Özel saat aralığı</option>
+            </select>
+            {proposalSlot === 'custom' && (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalStart} onChange={(event) => setProposalStart(event.target.value)} disabled={readOnly} />
+                <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalEnd} onChange={(event) => setProposalEnd(event.target.value)} disabled={readOnly} />
+              </div>
+            )}
+            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalNote} onChange={(event) => setProposalNote(event.target.value)} placeholder="Operasyona randevu notu" disabled={readOnly} />
+            <button
+              type="button"
+              disabled={readOnly || !proposalDate || (proposalSlot === 'custom' && (!proposalStart || !proposalEnd)) || actionLoading === 'appointment-proposal'}
+              onClick={() => void submitAction('appointment-proposal', {
+                proposed_date: proposalDate,
+                proposed_slot: proposalSlot,
+                proposed_time_start: proposalSlot === 'custom' ? proposalStart : null,
+                proposed_time_end: proposalSlot === 'custom' ? proposalEnd : null,
+                note: proposalNote || null,
+              }, 'Randevu önerisi operasyona gönderildi.')}
+              className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Randevu öner
+            </button>
+          </ActionBox>
+          <ActionBox title="İşi reddet">
+            <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} disabled={readOnly || !job.can_reject}>
+              <option value="not_available">Uygun değilim</option>
+              <option value="region_not_suitable">Bölge uygun değil</option>
+              <option value="time_not_suitable">Zaman uygun değil</option>
+              <option value="customer_disagreement">Müşteriyle anlaşamadım</option>
+              <option value="other">Diğer</option>
+            </select>
+            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectNote} onChange={(event) => setRejectNote(event.target.value)} placeholder={rejectReason === 'other' ? 'Reddetme notu zorunlu' : 'İsteğe bağlı not'} disabled={readOnly || !job.can_reject} />
+            <button
+              type="button"
+              disabled={readOnly || !job.can_reject || (rejectReason === 'other' && rejectNote.trim().length < 3) || actionLoading === 'reject'}
+              onClick={() => void submitAction('reject', { reason: rejectReason, note: rejectNote || null }, 'İş reddi operasyona gönderildi.')}
+              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              İşi reddet
             </button>
           </ActionBox>
           <ActionBox title="Tekrar ziyaret iste">
@@ -887,7 +1032,7 @@ function ActionPanel({ title, message, actions, partnerId }: { title: string, me
   )
 }
 
-function InfoTile({ label, value }: { label: string, value: string | number | null }) {
+function InfoTile({ label, value }: { label: string, value: ReactNode }) {
   return (
     <div className="rounded-xl bg-slate-50 px-3 py-2">
       <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</dt>

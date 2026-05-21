@@ -12,6 +12,7 @@ use App\Http\Requests\UpdateTechnicalServiceRequestStatus;
 use App\Http\Requests\UpdateTechnicalServiceScheduleRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
 use App\Http\Requests\UpdateTechnicalServiceWorkflowRequest;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
@@ -850,6 +851,16 @@ class TechnicalServiceController extends Controller
             $technicalServiceRequest->save();
         }
 
+        if ($technician instanceof TechnicalServiceTechnician) {
+            $this->createAssignmentOfferFromAssignPayload(
+                $technicalServiceRequest->refresh(),
+                $technician,
+                $routeQuote,
+                is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [],
+                $request->user(),
+            );
+        }
+
         $requestPayload = $this->workflowService->serialize($technicalServiceRequest->refresh(), true);
 
         if ($routeQuote instanceof TechnicalServiceRouteQuote) {
@@ -1161,6 +1172,148 @@ class TechnicalServiceController extends Controller
             'travel_calculation_source' => 'manual',
             'travel_calculated_at' => now(),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $offerPayload
+     */
+    private function createAssignmentOfferFromAssignPayload(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+        ?TechnicalServiceRouteQuote $routeQuote,
+        array $offerPayload,
+        mixed $user,
+    ): TechnicalServiceAssignmentOffer {
+        $laborAmount = $this->nullableMoney($offerPayload['labor_amount'] ?? null)
+            ?? $this->nullableMoney($request->technician_payment_amount)
+            ?? 0.0;
+        $routeFeeAmount = $this->nullableMoney($offerPayload['route_fee_amount'] ?? null)
+            ?? $this->nullableMoney($routeQuote?->fee_amount)
+            ?? $this->nullableMoney($request->travel_fee_amount)
+            ?? 0.0;
+        $totalAmount = $this->nullableMoney($offerPayload['total_amount'] ?? null)
+            ?? round($laborAmount + $routeFeeAmount, 2);
+        $note = trim((string) ($offerPayload['note'] ?? ''));
+        $currency = strtoupper(substr((string) ($offerPayload['currency'] ?? 'TRY'), 0, 8)) ?: 'TRY';
+        $messagePayload = $this->technicianAssignmentMessagePayload($request, $technician, [
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => $totalAmount,
+            'currency' => $currency,
+            'note' => $note !== '' ? $note : null,
+        ]);
+
+        $offer = TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'route_quote_id' => $routeQuote?->id,
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => $totalAmount,
+            'currency' => $currency,
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'note' => $note !== '' ? $note : null,
+            'sent_by' => $user?->id,
+            'sent_at' => now(),
+            'metadata' => [
+                'source' => 'technical_service_assignment',
+                'message_payload' => $messagePayload,
+                'route_quote_id' => $routeQuote?->id,
+            ],
+        ]);
+
+        $request->events()->create([
+            'event_type' => 'assignment_offer_sent',
+            'title' => 'Ustaya hakediş bilgisi gönderildi',
+            'note' => $note !== '' ? $note : null,
+            'from_status' => $request->workflow_status,
+            'to_status' => $request->workflow_status,
+            'author_user_id' => $user?->id,
+            'metadata' => [
+                'assignment_offer_id' => $offer->id,
+                'technician_id' => $technician->id,
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => $totalAmount,
+                'currency' => $currency,
+                'message_payload' => $messagePayload,
+            ],
+        ]);
+
+        return $offer;
+    }
+
+    /**
+     * @param  array<string, mixed>  $amounts
+     * @return array<string, mixed>
+     */
+    private function technicianAssignmentMessagePayload(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician, array $amounts): array
+    {
+        $phone = $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone);
+        $address = $request->location_formatted_address ?: $request->service_address;
+
+        return [
+            'channel' => 'system_payload',
+            'recipient' => 'technician',
+            'technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'technician_phone' => $phone,
+            'technician_tel_link' => $this->telLink($phone),
+            'mrn' => $request->mrn,
+            'customer_name' => $request->customer_name,
+            'customer_phone' => $request->customer_phone,
+            'customer_tel_link' => $this->telLink($request->customer_phone),
+            'address' => $address,
+            'maps_link' => $this->mapsLink($request, $address),
+            'appointment_date' => $request->scheduled_date?->toDateString(),
+            'appointment_time' => $request->scheduled_time,
+            'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
+            'route_fee_amount' => round((float) ($amounts['route_fee_amount'] ?? 0), 2),
+            'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
+            'currency' => $amounts['currency'] ?? 'TRY',
+            'note' => $amounts['note'] ?? null,
+        ];
+    }
+
+    private function nullableMoney(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return round(max((float) $value, 0), 2);
+    }
+
+    private function telLink(?string $phone): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $phone);
+        if ($digits === '') {
+            return null;
+        }
+
+        if (str_starts_with($digits, '0')) {
+            $digits = '90'.substr($digits, 1);
+        }
+
+        return 'tel:+'.$digits;
+    }
+
+    private function mapsLink(TechnicalServiceRequest $request, ?string $address): ?string
+    {
+        if ($request->location_latitude !== null && $request->location_longitude !== null) {
+            return 'https://www.google.com/maps/search/?api=1&query='
+                .rawurlencode((string) $request->location_latitude.','.(string) $request->location_longitude);
+        }
+
+        $query = trim((string) $address);
+
+        return $query !== ''
+            ? 'https://www.google.com/maps/search/?api=1&query='.rawurlencode($query)
+            : null;
     }
 
     /**

@@ -273,8 +273,15 @@ class B2BPartnerPortalDataService
         $request->loadMissing([
             'partnerJobActions' => fn ($query) => $query->latest(),
             'uploads',
+            'latestAssignmentOffer.technician',
+            'technicianRecord',
         ]);
         $latestAction = $request->partnerJobActions->first();
+        $latestAppointmentProposal = $request->partnerJobActions
+            ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED);
+        $latestRejection = $request->partnerJobActions
+            ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED);
+        $assignmentOffer = $request->latestAssignmentOffer;
 
         return [
             'id' => $request->id,
@@ -300,6 +307,8 @@ class B2BPartnerPortalDataService
             'next_action' => $request->next_action,
             'route_distance_summary' => $request->travel_round_trip_km !== null ? ((float) $request->travel_round_trip_km).' km' : null,
             'payment_status_summary' => $request->mount_payment_label ?? $request->mount_payment_status,
+            'maps_link' => $this->mapsLink($request),
+            'customer_tel_link' => $this->telLink($request->customer_phone),
             'checklist_status' => $request->checklist_status,
             'checklist_payload' => is_array($request->checklist_payload) ? $request->checklist_payload : [],
             'photo_counts' => [
@@ -320,23 +329,60 @@ class B2BPartnerPortalDataService
                 'action' => $latestAction->action,
                 'status' => $latestAction->status,
                 'note' => $latestAction->note,
+                'payload' => is_array($latestAction->payload) ? $latestAction->payload : [],
                 'created_at' => $latestAction->created_at?->toIso8601String(),
             ] : null,
             'portal_actions' => $request->partnerJobActions
                 ->take(8)
                 ->map(fn (TechnicalServicePartnerJobAction $action): array => [
+                    'id' => $action->id,
                     'action' => $action->action,
                     'status' => $action->status,
                     'note' => $action->note,
+                    'payload' => is_array($action->payload) ? $action->payload : [],
                     'created_at' => $action->created_at?->toIso8601String(),
                 ])
                 ->values()
                 ->all(),
+            'appointment_proposal' => $latestAppointmentProposal ? [
+                'id' => $latestAppointmentProposal->id,
+                'status' => $latestAppointmentProposal->status,
+                'note' => $latestAppointmentProposal->note,
+                'payload' => is_array($latestAppointmentProposal->payload) ? $latestAppointmentProposal->payload : [],
+                'created_at' => $latestAppointmentProposal->created_at?->toIso8601String(),
+            ] : null,
+            'rejection' => $latestRejection ? [
+                'id' => $latestRejection->id,
+                'status' => $latestRejection->status,
+                'note' => $latestRejection->note,
+                'payload' => is_array($latestRejection->payload) ? $latestRejection->payload : [],
+                'created_at' => $latestRejection->created_at?->toIso8601String(),
+            ] : null,
+            'assignment_offer' => $assignmentOffer ? [
+                'id' => $assignmentOffer->id,
+                'labor_amount' => (float) $assignmentOffer->labor_amount,
+                'route_fee_amount' => (float) $assignmentOffer->route_fee_amount,
+                'total_amount' => (float) $assignmentOffer->total_amount,
+                'currency' => $assignmentOffer->currency,
+                'status' => $assignmentOffer->status,
+                'note' => $assignmentOffer->note,
+                'sent_at' => $assignmentOffer->sent_at?->toIso8601String(),
+                'message_payload' => is_array($assignmentOffer->metadata) ? ($assignmentOffer->metadata['message_payload'] ?? null) : null,
+            ] : null,
+            'earning_summary' => [
+                'labor_amount' => $assignmentOffer ? (float) $assignmentOffer->labor_amount : (float) ($request->technician_payment_amount ?? 0),
+                'route_fee_amount' => $assignmentOffer ? (float) $assignmentOffer->route_fee_amount : (float) ($request->travel_fee_amount ?? 0),
+                'total_amount' => $assignmentOffer
+                    ? (float) $assignmentOffer->total_amount
+                    : (float) (($request->technician_payment_amount ?? 0) + ($request->travel_fee_amount ?? 0)),
+                'status' => $assignmentOffer?->status,
+            ],
             'kanban_column' => $this->serviceJobColumn($request, $latestAction),
             'can_accept' => $request->workflow_status === 'Usta Onayı Bekleyen',
             'can_request_revisit' => ! in_array($request->workflow_status, ['Tamamlandı', 'İptal'], true),
             'can_submit_completion' => in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true),
             'can_complete_directly' => $this->canCompleteDirectly($request),
+            'can_reject' => ! in_array($request->workflow_status, ['Tamamlandı', 'İptal'], true),
             'updated_at' => $request->updated_at?->toIso8601String(),
         ];
     }
@@ -409,6 +455,10 @@ class B2BPartnerPortalDataService
             return 'revisit';
         }
 
+        if ($latestAction?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED) {
+            return 'new_jobs';
+        }
+
         if (in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)) {
             return 'appointment_confirmed';
         }
@@ -425,6 +475,34 @@ class B2BPartnerPortalDataService
             && (int) ($request->general_photo_count ?? 0) >= 1
             && in_array($request->document_status, ['tamamlandı', 'tamam', 'gerekli_degil'], true)
             && $request->customer_closure_approval_status === 'onaylandı';
+    }
+
+    private function telLink(?string $phone): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $phone);
+        if ($digits === '') {
+            return null;
+        }
+
+        if (str_starts_with($digits, '0')) {
+            $digits = '90'.substr($digits, 1);
+        }
+
+        return 'tel:+'.$digits;
+    }
+
+    private function mapsLink(TechnicalServiceRequest $request): ?string
+    {
+        if ($request->location_latitude !== null && $request->location_longitude !== null) {
+            return 'https://www.google.com/maps/search/?api=1&query='
+                .rawurlencode((string) $request->location_latitude.','.(string) $request->location_longitude);
+        }
+
+        $address = trim((string) ($request->location_formatted_address ?: $request->service_address));
+
+        return $address !== ''
+            ? 'https://www.google.com/maps/search/?api=1&query='.rawurlencode($address)
+            : null;
     }
 
     /**

@@ -29,6 +29,12 @@ class AssignTechnicalServiceRequest extends FormRequest
             'override_without_payment' => ['nullable', 'boolean'],
             'override_reason' => ['required_if:override_without_payment,true', 'nullable', 'string', 'min:5', 'max:2000'],
             'note' => ['nullable', 'string', 'max:2000'],
+            'assignment_offer' => ['nullable', 'array'],
+            'assignment_offer.labor_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.route_fee_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.total_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.currency' => ['nullable', 'string', 'max:8'],
+            'assignment_offer.note' => ['nullable', 'string', 'max:2000'],
         ];
     }
 

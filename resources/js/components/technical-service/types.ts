@@ -45,6 +45,37 @@ export type ServiceRequest = {
   routeFeeConfig?: ServiceRequestRouteFeeConfig | null
   routeQuote?: ServiceRequestRouteQuote | null
   nextActionPayload?: ServiceRequestNextAction | null
+  assignmentOffer?: ServiceRequestAssignmentOffer | null
+  partnerPortalActions?: ServiceRequestPartnerPortalAction[]
+}
+
+export type ServiceRequestAssignmentOffer = {
+  id: number | string
+  technical_service_request_id?: number | string | null
+  technical_service_technician_id?: number | string | null
+  technician_name?: string | null
+  route_quote_id?: number | string | null
+  labor_amount: number
+  route_fee_amount: number
+  total_amount: number
+  currency: string
+  status: string
+  note?: string | null
+  sent_at?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export type ServiceRequestPartnerPortalAction = {
+  id: number | string
+  partner_id?: number | string | null
+  user_id?: number | string | null
+  technical_service_technician_id?: number | string | null
+  action: string
+  status: string
+  note?: string | null
+  payload?: Record<string, unknown>
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export type ServiceRequestNextAction = {

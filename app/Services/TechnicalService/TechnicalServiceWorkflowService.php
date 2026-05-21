@@ -3,8 +3,10 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceAuditLog;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
@@ -799,6 +801,8 @@ class TechnicalServiceWorkflowService
             'requestSerials',
             'uploads',
             'latestRouteQuote',
+            'latestAssignmentOffer.technician',
+            'partnerJobActions' => fn ($query) => $query->latest()->limit(12),
         ]);
 
         $payload = $request->toArray();
@@ -831,6 +835,8 @@ class TechnicalServiceWorkflowService
         $payload['door_photos'] = $this->doorPhotoPayload($request);
         $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
+        $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
+        $payload['partner_portal_actions'] = $this->partnerPortalActionPayload($request);
         $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request);
 
         if ($includeHistory) {
@@ -1677,6 +1683,60 @@ class TechnicalServiceWorkflowService
         }
 
         return app(TechnicalServiceRouteCostService::class)->payload($quote);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function assignmentOfferPayload(?TechnicalServiceAssignmentOffer $offer): ?array
+    {
+        if (! $offer instanceof TechnicalServiceAssignmentOffer) {
+            return null;
+        }
+
+        return [
+            'id' => $offer->id,
+            'technical_service_request_id' => $offer->technical_service_request_id,
+            'technical_service_technician_id' => $offer->technical_service_technician_id,
+            'technician_name' => $offer->technician?->name,
+            'route_quote_id' => $offer->route_quote_id,
+            'labor_amount' => (float) $offer->labor_amount,
+            'route_fee_amount' => (float) $offer->route_fee_amount,
+            'total_amount' => (float) $offer->total_amount,
+            'currency' => $offer->currency,
+            'status' => $offer->status,
+            'note' => $offer->note,
+            'sent_at' => $this->dateTimeString($offer->sent_at),
+            'metadata' => is_array($offer->metadata) ? $offer->metadata : [],
+            'created_at' => $this->dateTimeString($offer->created_at),
+            'updated_at' => $this->dateTimeString($offer->updated_at),
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function partnerPortalActionPayload(TechnicalServiceRequest $request): array
+    {
+        if (! $request->relationLoaded('partnerJobActions')) {
+            return [];
+        }
+
+        return $request->partnerJobActions
+            ->map(fn (TechnicalServicePartnerJobAction $action): array => [
+                'id' => $action->id,
+                'partner_id' => $action->partner_id,
+                'user_id' => $action->user_id,
+                'technical_service_technician_id' => $action->technical_service_technician_id,
+                'action' => $action->action,
+                'status' => $action->status,
+                'note' => $action->note,
+                'payload' => is_array($action->payload) ? $action->payload : [],
+                'created_at' => $this->dateTimeString($action->created_at),
+                'updated_at' => $this->dateTimeString($action->updated_at),
+            ])
+            ->values()
+            ->all();
     }
 
     private function saleMountLabel(?string $status): string

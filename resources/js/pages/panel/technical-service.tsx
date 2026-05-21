@@ -188,6 +188,8 @@ type ApiTechnicalServiceRequest = {
   location?: ServiceRequest['location']
   door_photos?: ServiceRequest['doorPhotos']
   route_quote?: ServiceRequest['routeQuote']
+  assignment_offer?: ServiceRequest['assignmentOffer']
+  partner_portal_actions?: ServiceRequest['partnerPortalActions']
   document?: unknown
   documents?: unknown
   photo?: unknown
@@ -818,6 +820,8 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     doorPhotos: request.door_photos ?? [],
     routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
+    assignmentOffer: request.assignment_offer ?? null,
+    partnerPortalActions: request.partner_portal_actions ?? [],
   }
 }
 
@@ -878,6 +882,9 @@ export function TechnicalServiceOperationCenter() {
   const [travelRoundTripKm, setTravelRoundTripKm] = useState('')
   const [assignOverrideWithoutPayment, setAssignOverrideWithoutPayment] = useState(false)
   const [assignOverrideReason, setAssignOverrideReason] = useState('')
+  const [assignOfferLaborAmount, setAssignOfferLaborAmount] = useState('')
+  const [assignOfferRouteFeeAmount, setAssignOfferRouteFeeAmount] = useState('')
+  const [assignOfferNote, setAssignOfferNote] = useState('')
   const [contactMethod, setContactMethod] = useState('telefon')
   const [contactNote, setContactNote] = useState('')
   const [contactPreferredDate, setContactPreferredDate] = useState('')
@@ -2064,6 +2071,9 @@ export function TechnicalServiceOperationCenter() {
     )
     setAssignOverrideWithoutPayment(false)
     setAssignOverrideReason('')
+    setAssignOfferLaborAmount('')
+    setAssignOfferRouteFeeAmount('')
+    setAssignOfferNote('')
     setShowNearbyTechnicians(false)
     setAssignError(null)
     setRouteQuoteError(null)
@@ -2763,6 +2773,79 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handlePartnerAppointmentProposalApprove = async (actionId: number | string, payload?: { note?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/partner-appointment-proposals/${actionId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+    if (updatedRequest) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+      await loadRequests({ silent: true, preserveSelection: true })
+    }
+  }
+
+  const handlePartnerAppointmentProposalReject = async (actionId: number | string, payload: { note: string, status?: string }) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/partner-appointment-proposals/${actionId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+    if (updatedRequest) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+    }
+  }
+
+  const handleAssignmentOfferUpdate = async (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/assignment-offers/${offerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+    if (updatedRequest) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+    }
+  }
+
   const handleAssignSubmit = async () => {
     if (!selectedId) {
       return
@@ -2816,6 +2899,9 @@ export function TechnicalServiceOperationCenter() {
     setAssignError(null)
 
     try {
+      const offerLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
+      const offerRouteFeeAmount = parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0
+      const offerTotalAmount = Math.round((offerLaborAmount + offerRouteFeeAmount) * 100) / 100
       const response = await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
         method: 'POST',
         body: JSON.stringify({
@@ -2829,6 +2915,13 @@ export function TechnicalServiceOperationCenter() {
           override_reason: paymentOverrideRequired ? assignOverrideReason.trim() || null : null,
           mount_exclusion_acknowledged: mountExclusionAckRequired ? assignOverrideWithoutPayment : false,
           mount_exclusion_note: mountExclusionAckRequired ? assignOverrideReason.trim() || null : null,
+          assignment_offer: {
+            labor_amount: offerLaborAmount,
+            route_fee_amount: offerRouteFeeAmount,
+            total_amount: offerTotalAmount,
+            currency: 'TRY',
+            note: assignOfferNote.trim() || assignNote || null,
+          },
           note: assignNote || null,
         }),
       })
@@ -2837,6 +2930,9 @@ export function TechnicalServiceOperationCenter() {
       setAssignDialogOpen(false)
       setAssignOtherTechnician('')
       setAssignNote('')
+      setAssignOfferLaborAmount('')
+      setAssignOfferRouteFeeAmount('')
+      setAssignOfferNote('')
       setAssignTechnicianOption(submittedTechnicianOption)
       setTravelRoundTripKm(submittedTravelRoundTripKm)
 
@@ -3706,6 +3802,47 @@ export function TechnicalServiceOperationCenter() {
                     </span>
                   </div>
                 </div>
+
+                <div className="grid gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-950">
+                  <div>
+                    <p className="font-semibold">Ustaya gönderilecek hakediş bilgisi</p>
+                    <p className="mt-1 text-xs text-emerald-800">Atama kaydıyla birlikte sisteme bildirim payload'ı düşer; canlı WhatsApp/SMS gönderimi yapılmaz.</p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <label className="grid gap-1 text-xs font-semibold text-emerald-800">
+                      İşçilik / montaj
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={assignOfferLaborAmount}
+                        onChange={(event) => setAssignOfferLaborAmount(event.target.value)}
+                        placeholder={assignmentTechnicianLaborAmount !== null ? String(assignmentTechnicianLaborAmount) : '0'}
+                      />
+                    </label>
+                    <label className="grid gap-1 text-xs font-semibold text-emerald-800">
+                      Yol ücreti
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={assignOfferRouteFeeAmount}
+                        onChange={(event) => setAssignOfferRouteFeeAmount(event.target.value)}
+                        placeholder={assignmentRouteFeeAmount !== null ? String(assignmentRouteFeeAmount) : '0'}
+                      />
+                    </label>
+                    <div className="rounded-xl bg-white/80 p-3">
+                      <p className="text-xs font-semibold text-emerald-700">Toplam hakediş</p>
+                      <p className="mt-1 font-semibold text-slate-950">
+                        {formatMoneyLabel((parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0) + (parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0))}
+                      </p>
+                    </div>
+                  </div>
+                  <label className="grid gap-1 text-xs font-semibold text-emerald-800">
+                    Hakediş notu
+                    <Input value={assignOfferNote} onChange={(event) => setAssignOfferNote(event.target.value)} placeholder="Ustaya gidecek bilgilendirme notu" />
+                  </label>
+                </div>
               </div>
 
               <DialogFooter className="gap-2">
@@ -4374,6 +4511,9 @@ export function TechnicalServiceOperationCenter() {
                     onRouteQuoteManualSave={handleRouteQuoteManualSave}
                     onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
                     onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
+                    onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
+                    onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}
+                    onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
                     extraPaymentCreateLoading={extraPaymentCreateLoading}
                     extraPaymentCreateError={extraPaymentCreateError}
                     onAssignSelectedTechnician={handleAssignSubmit}

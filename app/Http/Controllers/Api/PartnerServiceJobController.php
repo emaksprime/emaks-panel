@@ -121,6 +121,63 @@ class PartnerServiceJobController extends Controller
         return response()->json($result);
     }
 
+    public function appointmentProposal(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
+        $data = $request->validate([
+            'proposed_date' => ['required', 'date'],
+            'proposed_slot' => ['required', 'string', Rule::in(['morning', 'afternoon', 'full_day', 'custom'])],
+            'proposed_time_start' => ['nullable', 'date_format:H:i', 'required_if:proposed_slot,custom'],
+            'proposed_time_end' => ['nullable', 'date_format:H:i', 'required_if:proposed_slot,custom'],
+            'note' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
+            return $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
+                'proposal' => [
+                    'proposed_date' => $data['proposed_date'],
+                    'proposed_slot' => $data['proposed_slot'],
+                    'proposed_time_start' => $data['proposed_time_start'] ?? null,
+                    'proposed_time_end' => $data['proposed_time_end'] ?? null,
+                    'slot_label' => $this->slotLabel($data['proposed_slot'], $data),
+                    'note' => $data['note'] ?? null,
+                    'submitted_at' => now()->toISOString(),
+                ],
+            ], $data['note'] ?? null, $job->workflow_status);
+        });
+
+        return response()->json([
+            'status' => $action->status,
+            'action' => $action->action,
+            'job' => $this->portalData->safeServiceJobSummary($job->refresh()),
+        ]);
+    }
+
+    public function reject(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
+        $data = $request->validate([
+            'reason' => ['required', 'string', Rule::in(['not_available', 'region_not_suitable', 'time_not_suitable', 'customer_disagreement', 'other'])],
+            'note' => ['nullable', 'string', 'max:2000', 'required_if:reason,other'],
+        ]);
+
+        $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
+            return $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
+                'reason' => $data['reason'],
+                'reason_label' => $this->rejectReasonLabel($data['reason']),
+                'note' => $data['note'] ?? null,
+                'submitted_at' => now()->toISOString(),
+                'ops_review_required' => true,
+            ], $data['note'] ?? $this->rejectReasonLabel($data['reason']), $job->workflow_status);
+        });
+
+        return response()->json([
+            'status' => $action->status,
+            'action' => $action->action,
+            'job' => $this->portalData->safeServiceJobSummary($job->refresh()),
+        ]);
+    }
+
     public function requestRevisit(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
@@ -348,7 +405,35 @@ class PartnerServiceJobController extends Controller
             TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 'Çilingir portalı: tekrar ziyaret istendi',
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 'Çilingir portalı: tamamlama gönderildi',
             TechnicalServicePartnerJobAction::ACTION_NOTE_ADDED => 'Çilingir portalı: not eklendi',
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 'Çilingir portalı: randevu önerildi',
+            TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => 'Çilingir portalı: iş reddedildi',
             default => 'Çilingir portalı aksiyonu',
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function slotLabel(string $slot, array $payload = []): string
+    {
+        return match ($slot) {
+            'morning' => 'Öğleden önce',
+            'afternoon' => 'Öğleden sonra',
+            'full_day' => 'Tam gün / operasyon belirlesin',
+            'custom' => trim(($payload['proposed_time_start'] ?? '').' - '.($payload['proposed_time_end'] ?? '')) ?: 'Özel saat',
+            default => $slot,
+        };
+    }
+
+    private function rejectReasonLabel(string $reason): string
+    {
+        return match ($reason) {
+            'not_available' => 'Uygun değilim',
+            'region_not_suitable' => 'Bölge uygun değil',
+            'time_not_suitable' => 'Zaman uygun değil',
+            'customer_disagreement' => 'Müşteriyle anlaşamadım',
+            'other' => 'Diğer',
+            default => $reason,
         };
     }
 

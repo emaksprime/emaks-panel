@@ -19,6 +19,10 @@ class TechnicalServicePartnerJobAction extends Model
 
     public const ACTION_NOTE_ADDED = 'note_added';
 
+    public const ACTION_APPOINTMENT_PROPOSED = 'appointment_proposed';
+
+    public const ACTION_JOB_REJECTED = 'job_rejected';
+
     public const STATUS_SUBMITTED = 'submitted';
 
     public const STATUS_APPLIED = 'applied';
@@ -26,6 +30,8 @@ class TechnicalServicePartnerJobAction extends Model
     public const STATUS_OPS_REVIEW = 'ops_review';
 
     public const STATUS_REJECTED = 'rejected';
+
+    public const STATUS_REVISION_REQUESTED = 'revision_requested';
 
     protected $table = 'technical_service_partner_job_actions';
 

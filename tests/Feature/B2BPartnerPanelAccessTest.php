@@ -18,6 +18,7 @@ use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
@@ -2994,6 +2995,177 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->getJson('/api/technical-service/requests')
             ->assertForbidden();
+    }
+
+    public function test_locksmith_partner_can_propose_appointment_and_ops_can_approve_with_message_payload(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Appointment Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Appointment Portal Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-APPOINTMENT-PROPOSE', [
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
+                'proposed_date' => '2026-05-25',
+                'proposed_slot' => 'morning',
+                'note' => 'Sabah uygunum.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+
+        $action = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED)
+            ->firstOrFail();
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'partner_portal_appointment_proposed',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-appointment-proposals/{$action->id}/approve", [
+                'note' => 'Operasyon onayladı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'applied')
+            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('message_payloads.customer.slot_text', 'öğleden önce')
+            ->assertJsonPath('message_payloads.technician.mrn', 'MRN-APPOINTMENT-PROPOSE');
+
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'id' => $action->id,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'partner_appointment_approved',
+        ]);
+    }
+
+    public function test_locksmith_partner_can_reject_job_without_removing_assignment(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Reject Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Reject Portal Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-REJECT-PORTAL', [
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/reject", [
+                'reason' => 'time_not_suitable',
+                'note' => 'Bu saat uygun değil.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]);
+        $this->assertDatabaseHas('technical_service_requests', [
+            'id' => $job->id,
+            'technical_service_technician_id' => $technician->id,
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'partner_portal_job_rejected',
+        ]);
+    }
+
+    public function test_technical_service_assignment_creates_assignment_offer_for_portal(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Offer Usta']);
+        $job = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-OFFER-ASSIGN',
+            'customer_name' => 'Offer Musteri',
+            'customer_phone' => '+905550000222',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Offer test adresi',
+            'product_name' => 'Offer Kilit',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+            'workflow_status' => 'Usta Ataması Bekleyen',
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+            'technician_payment_amount' => 900,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 44,
+                'assignment_offer' => [
+                    'labor_amount' => 900,
+                    'route_fee_amount' => 180,
+                    'total_amount' => 1080,
+                    'note' => 'Atama hakedişi.',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.labor_amount', 900)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 180)
+            ->assertJsonPath('request.assignment_offer.total_amount', 1080);
+
+        $offer = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $job->id)
+            ->firstOrFail();
+        $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_SENT, $offer->status);
+        $this->assertSame(1080.0, (float) $offer->total_amount);
+        $this->assertIsArray($offer->metadata['message_payload'] ?? null);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'assignment_offer_sent',
+        ]);
     }
 
     public function test_locksmith_partner_completion_can_use_existing_safe_workflow_when_requirements_are_met(): void

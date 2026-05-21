@@ -116,6 +116,9 @@ type ServiceRequestDetailsProps = {
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
+  onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
+  onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
+  onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
 }
 
 const eventTime = (timestamp: string): string => {
@@ -839,6 +842,9 @@ export function ServiceRequestDetails({
   onExtraMountPaymentCreate,
   onTechnicianEarningMessageCreate,
   onAssignSelectedTechnician,
+  onPartnerAppointmentProposalApprove,
+  onPartnerAppointmentProposalReject,
+  onAssignmentOfferUpdate,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
     request.serviceType,
@@ -901,10 +907,18 @@ export function ServiceRequestDetails({
   const [earningNoteInput, setEarningNoteInput] = useState('')
   const [earningMessageText, setEarningMessageText] = useState('')
   const [earningMessageUrl, setEarningMessageUrl] = useState('')
+  const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
+  const [offerLaborInput, setOfferLaborInput] = useState('')
+  const [offerRouteInput, setOfferRouteInput] = useState('')
+  const [offerNoteInput, setOfferNoteInput] = useState('')
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
   const locationInfo = request.location ?? null
   const doorPhotos = request.doorPhotos ?? []
   const routeQuote = request.routeQuote ?? null
+  const partnerPortalActions = request.partnerPortalActions ?? []
+  const openAppointmentProposals = partnerPortalActions.filter((action) => action.action === 'appointment_proposed' && action.status === 'ops_review')
+  const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
+  const assignmentOffer = request.assignmentOffer ?? null
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
   const selectedTechnicianIdString = selectedTechnicianId ? String(selectedTechnicianId) : null
   const routeQuoteTechnicianIdString = routeQuote?.technician_id !== null && routeQuote?.technician_id !== undefined
@@ -2028,6 +2042,83 @@ export function ServiceRequestDetails({
             {assignError ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">
                 {assignError}
+              </div>
+            ) : null}
+            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || assignmentOffer) ? (
+              <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
+                <div>
+                  <p className="font-semibold">Çilingir Portal Aksiyonları</p>
+                  <p className="mt-1 text-xs text-blue-800">Portal gönderimleri core iş akışını bypass etmez; operasyon onayı burada verilir.</p>
+                </div>
+                {openAppointmentProposals.map((action) => {
+                  const proposal = (action.payload?.proposal ?? {}) as Record<string, unknown>
+                  const proposalLabel = [proposal.proposed_date, proposal.slot_label].filter(Boolean).join(' · ')
+
+                  return (
+                    <div key={String(action.id)} className="grid gap-2 rounded-xl border border-blue-100 bg-white p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="font-semibold text-slate-950">Usta randevu önerisi</p>
+                          <p className="mt-1 text-xs text-slate-600">{proposalLabel || 'Öneri detayı yok'}</p>
+                          {action.note ? <p className="mt-1 text-xs text-slate-500">{action.note}</p> : null}
+                        </div>
+                        <Badge variant="warning">Operasyon onayı bekliyor</Badge>
+                      </div>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Onay / revize notu
+                        <Input value={appointmentReviewNote} onChange={(event) => setAppointmentReviewNote(event.target.value)} placeholder="Müşteri ve usta mesajına eklenecek operasyon notu" />
+                      </label>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button type="button" variant="outline" onClick={() => void onPartnerAppointmentProposalReject?.(action.id, { note: appointmentReviewNote || 'Randevu önerisi revize istendi.', status: 'revision_requested' })}>
+                          Revize iste
+                        </Button>
+                        <Button type="button" onClick={() => void onPartnerAppointmentProposalApprove?.(action.id, { note: appointmentReviewNote || null })}>
+                          Randevuyu onayla
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+                {jobRejections.slice(0, 2).map((action) => (
+                  <div key={String(action.id)} className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-rose-900">
+                    <p className="font-semibold">Usta işi reddetti</p>
+                    <p className="mt-1 text-xs">{String(action.payload?.reason_label ?? action.note ?? 'Neden belirtilmedi')}</p>
+                  </div>
+                ))}
+                {assignmentOffer ? (
+                  <div className="grid gap-3 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-emerald-950">
+                    <div className="grid gap-2 sm:grid-cols-4">
+                      <MiniMetric label="İşçilik" value={formatMoneyValue(assignmentOffer.labor_amount)} />
+                      <MiniMetric label="Yol" value={formatMoneyValue(assignmentOffer.route_fee_amount)} />
+                      <MiniMetric label="Toplam" value={formatMoneyValue(assignmentOffer.total_amount)} />
+                      <MiniMetric label="Durum" value={assignmentOffer.status} />
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-[140px_140px_minmax(0,1fr)]">
+                      <Input type="number" min="0" step="0.01" value={offerLaborInput} onChange={(event) => setOfferLaborInput(event.target.value)} placeholder={String(assignmentOffer.labor_amount)} />
+                      <Input type="number" min="0" step="0.01" value={offerRouteInput} onChange={(event) => setOfferRouteInput(event.target.value)} placeholder={String(assignmentOffer.route_fee_amount)} />
+                      <Input value={offerNoteInput} onChange={(event) => setOfferNoteInput(event.target.value)} placeholder="Revize notu" />
+                    </div>
+                    <div className="flex justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          const labor = parseNumericInput(offerLaborInput) ?? assignmentOffer.labor_amount
+                          const route = parseNumericInput(offerRouteInput) ?? assignmentOffer.route_fee_amount
+
+                          void onAssignmentOfferUpdate?.(assignmentOffer.id, {
+                            labor_amount: labor,
+                            route_fee_amount: route,
+                            total_amount: roundTwo(labor + route),
+                            note: offerNoteInput || null,
+                          })
+                        }}
+                      >
+                        Hakedişi revize et
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">

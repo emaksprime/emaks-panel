@@ -234,6 +234,16 @@ class TechnicalServiceRequest extends Model
         return $this->hasMany(TechnicalServicePartnerJobAction::class, 'technical_service_request_id');
     }
 
+    public function assignmentOffers(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceAssignmentOffer::class, 'technical_service_request_id');
+    }
+
+    public function latestAssignmentOffer(): HasOne
+    {
+        return $this->hasOne(TechnicalServiceAssignmentOffer::class, 'technical_service_request_id')->latestOfMany();
+    }
+
     public function latestRouteQuote(): HasOne
     {
         return $this->hasOne(TechnicalServiceRouteQuote::class, 'technical_service_request_id')->latestOfMany();
