@@ -1348,22 +1348,33 @@ class TechnicalServiceWorkflowTest extends TestCase
         }
 
         foreach ([
-            'QR Montaj Formu',
-            'Ödeme kontrol edilmedi',
-            'Kapı görseli kontrol edilmedi',
-            'Montaj ödemesi alındı',
+            'Aksiyon:',
+            'Ödeme gerekli',
+            'Usta seçilmeli',
+            'Usta onayı bekliyor',
+            'Son kontrol bekliyor',
+            'Fotoğraf eksik',
+            'Müşteri onayı bekliyor',
             'Çoklu ürün talebi',
-            'Montaja eklenen',
             'Eklenebilir seri',
             'İade seri var',
             'border-orange-300 bg-orange-100 text-orange-950',
             'border-rose-300 bg-rose-100 text-rose-950',
-            'border-emerald-200 bg-emerald-100 text-emerald-900',
             'border-blue-200 bg-blue-100 text-blue-900',
             'BadgeIconMark',
             'important: true',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $cardSource);
+        }
+
+        foreach ([
+            'QR Montaj Formu',
+            'Montaj ödemesi alındı',
+            'Montaja eklenen',
+            'Usta Atandı',
+            'Usta Onayladı',
+        ] as $removedCardTag) {
+            $this->assertStringNotContainsString($removedCardTag, $cardSource);
         }
     }
 

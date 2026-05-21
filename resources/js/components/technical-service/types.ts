@@ -20,6 +20,7 @@ export type ServiceRequest = {
   technicianId?: string | null
   appointment: string
   status: ServiceStatus
+  workflowStatus?: string | null
   address: string
   model: string
   channel: string
@@ -42,6 +43,7 @@ export type ServiceRequest = {
   invoiceSerials?: ServiceRequestInvoiceSerials | null
   location?: ServiceRequestLocation | null
   doorPhotos?: ServiceRequestDoorPhoto[]
+  fieldCompletionDocuments?: ServiceRequestFieldCompletionDocument[]
   routeFeeConfig?: ServiceRequestRouteFeeConfig | null
   routeQuote?: ServiceRequestRouteQuote | null
   nextActionPayload?: ServiceRequestNextAction | null
@@ -282,6 +284,10 @@ export type ServiceRequestDoorPhoto = {
   url?: string | null
   preview_url?: string | null
   download_url?: string | null
+}
+
+export type ServiceRequestFieldCompletionDocument = ServiceRequestDoorPhoto & {
+  label?: string | null
 }
 
 export type ServiceRequestRouteQuote = {

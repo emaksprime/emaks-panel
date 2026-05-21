@@ -798,7 +798,6 @@ export function ServiceRequestDetails({
   mikroMountCheck,
   mikroMountLoading = false,
   mikroMountError = null,
-  warranty = null,
   onAssign,
   onSchedule,
   onComplete,
@@ -871,6 +870,17 @@ export function ServiceRequestDetails({
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
   const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
+  const portalActionLabels: Record<string, string> = {
+    appointment_proposed: 'Randevu önerildi',
+    appointment_accepted_by_technician: 'Usta randevuyu onayladı',
+    customer_otp_requested: 'Müşteri onayı istendi',
+    customer_approval_confirmed: 'Müşteri montajı onayladı',
+    photos_uploaded: 'Fotoğraf yüklendi',
+    support_requested: 'Ek talep oluşturuldu',
+    completion_submitted: 'Tamamlama gönderildi',
+    job_rejected: 'Usta reddetti',
+    note_added: 'Not eklendi',
+  }
   const hasPortalActionNeedingOps = openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0
   const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
   const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? Boolean(invoiceSerials?.has_multi_product)
@@ -897,7 +907,13 @@ export function ServiceRequestDetails({
   const setFinalCheckOpen = (open: boolean) => {
     setFinalCheckOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
-  const [fieldCompletionOpen, setFieldCompletionOpen] = useState(false)
+  const [fieldCompletionOpenByRequest, setFieldCompletionOpenByRequest] = useState<Record<string, boolean>>({})
+  const shouldOpenFieldCompletion = completionSubmissions.length > 0
+    || ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı'].includes(request.workflowStatus ?? '')
+  const fieldCompletionOpen = fieldCompletionOpenByRequest[request.id] ?? shouldOpenFieldCompletion
+  const setFieldCompletionOpen = (open: boolean) => {
+    setFieldCompletionOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
@@ -1418,16 +1434,40 @@ export function ServiceRequestDetails({
 
     return priority(leftKey, leftAction.label) - priority(rightKey, rightAction.label)
   })
-  const checklistEntries = Object.entries(request.checklistPayload ?? {})
-  const checklistCompletedCount = checklistEntries.filter(([, checked]) => checked).length
+  const checklistEntries = Object.entries(request.checklistPayload ?? {}).map(([key, completed]) => ({
+    key,
+    label: key
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toLocaleUpperCase('tr-TR')),
+    completed: Boolean(completed),
+  }))
+  const checklistCompletedCount = checklistEntries.filter((item) => item.completed).length
   const checklistTotalCount = checklistEntries.length
   const checklistMissingCount = Math.max(checklistTotalCount - checklistCompletedCount, 0)
-  const photoCompletionLabel = `${request.beforePhotoCount ?? 0} / ${request.afterPhotoCount ?? 0} / ${request.generalPhotoCount ?? 0}`
+  const fieldCompletionDocumentTypes = [
+    { field: 'before_photo', label: 'Öncesi' },
+    { field: 'after_photo', label: 'Sonrası' },
+    { field: 'warranty_document_photo', label: 'Garanti Belgesi' },
+  ]
+  const fieldCompletionDocuments = request.fieldCompletionDocuments ?? []
+  const fieldCompletionDocumentStatuses = fieldCompletionDocumentTypes.map((type) => {
+    const document = fieldCompletionDocuments.find((item) => item.field_code === type.field)
+
+    return {
+      ...type,
+      document,
+      uploaded: Boolean(document),
+    }
+  })
+  const completedFieldDocumentCount = fieldCompletionDocumentStatuses.filter((item) => item.uploaded).length
+  const missingFieldDocumentLabels = fieldCompletionDocumentStatuses
+    .filter((item) => !item.uploaded)
+    .map((item) => item.label)
+  const photoCompletionLabel = `${completedFieldDocumentCount}/3 belge tamam`
   const scheduledDateLabel = request.scheduledDate
     ? formatTechnicalServiceDate(request.scheduledDate)
     : dateTimeOrEmpty(request.scheduledAt, 'Randevu planlanmadı')
   const scheduledTimeLabel = displayOrEmpty(request.scheduledTime || request.appointment, 'Saat planlanmadı')
-  const documentStatusLabel = displayOrEmpty(request.documentStatus, 'Belge yüklenmedi')
   const closureApprovalLabel = displayOrEmpty(request.customerClosureApprovalStatus, 'Kapanış onayı yok')
   const nextActionLabel = displayOrEmpty(request.nextAction, 'Sıradaki aksiyon tanımlı değil')
   const nextActionPayload = request.nextActionPayload
@@ -2723,33 +2763,62 @@ export function ServiceRequestDetails({
 
         <DetailPanel
           title="Saha Tamamlama Belgeleri"
-          summary="Fotoğraf, garanti kartı, usta açıklaması ve checklist"
+          summary="Öncesi, sonrası, garanti belgesi ve müşteri onayı"
           tone="door"
           open={fieldCompletionOpen}
           onOpenChange={setFieldCompletionOpen}
         >
           <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:p-5">
             <div className="grid gap-3 sm:grid-cols-2">
-              <MiniMetric label="Montaj fotoğrafları" value={photoCompletionLabel} hint="Öncesi / sonrası / genel" />
-              <MiniMetric label="Garanti kartı" value={documentStatusLabel} hint={warranty?.status ?? 'Kontrol edilmedi'} />
+              <MiniMetric
+                label="Saha belgeleri"
+                value={photoCompletionLabel}
+                hint={missingFieldDocumentLabels.length > 0 ? `${missingFieldDocumentLabels.join(', ')} bekliyor` : 'Tamam'}
+              />
+              <MiniMetric label="Müşteri onayı" value={closureApprovalLabel} hint={dateTimeOrEmpty(request.customerClosureApprovedAt, 'Bekliyor')} />
               <MiniMetric label="Usta açıklaması" value={displayOrEmpty(request.fieldCompletionNote, 'Bilgi yok')} />
               <MiniMetric label="Eksik / hatalı evrak" value={displayOrEmpty(request.completionBlockReason || request.incompleteReason, 'Yok')} />
               <MiniMetric
-                label="Checklist"
-                value={checklistTotalCount > 0 ? `${checklistCompletedCount}/${checklistTotalCount} tamam` : 'Yüklenmedi'}
-                hint={checklistTotalCount > 0 ? `${checklistMissingCount} eksik adım` : 'Bilgi yok'}
+                label="Backend kontrol"
+                value={checklistTotalCount > 0 ? `${checklistCompletedCount}/${checklistTotalCount} tamam` : 'Kayıt yok'}
+                hint={checklistTotalCount > 0 ? `${checklistMissingCount} eksik adım` : 'Checklist bu işte üretilmemiş'}
               />
             </div>
-            {checklistEntries.length > 0 ? (
-              <div className="grid gap-2">
-                {checklistEntries.map((item) => (
-                  <div key={item.key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-                    <span className="text-slate-700">{item.label}</span>
-                    <Badge variant={item.completed ? 'secondary' : 'outline'}>
-                      {item.completed ? 'Tamam' : 'Bekliyor'}
+            <div className="grid gap-2 md:grid-cols-3">
+              {fieldCompletionDocumentStatuses.map((item) => (
+                <div key={item.field} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-900">{item.label}</p>
+                    <Badge variant={item.uploaded ? 'secondary' : 'outline'}>
+                      {item.uploaded ? 'Yüklendi' : 'Bekliyor'}
                     </Badge>
                   </div>
-                ))}
+                  {item.document?.preview_url || item.document?.url ? (
+                    <a
+                      href={item.document.preview_url ?? item.document.url ?? '#'}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 inline-flex text-xs font-semibold text-blue-700 hover:text-blue-900"
+                    >
+                      Belgeyi aç
+                    </a>
+                  ) : (
+                    <p className="mt-3 text-xs text-slate-500">Bu belge henüz yüklenmedi.</p>
+                  )}
+                </div>
+              ))}
+            </div>
+            {partnerPortalActions.length > 0 ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Portal aksiyonları</p>
+                <div className="mt-3 grid gap-2">
+                  {partnerPortalActions.slice(0, 6).map((action) => (
+                    <div key={String(action.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white bg-white px-3 py-2 text-sm">
+                      <span className="font-medium text-slate-800">{portalActionLabels[action.action] ?? action.action}</span>
+                      <span className="text-xs text-slate-500">{dateTimeOrEmpty(action.created_at, 'Tarih yok')}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
           </section>

@@ -1133,9 +1133,35 @@ class TechnicalServiceController extends Controller
 
     private function photosComplete(TechnicalServiceRequest $request): bool
     {
+        if ($this->fieldCompletionDocumentsComplete($request)) {
+            return true;
+        }
+
         return (int) ($request->before_photo_count ?? 0) >= 3
             && (int) ($request->after_photo_count ?? 0) >= 3
             && (int) ($request->general_photo_count ?? 0) >= 1;
+    }
+
+    private function fieldCompletionDocumentsComplete(TechnicalServiceRequest $request): bool
+    {
+        $request->loadMissing('uploads');
+
+        $required = [
+            'before_photo',
+            'after_photo',
+            'warranty_document_photo',
+        ];
+
+        $presentTypes = $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT
+                || (
+                    $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
+                    && in_array((string) $upload->field_code, $required, true)
+                ))
+            ->map(fn (TechnicalServiceRequestUpload $upload): string => (string) $upload->field_code)
+            ->unique();
+
+        return collect($required)->every(fn (string $field): bool => $presentTypes->contains($field));
     }
 
     private function generateMrn(): string

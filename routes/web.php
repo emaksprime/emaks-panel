@@ -22,6 +22,7 @@ use App\Http\Controllers\B2BPortalPreviewController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use App\Http\Controllers\PartnerPortalController;
+use App\Http\Controllers\ServiceJobConfirmationController;
 use App\Http\Controllers\SupportController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -29,6 +30,10 @@ use Inertia\Inertia;
 require __DIR__.'/settings.php';
 
 Route::get('/', HomeController::class)->name('home');
+Route::get('service-job-confirmation/{token}', [ServiceJobConfirmationController::class, 'show'])
+    ->name('service-job-confirmation.show');
+Route::post('service-job-confirmation/{token}/approve', [ServiceJobConfirmationController::class, 'approve'])
+    ->name('service-job-confirmation.approve');
 
 Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::prefix('api')->group(function () {

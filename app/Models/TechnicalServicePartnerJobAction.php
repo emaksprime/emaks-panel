@@ -27,6 +27,8 @@ class TechnicalServicePartnerJobAction extends Model
 
     public const ACTION_CUSTOMER_OTP_REQUESTED = 'customer_otp_requested';
 
+    public const ACTION_CUSTOMER_APPROVAL_CONFIRMED = 'customer_approval_confirmed';
+
     public const ACTION_SUPPORT_REQUESTED = 'support_requested';
 
     public const ACTION_PHOTOS_UPLOADED = 'photos_uploaded';

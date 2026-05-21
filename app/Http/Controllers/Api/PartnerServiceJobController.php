@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\B2B\B2BPartner;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -350,7 +351,7 @@ class PartnerServiceJobController extends Controller
                 $created[] = TechnicalServiceRequestUpload::query()->create([
                     'technical_service_request_id' => $job->id,
                     'field_code' => (string) $fieldCode,
-                    'category' => TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
+                    'category' => TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
                     'original_name' => self::REQUIRED_PORTAL_PHOTO_FIELDS[(string) $fieldCode].' - '.$file->getClientOriginalName(),
                     'path' => $path,
                     'mime' => $file->getClientMimeType(),
@@ -399,19 +400,46 @@ class PartnerServiceJobController extends Controller
         ]);
 
         $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
-            return $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED, TechnicalServicePartnerJobAction::STATUS_SUBMITTED, [
-                'confirmation_method' => 'otp',
+            $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+                'technical_service_request_id' => $job->id,
+                'token' => Str::random(64),
+                'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+                'payload' => [
+                    'partner_id' => $partner->id,
+                    'requested_by_user_id' => $user->id,
+                    'technical_service_technician_id' => $job->technical_service_technician_id,
+                ],
+            ]);
+            $approvalUrl = route('service-job-confirmation.show', ['token' => $confirmation->token]);
+            $messageText = 'Montaj işleminizin tamamlandığını onaylamak için lütfen bağlantıya tıklayın ve "Montajı onaylıyorum" seçeneğini onaylayın. '.$approvalUrl;
+            $whatsappUrl = 'https://wa.me/'.$this->normalizedPhoneForWa($job->customer_phone).'?text='.rawurlencode($messageText);
+
+            $action = $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED, TechnicalServicePartnerJobAction::STATUS_SUBMITTED, [
+                'confirmation_method' => 'customer_link',
                 'provider' => 'system_payload',
-                'otp_reference' => 'portal-otp-'.Str::uuid(),
+                'confirmation_id' => $confirmation->id,
+                'approval_url' => $approvalUrl,
                 'requested_at' => now()->toISOString(),
                 'message_payload' => [
                     'recipient' => 'customer',
                     'channel' => 'system_payload',
                     'mrn' => $job->mrn,
                     'customer_phone' => $job->customer_phone,
-                    'message_text' => "{$job->mrn} servis tamamlanma onayÃ„Â± iÃƒÂ§in mÃƒÂ¼Ã…Å¸teri OTP isteÃ„Å¸i hazÃ„Â±rlandÃ„Â±.",
+                    'message_text' => $messageText,
+                    'approval_url' => $approvalUrl,
+                    'whatsapp_url' => $whatsappUrl,
                 ],
-            ], $data['note'] ?? 'MÃƒÂ¼Ã…Å¸teri OTP/onay isteÃ„Å¸i oluÃ…Å¸turuldu.', $job->workflow_status);
+            ], $data['note'] ?? 'Müşteri montaj onay bağlantısı hazırlandı.', $job->workflow_status);
+
+            $confirmation->forceFill([
+                'payload' => [
+                    ...(is_array($confirmation->payload) ? $confirmation->payload : []),
+                    'partner_action_id' => $action->id,
+                    'message_payload' => $action->payload['message_payload'] ?? [],
+                ],
+            ])->save();
+
+            return $action;
         });
 
         return response()->json([
@@ -838,19 +866,13 @@ class PartnerServiceJobController extends Controller
     {
         $job->loadMissing('uploads');
         $uploadedFields = $job->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO)
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
             ->map(fn (TechnicalServiceRequestUpload $upload): ?string => $this->canonicalPortalPhotoField($upload->field_code))
             ->filter(fn (?string $field): bool => $field !== null && array_key_exists($field, self::REQUIRED_PORTAL_PHOTO_FIELDS))
             ->unique()
             ->values();
 
-        $presentFields = $uploadedFields->isNotEmpty()
-            ? $uploadedFields
-            : collect([
-                (int) ($job->before_photo_count ?? 0) > 0 ? 'before_photo' : null,
-                (int) ($job->after_photo_count ?? 0) > 0 ? 'after_photo' : null,
-                (int) ($job->general_photo_count ?? 0) > 0 ? 'warranty_document_photo' : null,
-            ])->filter()->values();
+        $presentFields = $uploadedFields;
 
         $missingFields = collect(array_keys(self::REQUIRED_PORTAL_PHOTO_FIELDS))
             ->reject(fn (string $field): bool => $presentFields->contains($field))
@@ -876,7 +898,7 @@ class PartnerServiceJobController extends Controller
             return null;
         }
 
-        return self::LEGACY_PORTAL_PHOTO_FIELDS[$field] ?? $field;
+        return $field;
     }
 
     /**
@@ -888,9 +910,30 @@ class PartnerServiceJobController extends Controller
             return true;
         }
 
-        return $job->partnerJobActions()
-            ->where('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
+        return $job->customerConfirmations()
+            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED)
             ->exists();
+    }
+
+    private function isPortalFieldDocument(TechnicalServiceRequestUpload $upload): bool
+    {
+        if ($upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT) {
+            return true;
+        }
+
+        return $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
+            && array_key_exists((string) $upload->field_code, self::REQUIRED_PORTAL_PHOTO_FIELDS);
+    }
+
+    private function normalizedPhoneForWa(?string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $phone) ?: '';
+
+        if (str_starts_with($digits, '0')) {
+            return '90'.substr($digits, 1);
+        }
+
+        return $digits;
     }
 
     private function hasOpsAppointment(TechnicalServiceRequest $job): bool

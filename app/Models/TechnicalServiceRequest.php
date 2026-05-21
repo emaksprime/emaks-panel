@@ -224,6 +224,11 @@ class TechnicalServiceRequest extends Model
         return $this->hasMany(TechnicalServiceRequestUpload::class, 'technical_service_request_id');
     }
 
+    public function customerConfirmations(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceCustomerConfirmation::class, 'technical_service_request_id');
+    }
+
     public function routeQuotes(): HasMany
     {
         return $this->hasMany(TechnicalServiceRouteQuote::class, 'technical_service_request_id');

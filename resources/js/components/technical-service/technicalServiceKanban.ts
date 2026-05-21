@@ -132,7 +132,6 @@ export function getTechnicalServiceKanbanColumn(request: ServiceRequest): Techni
   const combinedText = [statusText, workflowText].filter(Boolean).join(' ')
   const hasTechnician = hasTechnicalServiceTechnician(request)
   const technicianApproved = isTechnicalServiceTechnicianApproved(request)
-  const customerApproved = isTechnicalServiceCustomerApproved(request)
   const partnerAction = latestOpsReviewPartnerAction(request)
 
   if (partnerAction?.action === 'completion_submitted') {
@@ -181,7 +180,7 @@ export function getTechnicalServiceKanbanColumn(request: ServiceRequest): Techni
     return 'review'
   }
 
-  if (hasTechnician && technicianApproved && customerApproved) {
+  if (hasTechnician && technicianApproved) {
     return 'assigned'
   }
 

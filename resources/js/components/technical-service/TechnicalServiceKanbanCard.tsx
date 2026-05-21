@@ -1,15 +1,14 @@
-import { AlertTriangle, Boxes, CalendarDays, CheckCircle2, MapPin, MoreHorizontal, Package, Phone, QrCode } from 'lucide-react'
+import { AlertTriangle, Boxes, CalendarDays, MapPin, MoreHorizontal, Package, Phone } from 'lucide-react'
 import {
   getTechnicalServiceKanbanColumn,
   hasTechnicalServiceTechnician,
-  isTechnicalServiceCustomerApproved,
   isTechnicalServiceTechnicianApproved,
 } from './technicalServiceKanban'
 import type { ServiceRequest } from './types'
 import { formatTechnicalServiceDateTime, formatTechnicalServiceMrn, normalizeTechnicalServiceText } from './utils'
 
 type BadgeTone = 'neutral' | 'blue' | 'green' | 'amber' | 'rose' | 'purple'
-type BadgeIcon = 'multi' | 'warning' | 'paid' | 'qr'
+type BadgeIcon = 'multi' | 'warning'
 type RequestBadge = { label: string, tone: BadgeTone, icon?: BadgeIcon, important?: boolean }
 
 const badgeClassName = 'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold leading-none'
@@ -43,10 +42,6 @@ const BadgeIconMark = ({ icon }: { icon?: BadgeIcon }) => {
       return <Boxes className="h-3.5 w-3.5" />
     case 'warning':
       return <AlertTriangle className="h-3.5 w-3.5" />
-    case 'paid':
-      return <CheckCircle2 className="h-3.5 w-3.5" />
-    case 'qr':
-      return <QrCode className="h-3.5 w-3.5" />
     default:
       return null
   }
@@ -123,72 +118,68 @@ const resolveTechnicianPhone = (request: ServiceRequest): string | null => {
 const includesAny = (value: string, keywords: string[]) =>
   keywords.some((keyword) => value.includes(normalizeTechnicalServiceText(keyword)))
 
+const fallbackActionLabel = (column: ReturnType<typeof getTechnicalServiceKanbanColumn>): string | null => ({
+  new: 'Operasyon kontrolü',
+  assignment_pending: 'Usta/randevu onayı',
+  assigned: 'Saha takibi',
+  final_check: 'Son kontrol',
+  review: 'Ops inceleme',
+  completed: 'Hakediş kontrolü',
+  cancelled: 'İptal kaydı',
+}[column] ?? null)
+
+const actionBadgeLabel = (request: ServiceRequest, column: ReturnType<typeof getTechnicalServiceKanbanColumn>): string | null => {
+  const rawAction = readFirstText(request.nextActionPayload?.title, request.nextAction)
+    ?? fallbackActionLabel(column)
+
+  if (!rawAction) {
+    return null
+  }
+
+  return `Aksiyon: ${rawAction.length > 36 ? `${rawAction.slice(0, 33)}...` : rawAction}`
+}
+
 const buildBadges = (request: ServiceRequest): RequestBadge[] => {
   const badges: RequestBadge[] = []
-  const closureText = normalizeTechnicalServiceText(request.customerClosureApprovalStatus)
-  const auditText = (request.auditLogs ?? [])
-    .flatMap((log) => [log.action_type, log.note])
-    .join(' ')
-  const sourceText = normalizeTechnicalServiceText([
-    request.workflowStatus,
-    request.nextAction,
-    request.latestEvent,
-    request.customerContactStatus,
-    request.customerContactNote,
-    request.customerRejectionReason,
-    request.technicianApprovalStatus,
-    request.technicianConfirmationStatus,
-    request.technicianRevisionNote,
-    request.fieldStatus,
-    request.fieldCompletionNote,
-    request.missingInfoReason,
-    request.pendingReason,
-    request.rescheduleReason,
-    request.documentStatus,
-    request.photoStatus,
-    request.completionBlockReason,
-    request.incompleteReason,
-    request.secondVisitReason,
-    request.cancellationReason,
-    request.slaStatus,
-    auditText,
-  ].filter(Boolean).join(' '))
+  const column = getTechnicalServiceKanbanColumn(request)
 
   const addBadge = (badge: RequestBadge) => {
     if (!badges.some((current) => current.label === badge.label)) {
       badges.push(badge)
     }
   }
-  const latestPortalOpsAction = (request.partnerPortalActions ?? []).find((action) => action.status === 'ops_review') ?? null
+
+  const latestPortalOpsAction = latestPortalOpsActionForCard(request)
 
   if (latestPortalOpsAction?.action === 'job_rejected') {
     addBadge({ label: 'Usta reddetti', tone: 'rose', icon: 'warning', important: true })
   } else if (latestPortalOpsAction?.action === 'completion_submitted') {
     addBadge({ label: 'Son kontrol bekliyor', tone: 'purple', icon: 'warning', important: true })
   } else if (latestPortalOpsAction?.action === 'appointment_proposed') {
-    addBadge({ label: 'Randevu önerisi', tone: 'amber', icon: 'warning', important: true })
+    addBadge({ label: 'Randevu önerisi bekliyor', tone: 'amber', icon: 'warning', important: true })
   } else if (latestPortalOpsAction?.action === 'support_requested') {
     addBadge({ label: 'Ek talep', tone: 'purple', icon: 'warning', important: true })
   } else if (latestPortalOpsAction?.action === 'revisit_requested') {
     addBadge({ label: 'Tekrar ziyaret talebi', tone: 'amber', icon: 'warning', important: true })
   }
 
-  const qrSourceChannel = request.qrSource?.source_channel ?? request.channel
+  const currentActionBadge = actionBadgeLabel(request, column)
+
+  if (currentActionBadge && !latestPortalOpsAction) {
+    addBadge({ label: currentActionBadge, tone: 'blue', important: true })
+  }
+
   const canonicalPaymentStatus = request.saleAndPayment?.payment_status ?? null
   const mountPaymentStatus = request.saleAndPayment?.mount_payment_status
-  const mountPaymentLabel = request.saleAndPayment?.mount_payment_label ?? ''
   const mountPaymentPaid = Boolean(
     canonicalPaymentStatus?.is_paid
     || request.saleAndPayment?.mount_payment_received
     || mountPaymentStatus === 'paid'
-    || mountPaymentLabel === 'Montaj ödemesi alındı',
   )
   const currentSerialState = request.qrSource?.current_serial_state
   const selectedInvoiceSerialCount = request.invoiceSerials?.selected_serials?.length ?? 0
   const extraSelectedSerialCount = Math.max(0, selectedInvoiceSerialCount - 1)
-  const addedSerialCount = request.invoiceSerials?.added_serial_count ?? extraSelectedSerialCount
   const addableSerialCount = request.invoiceSerials?.addable_serial_count ?? 0
-  const hiddenSerialCount = (request.invoiceSerials?.hidden_serials ?? []).length
   const returnedSerialCount = request.invoiceSerials?.returned_serial_count ?? (request.invoiceSerials?.returned_serials ?? []).length
   const routeQuote = request.routeQuote
   const routeQuoteMatchesAssignedTechnician = Boolean(
@@ -202,158 +193,65 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
 
   const hasTechnician = hasTechnicalServiceTechnician(request)
   const technicianApproved = isTechnicalServiceTechnicianApproved(request)
-  const customerApproved = isTechnicalServiceCustomerApproved(request)
-  const technicianRejected = includesAny(sourceText, [
-    'servis reddetti',
-    'usta reddetti',
-    'technician rejected',
-    'technician declined',
-  ])
-  const customerRejected = Boolean(request.customerRejectionReason) || includesAny(sourceText, [
-    'musteri reddetti',
-    'müşteri reddetti',
-    'musteri reddedildi',
-    'müşteri reddedildi',
-    'customer_rejected',
-    'customer rejected',
-  ])
-  const technicianRevisionRequested = Boolean(request.technicianRevisionRequestedAt) || includesAny(sourceText, [
-    'tarih revize',
-    'tarih revizesi',
-    'randevu revize',
-    'randevu degisikligi',
-    'randevu değişikliği',
-    'servis randevu degisikligi',
-    'servis randevu değişikliği',
-  ])
+  const customerClosureText = normalizeTechnicalServiceText(request.customerClosureApprovalStatus)
+  const customerClosureApproved = includesAny(customerClosureText, ['onaylandi', 'onaylandı', 'approved'])
+  const fieldDocumentCount = new Set(
+    (request.fieldCompletionDocuments ?? [])
+      .map((document) => document.field_code)
+      .filter((field): field is string => ['before_photo', 'after_photo', 'warranty_document_photo'].includes(String(field))),
+  ).size
 
-  if (currentSerialState === 'in_stock_or_center' || request.saleAndPayment?.sale_mount_status === 'check_failed') {
-    addBadge({ label: 'Kontrol bekliyor', tone: 'amber', icon: 'warning', important: true })
+  if (column === 'new' && (currentSerialState === 'in_stock_or_center' || request.saleAndPayment?.sale_mount_status === 'check_failed')) {
+    addBadge({ label: 'Seri kontrol bekliyor', tone: 'amber', icon: 'warning', important: true })
   }
 
-  if ((request.assignmentBlockers?.messages ?? []).length > 0) {
-    addBadge({ label: 'Atama engeli var', tone: 'rose', icon: 'warning', important: true })
+  if (column === 'new' && (returnedSerialCount > 0 || request.invoiceSerials?.has_returned)) {
+    addBadge({ label: 'İade seri var', tone: 'rose', icon: 'warning', important: true })
   }
 
-  if (request.operationControl?.payment_checked !== 'yes') {
-    addBadge({ label: 'Ödeme kontrol edilmedi', tone: 'rose', icon: 'warning', important: true })
+  if (column === 'new' && !mountPaymentPaid && (canonicalPaymentStatus?.requires_payment || request.operationControl?.payment_checked !== 'yes')) {
+    addBadge({ label: 'Ödeme gerekli', tone: 'rose', icon: 'warning', important: true })
   }
 
-  if (!request.operationControl?.door_photos_checked || request.operationControl.door_photos_checked === 'unreviewed') {
-    addBadge({ label: 'Kapı görseli kontrol edilmedi', tone: 'rose', icon: 'warning', important: true })
+  if (column === 'new' && !hasTechnician) {
+    addBadge({ label: 'Usta seçilmeli', tone: 'amber', icon: 'warning', important: true })
   }
 
   if (routeQuote?.status === 'calculated' && routeQuoteMatchesAssignedTechnician && routeQuoteHasCurrentFee) {
-    addBadge(routeQuote.travel_fee_required
-      ? { label: 'Yol ücreti onayı gerekli', tone: 'amber', icon: 'warning', important: true }
-      : { label: 'Yol ücreti yok', tone: 'green', icon: 'paid' })
+    if (routeQuote.travel_fee_required && column !== 'completed') {
+      addBadge({ label: 'Yol ücreti onayı gerekli', tone: 'amber', icon: 'warning', important: true })
+    } else if (column !== 'completed') {
+      addBadge({ label: 'Yol ücreti yok', tone: 'neutral' })
+    }
   } else if (routeQuote && routeQuoteMatchesAssignedTechnician) {
     addBadge({ label: 'Yol ücreti hesaplanamadı', tone: 'amber', icon: 'warning' })
   }
 
-  if (mountPaymentStatus === 'skipped_multi_product' || request.invoiceSerials?.has_multi_product || extraSelectedSerialCount > 0) {
+  if (column === 'new' && (mountPaymentStatus === 'skipped_multi_product' || request.invoiceSerials?.has_multi_product || extraSelectedSerialCount > 0)) {
     addBadge({ label: 'Çoklu ürün talebi', tone: 'amber', icon: 'multi', important: true })
   }
 
-  if (addedSerialCount > 0) {
-    addBadge({ label: `Montaja eklenen: ${addedSerialCount}`, tone: 'green', icon: 'paid', important: true })
-  }
-
-  if (addableSerialCount > 0) {
+  if (column === 'new' && addableSerialCount > 0) {
     addBadge({ label: `Eklenebilir seri: ${addableSerialCount}`, tone: 'amber', icon: 'multi', important: true })
   }
 
-  if (returnedSerialCount > 0 || request.invoiceSerials?.has_returned) {
-    addBadge({ label: 'İade seri var', tone: 'rose', icon: 'warning', important: true })
-  } else if (hiddenSerialCount > 0) {
-    addBadge({ label: 'Gizli seri var', tone: 'amber', icon: 'warning', important: true })
+  if (column === 'assignment_pending' && hasTechnician && !technicianApproved) {
+    addBadge({ label: 'Usta onayı bekliyor', tone: 'amber', icon: 'warning', important: true })
   }
 
-  if (mountPaymentPaid) {
-    addBadge({ label: 'Montaj ödemesi alındı', tone: 'green', icon: 'paid', important: true })
-  }
-
-  if (qrSourceChannel === 'qr_mount_form') {
-    addBadge({ label: 'QR Montaj Formu', tone: 'blue', icon: 'qr' })
-  }
-
-  if (hasTechnician) {
-    addBadge({ label: 'Usta Atandı', tone: 'blue' })
-  }
-
-  if (hasTechnician && !technicianApproved && !technicianRejected) {
-    addBadge({ label: 'Usta Onayı Bekleniyor', tone: 'amber' })
-  }
-
-  if (technicianApproved) {
-    addBadge({ label: 'Usta Onayladı', tone: 'green' })
-  }
-
-  if (hasTechnician && technicianApproved && !customerApproved && !customerRejected) {
-    addBadge({ label: 'Müşteri Onayı Bekleniyor', tone: 'amber' })
-  }
-
-  if (customerApproved) {
-    addBadge({ label: 'Müşteri Onayladı', tone: 'green' })
-  }
-
-  if (customerRejected) {
-    addBadge({ label: 'Müşteri Reddetti', tone: 'rose' })
-  }
-
-  if (request.customerClosureApprovalStatus && closureText !== 'onaylandi') {
-    addBadge({ label: 'Ödeme Bekleniyor', tone: 'rose' })
-  }
-
-  if (includesAny(sourceText, ['kabul edildi', 'usta kabul', 'approved'])) {
-    addBadge({ label: 'Kabul Edildi', tone: 'green' })
-  }
-
-  if (includesAny(sourceText, ['kapı uyumsuz', 'kapi uyumsuz', 'montaj yeri hazır değil', 'montaj yeri hazir degil'])) {
-    addBadge({ label: 'Kapı Uyumsuz', tone: 'rose' })
-  }
-
-  if (request.rescheduleRequested || request.requiresReschedule || includesAny(sourceText, ['randevu tarihi güncellenmeli', 'randevu tarihi guncellenmeli', 'tarih revize', 'randevu değişikliği', 'randevu degisikligi'])) {
-    addBadge({ label: 'Randevu Tarihi Güncellenmeli', tone: 'amber' })
-  }
-
-  if (technicianRevisionRequested) {
-    addBadge({ label: 'Tarih Revizesi Talep Etti', tone: 'amber' })
-  }
-
-  if (!customerRejected && !technicianRejected && includesAny(sourceText, ['reddedildi', 'red edildi', 'rejected'])) {
-    addBadge({ label: 'Reddedildi', tone: 'rose' })
-  }
-
-  if (includesAny(sourceText, ['teknik destek', 'teknik onay', 'servis problemi', 'cihaz değişimi', 'cihaz degisimi'])) {
-    addBadge({ label: 'Teknik Destek Gerekli', tone: 'purple' })
-  }
-
-  if (request.requiresSecondVisit || includesAny(sourceText, ['tekrar ziyaret', 'ikinci ziyaret', 'ikinci randevu'])) {
+  if (column === 'assigned' && request.requiresSecondVisit) {
     addBadge({ label: 'Tekrar Ziyaret Edilecek', tone: 'amber' })
   }
 
-  if (includesAny(sourceText, ['kapı onaylandı', 'kapi onaylandi', 'kapı uygun', 'kapi uygun'])) {
-    addBadge({ label: 'Kapı Onaylandı', tone: 'green' })
-  }
+  if (column === 'final_check') {
+    if (fieldDocumentCount < 3) {
+      addBadge({ label: 'Fotoğraf eksik', tone: 'rose', icon: 'warning', important: true })
+    }
 
-  if (includesAny(sourceText, ['whatsapp', 'wp mesaj', 'wp'])) {
-    addBadge({ label: 'WP Mesajı Gönderildi', tone: 'blue' })
+    if (!customerClosureApproved) {
+      addBadge({ label: 'Müşteri onayı bekliyor', tone: 'amber', icon: 'warning', important: true })
+    }
   }
-
-  if (includesAny(sourceText, ['yorum', 'comment', 'not eklendi'])) {
-    addBadge({ label: 'Yorum Eklendi', tone: 'neutral' })
-  }
-
-  if (request.technicianRevisionRequestedAt || includesAny(sourceText, ['servis destek', 'yedek parça', 'yedek parca', 'fiyat değişikliği', 'fiyat degisikligi'])) {
-    addBadge({ label: 'Servis Destek Talep Etti', tone: 'purple' })
-  }
-
-  if (includesAny(sourceText, ['servis randevu değişikliği', 'servis randevu degisikligi'])) {
-    addBadge({ label: 'Servis Randevu Değişikliği', tone: 'amber' })
-  }
-
-  const column = getTechnicalServiceKanbanColumn(request)
 
   if (column === 'completed') {
     addBadge({ label: 'Tamamlandı', tone: 'green' })
@@ -363,14 +261,14 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     addBadge({ label: 'İptal', tone: 'rose' })
   }
 
-  if (technicianRejected) {
-    addBadge({ label: 'Servis Reddetti', tone: 'rose' })
+  if (column === 'review' && badges.length === 0) {
+    addBadge({ label: 'Ops inceleme', tone: 'purple', icon: 'warning', important: true })
   }
 
   return badges.slice(0, 4)
 }
 
-const latestPortalOpsAction = (request: ServiceRequest) =>
+const latestPortalOpsActionForCard = (request: ServiceRequest) =>
   (request.partnerPortalActions ?? []).find((action) => action.status === 'ops_review') ?? null
 
 const portalActionLabel = (action: string) => ({
@@ -386,7 +284,7 @@ const columnDetailRows = (
   column: ReturnType<typeof getTechnicalServiceKanbanColumn>,
   technicianPhone: string | null,
 ): Array<{ label: string, value: string }> => {
-  const portalAction = latestPortalOpsAction(request)
+  const portalAction = latestPortalOpsActionForCard(request)
 
   if (column === 'new') {
     return [

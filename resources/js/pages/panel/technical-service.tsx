@@ -187,6 +187,7 @@ type ApiTechnicalServiceRequest = {
   invoice_serials?: ServiceRequest['invoiceSerials']
   location?: ServiceRequest['location']
   door_photos?: ServiceRequest['doorPhotos']
+  field_completion_documents?: ServiceRequest['fieldCompletionDocuments']
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
   partner_portal_actions?: ServiceRequest['partnerPortalActions']
@@ -818,6 +819,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     invoiceSerials: request.invoice_serials ?? null,
     location: request.location ?? null,
     doorPhotos: request.door_photos ?? [],
+    fieldCompletionDocuments: request.field_completion_documents ?? [],
     routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,

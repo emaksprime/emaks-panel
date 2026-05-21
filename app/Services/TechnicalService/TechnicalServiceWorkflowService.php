@@ -21,6 +21,18 @@ use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceWorkflowService
 {
+    private const FIELD_COMPLETION_DOCUMENT_TYPES = [
+        'before_photo' => 'Öncesi',
+        'after_photo' => 'Sonrası',
+        'warranty_document_photo' => 'Garanti Belgesi',
+    ];
+
+    private const CUSTOMER_DOOR_PHOTO_FIELDS = [
+        'door_front_photo',
+        'door_side_photo',
+        'door_back_photo',
+    ];
+
     public const WORKFLOW_STATUSES = [
         'Yeni Talep',
         'Eksik Bilgi / Fotoğraf Bekleyen',
@@ -843,6 +855,7 @@ class TechnicalServiceWorkflowService
         $payload['invoice_serials'] = $this->invoiceSerialsPayload($request);
         $payload['location'] = $this->locationPayload($request);
         $payload['door_photos'] = $this->doorPhotoPayload($request);
+        $payload['field_completion_documents'] = $this->fieldCompletionDocumentPayload($request);
         $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
@@ -1616,7 +1629,8 @@ class TechnicalServiceWorkflowService
     private function doorPhotoPayload(TechnicalServiceRequest $request): array
     {
         return $request->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO)
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
+                && in_array((string) $upload->field_code, self::CUSTOMER_DOOR_PHOTO_FIELDS, true))
             ->map(function (TechnicalServiceRequestUpload $upload) use ($request): array {
                 $authenticatedUrl = route('api.technical-service.requests.uploads.show', [
                     'technicalServiceRequest' => $request->id,
@@ -1637,6 +1651,48 @@ class TechnicalServiceWorkflowService
             })
             ->values()
             ->all();
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function fieldCompletionDocumentPayload(TechnicalServiceRequest $request): array
+    {
+        return $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isFieldCompletionDocument($upload))
+            ->map(function (TechnicalServiceRequestUpload $upload) use ($request): array {
+                $authenticatedUrl = route('api.technical-service.requests.uploads.show', [
+                    'technicalServiceRequest' => $request->id,
+                    'upload' => $upload->id,
+                ]);
+
+                $fieldCode = (string) $upload->field_code;
+
+                return [
+                    'id' => $upload->id,
+                    'field_code' => $fieldCode,
+                    'label' => self::FIELD_COMPLETION_DOCUMENT_TYPES[$fieldCode] ?? $upload->original_name,
+                    'category' => $upload->category,
+                    'original_name' => $upload->original_name,
+                    'mime' => $upload->mime,
+                    'size' => $upload->size,
+                    'url' => $authenticatedUrl,
+                    'preview_url' => $authenticatedUrl,
+                    'download_url' => $authenticatedUrl,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    private function isFieldCompletionDocument(TechnicalServiceRequestUpload $upload): bool
+    {
+        if ($upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT) {
+            return true;
+        }
+
+        return $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
+            && array_key_exists((string) $upload->field_code, self::FIELD_COMPLETION_DOCUMENT_TYPES);
     }
 
     /**
@@ -2021,9 +2077,26 @@ class TechnicalServiceWorkflowService
 
     private function photoStatusForCounts(TechnicalServiceRequest $request): bool
     {
+        if ($this->fieldCompletionDocumentsComplete($request)) {
+            return true;
+        }
+
         return (int) ($request->before_photo_count ?? 0) >= 3
             && (int) ($request->after_photo_count ?? 0) >= 3
             && (int) ($request->general_photo_count ?? 0) >= 1;
+    }
+
+    private function fieldCompletionDocumentsComplete(TechnicalServiceRequest $request): bool
+    {
+        $request->loadMissing('uploads');
+
+        $presentTypes = $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isFieldCompletionDocument($upload))
+            ->map(fn (TechnicalServiceRequestUpload $upload): string => (string) $upload->field_code)
+            ->filter(fn (string $field): bool => array_key_exists($field, self::FIELD_COMPLETION_DOCUMENT_TYPES))
+            ->unique();
+
+        return $presentTypes->count() === count(self::FIELD_COMPLETION_DOCUMENT_TYPES);
     }
 
     /**

@@ -106,6 +106,7 @@ type ServiceJob = {
   rejection: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   support_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   customer_otp_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  customer_confirmation?: { id: number, status: string, approved_at: string | null, customer_note: string | null, approval_url: string | null } | null
   completion_submission: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   assignment_offer: {
     id: number
@@ -652,6 +653,12 @@ const appointmentSlotLabels = (payload: Record<string, unknown> | undefined) => 
     .filter(Boolean)
 }
 
+const nestedStringValue = (source: Record<string, unknown> | undefined, key: string): string | null => {
+  const value = source?.[key]
+
+  return typeof value === 'string' && value.trim() !== '' ? value : null
+}
+
 const portalPhotoFields = [
   ['before_photo', 'Öncesi'],
   ['after_photo', 'Sonrası'],
@@ -842,6 +849,15 @@ function ServiceJobDetail({
   const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | null>(null)
   const photosReady = job.completion_requirements.photos_ready
   const confirmationReady = job.completion_requirements.customer_confirmation_ready
+  const otpPayload = job.customer_otp_request?.payload
+  const messagePayload = typeof otpPayload?.message_payload === 'object' && otpPayload.message_payload !== null
+    ? otpPayload.message_payload as Record<string, unknown>
+    : undefined
+  const approvalUrl = job.customer_confirmation?.approval_url
+    ?? nestedStringValue(otpPayload, 'approval_url')
+    ?? nestedStringValue(messagePayload, 'approval_url')
+  const whatsappUrl = nestedStringValue(messagePayload, 'whatsapp_url')
+  const confirmationMessageText = nestedStringValue(messagePayload, 'message_text')
   const missingPhotoLabels = job.completion_requirements.missing_photo_labels ?? []
   const completionMissingReasons = [
     ...missingPhotoLabels.map((label) => `${label} eksik`),
@@ -1218,6 +1234,21 @@ function ServiceJobDetail({
           )}
           {job.can_request_customer_otp && (
           <ActionBox title="Müşteri OTP / onay">
+            {approvalUrl || whatsappUrl ? (
+              <div className="rounded-xl border border-violet-100 bg-white p-3 text-xs text-slate-600">
+                <p className="font-semibold text-violet-900">Müşteri onay mesajı hazırlandı.</p>
+                {approvalUrl ? (
+                  <a href={approvalUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex font-semibold text-violet-700 hover:text-violet-900">
+                    Onay linkini aç
+                  </a>
+                ) : null}
+                {whatsappUrl ? (
+                  <a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-2 block font-semibold text-emerald-700 hover:text-emerald-900">
+                    WhatsApp mesajını aç
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
             <button type="button" disabled={readOnly} onClick={() => setActiveActionDialog('otp')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
               OTP/onay popup aç
             </button>
@@ -1290,9 +1321,18 @@ function ServiceJobDetail({
         </button>
       </ActionDialog>
       <ActionDialog title="Müşteri OTP / onay" open={activeActionDialog === 'otp'} onClose={() => setActiveActionDialog(null)}>
-        <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Onay notu" disabled={readOnly} />
-        <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'Müşteri OTP/onay payloadı oluşturuldu.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
-          OTP/onay iste
+        <div className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
+          <p className="font-semibold">Müşteriye onay mesajı hazırlanır.</p>
+          <p className="mt-1">Mesajda montajı onaylama bağlantısı olur; canlı SMS/WhatsApp gönderimi yapılmaz.</p>
+        </div>
+        {confirmationMessageText ? (
+          <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700">
+            {confirmationMessageText}
+          </div>
+        ) : null}
+        <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Operasyona not" disabled={readOnly} />
+        <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'Müşteri onay mesajı ve bağlantısı oluşturuldu.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
+          Onay mesajı oluştur
         </button>
       </ActionDialog>
       <ActionDialog title="Yedek parça / ek talep" open={activeActionDialog === 'support'} onClose={() => setActiveActionDialog(null)}>
@@ -1369,8 +1409,8 @@ function EarningsView({ earnings }: { earnings: PartnerPortalProps['partnerPorta
         <StatCard title="Tamamlanan toplam" value={money.format(completed.summary.grand_total)} hint="Hesaplanan" />
       </section>
       <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-950 shadow-sm">
-        <h2 className="text-lg font-semibold">Bekleyen hakedişler</h2>
-        <p className="mt-1 text-sm">Bu bölüm atama tekliflerinden gelen tahmini hakediştir; operasyon tamamlamayı onaylamadan actual hakediş sayılmaz.</p>
+        <h2 className="text-lg font-semibold">Bekleyen tahmini hakedişler</h2>
+        <p className="mt-1 text-sm">Bekleyen hakedişler tahmini tutardır. Operasyon son kontrolünden sonra kesin hakedişe dönüşür.</p>
         <div className="mt-4 grid gap-2">
           {pending.rows.length === 0 && <EmptyState title="Bekleyen hakediş yok" message="Planlı veya son kontrol bekleyen teklif bulunmadı." />}
           {pending.rows.map((row) => (

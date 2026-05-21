@@ -22,8 +22,10 @@ use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
@@ -2994,6 +2996,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
         ]);
 
+        $this->createPortalFieldDocument($completionJob, 'before_photo');
+        $this->createPortalFieldDocument($completionJob, 'after_photo');
+        $this->createPortalFieldDocument($completionJob, 'warranty_document_photo');
+
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$completionJob->id}/submit-completion", [
                 'result' => 'completed',
@@ -3022,6 +3028,145 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->getJson('/api/technical-service/requests')
             ->assertForbidden();
+    }
+
+    public function test_customer_approval_link_is_required_for_partner_completion(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Approval Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Approval Portal Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-CUSTOMER-APPROVAL', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $this->createPortalFieldDocument($job, 'before_photo');
+        $this->createPortalFieldDocument($job, 'after_photo');
+        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+                'note' => 'Müşteri onayı olmadan kapanmamalı.',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('customer_confirmation');
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/customer-otp-request", [
+                'note' => 'Müşteri bağlantıdan onaylayacak.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
+
+        $confirmation = TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $job->id)
+            ->firstOrFail();
+        $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_PENDING, $confirmation->status);
+        $this->assertStringContainsString('Montajı onaylıyorum', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
+        $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
+
+        $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
+            'customer_note' => 'Montajı onaylıyorum.',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('technical_service_customer_confirmations', [
+            'id' => $confirmation->id,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+        ]);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'customer_installation_approved',
+        ]);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+                'note' => 'Müşteri onayı sonrası son kontrole gönderildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'final_check');
+    }
+
+    public function test_public_customer_door_photos_do_not_count_as_partner_field_documents(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Document Separation Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Document Separation Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-DOC-SEPARATION', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'customer_closure_approval_status' => 'onaylandi',
+        ]);
+        foreach (['door_front_photo', 'door_side_photo', 'door_back_photo'] as $fieldCode) {
+            TechnicalServiceRequestUpload::query()->create([
+                'technical_service_request_id' => $job->id,
+                'field_code' => $fieldCode,
+                'category' => TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
+                'original_name' => $fieldCode.'.jpg',
+                'path' => 'technical-service/customer/'.$fieldCode.'.jpg',
+                'mime' => 'image/jpeg',
+                'size' => 128,
+            ]);
+        }
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 0)
+            ->assertJsonPath('job.completion_requirements.photos_ready', false)
+            ->assertJsonPath('job.photos', []);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+                'note' => 'Public fotoğraf saha belgesi sayılmamalı.',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('photos');
     }
 
     public function test_locksmith_partner_can_propose_appointment_and_ops_can_approve_with_message_payload(): void
@@ -3251,6 +3396,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
 
+        $this->createPortalFieldDocument($job, 'before_photo');
+        $this->createPortalFieldDocument($job, 'after_photo');
+        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
                 'result' => 'completed',
@@ -3473,6 +3622,19 @@ class B2BPartnerPanelAccessTest extends TestCase
             'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
             'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
         ], $attributes));
+    }
+
+    private function createPortalFieldDocument(TechnicalServiceRequest $request, string $fieldCode): TechnicalServiceRequestUpload
+    {
+        return TechnicalServiceRequestUpload::query()->create([
+            'technical_service_request_id' => $request->id,
+            'field_code' => $fieldCode,
+            'category' => TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+            'original_name' => $fieldCode.'.jpg',
+            'path' => 'technical-service/test/'.$fieldCode.'.jpg',
+            'mime' => 'image/jpeg',
+            'size' => 128,
+        ]);
     }
 
     /**

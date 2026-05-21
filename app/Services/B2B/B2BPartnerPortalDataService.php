@@ -8,6 +8,7 @@ use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -20,12 +21,6 @@ class B2BPartnerPortalDataService
         'before_photo' => 'Öncesi',
         'after_photo' => 'Sonrası',
         'warranty_document_photo' => 'Garanti Belgesi',
-    ];
-
-    private const LEGACY_PORTAL_PHOTO_FIELDS = [
-        'door_front_photo' => 'before_photo',
-        'door_side_photo' => 'after_photo',
-        'door_back_photo' => 'warranty_document_photo',
     ];
 
     public function __construct(
@@ -290,6 +285,7 @@ class B2BPartnerPortalDataService
         $request->loadMissing([
             'partnerJobActions' => fn ($query) => $query->latest(),
             'uploads',
+            'customerConfirmations' => fn ($query) => $query->latest(),
             'latestAssignmentOffer.technician',
             'technicianRecord',
         ]);
@@ -307,8 +303,11 @@ class B2BPartnerPortalDataService
         $stateAction = $this->stateAction($request);
         $assignmentOffer = $request->latestAssignmentOffer;
         $photoReadiness = $this->portalPhotoReadiness($request);
+        $latestCustomerConfirmation = $request->customerConfirmations->first();
+        $approvedCustomerConfirmation = $request->customerConfirmations
+            ->firstWhere('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED);
         $customerConfirmationReady = in_array($request->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±'], true)
-            || $latestOtpRequest instanceof TechnicalServicePartnerJobAction;
+            || $approvedCustomerConfirmation instanceof TechnicalServiceCustomerConfirmation;
         $completionRequirements = [
             'door_photos_required' => $photoReadiness['required'],
             'door_photos_uploaded' => $photoReadiness['count'],
@@ -380,6 +379,7 @@ class B2BPartnerPortalDataService
                 'general' => in_array('warranty_document_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
             ],
             'photos' => $request->uploads
+                ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
                 ->map(fn (TechnicalServiceRequestUpload $upload): array => [
                     'id' => $upload->id,
                     'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
@@ -434,6 +434,15 @@ class B2BPartnerPortalDataService
                 'note' => $latestOtpRequest->note,
                 'payload' => is_array($latestOtpRequest->payload) ? $latestOtpRequest->payload : [],
                 'created_at' => $latestOtpRequest->created_at?->toIso8601String(),
+            ] : null,
+            'customer_confirmation' => $latestCustomerConfirmation ? [
+                'id' => $latestCustomerConfirmation->id,
+                'status' => $latestCustomerConfirmation->status,
+                'approved_at' => $latestCustomerConfirmation->approved_at?->toIso8601String(),
+                'customer_note' => $latestCustomerConfirmation->customer_note,
+                'approval_url' => $latestCustomerConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_PENDING
+                    ? route('service-job-confirmation.show', ['token' => $latestCustomerConfirmation->token])
+                    : null,
             ] : null,
             'completion_submission' => $latestCompletionSubmission ? [
                 'id' => $latestCompletionSubmission->id,
@@ -645,9 +654,9 @@ class B2BPartnerPortalDataService
     private function portalPhotoLabel(TechnicalServiceRequestUpload $upload): ?string
     {
         return match ($upload->field_code) {
-            'before_photo', 'door_front_photo' => 'Öncesi',
-            'after_photo', 'door_side_photo' => 'Sonrası',
-            'warranty_document_photo', 'door_back_photo' => 'Garanti Belgesi',
+            'before_photo' => 'Öncesi',
+            'after_photo' => 'Sonrası',
+            'warranty_document_photo' => 'Garanti Belgesi',
             default => null,
         };
     }
@@ -813,19 +822,13 @@ class B2BPartnerPortalDataService
     {
         $request->loadMissing('uploads');
         $uploadedFields = $request->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO)
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
             ->map(fn (TechnicalServiceRequestUpload $upload): ?string => $this->canonicalPortalPhotoField($upload->field_code))
             ->filter(fn (?string $field): bool => $field !== null && array_key_exists($field, self::REQUIRED_PORTAL_PHOTO_FIELDS))
             ->unique()
             ->values();
 
-        $presentFields = $uploadedFields->isNotEmpty()
-            ? $uploadedFields
-            : collect([
-                (int) ($request->before_photo_count ?? 0) > 0 ? 'before_photo' : null,
-                (int) ($request->after_photo_count ?? 0) > 0 ? 'after_photo' : null,
-                (int) ($request->general_photo_count ?? 0) > 0 ? 'warranty_document_photo' : null,
-            ])->filter()->values();
+        $presentFields = $uploadedFields;
 
         $missingFields = collect(array_keys(self::REQUIRED_PORTAL_PHOTO_FIELDS))
             ->reject(fn (string $field): bool => $presentFields->contains($field))
@@ -851,7 +854,17 @@ class B2BPartnerPortalDataService
             return null;
         }
 
-        return self::LEGACY_PORTAL_PHOTO_FIELDS[$field] ?? $field;
+        return $field;
+    }
+
+    private function isPortalFieldDocument(TechnicalServiceRequestUpload $upload): bool
+    {
+        if ($upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT) {
+            return true;
+        }
+
+        return $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
+            && array_key_exists((string) $upload->field_code, self::REQUIRED_PORTAL_PHOTO_FIELDS);
     }
 
     /**
