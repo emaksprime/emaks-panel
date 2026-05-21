@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
+use App\Http\Controllers\Api\WarehouseRackTransferController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use App\Http\Controllers\SupportController;
@@ -49,6 +50,15 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 ->middleware(['panel.access:support', 'panel.access:support_activation_query'])
                 ->name('api.support.activation.search');
         });
+
+        Route::middleware('panel.access:warehouse_terminal')
+            ->prefix('operations/warehouse-terminal/rack-transfer')
+            ->group(function () {
+                Route::post('validate', [WarehouseRackTransferController::class, 'validate'])
+                    ->name('api.operations.warehouse-terminal.rack-transfer.validate');
+                Route::post('complete', [WarehouseRackTransferController::class, 'complete'])
+                    ->name('api.operations.warehouse-terminal.rack-transfer.complete');
+            });
 
         Route::prefix('technical-service')->group(function () {
             Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])
