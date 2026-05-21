@@ -7,7 +7,9 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class B2BPartner extends Model
 {
@@ -125,6 +127,40 @@ class B2BPartner extends Model
     public function technician(): BelongsTo
     {
         return $this->belongsTo(TechnicalServiceTechnician::class, 'technical_service_technician_id');
+    }
+
+    public function partnerTechnicians(): HasMany
+    {
+        return $this->hasMany(B2BPartnerTechnician::class, 'partner_id');
+    }
+
+    public function activePartnerTechnicians(): HasMany
+    {
+        return $this->partnerTechnicians()->where('active', true);
+    }
+
+    public function technicians(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            TechnicalServiceTechnician::class,
+            'b2b_partner_technicians',
+            'partner_id',
+            'technical_service_technician_id',
+        )
+            ->withPivot(['id', 'relationship_type', 'is_primary', 'active', 'source', 'match_reason', 'metadata', 'created_by'])
+            ->withTimestamps();
+    }
+
+    public function activeTechnicians(): BelongsToMany
+    {
+        return $this->technicians()->wherePivot('active', true);
+    }
+
+    public function primaryTechnicianLink(): HasOne
+    {
+        return $this->hasOne(B2BPartnerTechnician::class, 'partner_id')
+            ->where('active', true)
+            ->where('is_primary', true);
     }
 
     public function capabilities(): HasMany

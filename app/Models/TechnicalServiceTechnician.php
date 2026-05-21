@@ -2,8 +2,11 @@
 
 namespace App\Models;
 
+use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerTechnician;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -69,5 +72,22 @@ class TechnicalServiceTechnician extends Model
     public function requests(): HasMany
     {
         return $this->hasMany(TechnicalServiceRequest::class, 'technical_service_technician_id');
+    }
+
+    public function b2bPartnerLinks(): HasMany
+    {
+        return $this->hasMany(B2BPartnerTechnician::class, 'technical_service_technician_id');
+    }
+
+    public function b2bPartners(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            B2BPartner::class,
+            'b2b_partner_technicians',
+            'technical_service_technician_id',
+            'partner_id',
+        )
+            ->withPivot(['id', 'relationship_type', 'is_primary', 'active', 'source', 'match_reason', 'metadata', 'created_by'])
+            ->withTimestamps();
     }
 }

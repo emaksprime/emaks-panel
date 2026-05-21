@@ -31,6 +31,8 @@ type Partner = {
   source_field_missing?: string[]
   active: boolean
   technical_service_technician_id: number | null
+  primary_technician_id?: number | null
+  linked_technicians?: PartnerTechnicianLink[]
   linked_technician_name: string | null
   linked_technician_phone: string | null
   child_cari_accounts?: CariControlChildAccount[]
@@ -43,6 +45,30 @@ type Partner = {
   invoice_usage_note?: string | null
   users_count?: number
   active_users_count?: number
+}
+
+type PartnerTechnicianLink = {
+  id: number
+  partner_id: number
+  technical_service_technician_id: number
+  relationship_type: string
+  is_primary: boolean
+  active: boolean
+  source?: string | null
+  match_reason?: string | null
+  technician: {
+    id: number
+    name: string
+    display_name?: string | null
+    phone: string | null
+    city: string | null
+    district: string | null
+    address?: string | null
+    mikro_cari_kodu?: string | null
+    mikro_cari_adi?: string | null
+    technician_type?: string | null
+    active?: boolean
+  } | null
 }
 
 type TechnicianOption = {
@@ -62,6 +88,11 @@ type TechnicianOption = {
   source_key: string
   match_reason?: string | null
   requires_type_review?: boolean
+  linked_partner_id?: number | null
+  linked_partner_name?: string | null
+  linked_to_current_partner?: boolean
+  can_link?: boolean
+  cannot_link_reason?: string | null
 }
 
 type PartnerForm = {
@@ -333,22 +364,26 @@ const partnerChildCariAccounts = (partner: Partner): PartnerChildAccountDisplay[
   })
 }
 
-const partnerToFormValues = (partner: Partner): PartnerForm => ({
-  capabilities: partnerCapabilities(partner),
-  partner_code: partner.partner_code ?? '',
-  display_name: partner.display_name ?? '',
-  mikro_cari_kodu: partner.mikro_cari_kodu ?? '',
-  mikro_cari_unvan: partner.mikro_cari_unvan ?? '',
-  cari_grup_kodu: partner.cari_grup_kodu ?? '',
-  responsibility_code: partner.responsibility_code ?? '',
-  phone: partner.phone ?? '',
-  email: partner.email ?? '',
-  city: partner.city ?? '',
-  district: partner.district ?? '',
-  address: partner.address ?? '',
-  active: partner.active,
-  technical_service_technician_id: partner.technical_service_technician_id ? String(partner.technical_service_technician_id) : '',
-})
+const partnerToFormValues = (partner: Partner): PartnerForm => {
+  const primaryTechnicianId = partner.primary_technician_id ?? partner.technical_service_technician_id
+
+  return {
+    capabilities: partnerCapabilities(partner),
+    partner_code: partner.partner_code ?? '',
+    display_name: partner.display_name ?? '',
+    mikro_cari_kodu: partner.mikro_cari_kodu ?? '',
+    mikro_cari_unvan: partner.mikro_cari_unvan ?? '',
+    cari_grup_kodu: partner.cari_grup_kodu ?? '',
+    responsibility_code: partner.responsibility_code ?? '',
+    phone: partner.phone ?? '',
+    email: partner.email ?? '',
+    city: partner.city ?? '',
+    district: partner.district ?? '',
+    address: partner.address ?? '',
+    active: partner.active,
+    technical_service_technician_id: primaryTechnicianId ? String(primaryTechnicianId) : '',
+  }
+}
 
 const partnerCapabilities = (partner: Partner): PartnerType[] => {
   const capabilities = partner.capabilities?.filter((capability): capability is PartnerType => ['dealer', 'locksmith', 'manufacturer', 'seller'].includes(capability)) ?? []
@@ -372,6 +407,7 @@ const locationLabel = (city: string | null, district: string | null) => {
 }
 
 const selectedTechnician = (technicians: TechnicianOption[], id: string) => technicians.find((item) => String(item.id) === id) ?? null
+
 
 const selectedTechnicianLabel = (technicians: TechnicianOption[], id: string) => {
   const technician = selectedTechnician(technicians, id)
@@ -463,11 +499,13 @@ export default function B2BPartnersPage() {
   const [editingPartner, setEditingPartner] = useState<Partner | null>(null)
   const [selectedPartnerId, setSelectedPartnerId] = useState<number | null>(null)
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([])
+  const [partnerTechnicianLinks, setPartnerTechnicianLinks] = useState<PartnerTechnicianLink[]>([])
   const editingPartnerId = editingPartner?.id
   const [technicianSearch, setTechnicianSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [technicianLoading, setTechnicianLoading] = useState(false)
+  const [technicianLinkLoading, setTechnicianLinkLoading] = useState(false)
   const [cariChecking, setCariChecking] = useState(false)
   const [locksmithSyncing, setLocksmithSyncing] = useState(false)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
@@ -486,6 +524,7 @@ export default function B2BPartnersPage() {
 
   const hasLocksmithForm = form.capabilities.includes('locksmith')
   const hasMikroForm = form.capabilities.some((capability) => ['dealer', 'manufacturer', 'seller'].includes(capability))
+  const showLegacyTechnicianSelect = false
   const cariCandidates = useMemo(() => cariControl?.candidates ?? cariControl?.items ?? [], [cariControl])
   const cariControlStatus = cariControl?.status ?? 'idle'
   const cariControlMeta = (cariControl as (CariControlState & { meta?: Record<string, unknown> }) | null)?.meta ?? {}
@@ -531,17 +570,20 @@ export default function B2BPartnersPage() {
         if (!refreshedPartner) {
           setSelectedPartnerId(null)
           setEditingPartner(null)
+          setPartnerTechnicianLinks([])
           setForm(emptyForm)
           setFormMode('create')
           setMessage(null)
           setError(null)
         } else if (editingPartnerId === undefined || editingPartnerId !== refreshedPartner.id) {
           setEditingPartner(refreshedPartner)
+          setPartnerTechnicianLinks(refreshedPartner.linked_technicians ?? [])
           setForm(partnerToFormValues(refreshedPartner))
           setMessage(null)
           setError(null)
         } else {
           setEditingPartner(refreshedPartner)
+          setPartnerTechnicianLinks(refreshedPartner.linked_technicians ?? [])
           setForm(partnerToFormValues(refreshedPartner))
         }
       }
@@ -551,6 +593,26 @@ export default function B2BPartnersPage() {
       setLoading(false)
     }
   }, [editingPartnerId, filters, formMode, selectedPartnerId])
+
+  const loadPartnerTechnicians = useCallback(async (partnerId: number) => {
+    setTechnicianLinkLoading(true)
+
+    try {
+      const response = await apiRequest(`/api/b2b/partners/${partnerId}/technicians`)
+      setPartnerTechnicianLinks(response.items ?? [])
+
+      if (response.partner) {
+        const refreshedPartner = response.partner as Partner
+        setEditingPartner(refreshedPartner)
+        setForm(partnerToFormValues(refreshedPartner))
+        setPartners((current) => current.map((partner) => (partner.id === refreshedPartner.id ? refreshedPartner : partner)))
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Bagli usta listesi alinamadi.')
+    } finally {
+      setTechnicianLinkLoading(false)
+    }
+  }, [])
 
   const loadTechnicians = useCallback(async (search = technicianSearch) => {
     setTechnicianLoading(true)
@@ -574,6 +636,10 @@ export default function B2BPartnersPage() {
         params.set('city', form.city.trim())
       }
 
+      if (editingPartnerId !== undefined) {
+        params.set('partner_id', String(editingPartnerId))
+      }
+
       const response = await apiRequest(`/api/b2b/locksmith-technicians?${params.toString()}`)
       setTechnicians(response.items ?? [])
     } catch (requestError) {
@@ -581,7 +647,7 @@ export default function B2BPartnersPage() {
     } finally {
       setTechnicianLoading(false)
     }
-  }, [form.city, form.mikro_cari_kodu, form.phone, technicianSearch])
+  }, [editingPartnerId, form.city, form.mikro_cari_kodu, form.phone, technicianSearch])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -608,6 +674,7 @@ export default function B2BPartnersPage() {
     setForm(emptyForm)
     setFormMode('create')
     setEditingPartner(null)
+    setPartnerTechnicianLinks([])
     setMessage(null)
     setError(null)
   }
@@ -615,10 +682,15 @@ export default function B2BPartnersPage() {
   const startEdit = (partner: Partner, mode: FormMode = 'edit') => {
     setSelectedPartnerId(partner.id)
     setEditingPartner(partner)
+    setPartnerTechnicianLinks(partner.linked_technicians ?? [])
     setForm(partnerToFormValues(partner))
     setFormMode(mode)
     setMessage(null)
     setError(null)
+
+    if (partnerCapabilities(partner).includes('locksmith')) {
+      void loadPartnerTechnicians(partner.id)
+    }
   }
 
   const updateForm = <K extends keyof PartnerForm>(key: K, value: PartnerForm[K]) => {
@@ -881,6 +953,95 @@ export default function B2BPartnersPage() {
       setError(requestError instanceof Error ? requestError.message : 'Çilingirler eşitlenemedi.')
     } finally {
       setLocksmithSyncing(false)
+    }
+  }
+
+  const applyTechnicianLinkResponse = async (response: { items?: PartnerTechnicianLink[], partner?: Partner }) => {
+    if (response.items) {
+      setPartnerTechnicianLinks(response.items)
+    }
+
+    if (response.partner) {
+      const refreshedPartner = response.partner
+      setEditingPartner(refreshedPartner)
+      setForm(partnerToFormValues(refreshedPartner))
+      setPartners((current) => current.map((partner) => (partner.id === refreshedPartner.id ? refreshedPartner : partner)))
+    }
+
+    await loadTechnicians()
+  }
+
+  const linkTechnician = async (technicianId: number, isPrimary = false) => {
+    if (!editingPartner) {
+      setError('Usta bağlamak için önce partner kaydını oluşturun.')
+
+      return
+    }
+
+    setTechnicianLinkLoading(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const response = await apiRequest(`/api/b2b/partners/${editingPartner.id}/technicians`, {
+        method: 'POST',
+        body: JSON.stringify({
+          technical_service_technician_id: technicianId,
+          relationship_type: 'field_technician',
+          is_primary: isPrimary,
+        }),
+      })
+      await applyTechnicianLinkResponse(response)
+      setMessage('Teknik servis ustası bağlandı.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Teknik servis ustası bağlanamadı.')
+    } finally {
+      setTechnicianLinkLoading(false)
+    }
+  }
+
+  const updateTechnicianLink = async (link: PartnerTechnicianLink, payload: { is_primary?: boolean, active?: boolean }) => {
+    if (!editingPartner) {
+      return
+    }
+
+    setTechnicianLinkLoading(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const response = await apiRequest(`/api/b2b/partners/${editingPartner.id}/technicians/${link.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      await applyTechnicianLinkResponse(response)
+      setMessage(payload.is_primary ? 'Birincil usta güncellendi.' : 'Usta bağlantısı güncellendi.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Usta bağlantısı güncellenemedi.')
+    } finally {
+      setTechnicianLinkLoading(false)
+    }
+  }
+
+  const unlinkTechnician = async (link: PartnerTechnicianLink) => {
+    if (!editingPartner) {
+      return
+    }
+
+    setTechnicianLinkLoading(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const response = await apiRequest(`/api/b2b/partners/${editingPartner.id}/technicians/${link.id}`, {
+        method: 'DELETE',
+      })
+      await applyTechnicianLinkResponse(response)
+      setMessage('Usta bağlantısı pasifleştirildi.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Usta bağlantısı kaldırılamadı.')
+    } finally {
+      setTechnicianLinkLoading(false)
     }
   }
 
@@ -1304,7 +1465,13 @@ export default function B2BPartnersPage() {
                             </div>
                             <div className="rounded-xl bg-white px-3 py-2">
                               <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Bağlı usta</span>
-                              <span className="line-clamp-1">{capabilities.includes('locksmith') ? partner.linked_technician_name ?? 'Teknik servis ustası bağlı değil' : '-'}</span>
+                              <span className="line-clamp-1">
+                                {capabilities.includes('locksmith')
+                                  ? (partner.linked_technicians ?? []).length > 0
+                                    ? (partner.linked_technicians ?? []).map((link) => link.technician?.name).filter(Boolean).join(', ')
+                                    : partner.linked_technician_name ?? 'Teknik servis ustası bağlı değil'
+                                  : '-'}
+                              </span>
                             </div>
                             <div className="rounded-xl bg-white px-3 py-2">
                               <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Açık adres</span>
@@ -1451,6 +1618,105 @@ export default function B2BPartnersPage() {
               )}
 
               {hasLocksmithForm && (
+                <section className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-semibold text-emerald-900">Bağlı Teknik Servis Ustaları</div>
+                      <p className="mt-1 text-xs text-emerald-700">Bir partner birden fazla ustaya bağlanabilir; birincil usta eski alanla senkron tutulur.</p>
+                    </div>
+                    {editingPartner && (
+                      <Button type="button" variant="outline" onClick={() => void loadPartnerTechnicians(editingPartner.id)} disabled={technicianLinkLoading}>
+                        {technicianLinkLoading ? 'Yükleniyor...' : 'Yenile'}
+                      </Button>
+                    )}
+                  </div>
+
+                  {partnerTechnicianLinks.length > 0 ? (
+                    <div className="mt-3 grid gap-2">
+                      {partnerTechnicianLinks.map((link) => (
+                        <div key={link.id} className="rounded-lg border border-emerald-100 bg-white px-3 py-2 text-sm text-slate-700">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold text-slate-900">{link.technician?.name ?? `Usta #${link.technical_service_technician_id}`}</span>
+                            {link.is_primary && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">Birincil</span>}
+                            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${link.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                              {link.active ? 'Aktif' : 'Pasif'}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {[link.technician?.phone, locationLabel(link.technician?.city ?? null, link.technician?.district ?? null), link.technician?.mikro_cari_kodu].filter(Boolean).join(' · ')}
+                          </div>
+                          {formMode !== 'detail' && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {!link.is_primary && link.active && (
+                                <Button type="button" size="sm" variant="outline" onClick={() => void updateTechnicianLink(link, { is_primary: true })} disabled={technicianLinkLoading}>
+                                  Birincil yap
+                                </Button>
+                              )}
+                              {link.active && (
+                                <Button type="button" size="sm" variant="outline" onClick={() => void unlinkTechnician(link)} disabled={technicianLinkLoading}>
+                                  Bağlantıyı kaldır
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      Teknik servis ustası bağlı değil. Bu partner portal/yetki kaydı olarak durur; çilingir işleri için mevcut usta kaydına bağlanmalıdır.
+                    </div>
+                  )}
+
+                  {formMode !== 'detail' && (
+                    <div className="mt-3 rounded-lg border border-emerald-100 bg-white p-3">
+                      <div className="flex gap-2">
+                        <Input className="w-full min-w-0 max-w-full" value={technicianSearch} onChange={(event) => setTechnicianSearch(event.target.value)} placeholder="Ad, telefon, cari kodu veya şehir" />
+                        <Button type="button" variant="outline" onClick={() => void loadTechnicians()} disabled={technicianLoading || !editingPartner}>
+                          {technicianLoading ? 'Aranıyor...' : 'Ara'}
+                        </Button>
+                      </div>
+                      {!editingPartner && (
+                        <div className="mt-2 text-xs font-semibold text-amber-700">Usta bağlamak için önce partner kaydını oluşturun.</div>
+                      )}
+                      {technicians.length > 0 && (
+                        <div className="mt-3 grid gap-2">
+                          {technicians.map((technician) => (
+                            <div key={technician.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold text-slate-900">{technician.name}</span>
+                                {technician.linked_to_current_partner && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">Zaten bağlı</span>}
+                                {technician.linked_partner_id && !technician.linked_to_current_partner && <span className="rounded-full bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700">Başka partnerde</span>}
+                                {technician.requires_type_review && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">Tip kontrol gerekli</span>}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                {[technician.phone, locationLabel(technician.city, technician.district), technician.mikro_cari_kodu ?? technician.cari_code].filter(Boolean).join(' · ')}
+                              </div>
+                              {technician.linked_partner_name && !technician.linked_to_current_partner && (
+                                <div className="mt-1 text-xs text-rose-600">Bağlı partner: {technician.linked_partner_name}</div>
+                              )}
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {!technician.linked_to_current_partner && (
+                                  <Button type="button" size="sm" variant="outline" onClick={() => void linkTechnician(technician.id)} disabled={technicianLinkLoading || !editingPartner || technician.can_link === false}>
+                                    Bağla
+                                  </Button>
+                                )}
+                                {technician.can_link !== false && !technician.linked_to_current_partner && (
+                                  <Button type="button" size="sm" variant="outline" onClick={() => void linkTechnician(technician.id, true)} disabled={technicianLinkLoading || !editingPartner}>
+                                    Bağla ve birincil yap
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {showLegacyTechnicianSelect && hasLocksmithForm && (
                 <section className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
                   <label className="grid gap-1 text-sm font-semibold text-emerald-900">
                     Teknik Servis Ustası

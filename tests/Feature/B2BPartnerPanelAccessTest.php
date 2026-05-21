@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerCapability;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\B2B\B2BCariSnapshot;
 use App\Models\B2B\B2BCariSnapshotRun;
 use App\Models\B2B\B2BPartnerUserAccess;
@@ -16,9 +17,11 @@ use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
+use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
+use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -157,6 +160,271 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('partner.technical_service_technician_id', $technician->id)
             ->assertJsonPath('partner.linked_technician_name', 'Çilingir Usta');
+    }
+
+    public function test_partner_can_have_multiple_active_technicians_without_replacing_existing_link(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $bahattin = $this->technician([
+            'name' => 'Bahattin Ankara',
+            'city' => 'Ankara',
+            'mikro_cari_kodu' => '320.CLG.BAHAT',
+            'cari_code' => '320.CLG.BAHAT',
+        ]);
+        $berkay = $this->technician([
+            'name' => 'Berkay Izmir',
+            'city' => 'Izmir',
+            'mikro_cari_kodu' => '320.CLG.BAHAT',
+            'cari_code' => '320.CLG.BAHAT',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/technicians", [
+                'technical_service_technician_id' => $bahattin->id,
+                'is_primary' => true,
+            ])
+            ->assertCreated()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('partner.technical_service_technician_id', $bahattin->id);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/technicians", [
+                'technical_service_technician_id' => $berkay->id,
+            ])
+            ->assertCreated()
+            ->assertJsonCount(2, 'items')
+            ->assertJsonPath('partner.technical_service_technician_id', $bahattin->id);
+
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $bahattin->id,
+            'active' => true,
+            'is_primary' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $berkay->id,
+            'active' => true,
+        ]);
+    }
+
+    public function test_same_active_technician_cannot_link_to_two_active_partners(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $firstPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $secondPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $technician = $this->technician(['name' => 'Tekil Usta']);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$firstPartner->id}/technicians", [
+                'technical_service_technician_id' => $technician->id,
+            ])
+            ->assertCreated();
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$secondPartner->id}/technicians", [
+                'technical_service_technician_id' => $technician->id,
+            ])
+            ->assertJsonValidationErrors('technical_service_technician_id');
+    }
+
+    public function test_primary_technician_can_change_and_unlink_keeps_other_links(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $first = $this->technician(['name' => 'Birinci Usta']);
+        $second = $this->technician(['name' => 'Ikinci Usta']);
+
+        $this->actingAs($admin)->postJson("/api/b2b/partners/{$partner->id}/technicians", [
+            'technical_service_technician_id' => $first->id,
+            'is_primary' => true,
+        ])->assertCreated();
+        $secondResponse = $this->actingAs($admin)->postJson("/api/b2b/partners/{$partner->id}/technicians", [
+            'technical_service_technician_id' => $second->id,
+        ])->assertCreated();
+        $secondLinkId = $secondResponse->json('link.id');
+
+        $this->actingAs($admin)
+            ->patchJson("/api/b2b/partners/{$partner->id}/technicians/{$secondLinkId}", ['is_primary' => true])
+            ->assertOk()
+            ->assertJsonPath('partner.technical_service_technician_id', $second->id);
+
+        $this->assertSame(1, B2BPartnerTechnician::query()->where('partner_id', $partner->id)->where('active', true)->where('is_primary', true)->count());
+
+        $firstLink = B2BPartnerTechnician::query()
+            ->where('partner_id', $partner->id)
+            ->where('technical_service_technician_id', $first->id)
+            ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->deleteJson("/api/b2b/partners/{$partner->id}/technicians/{$firstLink->id}")
+            ->assertOk()
+            ->assertJsonCount(2, 'items');
+
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'id' => $firstLink->id,
+            'active' => false,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $second->id,
+            'active' => true,
+            'is_primary' => true,
+        ]);
+    }
+
+    public function test_dealer_only_partner_cannot_link_technicians_but_multi_role_partner_can(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $dealer = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $multiRole = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $technician = $this->technician();
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$dealer->id}/technicians", [
+                'technical_service_technician_id' => $technician->id,
+            ])
+            ->assertJsonValidationErrors('technical_service_technician_id');
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$multiRole->id}/technicians", [
+                'technical_service_technician_id' => $technician->id,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('partner.technical_service_technician_id', $technician->id);
+    }
+
+    public function test_technician_lookup_marks_current_and_other_partner_links(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $currentPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $otherPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $currentTechnician = $this->technician([
+            'name' => 'Bahattin Ankara',
+            'mikro_cari_kodu' => '320.CLG.SAME',
+            'cari_code' => '320.CLG.SAME',
+        ]);
+        $otherTechnician = $this->technician([
+            'name' => 'Berkay Izmir',
+            'mikro_cari_kodu' => '320.CLG.SAME',
+            'cari_code' => '320.CLG.SAME',
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $currentPartner->id,
+            'technical_service_technician_id' => $currentTechnician->id,
+            'is_primary' => true,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $otherPartner->id,
+            'technical_service_technician_id' => $otherTechnician->id,
+            'is_primary' => true,
+            'active' => true,
+        ]);
+
+        $items = $this->actingAs($admin)
+            ->getJson("/api/b2b/locksmith-technicians?search=320.CLG.SAME&partner_id={$currentPartner->id}")
+            ->assertOk()
+            ->assertJsonCount(2, 'items')
+            ->json('items');
+
+        $this->assertTrue(collect($items)->firstWhere('id', $currentTechnician->id)['linked_to_current_partner']);
+        $this->assertFalse(collect($items)->firstWhere('id', $otherTechnician->id)['can_link']);
+    }
+
+    public function test_portal_service_job_scope_uses_all_active_linked_technicians(): void
+    {
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $first = $this->technician(['name' => 'Scope Usta 1']);
+        $second = $this->technician(['name' => 'Scope Usta 2']);
+        $other = $this->technician(['name' => 'Scope Diger']);
+        foreach ([$first, $second] as $index => $technician) {
+            B2BPartnerTechnician::query()->create([
+                'partner_id' => $partner->id,
+                'technical_service_technician_id' => $technician->id,
+                'active' => true,
+                'is_primary' => $index === 0,
+            ]);
+        }
+        TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-SCOPE-1',
+            'customer_name' => 'Scope Musteri',
+            'customer_phone' => '+905550000001',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Scope adres 1',
+            'product_name' => 'Test Kilit',
+            'service_type' => 'Montaj',
+            'technical_service_technician_id' => $first->id,
+            'status' => TechnicalServiceRequest::STATUS_NEW,
+            'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+        ]);
+        TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-SCOPE-2',
+            'customer_name' => 'Scope Musteri',
+            'customer_phone' => '+905550000002',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Scope adres 2',
+            'product_name' => 'Test Kilit',
+            'service_type' => 'Montaj',
+            'technical_service_technician_id' => $second->id,
+            'status' => TechnicalServiceRequest::STATUS_NEW,
+            'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+        ]);
+        TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-SCOPE-3',
+            'customer_name' => 'Scope Musteri',
+            'customer_phone' => '+905550000003',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Scope adres 3',
+            'product_name' => 'Test Kilit',
+            'service_type' => 'Montaj',
+            'technical_service_technician_id' => $other->id,
+            'status' => TechnicalServiceRequest::STATUS_NEW,
+            'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+        ]);
+
+        $mrns = app(B2BPartnerServiceJobScopeService::class)
+            ->serviceJobsQuery($partner)
+            ->pluck('mrn')
+            ->sort()
+            ->values()
+            ->all();
+
+        $this->assertSame(['MRN-SCOPE-1', 'MRN-SCOPE-2'], $mrns);
     }
 
     public function test_partner_access_scope_abilities_are_enforced(): void
@@ -1715,6 +1983,21 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'capability' => $capability,
                 'active' => true,
             ]);
+        }
+
+        if (! empty($partner->technical_service_technician_id)) {
+            B2BPartnerTechnician::query()->updateOrCreate(
+                [
+                    'partner_id' => $partner->id,
+                    'technical_service_technician_id' => $partner->technical_service_technician_id,
+                ],
+                [
+                    'relationship_type' => 'field_technician',
+                    'is_primary' => true,
+                    'active' => true,
+                    'source' => 'test_helper',
+                ],
+            );
         }
 
         return $partner->load('capabilities');
