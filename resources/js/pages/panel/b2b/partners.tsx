@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, Link } from '@inertiajs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Heading from '@/components/heading'
 import { Button } from '@/components/ui/button'
@@ -45,6 +45,32 @@ type Partner = {
   invoice_usage_note?: string | null
   users_count?: number
   active_users_count?: number
+  portal_admin_users?: PortalAdminUser[]
+  has_portal_admin?: boolean
+}
+
+type PortalAdminUser = {
+  user_id: number
+  username: string | null
+  name: string | null
+  role_code: string | null
+  active: boolean
+  portal_admin: boolean
+}
+
+type ProvisionResult = {
+  partner_id: number
+  partner_name?: string | null
+  user_id?: number
+  username?: string | null
+  role_code?: string | null
+  created?: boolean
+  linked?: boolean
+  skipped?: boolean
+  failed?: boolean
+  status?: string
+  default_password?: string | null
+  message?: string
 }
 
 type PartnerTechnicianLink = {
@@ -465,7 +491,7 @@ const partnerCardAccentClass = (active: boolean, capabilities: PartnerType[]) =>
 }
 
 const partnerActionButtonClass = (variant: 'detail' | 'edit' | 'users' | 'danger' | 'success') => {
-  const base = 'h-9 w-full rounded-lg border text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2'
+  const base = 'inline-flex h-9 w-full items-center justify-center rounded-lg border text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2'
 
   if (variant === 'edit') {
     return `${base} border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100 focus-visible:ring-sky-300`
@@ -493,6 +519,14 @@ const candidateCapabilities = (candidate: CariControlCandidate): PartnerType[] =
   return capabilities.length > 0 ? capabilities : ['dealer']
 }
 
+const primaryPortalAdmin = (partner: Partner | null | undefined): PortalAdminUser | null => partner?.portal_admin_users?.[0] ?? null
+
+const portalAdminLabel = (partner: Partner | null | undefined): string => {
+  const admin = primaryPortalAdmin(partner)
+
+  return admin?.username ?? admin?.name ?? '-'
+}
+
 export default function B2BPartnersPage() {
   const [partners, setPartners] = useState<Partner[]>([])
   const [filters, setFilters] = useState<Filters>(emptyFilters)
@@ -510,6 +544,8 @@ export default function B2BPartnersPage() {
   const [technicianLinkLoading, setTechnicianLinkLoading] = useState(false)
   const [cariChecking, setCariChecking] = useState(false)
   const [locksmithSyncing, setLocksmithSyncing] = useState(false)
+  const [adminProvisioning, setAdminProvisioning] = useState(false)
+  const [provisionResults, setProvisionResults] = useState<ProvisionResult[] | null>(null)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
   const [cariControlOpen, setCariControlOpen] = useState(false)
   const [cariSearch, setCariSearch] = useState('')
@@ -947,6 +983,62 @@ export default function B2BPartnersPage() {
     }
   }
 
+  const provisionPartnerAdmin = async (partner: Partner) => {
+    setAdminProvisioning(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const payload = await apiRequest(`/api/b2b/partners/${partner.id}/provision-admin-user`, {
+        method: 'POST',
+        body: JSON.stringify({ show_default_password: true }),
+      })
+      const result = payload as ProvisionResult & { partner?: Partner }
+      setProvisionResults([result])
+
+      if (payload.partner) {
+        const refreshedPartner = payload.partner as Partner
+        setPartners((current) => current.map((item) => (item.id === refreshedPartner.id ? refreshedPartner : item)))
+
+        if (selectedPartnerId === refreshedPartner.id) {
+          setEditingPartner(refreshedPartner)
+          setForm(partnerToFormValues(refreshedPartner))
+        }
+      }
+
+      setMessage(result.created ? `Portal admin kullanıcısı oluşturuldu: ${result.username}.` : `Portal admin kullanıcısı hazır: ${result.username ?? portalAdminLabel(partner)}.`)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Portal admin kullanıcısı oluşturulamadı.')
+    } finally {
+      setAdminProvisioning(false)
+    }
+  }
+
+  const bulkProvisionPartnerAdmins = async () => {
+    setAdminProvisioning(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const payload = await apiRequest('/api/b2b/partners/provision-admin-users', {
+        method: 'POST',
+        body: JSON.stringify({
+          only_without_users: true,
+          active_only: true,
+          show_default_password: true,
+        }),
+      })
+      const results = (payload.results ?? []) as ProvisionResult[]
+      setProvisionResults(results)
+      setMessage(`Toplu portal admin işlemi tamamlandı. Oluşturulan: ${payload.created ?? 0}, mevcut: ${payload.skipped_existing ?? 0}, hata: ${payload.failed ?? 0}.`)
+      await loadPartners()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Toplu portal admin işlemi tamamlanamadı.')
+    } finally {
+      setAdminProvisioning(false)
+    }
+  }
+
   const applyTechnicianLinkResponse = async (response: { items?: PartnerTechnicianLink[], partner?: Partner }) => {
     if (response.items) {
       setPartnerTechnicianLinks(response.items)
@@ -1123,6 +1215,9 @@ export default function B2BPartnersPage() {
             <Button type="button" variant="outline" onClick={() => void syncLocksmithTechnicians()} disabled={locksmithSyncing}>
               {locksmithSyncing ? 'Eşitleniyor...' : 'Çilingirleri eşitle'}
             </Button>
+            <Button type="button" variant="outline" onClick={() => void bulkProvisionPartnerAdmins()} disabled={adminProvisioning}>
+              {adminProvisioning ? 'Hazırlanıyor...' : 'Kullanıcısı olmayanlara admin aç'}
+            </Button>
             <Button type="button" onClick={startCreate}>Yeni Partner</Button>
           </div>
         </div>
@@ -1130,6 +1225,30 @@ export default function B2BPartnersPage() {
           <div className={`rounded-xl border px-4 py-3 text-sm ${error ? 'border-rose-200 bg-rose-50 text-rose-700' : cariControl ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
             {error ?? cariControl?.message ?? message}
           </div>
+        )}
+
+        {provisionResults && provisionResults.length > 0 && (
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-semibold">Portal admin kullanıcı sonucu</h2>
+                <p className="mt-1 text-emerald-800">Varsayılan şifre sadece yeni oluşturulan kullanıcılar için bu ekranda bir kez gösterilir.</p>
+              </div>
+              <Button type="button" variant="outline" onClick={() => setProvisionResults(null)}>Kapat</Button>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {provisionResults.slice(0, 24).map((result, index) => (
+                <div key={`${result.partner_id}-${result.user_id ?? index}`} className="rounded-xl border border-emerald-100 bg-white px-3 py-2">
+                  <div className="font-semibold text-slate-900">{result.partner_name ?? `Partner #${result.partner_id}`}</div>
+                  <div className="mt-1 text-slate-600">Kullanıcı: {result.username ?? '-'}</div>
+                  <div className="text-slate-600">Rol: {result.role_code ?? '-'}</div>
+                  {result.default_password && <div className="font-semibold text-emerald-700">Varsayılan şifre: {result.default_password}</div>}
+                  {result.failed && <div className="font-semibold text-rose-700">Hata: {result.message ?? 'İşlem tamamlanamadı'}</div>}
+                </div>
+              ))}
+            </div>
+            {provisionResults.length > 24 && <div className="mt-2 text-xs font-semibold text-emerald-800">+{provisionResults.length - 24} sonuç daha var.</div>}
+          </section>
         )}
 
         {cariControlOpen && (
@@ -1448,6 +1567,7 @@ export default function B2BPartnersPage() {
                             <span><strong className="text-slate-800">E-posta:</strong> {partner.email ?? '-'}</span>
                             <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
                             <span><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
+                            <span><strong className="text-slate-800">Portal admin:</strong> {partner.has_portal_admin ? portalAdminLabel(partner) : 'Yok'}</span>
                           </div>
                           <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-3">
                             <div className="rounded-xl bg-white px-3 py-2">
@@ -1475,7 +1595,7 @@ export default function B2BPartnersPage() {
                             </div>
                           )}
                         </div>
-                        <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-4">
+                        <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
                           <Button type="button" className={partnerActionButtonClass('detail')} variant="outline" onClick={() => startEdit(partner, 'detail')}>Detay</Button>
                           <Button type="button" className={partnerActionButtonClass('edit')} variant="outline" onClick={() => startEdit(partner)}>Düzenle</Button>
                           <Button
@@ -1488,6 +1608,23 @@ export default function B2BPartnersPage() {
                           >
                             Kullanıcılar
                           </Button>
+                          {!partner.has_portal_admin && (
+                            <Button
+                              type="button"
+                              className={partnerActionButtonClass('users')}
+                              variant="outline"
+                              onClick={() => void provisionPartnerAdmin(partner)}
+                              disabled={adminProvisioning}
+                            >
+                              Admin aç
+                            </Button>
+                          )}
+                          <Link
+                            href={`/panel/b2b/partners/${partner.id}/portal-preview`}
+                            className={partnerActionButtonClass('users')}
+                          >
+                            Portal Önizle
+                          </Link>
                           <Button
                             type="button"
                             className={partnerActionButtonClass(partner.active ? 'danger' : 'success')}
@@ -1775,16 +1912,38 @@ export default function B2BPartnersPage() {
               <section className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <div className="font-semibold text-slate-800">Kullanıcılar</div>
                 <p className="mt-1">Bu partner için {editingPartner?.active_users_count ?? 0} aktif / {editingPartner?.users_count ?? 0} toplam kullanıcı tanımı var.</p>
-                <Button
-                  type="button"
-                  className="mt-3"
-                  variant="outline"
-                  onClick={() => {
-                    window.location.href = '/panel/b2b/users'
-                  }}
-                >
-                  Kullanıcıları yönet
-                </Button>
+                <div className="mt-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+                  Portal admin: {editingPartner?.has_portal_admin ? portalAdminLabel(editingPartner) : 'Yok'}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {editingPartner && !editingPartner.has_portal_admin && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void provisionPartnerAdmin(editingPartner)}
+                      disabled={adminProvisioning}
+                    >
+                      Admin kullanıcı oluştur
+                    </Button>
+                  )}
+                  {editingPartner?.has_portal_admin && (
+                    <Link
+                      href={`/panel/b2b/partners/${editingPartner.id}/portal-preview`}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                    >
+                      Portal Önizle
+                    </Link>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      window.location.href = '/panel/b2b/users'
+                    }}
+                  >
+                    Kullanıcıları yönet
+                  </Button>
+                </div>
               </section>
 
               <div className="flex flex-wrap justify-end gap-2 pt-2">

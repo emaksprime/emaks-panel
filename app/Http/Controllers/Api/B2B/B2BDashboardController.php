@@ -11,6 +11,7 @@ use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Services\B2B\B2BPartnerAdminProvisioningService;
 use App\Services\PanelAccessService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -19,7 +20,10 @@ use Illuminate\Support\Carbon;
 
 class B2BDashboardController extends Controller
 {
-    public function __construct(private readonly PanelAccessService $panelAccess) {}
+    public function __construct(
+        private readonly PanelAccessService $panelAccess,
+        private readonly B2BPartnerAdminProvisioningService $adminProvisioning,
+    ) {}
 
     public function summary(Request $request): JsonResponse
     {
@@ -470,6 +474,8 @@ class B2BDashboardController extends Controller
                     'address_missing' => empty($partner->address),
                     'users_count' => $partner->users_count ?? 0,
                     'active_users_count' => $partner->active_users_count ?? 0,
+                    'portal_admin_users' => $this->adminProvisioning->portalAdminSummaries($partner),
+                    'has_portal_admin' => $this->adminProvisioning->activePortalAdminProfile($partner) !== null,
                     'linked_technicians_count' => $partner->linked_technicians_count ?? 0,
                     'child_cari_count' => count($metadata['child_cari_accounts'] ?? []),
                     'active' => (bool) $partner->active,

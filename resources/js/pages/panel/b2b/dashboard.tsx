@@ -21,6 +21,13 @@ type PartnerStatus = {
   address_missing: boolean
   users_count: number
   active_users_count: number
+  has_portal_admin?: boolean
+  portal_admin_users?: Array<{
+    user_id: number
+    username: string | null
+    name: string | null
+    role_code: string | null
+  }>
   linked_technicians_count: number
   child_cari_count: number
   active: boolean
@@ -88,6 +95,21 @@ type Filters = {
   data_state: '' | 'missing_invoice' | 'complete_invoice'
   child_cari_state: '' | 'with_child_cari' | 'without_child_cari'
   include_locksmiths: boolean
+}
+
+type ProvisionResult = {
+  partner_id: number
+  partner_name?: string | null
+  user_id?: number
+  username?: string | null
+  role_code?: string | null
+  created?: boolean
+  linked?: boolean
+  skipped?: boolean
+  failed?: boolean
+  status?: string
+  default_password?: string | null
+  message?: string
 }
 
 const initialFilters: Filters = {
@@ -178,6 +200,8 @@ export default function B2BDashboard() {
   const [filters, setFilters] = useState<Filters>(initialFilters)
   const [activeTab, setActiveTab] = useState<TabKey>('general')
   const [loading, setLoading] = useState(true)
+  const [adminProvisioning, setAdminProvisioning] = useState(false)
+  const [provisionResults, setProvisionResults] = useState<ProvisionResult[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const loadDashboard = useCallback(async (nextFilters: Filters = initialFilters) => {
@@ -267,6 +291,28 @@ export default function B2BDashboard() {
     void loadDashboard(initialFilters)
   }
 
+  const bulkProvisionPartnerAdmins = async () => {
+    setAdminProvisioning(true)
+    setError(null)
+
+    try {
+      const payload = await apiRequest('/api/b2b/partners/provision-admin-users', {
+        method: 'POST',
+        body: JSON.stringify({
+          only_without_users: true,
+          active_only: true,
+          show_default_password: true,
+        }),
+      })
+      setProvisionResults((payload.results ?? []) as ProvisionResult[])
+      await loadDashboard(filters)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Portal admin kullanıcıları oluşturulamadı.')
+    } finally {
+      setAdminProvisioning(false)
+    }
+  }
+
   const includeLocksmiths = Boolean(summary?.visibility?.can_include_locksmiths && summary?.visibility?.include_locksmiths)
   const tabs: Array<[TabKey, string]> = [
     ['general', 'Genel'],
@@ -296,10 +342,35 @@ export default function B2BDashboard() {
           <Link href="/panel/b2b/users" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm">
             Kullanıcılar
           </Link>
+          <Button type="button" variant="outline" onClick={() => void bulkProvisionPartnerAdmins()} disabled={adminProvisioning}>
+            {adminProvisioning ? 'Hazırlanıyor...' : 'Kullanıcısı olmayanlara admin aç'}
+          </Button>
         </div>
       </div>
 
       {error && <div className="rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</div>}
+
+      {provisionResults && provisionResults.length > 0 && (
+        <section className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="font-semibold">Portal admin kullanıcı sonucu</h2>
+              <p className="mt-1 text-emerald-800">Yeni oluşturulan kullanıcıların varsayılan şifresi burada bir kez gösterilir.</p>
+            </div>
+            <Button type="button" variant="outline" onClick={() => setProvisionResults(null)}>Kapat</Button>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {provisionResults.slice(0, 18).map((result, index) => (
+              <div key={`${result.partner_id}-${result.user_id ?? index}`} className="rounded-lg border border-emerald-100 bg-white px-3 py-2">
+                <div className="font-semibold text-slate-900">{result.partner_name ?? `Partner #${result.partner_id}`}</div>
+                <div className="text-slate-600">Kullanıcı: {result.username ?? '-'}</div>
+                {result.default_password && <div className="font-semibold text-emerald-700">Varsayılan şifre: {result.default_password}</div>}
+                {result.failed && <div className="font-semibold text-rose-700">Hata: {result.message ?? 'İşlem tamamlanamadı'}</div>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {kpis.map(([title, value, tone, hint]) => (
@@ -430,7 +501,7 @@ function PartnerList({ partners, compact = false }: { partners: PartnerStatus[],
             <div className="flex flex-wrap gap-2">
               <Link href="/panel/b2b/partners" className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Detay</Link>
               <Link href="/panel/b2b/users" className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Kullanıcılar</Link>
-              <button type="button" disabled className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-400">Portal Önizle</button>
+              <Link href={`/panel/b2b/partners/${partner.id}/portal-preview`} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Portal Önizle</Link>
             </div>
           </div>
           <div className="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-4">
@@ -440,6 +511,7 @@ function PartnerList({ partners, compact = false }: { partners: PartnerStatus[],
             <div><span className="font-semibold text-slate-800">Konum:</span> {compactLocation(partner.city, partner.district)}</div>
             <div><span className="font-semibold text-slate-800">Adres:</span> {partner.address_missing ? 'Eksik' : 'Tamam'}</div>
             <div><span className="font-semibold text-slate-800">Kullanıcı:</span> {partner.active_users_count}/{partner.users_count}</div>
+            <div><span className="font-semibold text-slate-800">Portal admin:</span> {partner.has_portal_admin ? (partner.portal_admin_users?.[0]?.username ?? '-') : 'Yok'}</div>
             <div><span className="font-semibold text-slate-800">Usta:</span> {partner.linked_technicians_count}</div>
             <div><span className="font-semibold text-slate-800">Alt cari:</span> {partner.child_cari_count}</div>
           </div>

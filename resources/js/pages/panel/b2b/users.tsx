@@ -18,6 +18,27 @@ type Partner = {
   city: string | null
   district: string | null
   active: boolean
+  portal_admin_users?: PortalAdminUser[]
+  has_portal_admin?: boolean
+}
+
+type PortalAdminUser = {
+  user_id: number
+  username: string | null
+  name: string | null
+  role_code: string | null
+  active: boolean
+  portal_admin: boolean
+}
+
+type ProvisionResult = {
+  partner_id: number
+  user_id?: number
+  username?: string | null
+  role_code?: string | null
+  created?: boolean
+  linked?: boolean
+  default_password?: string | null
 }
 
 type ScopeAbilities = Record<AbilityKey, boolean>
@@ -140,6 +161,14 @@ const scopesToPayload = (scopes: Record<ScopeKey, ScopeAbilities>) => scopeRows.
 
 const userSummary = (user: Pick<UserOption, 'name' | 'email' | 'role_code'>) => `${user.name} · ${user.email}${user.role_code ? ` · ${user.role_code}` : ''}`
 
+const primaryPortalAdmin = (partner: Partner | null): PortalAdminUser | null => partner?.portal_admin_users?.[0] ?? null
+
+const portalAdminLabel = (partner: Partner | null): string => {
+  const admin = primaryPortalAdmin(partner)
+
+  return admin?.username ?? admin?.name ?? '-'
+}
+
 export default function B2BPartnerUsersPage() {
   const [partners, setPartners] = useState<Partner[]>([])
   const [partnerUsers, setPartnerUsers] = useState<PartnerUser[]>([])
@@ -154,6 +183,8 @@ export default function B2BPartnerUsersPage() {
   const [assignedUserSearch, setAssignedUserSearch] = useState('')
   const [panelUserSearch, setPanelUserSearch] = useState('')
   const [panelUsersLoading, setPanelUsersLoading] = useState(false)
+  const [adminProvisioning, setAdminProvisioning] = useState(false)
+  const [provisionResult, setProvisionResult] = useState<ProvisionResult | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -251,6 +282,38 @@ export default function B2BPartnerUsersPage() {
       setPanelUsersLoading(false)
     }
   }, [panelUserSearch])
+
+  const provisionSelectedPartnerAdmin = async () => {
+    if (!selectedPartnerId) {
+      setError('Önce partner seçin.')
+
+      return
+    }
+
+    setAdminProvisioning(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const payload = await apiRequest(`/api/b2b/partners/${selectedPartnerId}/provision-admin-user`, {
+        method: 'POST',
+        body: JSON.stringify({ show_default_password: true }),
+      })
+      setProvisionResult(payload as ProvisionResult)
+
+      if (payload.partner) {
+        const refreshedPartner = payload.partner as Partner
+        setPartners((current) => current.map((partner) => (partner.id === refreshedPartner.id ? refreshedPartner : partner)))
+      }
+
+      await loadPartnerUsers(selectedPartnerId)
+      setMessage(payload.created ? `Portal admin kullanıcısı oluşturuldu: ${payload.username}.` : `Portal admin kullanıcısı hazır: ${payload.username ?? portalAdminLabel(selectedPartner)}.`)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Portal admin kullanıcısı oluşturulamadı.')
+    } finally {
+      setAdminProvisioning(false)
+    }
+  }
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -414,6 +477,16 @@ export default function B2BPartnerUsersPage() {
           Yeni panel kullanıcısı Admin &gt; Kullanıcı Yönetimi ekranından oluşturulur. Burada sadece mevcut kullanıcı partner'a atanır.
         </section>
 
+        {provisionResult && (
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+            <div className="font-semibold">Portal admin kullanıcısı hazır: {provisionResult.username ?? '-'}</div>
+            <div className="mt-1">Rol: {provisionResult.role_code ?? '-'}</div>
+            {provisionResult.default_password && (
+              <div className="mt-1 font-semibold text-emerald-700">Varsayılan şifre: {provisionResult.default_password}</div>
+            )}
+          </section>
+        )}
+
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_160px_auto]">
             <Input className="w-full min-w-0 max-w-full" value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Partner ara: kod, ad, cari" />
@@ -475,8 +548,20 @@ export default function B2BPartnerUsersPage() {
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Atanmış kullanıcılar</h2>
                 <p className="text-sm text-slate-500">{selectedPartner ? selectedPartner.display_name : 'Partner seçilmedi'}</p>
+                {selectedPartner && (
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    Portal admin: {selectedPartner.has_portal_admin ? portalAdminLabel(selectedPartner) : 'Yok'}
+                  </p>
+                )}
               </div>
-              <Input className="w-full min-w-0 max-w-full" value={assignedUserSearch} onChange={(event) => setAssignedUserSearch(event.target.value)} placeholder="Atanmış kullanıcı ara" />
+              <div className="flex w-full flex-col gap-2 md:max-w-md">
+                <Input className="w-full min-w-0 max-w-full" value={assignedUserSearch} onChange={(event) => setAssignedUserSearch(event.target.value)} placeholder="Atanmış kullanıcı ara" />
+                {selectedPartner && !selectedPartner.has_portal_admin && (
+                  <Button type="button" variant="outline" onClick={() => void provisionSelectedPartnerAdmin()} disabled={adminProvisioning}>
+                    {adminProvisioning ? 'Hazırlanıyor...' : 'Admin kullanıcı oluştur'}
+                  </Button>
+                )}
+              </div>
             </div>
 
               <div className="p-4">

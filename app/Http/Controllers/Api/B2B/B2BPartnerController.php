@@ -14,6 +14,7 @@ use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BCariControlService;
 use App\Services\B2B\B2BPartnerAccessService;
+use App\Services\B2B\B2BPartnerAdminProvisioningService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -29,6 +30,7 @@ class B2BPartnerController extends Controller
     public function __construct(
         private readonly B2BPartnerAccessService $access,
         private readonly B2BCariControlService $cariControlService,
+        private readonly B2BPartnerAdminProvisioningService $adminProvisioning,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -362,6 +364,55 @@ class B2BPartnerController extends Controller
             'items' => $this->partnerTechnicianItems($partner->fresh()),
             'partner' => $this->partnerPayload($partner->fresh()->loadMissing(['technician', 'capabilities'])),
         ]);
+    }
+
+    public function provisionAdminUser(Request $request, B2BPartner $partner): JsonResponse
+    {
+        $user = $request->user();
+        abort_unless($user && $this->access->canSearchPanelUsers($user), 403);
+
+        $data = $request->validate([
+            'force' => ['nullable', 'boolean'],
+            'show_default_password' => ['nullable', 'boolean'],
+        ]);
+
+        $result = $this->adminProvisioning->provisionForPartner($partner, [
+            'force' => (bool) ($data['force'] ?? false),
+            'show_default_password' => (bool) ($data['show_default_password'] ?? true),
+            'actor' => $user,
+            'request' => $request,
+        ]);
+
+        return response()->json([
+            ...$result,
+            'partner' => $this->partnerPayload($partner->fresh()),
+        ], ($result['created'] ?? false) ? 201 : 200);
+    }
+
+    public function bulkProvisionAdminUsers(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        abort_unless($user && $this->access->canSearchPanelUsers($user), 403);
+
+        $data = $request->validate([
+            'partner_ids' => ['nullable', 'array'],
+            'partner_ids.*' => ['integer', Rule::exists((new B2BPartner)->getTable(), 'id')],
+            'only_without_users' => ['nullable', 'boolean'],
+            'capabilities' => ['nullable', 'array'],
+            'capabilities.*' => ['string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
+            'active_only' => ['nullable', 'boolean'],
+            'show_default_password' => ['nullable', 'boolean'],
+        ]);
+
+        return response()->json($this->adminProvisioning->provisionForAllActivePartners([
+            'partner_ids' => $data['partner_ids'] ?? [],
+            'only_without_users' => (bool) ($data['only_without_users'] ?? true),
+            'capabilities' => $data['capabilities'] ?? [],
+            'active_only' => (bool) ($data['active_only'] ?? true),
+            'show_default_password' => (bool) ($data['show_default_password'] ?? true),
+            'actor' => $user,
+            'request' => $request,
+        ]));
     }
 
     public function cariControl(Request $request): JsonResponse
@@ -1992,6 +2043,8 @@ class B2BPartnerController extends Controller
             'invoice_usage_note' => is_array($partner->metadata) ? ($partner->metadata['invoice_usage_note'] ?? null) : null,
             'users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->count(),
             'active_users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->where('active', true)->count(),
+            'portal_admin_users' => $this->adminProvisioning->portalAdminSummaries($partner),
+            'has_portal_admin' => $this->adminProvisioning->activePortalAdminProfile($partner) !== null,
             'mikro_snapshot' => [
                 'mikro_cari_kodu' => $partner->mikro_cari_kodu,
                 'mikro_cari_unvan' => $partner->mikro_cari_unvan,

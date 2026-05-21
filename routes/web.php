@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
+use App\Http\Controllers\B2BPortalPreviewController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use App\Http\Controllers\PartnerPortalController;
@@ -89,6 +90,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::get('users/search', [B2BPartnerUserController::class, 'searchUsers'])
                     ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
                     ->name('api.b2b.users.search');
+                Route::post('partners/provision-admin-users', [B2BPartnerController::class, 'bulkProvisionAdminUsers'])
+                    ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
+                    ->name('api.b2b.partners.provision-admin-users');
                 Route::get('locksmith-technicians', [B2BPartnerController::class, 'locksmithTechnicians'])
                     ->name('api.b2b.locksmith-technicians.index');
                 Route::post('locksmith-technicians/sync', [B2BPartnerController::class, 'syncLocksmithTechnicians'])
@@ -113,6 +117,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                     ->name('api.b2b.partner-users.update');
                 Route::delete('partners/{partner}/users/{user}', [B2BPartnerUserController::class, 'destroy'])
                     ->name('api.b2b.partner-users.destroy');
+                Route::post('partners/{partner}/provision-admin-user', [B2BPartnerController::class, 'provisionAdminUser'])
+                    ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
+                    ->name('api.b2b.partners.provision-admin-user');
                 Route::get('partners/{partner}', [B2BPartnerController::class, 'show'])
                     ->name('api.b2b.partners.show');
                 Route::patch('partners/{partner}/active', [B2BPartnerController::class, 'updateActive'])
@@ -267,6 +274,10 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:b2b.partners.view,b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.manufacturers.view,b2b.sellers.view')->name('b2b.partners');
+
+    Route::get('panel/b2b/partners/{partner}/portal-preview', B2BPortalPreviewController::class)
+        ->middleware('panel.access:b2b.portal_preview.view')
+        ->name('b2b.portal-preview');
 
     Route::get('panel/b2b', fn () => Inertia::render('panel/b2b/dashboard', [
         'page' => [

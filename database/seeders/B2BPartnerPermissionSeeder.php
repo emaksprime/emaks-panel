@@ -40,6 +40,7 @@ class B2BPartnerPermissionSeeder extends Seeder
             ['code' => 'b2b.sellers.manage', 'name' => 'B2B Satıcı Yönetimi', 'type' => 'action', 'description' => 'Satıcı partner kayıtlarını yönetme yetkisi.', 'active' => true],
             ['code' => 'b2b.view', 'name' => 'B2B Partner Görünümü', 'type' => 'page', 'description' => 'B2B partner modülü giriş yetkisi.', 'active' => true],
             ['code' => 'b2b.dashboard.view', 'name' => 'B2B Kokpit Görünümü', 'type' => 'page', 'description' => 'Operasyon B2B kokpit ekranı.', 'active' => true],
+            ['code' => 'b2b.portal_preview.view', 'name' => 'B2B Portal Önizleme', 'type' => 'action', 'description' => 'İç operasyonun partner portalını read-only önizleme yetkisi.', 'active' => true],
             ['code' => 'b2b.manage', 'name' => 'B2B Partner Yönetimi', 'type' => 'action', 'description' => 'B2B partner yönetim aksiyonları.', 'active' => true],
             ['code' => 'b2b.dealers.view', 'name' => 'B2B Bayi Görünümü', 'type' => 'scope', 'description' => 'Bayi partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
             ['code' => 'b2b.dealers.manage', 'name' => 'B2B Bayi Yönetimi', 'type' => 'action', 'description' => 'Bayi partner kayıtlarını yönetme yetkisi.', 'active' => true],

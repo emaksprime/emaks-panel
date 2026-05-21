@@ -600,6 +600,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $codes = [
             'b2b.view',
             'b2b.dashboard.view',
+            'b2b.portal_preview.view',
             'b2b.partners.view',
             'b2b.manage',
             'b2b.dealers.view',
@@ -621,6 +622,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(count($codes), Resource::query()->whereIn('code', $codes)->count());
         $this->assertSame(1, Resource::query()->where('code', 'b2b.view')->count());
         $this->assertSame(1, Resource::query()->where('code', 'b2b.dashboard.view')->count());
+        $this->assertSame(1, Resource::query()->where('code', 'b2b.portal_preview.view')->count());
         $this->assertSame(1, Resource::query()->where('code', 'b2b.partners.view')->count());
         $this->assertSame(1, Page::query()->where('code', 'b2b_partners')->count());
         $this->assertSame(1, Page::query()->where('code', 'b2b_dashboard')->count());
@@ -664,6 +666,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertDatabaseMissing('panel.role_resource_permissions', [
             'role_code' => 'b2b_manager',
             'resource_code' => 'b2b.locksmiths.view',
+        ]);
+        $this->assertDatabaseMissing('panel.role_resource_permissions', [
+            'role_code' => 'b2b_manager',
+            'resource_code' => 'b2b.portal_preview.view',
         ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_dealer',
@@ -1519,9 +1525,13 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('child_cari_accounts', $source);
         $this->assertStringContainsString('matched_child_cari_codes', $source);
         $this->assertStringContainsString('Eşleşen cari bulunamadı.', $source);
+        $this->assertStringContainsString('Admin kullanıcı oluştur', $source);
+        $this->assertStringContainsString('Kullanıcısı olmayanlara admin aç', $source);
+        $this->assertStringContainsString('Portal Önizle', $source);
         $this->assertStringNotContainsString('overflow-x-auto', $source);
         $this->assertStringNotContainsString('Bayi için kullanılmaz', $source);
         $this->assertStringNotContainsString('overflow-x-auto', $usersSource);
+        $this->assertStringContainsString('Portal admin', $usersSource);
         $this->assertStringContainsString('grid gap-3 rounded-xl', $usersSource);
         $this->assertStringContainsString('Partner kullanıcı yetkileri güncellendi', $usersSource);
     }
@@ -2348,6 +2358,266 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->actingAs($user)->get('/panel/b2b')->assertOk();
         $this->actingAs($user)->getJson('/api/b2b/dashboard/summary')->assertOk();
+    }
+
+    public function test_partner_admin_provisioning_creates_scoped_dealer_user(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'display_name' => 'BAHATTIN OZBEK',
+            'mikro_cari_kodu' => '320.CLG.06.002',
+        ]);
+        $otherPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'mikro_cari_kodu' => '320.CLG.06.999',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user", [
+                'show_default_password' => true,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('created', true)
+            ->assertJsonPath('username', 'bahat320')
+            ->assertJsonPath('role_code', 'b2b_dealer')
+            ->assertJsonPath('default_password', '12345678');
+
+        $user = User::query()->where('username', 'bahat320')->firstOrFail();
+        $this->assertSame('b2b_dealer', $user->role_code);
+        $this->assertTrue(Hash::check('12345678', $user->password_hash));
+        $this->assertNotSame('12345678', $user->password_hash);
+        $this->assertTrue((bool) $user->force_password_change);
+
+        $this->assertDatabaseHas('b2b_partner_user_profiles', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'orders',
+            'can_view' => true,
+            'can_create' => true,
+            'can_update' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'stock',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'users',
+            'can_view' => true,
+            'can_create' => true,
+            'can_update' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'finance',
+            'can_view' => false,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'access_scope' => 'technical_service',
+            'can_view' => false,
+        ]);
+
+        $this->assertTrue(app(B2BPartnerAccessService::class)->canViewPartner($user, $partner));
+        $this->assertFalse(app(B2BPartnerAccessService::class)->canViewPartner($user, $otherPartner));
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'subject_id' => $user->id,
+            'action' => 'b2b.partner.admin_user_created',
+        ]);
+        $auditPayload = B2BPartnerAuditLog::query()
+            ->where('partner_id', $partner->id)
+            ->get()
+            ->map(fn (B2BPartnerAuditLog $log): string => json_encode([$log->old_values, $log->new_values]) ?: '')
+            ->implode("\n");
+        $this->assertStringNotContainsString('12345678', $auditPayload);
+    }
+
+    public function test_partner_admin_provisioning_is_idempotent_and_username_suffixes_are_unique(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        User::factory()->create(['username' => 'bahat320']);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'display_name' => 'BAHATTIN OZBEK',
+            'mikro_cari_kodu' => '320.CLG.06.002',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated()
+            ->assertJsonPath('username', 'bahat3202');
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertOk()
+            ->assertJsonPath('status', 'already_linked')
+            ->assertJsonPath('username', 'bahat3202')
+            ->assertJsonPath('default_password', null);
+
+        $this->assertSame(1, B2BPartnerUserProfile::query()
+            ->where('partner_id', $partner->id)
+            ->whereHas('user', fn ($query) => $query->where('role_code', 'b2b_dealer'))
+            ->count());
+    }
+
+    public function test_locksmith_and_hybrid_partner_admin_scopes_are_partner_limited(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $locksmith = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'LOCKSMITH ONLY',
+            'mikro_cari_kodu' => '320.CLG.01.001',
+        ]);
+        $hybrid = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'HYBRID PARTNER',
+            'mikro_cari_kodu' => '120.00.33.00005',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$locksmith->id}/provision-admin-user")
+            ->assertCreated()
+            ->assertJsonPath('role_code', 'b2b_locksmith');
+        $locksmithUser = User::query()->where('role_code', 'b2b_locksmith')->firstOrFail();
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $locksmith->id,
+            'user_id' => $locksmithUser->id,
+            'access_scope' => 'technical_service',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $locksmith->id,
+            'user_id' => $locksmithUser->id,
+            'access_scope' => 'orders',
+            'can_view' => false,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$hybrid->id}/provision-admin-user")
+            ->assertCreated()
+            ->assertJsonPath('role_code', 'b2b_dealer');
+        $hybridUser = User::query()
+            ->where('role_code', 'b2b_dealer')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $hybrid->id))
+            ->firstOrFail();
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $hybrid->id,
+            'user_id' => $hybridUser->id,
+            'access_scope' => 'orders',
+            'can_view' => true,
+            'can_create' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $hybrid->id,
+            'user_id' => $hybridUser->id,
+            'access_scope' => 'technical_service',
+            'can_view' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_user_access', [
+            'partner_id' => $hybrid->id,
+            'user_id' => $hybridUser->id,
+            'access_scope' => 'finance',
+            'can_view' => false,
+        ]);
+    }
+
+    public function test_bulk_partner_admin_provisioning_skips_existing_active_admin_users(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $existing = $this->partner(['display_name' => 'Existing Dealer', 'mikro_cari_kodu' => '120.00.01']);
+        $missing = $this->partner(['display_name' => 'Missing Dealer', 'mikro_cari_kodu' => '120.00.02']);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$existing->id}/provision-admin-user")
+            ->assertCreated();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/partners/provision-admin-users', [
+                'partner_ids' => [$existing->id, $missing->id],
+                'only_without_users' => true,
+                'show_default_password' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('total', 2)
+            ->assertJsonPath('created', 1)
+            ->assertJsonPath('skipped_existing', 1);
+    }
+
+    public function test_partner_users_cannot_provision_admins_or_open_internal_preview(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner(['display_name' => 'Scoped Dealer', 'mikro_cari_kodu' => '120.00.33']);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_dealer')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertForbidden();
+        $this->actingAs($portalUser)
+            ->get("/panel/b2b/partners/{$partner->id}/portal-preview")
+            ->assertForbidden();
+        $this->actingAs($portalUser)
+            ->get('/panel/b2b')
+            ->assertForbidden();
+        $this->actingAs($portalUser)
+            ->get('/partner/dashboard')
+            ->assertOk();
+    }
+
+    public function test_portal_preview_requires_permission_and_loads_selected_partner_only(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $operationUser = $this->userWithRole('b2b_preview_operator');
+        $this->grantPanelResource('b2b_preview_operator', 'b2b.portal_preview.view');
+        $partner = $this->partner(['display_name' => 'Preview Partner', 'mikro_cari_kodu' => '120.00.55']);
+        $otherPartner = $this->partner(['display_name' => 'Other Partner', 'mikro_cari_kodu' => '120.00.56']);
+
+        $this->actingAs($operationUser)
+            ->get("/panel/b2b/partners/{$partner->id}/portal-preview")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('panel/b2b/portal-preview')
+                ->where('preview.read_only', true)
+                ->where('partnerPortal.selectedPartner.id', $partner->id)
+                ->where('partnerPortal.partners.0.id', $partner->id)
+                ->missing('partnerPortal.partners.1')
+            );
+
+        $this->actingAs($operationUser)
+            ->get("/panel/b2b/partners/{$otherPartner->id}/portal-preview")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('panel/b2b/portal-preview')
+                ->where('partnerPortal.selectedPartner.id', $otherPartner->id)
+            );
     }
 
     private function partnerUser(): User
