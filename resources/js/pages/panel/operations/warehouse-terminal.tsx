@@ -1,5 +1,6 @@
-import { Head } from '@inertiajs/react';
+import { Head, Link } from '@inertiajs/react';
 import {
+    ArrowRight,
     BadgeCheck,
     Boxes,
     ClipboardList,
@@ -18,6 +19,7 @@ type TerminalCard = {
     status: 'Pilot' | 'Hazırlanıyor';
     description: string;
     Icon: LucideIcon;
+    href?: string;
 };
 
 const terminalCards: TerminalCard[] = [
@@ -26,6 +28,7 @@ const terminalCards: TerminalCard[] = [
         status: 'Pilot',
         description: 'Kaynak raf, ürün/seri ve hedef raf okutularak transfer yapılacak.',
         Icon: RotateCcw,
+        href: '/operations/warehouse-terminal/rack-transfer',
     },
     {
         title: 'Seri / Raf Sorgu',
@@ -118,22 +121,44 @@ export default function WarehouseTerminal() {
                 </section>
 
                 <section className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    {terminalCards.map(({ title, status, description, Icon }) => (
-                        <article key={title} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                            <div className="flex items-start justify-between gap-3">
-                                <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white">
-                                    <Icon className="size-5" />
-                                </span>
-                                <StatusBadge status={status} />
-                            </div>
-                            <h2 className="mt-4 text-base font-bold text-slate-950">
-                                {title}
-                            </h2>
-                            <p className="mt-2 text-sm leading-6 text-slate-600">
-                                {description}
-                            </p>
-                        </article>
-                    ))}
+                    {terminalCards.map(({ title, status, description, Icon, href }) => {
+                        const cardClassName = [
+                            'rounded-lg border border-slate-200 bg-white p-4 shadow-sm',
+                            href ? 'transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2' : '',
+                        ].join(' ');
+                        const content = (
+                            <>
+                                <div className="flex items-start justify-between gap-3">
+                                    <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white">
+                                        <Icon className="size-5" />
+                                    </span>
+                                    <StatusBadge status={status} />
+                                </div>
+                                <h2 className="mt-4 text-base font-bold text-slate-950">
+                                    {title}
+                                </h2>
+                                <p className="mt-2 text-sm leading-6 text-slate-600">
+                                    {description}
+                                </p>
+                                {href ? (
+                                    <div className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-blue-700">
+                                        Aç
+                                        <ArrowRight className="size-4" />
+                                    </div>
+                                ) : null}
+                            </>
+                        );
+
+                        return href ? (
+                            <Link key={title} href={href} className={cardClassName}>
+                                {content}
+                            </Link>
+                        ) : (
+                            <article key={title} className={cardClassName}>
+                                {content}
+                            </article>
+                        );
+                    })}
                 </section>
 
                 <section className="mt-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-5">

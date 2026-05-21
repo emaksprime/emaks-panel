@@ -33,7 +33,7 @@ const moduleItems = [
     {
         label: 'Operasyon',
         candidates: ['/operations/warehouse-terminal'],
-        match: ['/operations/warehouse-terminal'],
+        match: ['/operations/warehouse-terminal', '/operations/warehouse-terminal/rack-transfer'],
         tone: 'sky',
     },
     {
