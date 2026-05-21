@@ -333,6 +333,23 @@ const partnerChildCariAccounts = (partner: Partner): PartnerChildAccountDisplay[
   })
 }
 
+const partnerToFormValues = (partner: Partner): PartnerForm => ({
+  capabilities: partnerCapabilities(partner),
+  partner_code: partner.partner_code ?? '',
+  display_name: partner.display_name ?? '',
+  mikro_cari_kodu: partner.mikro_cari_kodu ?? '',
+  mikro_cari_unvan: partner.mikro_cari_unvan ?? '',
+  cari_grup_kodu: partner.cari_grup_kodu ?? '',
+  responsibility_code: partner.responsibility_code ?? '',
+  phone: partner.phone ?? '',
+  email: partner.email ?? '',
+  city: partner.city ?? '',
+  district: partner.district ?? '',
+  address: partner.address ?? '',
+  active: partner.active,
+  technical_service_technician_id: partner.technical_service_technician_id ? String(partner.technical_service_technician_id) : '',
+})
+
 const partnerCapabilities = (partner: Partner): PartnerType[] => {
   const capabilities = partner.capabilities?.filter((capability): capability is PartnerType => ['dealer', 'locksmith', 'manufacturer', 'seller'].includes(capability)) ?? []
 
@@ -382,7 +399,11 @@ const primaryPartnerType = (capabilities: PartnerType[]): PartnerType => {
   return 'seller'
 }
 
-const partnerCardAccentClass = (capabilities: PartnerType[]) => {
+const partnerCardAccentClass = (active: boolean, capabilities: PartnerType[]) => {
+  if (!active) {
+    return 'border-rose-200 bg-rose-50/70 hover:border-rose-300 hover:shadow-rose-100/80'
+  }
+
   const primary = primaryPartnerType(capabilities)
   const hasMultipleRoles = capabilities.length > 1
 
@@ -440,7 +461,9 @@ export default function B2BPartnersPage() {
   const [form, setForm] = useState<PartnerForm>(emptyForm)
   const [formMode, setFormMode] = useState<FormMode>('create')
   const [editingPartner, setEditingPartner] = useState<Partner | null>(null)
+  const [selectedPartnerId, setSelectedPartnerId] = useState<number | null>(null)
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([])
+  const editingPartnerId = editingPartner?.id
   const [technicianSearch, setTechnicianSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -499,13 +522,35 @@ export default function B2BPartnersPage() {
         }
       })
       const response = await apiRequest(`/api/b2b/partners?${params.toString()}`)
-      setPartners(response.items ?? [])
+      const nextPartners = response.items ?? []
+      setPartners(nextPartners)
+
+      if (formMode !== 'create' && selectedPartnerId !== null) {
+        const refreshedPartner = nextPartners.find((partner) => partner.id === selectedPartnerId)
+
+        if (!refreshedPartner) {
+          setSelectedPartnerId(null)
+          setEditingPartner(null)
+          setForm(emptyForm)
+          setFormMode('create')
+          setMessage(null)
+          setError(null)
+        } else if (editingPartnerId === undefined || editingPartnerId !== refreshedPartner.id) {
+          setEditingPartner(refreshedPartner)
+          setForm(partnerToFormValues(refreshedPartner))
+          setMessage(null)
+          setError(null)
+        } else {
+          setEditingPartner(refreshedPartner)
+          setForm(partnerToFormValues(refreshedPartner))
+        }
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Partner listesi alınamadı.')
     } finally {
       setLoading(false)
     }
-  }, [filters])
+  }, [editingPartnerId, filters, formMode, selectedPartnerId])
 
   const loadTechnicians = useCallback(async (search = technicianSearch) => {
     setTechnicianLoading(true)
@@ -559,6 +604,7 @@ export default function B2BPartnersPage() {
   }, [hasLocksmithForm, loadTechnicians])
 
   const startCreate = () => {
+    setSelectedPartnerId(null)
     setForm(emptyForm)
     setFormMode('create')
     setEditingPartner(null)
@@ -567,23 +613,9 @@ export default function B2BPartnersPage() {
   }
 
   const startEdit = (partner: Partner, mode: FormMode = 'edit') => {
+    setSelectedPartnerId(partner.id)
     setEditingPartner(partner)
-    setForm({
-      capabilities: partnerCapabilities(partner),
-      partner_code: partner.partner_code ?? '',
-      display_name: partner.display_name ?? '',
-      mikro_cari_kodu: partner.mikro_cari_kodu ?? '',
-      mikro_cari_unvan: partner.mikro_cari_unvan ?? '',
-      cari_grup_kodu: partner.cari_grup_kodu ?? '',
-      responsibility_code: partner.responsibility_code ?? '',
-      phone: partner.phone ?? '',
-      email: partner.email ?? '',
-      city: partner.city ?? '',
-      district: partner.district ?? '',
-      address: partner.address ?? '',
-      active: partner.active,
-      technical_service_technician_id: partner.technical_service_technician_id ? String(partner.technical_service_technician_id) : '',
-    })
+    setForm(partnerToFormValues(partner))
     setFormMode(mode)
     setMessage(null)
     setError(null)
@@ -869,6 +901,7 @@ export default function B2BPartnersPage() {
         body: JSON.stringify(payload),
       })
       const savedPartner = response.partner as Partner
+      setSelectedPartnerId(savedPartner.id)
       setPartners((current) => {
         if (editingPartner) {
           return current.map((partner) => (partner.id === savedPartner.id ? savedPartner : partner))
@@ -878,22 +911,7 @@ export default function B2BPartnersPage() {
       })
       setEditingPartner(savedPartner)
       setFormMode('edit')
-      setForm({
-        capabilities: partnerCapabilities(savedPartner),
-        partner_code: savedPartner.partner_code ?? '',
-        display_name: savedPartner.display_name ?? '',
-        mikro_cari_kodu: savedPartner.mikro_cari_kodu ?? '',
-        mikro_cari_unvan: savedPartner.mikro_cari_unvan ?? '',
-        cari_grup_kodu: savedPartner.cari_grup_kodu ?? '',
-        responsibility_code: savedPartner.responsibility_code ?? '',
-        phone: savedPartner.phone ?? '',
-        email: savedPartner.email ?? '',
-        city: savedPartner.city ?? '',
-        district: savedPartner.district ?? '',
-        address: savedPartner.address ?? '',
-        active: savedPartner.active,
-        technical_service_technician_id: savedPartner.technical_service_technician_id ? String(savedPartner.technical_service_technician_id) : '',
-      })
+      setForm(partnerToFormValues(savedPartner))
       setMessage(editingPartner ? 'Partner güncellendi.' : 'Partner oluşturuldu.')
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Partner kaydedilemedi.')
@@ -915,7 +933,7 @@ export default function B2BPartnersPage() {
       const updatedPartner = response.partner as Partner
       setPartners((current) => current.map((item) => (item.id === updatedPartner.id ? updatedPartner : item)))
 
-      if (editingPartner?.id === updatedPartner.id) {
+      if (selectedPartnerId === updatedPartner.id) {
         startEdit(updatedPartner, formMode)
       }
 
@@ -1244,7 +1262,7 @@ export default function B2BPartnersPage() {
                   return (
                     <article
                       key={partner.id}
-                      className={`min-w-0 rounded-2xl p-4 transition shadow-sm ${partnerCardAccentClass(capabilities)} hover:shadow-md`}
+                      className={`min-w-0 rounded-2xl p-4 transition shadow-sm ${partnerCardAccentClass(partner.active, capabilities)} hover:shadow-md`}
                     >
                       <div className="flex min-w-0 flex-col gap-4">
                         <div className="min-w-0 space-y-2">
@@ -1330,7 +1348,7 @@ export default function B2BPartnersPage() {
             )}
           </section>
 
-          <aside className="min-w-0 w-full max-w-full rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <aside className="lg:sticky lg:top-24 lg:self-start min-w-0 w-full max-w-full max-h-[calc(100vh-7rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-4">
               <h3 className="text-base font-semibold text-slate-900">
                 {formMode === 'create' ? 'Yeni Partner' : formMode === 'detail' ? 'Partner Detayı' : 'Partner Düzenle'}
