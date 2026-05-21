@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\CompleteWarehouseRackTransferRequest;
+use App\Http\Requests\TransferWarehouseRackRequest;
 use App\Http\Requests\ValidateWarehouseRackTransferRequest;
+use App\Http\Requests\WarehouseRackTransferHistoryRequest;
 use App\Services\WarehouseRackTransferService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\ValidationException;
@@ -32,6 +34,20 @@ class WarehouseRackTransferController extends Controller
         } catch (ValidationException $exception) {
             return $this->validationError($exception);
         }
+    }
+
+    public function transfer(TransferWarehouseRackRequest $request): JsonResponse
+    {
+        try {
+            return response()->json($this->transfers->transfer($request->validated(), $request->user()));
+        } catch (ValidationException $exception) {
+            return $this->validationError($exception);
+        }
+    }
+
+    public function history(WarehouseRackTransferHistoryRequest $request): JsonResponse
+    {
+        return response()->json($this->transfers->history($request->validated()));
     }
 
     private function validationError(ValidationException $exception): JsonResponse

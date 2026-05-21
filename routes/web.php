@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\TechnicalServiceMikroController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
 use App\Http\Controllers\Api\WarehouseRackTransferController;
+use App\Http\Controllers\Api\WarehouseTerminalLookupController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
 use App\Http\Controllers\SupportController;
@@ -52,12 +53,23 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         });
 
         Route::middleware('panel.access:warehouse_terminal')
-            ->prefix('operations/warehouse-terminal/rack-transfer')
+            ->prefix('operations/warehouse-terminal')
             ->group(function () {
-                Route::post('validate', [WarehouseRackTransferController::class, 'validate'])
+                Route::get('lookups/warehouses', [WarehouseTerminalLookupController::class, 'warehouses'])
+                    ->name('api.operations.warehouse-terminal.lookups.warehouses');
+                Route::get('lookups/racks', [WarehouseTerminalLookupController::class, 'racks'])
+                    ->name('api.operations.warehouse-terminal.lookups.racks');
+                Route::get('lookups/items', [WarehouseTerminalLookupController::class, 'items'])
+                    ->name('api.operations.warehouse-terminal.lookups.items');
+
+                Route::post('rack-transfer/validate', [WarehouseRackTransferController::class, 'validate'])
                     ->name('api.operations.warehouse-terminal.rack-transfer.validate');
-                Route::post('complete', [WarehouseRackTransferController::class, 'complete'])
+                Route::post('rack-transfer/complete', [WarehouseRackTransferController::class, 'complete'])
                     ->name('api.operations.warehouse-terminal.rack-transfer.complete');
+                Route::post('rack-transfer/transfer', [WarehouseRackTransferController::class, 'transfer'])
+                    ->name('api.operations.warehouse-terminal.rack-transfer.transfer');
+                Route::get('rack-transfer/history', [WarehouseRackTransferController::class, 'history'])
+                    ->name('api.operations.warehouse-terminal.rack-transfer.history');
             });
 
         Route::prefix('technical-service')->group(function () {

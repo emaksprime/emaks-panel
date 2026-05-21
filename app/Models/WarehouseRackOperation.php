@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class WarehouseRackOperation extends Model
 {
@@ -39,5 +41,15 @@ class WarehouseRackOperation extends Model
             'cancelled_at' => 'datetime',
             'meta' => 'array',
         ];
+    }
+
+    public function items(): HasMany
+    {
+        return $this->hasMany(WarehouseRackOperationItem::class, 'operation_id')->orderBy('line_no');
+    }
+
+    public function completedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'completed_by');
     }
 }
