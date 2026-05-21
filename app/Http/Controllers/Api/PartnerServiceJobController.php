@@ -42,10 +42,16 @@ class PartnerServiceJobController extends Controller
         'Garanti / servis formu bilgisi kontrol edildi',
     ];
 
-    private const REQUIRED_DOOR_PHOTO_FIELDS = [
-        'door_front_photo',
-        'door_side_photo',
-        'door_back_photo',
+    private const REQUIRED_PORTAL_PHOTO_FIELDS = [
+        'before_photo' => 'Öncesi',
+        'after_photo' => 'Sonrası',
+        'warranty_document_photo' => 'Garanti Belgesi',
+    ];
+
+    private const LEGACY_PORTAL_PHOTO_FIELDS = [
+        'door_front_photo' => 'before_photo',
+        'door_side_photo' => 'after_photo',
+        'door_back_photo' => 'warranty_document_photo',
     ];
 
     public function __construct(
@@ -99,10 +105,21 @@ class PartnerServiceJobController extends Controller
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
+        if (! $this->hasOpsAppointment($job)) {
+            throw ValidationException::withMessages([
+                'appointment' => 'Operasyon randevu tarihi ve saat aralığı vermeden randevu onaylanamaz. Randevu saati önerin.',
+            ]);
+        }
+
         $result = DB::transaction(function () use ($job, $partner, $user, $data): array {
             $from = $job->workflow_status;
             $status = TechnicalServicePartnerJobAction::STATUS_SUBMITTED;
-            $payload = ['note' => $data['note'] ?? null];
+            $payload = [
+                'note' => $data['note'] ?? null,
+                'scheduled_date' => $job->scheduled_date?->toDateString(),
+                'scheduled_time' => $job->scheduled_time,
+                'scheduled_at' => $job->scheduled_at?->toISOString(),
+            ];
 
             if (in_array($job->workflow_status, ['Usta Onayı Bekleyen', 'Usta OnayÄ± Bekleyen'], true)) {
                 try {
@@ -114,7 +131,7 @@ class PartnerServiceJobController extends Controller
                             'note' => $data['note'] ?? 'Partner portalından randevu onaylandı.',
                         ],
                         $user,
-                        'partner_portal_accepted',
+                        'partner_portal_appointment_accepted',
                     );
                     $status = TechnicalServicePartnerJobAction::STATUS_APPLIED;
                 } catch (Throwable $exception) {
@@ -123,7 +140,7 @@ class PartnerServiceJobController extends Controller
                 }
             }
 
-            $this->recordAction($job->refresh(), $partner, $user, TechnicalServicePartnerJobAction::ACTION_ACCEPTED, $status, $payload, $data['note'] ?? null, $from);
+            $this->recordAction($job->refresh(), $partner, $user, TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN, $status, $payload, $data['note'] ?? null, $from);
 
             return $this->jobResponse($job->refresh(), $status);
         });
@@ -231,22 +248,24 @@ class PartnerServiceJobController extends Controller
         [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
         $data = $request->validate([
             'result' => ['required', 'string', Rule::in(['completed', 'revisit_required', 'customer_not_available', 'missing_info_or_photo', 'parts_pending'])],
-            'checklist' => ['required', 'array'],
+            'checklist' => ['nullable', 'array'],
             'note' => ['required', 'string', 'max:2000'],
             'customer_confirmation_method' => ['nullable', 'string', 'max:128'],
             'customer_confirmation_note' => ['nullable', 'string', 'max:1000'],
             'photo_upload_ids' => ['nullable', 'array'],
             'photo_upload_ids.*' => ['integer'],
         ]);
-        $this->validateSimpleChecklist($data['checklist']);
+        $checklist = $data['checklist'] ?? $this->portalCompletionChecklist();
+        $this->validateSimpleChecklist($checklist);
         $this->validateCompletionEvidence($job, $data);
 
-        $result = DB::transaction(function () use ($job, $partner, $user, $data): array {
+        $result = DB::transaction(function () use ($job, $partner, $user, $data, $checklist): array {
             $from = $job->workflow_status;
             $status = TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
             $payload = [
                 'result' => $data['result'],
-                'checklist' => $data['checklist'],
+                'checklist_gate' => 'server_checked',
+                'checklist' => $checklist,
                 'customer_confirmation_method' => $data['customer_confirmation_method'] ?? null,
                 'customer_confirmation_note' => $data['customer_confirmation_note'] ?? null,
                 'photo_upload_ids' => $data['photo_upload_ids'] ?? [],
@@ -277,18 +296,27 @@ class PartnerServiceJobController extends Controller
     {
         [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
         $data = $request->validate([
+            'before_photo' => ['nullable', 'file', 'image', 'max:10240'],
+            'after_photo' => ['nullable', 'file', 'image', 'max:10240'],
+            'warranty_document_photo' => ['nullable', 'file', 'image', 'max:10240'],
             'door_front_photo' => ['nullable', 'file', 'image', 'max:10240'],
             'door_side_photo' => ['nullable', 'file', 'image', 'max:10240'],
             'door_back_photo' => ['nullable', 'file', 'image', 'max:10240'],
         ]);
 
-        $files = collect(self::REQUIRED_DOOR_PHOTO_FIELDS)
-            ->mapWithKeys(fn (string $fieldCode): array => [$fieldCode => $data[$fieldCode] ?? null])
-            ->filter(fn (mixed $file): bool => $file instanceof UploadedFile);
+        $fieldFiles = [];
+        foreach (array_keys(self::REQUIRED_PORTAL_PHOTO_FIELDS) as $fieldCode) {
+            $fieldFiles[$fieldCode] = $data[$fieldCode] ?? null;
+        }
+        foreach (self::LEGACY_PORTAL_PHOTO_FIELDS as $legacyField => $fieldCode) {
+            $fieldFiles[$fieldCode] ??= $data[$legacyField] ?? null;
+        }
+
+        $files = collect($fieldFiles)->filter(fn (mixed $file): bool => $file instanceof UploadedFile);
 
         if ($files->isEmpty()) {
             throw ValidationException::withMessages([
-                'photos' => 'En az bir kapÃ„Â± fotoÃ„Å¸rafÃ„Â± yÃƒÂ¼kleyin.',
+                'photos' => 'En az bir fotoğraf yükleyin.',
             ]);
         }
 
@@ -307,7 +335,7 @@ class PartnerServiceJobController extends Controller
                     'technical_service_request_id' => $job->id,
                     'field_code' => (string) $fieldCode,
                     'category' => TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
-                    'original_name' => $file->getClientOriginalName(),
+                    'original_name' => self::REQUIRED_PORTAL_PHOTO_FIELDS[(string) $fieldCode].' - '.$file->getClientOriginalName(),
                     'path' => $path,
                     'mime' => $file->getClientMimeType(),
                     'size' => $file->getSize() ?: 0,
@@ -327,12 +355,12 @@ class PartnerServiceJobController extends Controller
                 'visibility' => 'ops',
                 'photo_upload_ids' => collect($created)->pluck('id')->all(),
                 'photo_fields' => collect($created)->pluck('field_code')->all(),
-            ], 'Ãƒâ€¡ilingir portalÃ„Â±ndan fotoÃ„Å¸raf yÃƒÂ¼klendi.', $job->workflow_status);
+            ], 'Çilingir portalından fotoğraf yüklendi.', $job->workflow_status);
 
             return collect($created)
                 ->map(fn (TechnicalServiceRequestUpload $upload): array => [
                     'id' => $upload->id,
-                    'label' => $upload->original_name,
+                    'label' => self::REQUIRED_PORTAL_PHOTO_FIELDS[$upload->field_code] ?? $upload->original_name,
                     'category' => $upload->category,
                     'field_code' => $upload->field_code,
                 ])
@@ -519,7 +547,7 @@ class PartnerServiceJobController extends Controller
         ]);
 
         $job->events()->create([
-            'event_type' => 'partner_portal_'.$action,
+            'event_type' => $this->eventType($action),
             'title' => $this->eventTitle($action),
             'note' => $note,
             'from_status' => $fromStatus,
@@ -536,9 +564,18 @@ class PartnerServiceJobController extends Controller
         return $record;
     }
 
+    private function eventType(string $action): string
+    {
+        return match ($action) {
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN => 'partner_portal_appointment_accepted',
+            default => 'partner_portal_'.$action,
+        };
+    }
+
     private function eventTitle(string $action): string
     {
         return match ($action) {
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN => 'Çilingir portalı: randevu onaylandı',
             TechnicalServicePartnerJobAction::ACTION_ACCEPTED => 'Ã‡ilingir portalÄ±: randevu onaylandÄ±',
             TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 'Ã‡ilingir portalÄ±: tekrar ziyaret istendi',
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 'Ã‡ilingir portalÄ±: tamamlama gÃ¶nderildi',
@@ -573,7 +610,7 @@ class PartnerServiceJobController extends Controller
     {
         $today = CarbonImmutable::today();
 
-        return collect($slots)
+        $validated = collect($slots)
             ->values()
             ->map(function (array $slot, int $index) use ($today): array {
                 $date = CarbonImmutable::parse((string) $slot['date'])->startOfDay();
@@ -600,6 +637,20 @@ class PartnerServiceJobController extends Controller
                 ];
             })
             ->all();
+
+        $sorted = collect($validated)->sortBy(fn (array $slot): string => $slot['date'].' '.$slot['start_time'])->values();
+        for ($index = 1; $index < $sorted->count(); $index++) {
+            $previous = $sorted[$index - 1];
+            $current = $sorted[$index];
+
+            if ($previous['date'] === $current['date'] && $current['start_time'] < $previous['end_time']) {
+                throw ValidationException::withMessages([
+                    'slots' => 'Randevu saatleri aynı gün içinde çakışamaz.',
+                ]);
+            }
+        }
+
+        return $validated;
     }
 
     private function rejectReasonLabel(string $reason): string
@@ -652,6 +703,16 @@ class PartnerServiceJobController extends Controller
     }
 
     /**
+     * @return array<string, bool>
+     */
+    private function portalCompletionChecklist(): array
+    {
+        return collect(self::SIMPLE_CHECKLIST)
+            ->mapWithKeys(fn (string $key): array => [$key => true])
+            ->all();
+    }
+
+    /**
      * @param  array<string, mixed>  $data
      */
     private function validateCompletionEvidence(TechnicalServiceRequest $job, array $data): void
@@ -700,6 +761,12 @@ class PartnerServiceJobController extends Controller
         return $job->partnerJobActions()
             ->where('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
             ->exists();
+    }
+
+    private function hasOpsAppointment(TechnicalServiceRequest $job): bool
+    {
+        return $job->scheduled_at !== null
+            || ($job->scheduled_date !== null && filled($job->scheduled_time));
     }
 
     /**

@@ -156,6 +156,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('service-jobs/{technicalServiceRequest}/accept', [PartnerServiceJobController::class, 'accept'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.accept');
+                Route::post('service-jobs/{technicalServiceRequest}/accept-appointment', [PartnerServiceJobController::class, 'accept'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.accept-appointment');
                 Route::post('service-jobs/{technicalServiceRequest}/appointment-proposal', [PartnerServiceJobController::class, 'appointmentProposal'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.appointment-proposal');

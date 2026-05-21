@@ -3171,7 +3171,7 @@ export function TechnicalServiceOperationCenter() {
     <>
       <Head title="Teknik Servis Operasyon Merkezi" />
 
-      <div className="relative left-1/2 -ml-[50vw] min-h-screen w-screen max-w-[100vw] overflow-x-hidden bg-[#F3F7FB]">
+      <div className="relative min-h-screen w-full overflow-x-hidden bg-[#F3F7FB]">
         <div className="w-full max-w-none space-y-6 px-3 py-5 sm:px-4 md:px-5 xl:px-6 2xl:px-8">
         <section className="rounded-[32px] border border-white bg-white px-5 py-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] ring-1 ring-slate-200/70 sm:px-6 sm:py-6 xl:px-7">
           <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">

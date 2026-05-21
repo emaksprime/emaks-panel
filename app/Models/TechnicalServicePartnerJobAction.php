@@ -13,6 +13,8 @@ class TechnicalServicePartnerJobAction extends Model
 
     public const ACTION_ACCEPTED = 'accepted';
 
+    public const ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN = 'appointment_accepted_by_technician';
+
     public const ACTION_REVISIT_REQUESTED = 'revisit_requested';
 
     public const ACTION_COMPLETION_SUBMITTED = 'completion_submitted';

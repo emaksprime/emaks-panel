@@ -304,7 +304,25 @@ class B2BPartnerPortalDataService
             'customer_confirmation_ready' => $customerConfirmationReady,
             'checklist_required' => true,
             'ops_final_check_required' => true,
+            'required_photo_labels' => ['Öncesi', 'Sonrası', 'Garanti Belgesi'],
         ];
+        $hasOpsAppointment = $this->hasOpsAppointment($request);
+        $isTerminal = $this->isTerminalStatus($request);
+        $isAppointmentConfirmed = $this->isAppointmentConfirmedStatus($request);
+        $hasOpsReviewAction = $stateAction instanceof TechnicalServicePartnerJobAction
+            && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
+        $isRejectedInReview = $hasOpsReviewAction
+            && $stateAction->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED;
+        $isFinalCheck = $hasOpsReviewAction
+            && $stateAction->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED;
+        $canAcceptAppointment = $this->isTechnicianApprovalStatus($request)
+            && $hasOpsAppointment
+            && ! $hasOpsReviewAction;
+        $canProposeAppointment = ! $isTerminal
+            && ! $isAppointmentConfirmed
+            && ! $isFinalCheck
+            && ! $isRejectedInReview;
+        $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview;
 
         return [
             'id' => $request->id,
@@ -324,6 +342,7 @@ class B2BPartnerPortalDataService
             'scheduled_at' => $request->scheduled_at?->toIso8601String(),
             'scheduled_date' => $request->scheduled_date?->toDateString(),
             'appointment_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
+            'appointment_label' => $this->appointmentLabel($request),
             'priority' => $request->priority,
             'status' => $request->status,
             'workflow_status' => $request->workflow_status,
@@ -333,7 +352,7 @@ class B2BPartnerPortalDataService
             'maps_link' => $this->mapsLink($request),
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'checklist_status' => $request->checklist_status,
-            'checklist_payload' => is_array($request->checklist_payload) ? $request->checklist_payload : [],
+            'checklist_payload' => [],
             'photo_counts' => [
                 'before' => (int) ($request->before_photo_count ?? 0),
                 'after' => (int) ($request->after_photo_count ?? 0),
@@ -342,7 +361,7 @@ class B2BPartnerPortalDataService
             'photos' => $request->uploads
                 ->map(fn (TechnicalServiceRequestUpload $upload): array => [
                     'id' => $upload->id,
-                    'label' => $upload->original_name,
+                    'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
                     'category' => $upload->category,
                     'field_code' => $upload->field_code,
                 ])
@@ -426,11 +445,16 @@ class B2BPartnerPortalDataService
             'card_priority' => $this->serviceJobPriority($stateAction),
             'card_tone' => $this->serviceJobTone($request, $stateAction),
             'kanban_column' => $this->serviceJobColumn($request, $stateAction),
-            'can_accept' => $request->workflow_status === 'Usta Onayı Bekleyen',
-            'can_request_revisit' => ! in_array($request->workflow_status, ['Tamamlandı', 'İptal'], true),
-            'can_submit_completion' => in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true),
+            'action_state' => $this->serviceJobActionState($request, $stateAction, $completionRequirements),
+            'can_accept' => $canAcceptAppointment,
+            'can_propose_appointment' => $canProposeAppointment,
+            'can_request_revisit' => $canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit',
+            'can_request_support' => $canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit',
+            'can_request_customer_otp' => $canFieldActions,
+            'can_upload_photos' => $canFieldActions,
+            'can_submit_completion' => $canFieldActions,
             'can_complete_directly' => false,
-            'can_reject' => ! in_array($request->workflow_status, ['Tamamlandı', 'İptal'], true),
+            'can_reject' => ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview,
             'updated_at' => $request->updated_at?->toIso8601String(),
         ];
     }
@@ -546,11 +570,65 @@ class B2BPartnerPortalDataService
             return 'son_kontrol';
         }
 
-        if (in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)) {
+        if ($this->isAppointmentConfirmedStatus($request)) {
             return 'planlı';
         }
 
         return 'beklemede';
+    }
+
+    private function appointmentLabel(TechnicalServiceRequest $request): ?string
+    {
+        if ($request->scheduled_at !== null) {
+            return $request->scheduled_at->format('d.m.Y H:i');
+        }
+
+        if ($request->scheduled_date !== null) {
+            return trim($request->scheduled_date->format('d.m.Y').' '.(string) $request->scheduled_time);
+        }
+
+        return null;
+    }
+
+    private function hasOpsAppointment(TechnicalServiceRequest $request): bool
+    {
+        return $request->scheduled_at !== null
+            || ($request->scheduled_date !== null && filled($request->scheduled_time));
+    }
+
+    private function isTerminalStatus(TechnicalServiceRequest $request): bool
+    {
+        return in_array($request->workflow_status, ['Tamamlandı', 'TamamlandÄ±', 'İptal', 'Ä°ptal'], true)
+            || $request->completed_at !== null;
+    }
+
+    private function isTechnicianApprovalStatus(TechnicalServiceRequest $request): bool
+    {
+        return in_array($request->workflow_status, ['Usta Onayı Bekleyen', 'Usta OnayÄ± Bekleyen'], true);
+    }
+
+    private function isAppointmentConfirmedStatus(TechnicalServiceRequest $request): bool
+    {
+        return in_array($request->workflow_status, [
+            'Planlı',
+            'PlanlÄ±',
+            'Yolda',
+            'Sahada',
+            'Belge / Fotoğraf Bekleyen',
+            'Belge / FotoÄŸraf Bekleyen',
+            'Müşteri Kapanış Onayı Bekleyen',
+            'MÃ¼ÅŸteri KapanÄ±ÅŸ OnayÄ± Bekleyen',
+        ], true);
+    }
+
+    private function portalPhotoLabel(TechnicalServiceRequestUpload $upload): ?string
+    {
+        return match ($upload->field_code) {
+            'before_photo', 'door_front_photo' => 'Öncesi',
+            'after_photo', 'door_side_photo' => 'Sonrası',
+            'warranty_document_photo', 'door_back_photo' => 'Garanti Belgesi',
+            default => null,
+        };
     }
 
     private function stateAction(TechnicalServiceRequest $request): ?TechnicalServicePartnerJobAction
@@ -612,6 +690,59 @@ class B2BPartnerPortalDataService
         }
 
         return array_values(array_unique($badges));
+    }
+
+    /**
+     * @param  array<string, mixed>  $completionRequirements
+     */
+    private function serviceJobActionState(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $action, array $completionRequirements): string
+    {
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'rejected_ops_review';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'final_check_waiting';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'appointment_proposed_waiting';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'revisit_requested';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'support_requested';
+        }
+
+        if ($this->isAppointmentConfirmedStatus($request)) {
+            if (($completionRequirements['photos_ready'] ?? false) !== true) {
+                return 'photo_waiting';
+            }
+
+            if (($completionRequirements['customer_confirmation_ready'] ?? false) !== true) {
+                return 'otp_waiting';
+            }
+
+            return 'appointment_confirmed';
+        }
+
+        if ($this->isTechnicianApprovalStatus($request) && $this->hasOpsAppointment($request)) {
+            return 'appointment_waiting_technician_accept';
+        }
+
+        if ($this->isTerminalStatus($request)) {
+            return 'completed';
+        }
+
+        return 'new';
     }
 
     private function serviceJobPriority(?TechnicalServicePartnerJobAction $action): int
@@ -677,10 +808,7 @@ class B2BPartnerPortalDataService
             return 'final_check';
         }
 
-        if (
-            $request->workflow_status === 'Tamamlandı'
-            || $request->completed_at !== null
-        ) {
+        if ($this->isTerminalStatus($request)) {
             return 'completed';
         }
 
@@ -696,7 +824,7 @@ class B2BPartnerPortalDataService
             return 'new_jobs';
         }
 
-        if (in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)) {
+        if ($this->isAppointmentConfirmedStatus($request)) {
             return 'appointment_confirmed';
         }
 

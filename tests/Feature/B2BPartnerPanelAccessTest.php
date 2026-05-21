@@ -2889,7 +2889,9 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$newJob->id}")
             ->assertOk()
-            ->assertJsonPath('job.can_accept', true);
+            ->assertJsonPath('job.can_accept', false)
+            ->assertJsonPath('job.can_propose_appointment', true)
+            ->assertJsonPath('job.checklist_payload', []);
     }
 
     public function test_locksmith_partner_service_job_actions_are_scoped_and_audited(): void
@@ -2910,6 +2912,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             'active' => true,
         ]);
         $acceptJob = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-ACCEPT', [
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '12:00',
+        ]);
+        $unplannedAcceptJob = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-ACCEPT-NO-DATE', [
             'workflow_status' => 'Usta Onayı Bekleyen',
             'status' => 'Atandı',
         ]);
@@ -2939,7 +2947,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->firstOrFail();
 
         $this->actingAs($portalUser)
-            ->postJson("/api/partner/service-jobs/{$acceptJob->id}/accept", ['note' => 'Randevu uygundur'])
+            ->postJson("/api/partner/service-jobs/{$unplannedAcceptJob->id}/accept-appointment", ['note' => 'Randevu yok'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('appointment');
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$acceptJob->id}/accept-appointment", ['note' => 'Randevu uygundur'])
             ->assertOk()
             ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
             ->assertJsonPath('job.kanban_column', 'appointment_confirmed');
@@ -2947,12 +2960,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $acceptJob->id,
             'partner_id' => $partner->id,
             'user_id' => $portalUser->id,
-            'action' => TechnicalServicePartnerJobAction::ACTION_ACCEPTED,
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN,
             'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
         ]);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $acceptJob->id,
-            'event_type' => 'partner_portal_accepted',
+            'event_type' => 'partner_portal_appointment_accepted',
         ]);
 
         $this->actingAs($portalUser)
@@ -2979,18 +2992,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
         ]);
 
-        $checklist = [
-            'customer_contacted' => true,
-            'address_confirmed' => true,
-            'appointment_confirmed' => true,
-            'door_product_checked' => true,
-            'job_completed' => true,
-            'customer_informed' => true,
-        ];
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$completionJob->id}/submit-completion", [
                 'result' => 'completed',
-                'checklist' => $checklist,
                 'note' => 'İşlem tamamlandı, operasyon onayı bekleniyor.',
             ])
             ->assertOk()
@@ -3046,6 +3050,16 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
+                'slots' => [
+                    ['date' => '2026-05-25', 'start_time' => '10:00', 'end_time' => '12:00'],
+                    ['date' => '2026-05-25', 'start_time' => '11:30', 'end_time' => '13:00'],
+                ],
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('slots');
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
@@ -3237,14 +3251,6 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
                 'result' => 'completed',
-                'checklist' => [
-                    'customer_contacted' => true,
-                    'address_confirmed' => true,
-                    'appointment_confirmed' => true,
-                    'door_product_checked' => true,
-                    'job_completed' => true,
-                    'customer_informed' => true,
-                ],
                 'note' => 'Doğrudan tamamlanabilir şartlar sağlandı.',
             ])
             ->assertOk()

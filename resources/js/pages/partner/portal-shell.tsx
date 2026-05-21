@@ -87,6 +87,7 @@ type ServiceJob = {
   scheduled_at: string | null
   scheduled_date: string | null
   appointment_at: string | null
+  appointment_label: string | null
   priority: string | null
   status: string | null
   workflow_status: string | null
@@ -130,13 +131,19 @@ type ServiceJob = {
     customer_confirmation_ready: boolean
     checklist_required: boolean
     ops_final_check_required: boolean
+    required_photo_labels?: string[]
   }
   badges: string[]
   card_priority: number
   card_tone: 'blue' | 'green' | 'amber' | 'slate' | 'violet' | 'rose'
   kanban_column: 'new_jobs' | 'appointment_confirmed' | 'revisit' | 'final_check' | 'completed'
+  action_state?: string
   can_accept: boolean
+  can_propose_appointment?: boolean
   can_request_revisit: boolean
+  can_request_support?: boolean
+  can_request_customer_otp?: boolean
+  can_upload_photos?: boolean
   can_submit_completion: boolean
   can_complete_directly: boolean
   can_reject: boolean
@@ -617,6 +624,7 @@ const cardToneClass = (tone: ServiceJob['card_tone']) => ({
 
 const actionLabel = (action: string) => ({
   accepted: 'Randevu onaylandı',
+  appointment_accepted_by_technician: 'Randevu onaylandı',
   appointment_proposed: 'Randevu önerildi',
   job_rejected: 'İş reddedildi',
   revisit_requested: 'Tekrar ziyaret istendi',
@@ -642,14 +650,49 @@ const appointmentSlotLabels = (payload: Record<string, unknown> | undefined) => 
     .filter(Boolean)
 }
 
-const requiredChecklist = [
-  ['customer_contacted', 'Müşteri ile iletişim kuruldu'],
-  ['address_confirmed', 'Adres doğrulandı'],
-  ['appointment_confirmed', 'Randevu teyit edildi'],
-  ['door_product_checked', 'Kapı/ürün kontrol edildi'],
-  ['job_completed', 'İşlem tamamlandı'],
-  ['customer_informed', 'Müşteri bilgilendirildi'],
+const portalPhotoFields = [
+  ['before_photo', 'Öncesi'],
+  ['after_photo', 'Sonrası'],
+  ['warranty_document_photo', 'Garanti Belgesi'],
 ] as const
+
+const slotValidationMessage = (slots: Array<{ date: string, start_time: string, end_time: string }>) => {
+  if (slots.length < 1) {
+    return 'En az bir randevu saati önerin.'
+  }
+
+  if (slots.length > 3) {
+    return 'En fazla 3 randevu saati önerilebilir.'
+  }
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const sorted = [...slots].sort((a, b) => `${a.date} ${a.start_time}`.localeCompare(`${b.date} ${b.start_time}`))
+
+  for (let index = 0; index < sorted.length; index += 1) {
+    const slot = sorted[index]
+
+    if (!slot.date || !slot.start_time || !slot.end_time) {
+      return 'Tarih, başlangıç ve bitiş saati zorunlu.'
+    }
+
+    if (new Date(`${slot.date}T00:00:00`).getTime() < today.getTime()) {
+      return 'Geçmiş tarih için randevu önerilemez.'
+    }
+
+    if (slot.end_time <= slot.start_time) {
+      return 'Bitiş saati başlangıçtan sonra olmalı.'
+    }
+
+    const previous = sorted[index - 1]
+
+    if (previous && previous.date === slot.date && slot.start_time < previous.end_time) {
+      return 'Randevu saatleri aynı gün içinde çakışamaz.'
+    }
+  }
+
+  return null
+}
 
 function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
   const initialJobs = useMemo(() => board.columns.flatMap((column) => column.jobs), [board.columns])
@@ -703,6 +746,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                   </div>
                   <p className="mt-2 text-sm font-medium text-slate-800">{job.customer_name ?? 'Müşteri'}</p>
                   <p className="mt-1 text-xs text-slate-500">{[job.city, job.district].filter(Boolean).join(' / ') || '-'}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-600">Randevu: {job.appointment_label ?? job.appointment_at ?? '-'}</p>
                   <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
                   {job.badges.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
@@ -718,10 +762,10 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
         ))}
       </section>
       {selectedJob && detailOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/40 p-0 sm:p-4">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 p-0 sm:p-4 lg:p-6">
           <div className="absolute inset-0" onClick={() => setDetailOpen(false)} />
-          <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-5xl flex-col overflow-hidden bg-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100vh-2rem)] sm:rounded-3xl">
-            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4">
+          <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-6xl flex-col overflow-hidden bg-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100vh-2rem)] lg:max-h-[calc(100vh-3rem)] sm:rounded-3xl">
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-4 py-4">
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">İş detayı</p>
                 <h2 className="mt-1 text-xl font-semibold text-slate-950">{selectedJob.mrn}</h2>
@@ -777,10 +821,45 @@ function ServiceJobDetail({
   const [supportDescription, setSupportDescription] = useState('')
   const [supportProduct, setSupportProduct] = useState('')
   const [supportQuantity, setSupportQuantity] = useState('')
-  const checklist = Object.fromEntries(requiredChecklist.map(([key]) => [key, true]))
+  const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | null>(null)
   const photosReady = job.completion_requirements.photos_ready
   const confirmationReady = job.completion_requirements.customer_confirmation_ready
   const completionBlocked = !photosReady || !confirmationReady || completionNote.trim().length < 3
+  const appointmentSlotError = slotValidationMessage(appointmentSlots)
+  const canAcceptAppointment = Boolean(job.can_accept)
+  const canProposeAppointment = Boolean(job.can_propose_appointment ?? true)
+  const canOnlyAddNote = ['final_check_waiting', 'rejected_ops_review', 'completed'].includes(job.action_state ?? '')
+  const statusPlan = (() => {
+    if (job.action_state === 'rejected_ops_review') {
+      return 'İş reddi operasyona iletildi. Bu aşamada sadece not ekleyebilirsiniz.'
+    }
+
+    if (job.action_state === 'final_check_waiting') {
+      return 'İşlem operasyonda son kontrolde. Onay gelmeden tamamlanan/hakediş kesinleşmiş sayılmaz.'
+    }
+
+    if (job.action_state === 'appointment_waiting_technician_accept') {
+      return 'Operasyon randevu verdi. Bu aşamada randevuyu onaylayabilir, revize için yeni saat önerebilir veya işi reddedebilirsiniz.'
+    }
+
+    if (job.action_state === 'appointment_proposed_waiting') {
+      return 'Randevu önerisi operasyon onayı bekliyor. Gerekirse yeni saat önerisi gönderebilirsiniz.'
+    }
+
+    if (job.kanban_column === 'appointment_confirmed') {
+      return 'Randevu onaylandı. Fotoğrafları, müşteri onayını ve ara talepleri bu ekrandan yönetin.'
+    }
+
+    if (job.kanban_column === 'revisit') {
+      return 'Tekrar ziyaret veya ara işlem bekliyor. Yeni saat önerisi, ek talep ve not gönderebilirsiniz.'
+    }
+
+    if (job.kanban_column === 'completed') {
+      return 'İş tamamlandı. Aksiyon kapalı; hakediş durumunu görüntüleyebilirsiniz.'
+    }
+
+    return 'Randevu tarihi ve saat aralığı önerin. Operasyon onaylayınca iş randevu onaylandı aşamasına geçer.'
+  })()
 
   const submitAction = async (action: string, payload: Record<string, unknown>, successMessage: string) => {
     if (readOnly) {
@@ -881,7 +960,7 @@ function ServiceJobDetail({
   }
 
   return (
-    <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[minmax(0,1fr)_360px]">
+    <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:grid-cols-[minmax(0,1fr)_400px] lg:p-5">
       <div className="min-w-0">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -910,7 +989,7 @@ function ServiceJobDetail({
           <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
           <InfoTile label="Ürün" value={[job.product_name, job.model].filter(Boolean).join(' / ') || '-'} />
           <InfoTile label="Seri" value={job.serial_no ?? '-'} />
-          <InfoTile label="Randevu" value={job.appointment_at ?? '-'} />
+          <InfoTile label="Randevu" value={job.appointment_label ?? job.appointment_at ?? '-'} />
           <InfoTile label="Sonraki aksiyon" value={job.next_action ?? '-'} />
           <InfoTile label="Yol" value={job.route_distance_summary ?? '-'} />
           <InfoTile label="Ödeme" value={job.payment_status_summary ?? '-'} />
@@ -961,23 +1040,22 @@ function ServiceJobDetail({
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Checklist</p>
-            <div className="mt-3 grid gap-2">
-              {requiredChecklist.map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 text-sm text-slate-700">
-                  <input type="checkbox" checked readOnly className="h-4 w-4 rounded border-slate-300" />
-                  {label}
-                </label>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Aksiyon planı</p>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{statusPlan}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {job.badges.length === 0 ? (
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">Normal akış</span>
+              ) : job.badges.map((badge) => (
+                <span key={badge} className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{badge}</span>
               ))}
             </div>
-            <p className="mt-3 text-xs text-slate-500">Teknik Servis checklist durumu: {job.checklist_status ?? '-'}</p>
           </div>
           <div className="rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fotoğraf / belge</p>
-            <p className="mt-2 text-sm text-slate-700">Önce: {job.photo_counts.before} · Sonra: {job.photo_counts.after} · Genel: {job.photo_counts.general}</p>
+            <p className="mt-2 text-sm text-slate-700">Öncesi / Sonrası / Garanti Belgesi</p>
             <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
               <p className="font-semibold">Tamamlama şartı</p>
-              <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} kapı fotoğrafı yüklendi.</p>
+              <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} fotoğraf/belge yüklendi.</p>
               <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri OTP/onay bekliyor.'}</p>
             </div>
             {job.photos.length === 0 ? (
@@ -990,17 +1068,13 @@ function ServiceJobDetail({
               </div>
             )}
             <div className="mt-3 grid gap-2">
-              {[
-                ['door_front_photo', 'Kapı ön yüzü'],
-                ['door_side_photo', 'Kapı yan yüzü'],
-                ['door_back_photo', 'Kapı arka yüzü'],
-              ].map(([field, label]) => (
+              {portalPhotoFields.map(([field, label]) => (
                 <label key={field} className="grid gap-1 text-xs font-semibold text-slate-600">
                   {label}
                   <input
                     type="file"
                     accept="image/*"
-                    disabled={readOnly}
+                    disabled={readOnly || !job.can_upload_photos}
                     onChange={(event) => setPhotoFiles({ ...photoFiles, [field]: event.target.files?.[0] ?? null })}
                     className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                   />
@@ -1008,7 +1082,7 @@ function ServiceJobDetail({
               ))}
               <button
                 type="button"
-                disabled={readOnly || actionLoading === 'photos' || Object.values(photoFiles).every((file) => !file)}
+                disabled={readOnly || !job.can_upload_photos || actionLoading === 'photos' || Object.values(photoFiles).every((file) => !file)}
                 onClick={() => void submitPhotoUpload()}
                 className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -1031,17 +1105,22 @@ function ServiceJobDetail({
           </div>
         )}
       </div>
-      <aside className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <p className="text-sm font-semibold text-slate-950">Aksiyonlar</p>
-        {readOnly && <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">Önizleme modu: işlem yapılamaz.</p>}
+      <aside className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-4 lg:self-start">
+        <p className="text-sm font-semibold text-slate-950">Bu aşamadaki aksiyonlar</p>
+        <p className="mt-1 text-xs leading-5 text-slate-500">{statusPlan}</p>
+        {readOnly && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">Önizleme modu: işlem yapılamaz.</p>}
         <div className="mt-4 grid gap-4">
-          <ActionBox title="Randevuyu onayla">
-            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={acceptNote} onChange={(event) => setAcceptNote(event.target.value)} placeholder="İsteğe bağlı not" disabled={readOnly || !job.can_accept} />
-            <button type="button" disabled={readOnly || !job.can_accept || actionLoading === 'accept'} onClick={() => void submitAction('accept', { note: acceptNote }, 'Randevu onayı gönderildi.')} className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-              {job.can_accept ? 'Randevu onayla' : 'Bu iş onay beklemiyor'}
-            </button>
-          </ActionBox>
-          <ActionBox title="Randevu öner">
+          {canAcceptAppointment && (
+            <ActionBox title="Randevuyu onayla">
+              <p className="rounded-xl bg-white p-3 text-xs font-semibold text-slate-700">Ops randevusu: {job.appointment_label ?? job.appointment_at ?? '-'}</p>
+              <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={acceptNote} onChange={(event) => setAcceptNote(event.target.value)} placeholder="İsteğe bağlı not" disabled={readOnly} />
+              <button type="button" disabled={readOnly || actionLoading === 'accept-appointment'} onClick={() => void submitAction('accept-appointment', { note: acceptNote }, 'Randevu onayı gönderildi.')} className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+                Randevu onayla
+              </button>
+            </ActionBox>
+          )}
+          {canProposeAppointment && (
+            <ActionBox title={job.action_state === 'appointment_proposed_waiting' ? 'Randevu önerisini revize et' : 'Randevu saatleri öner'}>
             <div className="grid gap-2">
               {appointmentSlots.map((slot, index) => (
                 <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1059,13 +1138,14 @@ function ServiceJobDetail({
                 </div>
               ))}
             </div>
+            {appointmentSlotError && <p className="rounded-xl bg-rose-50 p-2 text-xs font-semibold text-rose-700">{appointmentSlotError}</p>}
             <button type="button" disabled={readOnly || appointmentSlots.length >= 3} onClick={addAppointmentSlot} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
               Randevu saati ekle
             </button>
             <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalNote} onChange={(event) => setProposalNote(event.target.value)} placeholder="Operasyona randevu notu" disabled={readOnly} />
             <button
               type="button"
-              disabled={readOnly || appointmentSlots.some((slot) => !slot.date || !slot.start_time || !slot.end_time || slot.end_time <= slot.start_time) || actionLoading === 'appointment-proposal'}
+              disabled={readOnly || appointmentSlotError !== null || actionLoading === 'appointment-proposal'}
               onClick={() => void submitAction('appointment-proposal', {
                 slots: appointmentSlots,
                 note: proposalNote || null,
@@ -1075,62 +1155,36 @@ function ServiceJobDetail({
               Randevu öner
             </button>
           </ActionBox>
+          )}
+          {job.can_reject && (
           <ActionBox title="İşi reddet">
-            <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} disabled={readOnly || !job.can_reject}>
-              <option value="not_available">Uygun değilim</option>
-              <option value="region_not_suitable">Bölge uygun değil</option>
-              <option value="time_not_suitable">Zaman uygun değil</option>
-              <option value="customer_unreachable">Müşteriyle iletişim kurulamadı</option>
-              <option value="customer_disagreement">Müşteriyle anlaşamadım</option>
-              <option value="other">Diğer</option>
-            </select>
-            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectNote} onChange={(event) => setRejectNote(event.target.value)} placeholder="Açıklama zorunlu" disabled={readOnly || !job.can_reject} />
-            <button
-              type="button"
-              disabled={readOnly || !job.can_reject || rejectNote.trim().length < 3 || actionLoading === 'reject'}
-              onClick={() => void submitAction('reject', { reason: rejectReason, note: rejectNote }, 'İş reddi operasyona gönderildi.')}
-              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              İşi reddet
+            <button type="button" disabled={readOnly || !job.can_reject} onClick={() => setActiveActionDialog('reject')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50">
+              Reddetme formunu aç
             </button>
           </ActionBox>
+          )}
+          {job.can_request_revisit && (
           <ActionBox title="Tekrar ziyaret iste">
-            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={revisitReason} onChange={(event) => setRevisitReason(event.target.value)} placeholder="Tekrar ziyaret nedeni" disabled={readOnly || !job.can_request_revisit} />
-            <button type="button" disabled={readOnly || !job.can_request_revisit || revisitReason.trim().length < 3 || actionLoading === 'request-revisit'} onClick={() => void submitAction('request-revisit', { reason: revisitReason }, 'Tekrar ziyaret talebi gönderildi.')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50">
-              Tekrar ziyaret iste
+            <button type="button" disabled={readOnly || !job.can_request_revisit} onClick={() => setActiveActionDialog('revisit')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50">
+              Tekrar ziyaret formunu aç
             </button>
           </ActionBox>
+          )}
+          {job.can_request_customer_otp && (
           <ActionBox title="Müşteri OTP / onay">
-            <textarea className="min-h-16 w-full rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Onay notu" disabled={readOnly} />
-            <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'Müşteri OTP/onay payloadı oluşturuldu.')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
-              OTP/onay iste
+            <button type="button" disabled={readOnly} onClick={() => setActiveActionDialog('otp')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
+              OTP/onay popup aç
             </button>
           </ActionBox>
+          )}
+          {job.can_request_support && (
           <ActionBox title="Yedek parça / ek talep">
-            <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportType} onChange={(event) => setSupportType(event.target.value)} disabled={readOnly}>
-              <option value="spare_part">Yedek parça</option>
-              <option value="extra_product">Ek ürün</option>
-              <option value="missing_info">Eksik bilgi</option>
-              <option value="customer_call">Müşteri aransın</option>
-              <option value="other">Diğer</option>
-            </select>
-            <input className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportProduct} onChange={(event) => setSupportProduct(event.target.value)} placeholder="Ürün/parça adı" disabled={readOnly} />
-            <input type="number" min={1} className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportQuantity} onChange={(event) => setSupportQuantity(event.target.value)} placeholder="Adet" disabled={readOnly} />
-            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportDescription} onChange={(event) => setSupportDescription(event.target.value)} placeholder="Açıklama zorunlu" disabled={readOnly} />
-            <button
-              type="button"
-              disabled={readOnly || supportDescription.trim().length < 3 || actionLoading === 'support-request'}
-              onClick={() => void submitAction('support-request', {
-                type: supportType,
-                description: supportDescription,
-                product_name: supportProduct || null,
-                quantity: supportQuantity ? Number(supportQuantity) : null,
-              }, 'Ek talep operasyona gönderildi.')}
-              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Ek talep gönder
+            <button type="button" disabled={readOnly || !job.can_request_support} onClick={() => setActiveActionDialog('support')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50">
+              Ek talep popup aç
             </button>
           </ActionBox>
+          )}
+          {job.can_submit_completion && (
           <ActionBox title="Tamamlamaya gönder">
             <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionResult} onChange={(event) => setCompletionResult(event.target.value)} disabled={readOnly || !job.can_submit_completion}>
               <option value="completed">Tamamlandı</option>
@@ -1144,10 +1198,16 @@ function ServiceJobDetail({
               <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
             </div>
             <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İşlem notu" disabled={readOnly || !job.can_submit_completion} />
-            <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, checklist, note: completionNote }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+            <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
               Tamamlamaya gönder
             </button>
           </ActionBox>
+          )}
+          {canOnlyAddNote && (
+            <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-600">
+              Bu aşamada işlem kapalı. Operasyona not bırakabilirsiniz.
+            </div>
+          )}
           <ActionBox title="Operasyona not">
             <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Not yaz" disabled={readOnly} />
             <button type="button" disabled={readOnly || note.trim().length < 3 || actionLoading === 'note'} onClick={() => void submitAction('note', { note, visibility: 'ops' }, 'Not eklendi.')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
@@ -1156,6 +1216,57 @@ function ServiceJobDetail({
           </ActionBox>
         </div>
       </aside>
+      <ActionDialog title="İşi reddet" open={activeActionDialog === 'reject'} onClose={() => setActiveActionDialog(null)}>
+        <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} disabled={readOnly || !job.can_reject}>
+          <option value="not_available">Uygun değilim</option>
+          <option value="region_not_suitable">Bölge uygun değil</option>
+          <option value="time_not_suitable">Zaman uygun değil</option>
+          <option value="customer_unreachable">Müşteriyle iletişim kurulamadı</option>
+          <option value="customer_disagreement">Müşteriyle anlaşamadım</option>
+          <option value="other">Diğer</option>
+        </select>
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectNote} onChange={(event) => setRejectNote(event.target.value)} placeholder="Açıklama zorunlu" disabled={readOnly || !job.can_reject} />
+        <button type="button" disabled={readOnly || !job.can_reject || rejectNote.trim().length < 3 || actionLoading === 'reject'} onClick={() => void submitAction('reject', { reason: rejectReason, note: rejectNote }, 'İş reddi operasyona gönderildi.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50">
+          İşi reddet
+        </button>
+      </ActionDialog>
+      <ActionDialog title="Tekrar ziyaret iste" open={activeActionDialog === 'revisit'} onClose={() => setActiveActionDialog(null)}>
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={revisitReason} onChange={(event) => setRevisitReason(event.target.value)} placeholder="Tekrar ziyaret nedeni" disabled={readOnly || !job.can_request_revisit} />
+        <button type="button" disabled={readOnly || !job.can_request_revisit || revisitReason.trim().length < 3 || actionLoading === 'request-revisit'} onClick={() => void submitAction('request-revisit', { reason: revisitReason }, 'Tekrar ziyaret talebi gönderildi.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50">
+          Tekrar ziyaret iste
+        </button>
+      </ActionDialog>
+      <ActionDialog title="Müşteri OTP / onay" open={activeActionDialog === 'otp'} onClose={() => setActiveActionDialog(null)}>
+        <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Onay notu" disabled={readOnly} />
+        <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'Müşteri OTP/onay payloadı oluşturuldu.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
+          OTP/onay iste
+        </button>
+      </ActionDialog>
+      <ActionDialog title="Yedek parça / ek talep" open={activeActionDialog === 'support'} onClose={() => setActiveActionDialog(null)}>
+        <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportType} onChange={(event) => setSupportType(event.target.value)} disabled={readOnly}>
+          <option value="spare_part">Yedek parça</option>
+          <option value="extra_product">Ek ürün</option>
+          <option value="missing_info">Eksik bilgi</option>
+          <option value="customer_call">Müşteri aransın</option>
+          <option value="other">Diğer</option>
+        </select>
+        <input className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportProduct} onChange={(event) => setSupportProduct(event.target.value)} placeholder="Ürün/parça adı" disabled={readOnly} />
+        <input type="number" min={1} className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportQuantity} onChange={(event) => setSupportQuantity(event.target.value)} placeholder="Adet" disabled={readOnly} />
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportDescription} onChange={(event) => setSupportDescription(event.target.value)} placeholder="Açıklama zorunlu" disabled={readOnly} />
+        <button
+          type="button"
+          disabled={readOnly || supportDescription.trim().length < 3 || actionLoading === 'support-request'}
+          onClick={() => void submitAction('support-request', {
+            type: supportType,
+            description: supportDescription,
+            product_name: supportProduct || null,
+            quantity: supportQuantity ? Number(supportQuantity) : null,
+          }, 'Ek talep operasyona gönderildi.').then(() => setActiveActionDialog(null))}
+          className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Ek talep gönder
+        </button>
+      </ActionDialog>
     </section>
   )
 }
@@ -1165,6 +1276,29 @@ function ActionBox({ title, children }: { title: string, children: ReactNode }) 
     <div className="grid gap-2">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3>
       {children}
+    </div>
+  )
+}
+
+function ActionDialog({ title, open, onClose, children }: { title: string, open: boolean, onClose: () => void, children: ReactNode }) {
+  if (!open) {
+    return null
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] grid place-items-end bg-slate-950/45 p-0 sm:place-items-center sm:p-4">
+      <button type="button" className="absolute inset-0 cursor-default" aria-label="Popup kapat" onClick={onClose} />
+      <div className="relative z-10 grid max-h-[92vh] w-full gap-4 overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-lg font-semibold text-slate-950">{title}</h3>
+          <button type="button" onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100" aria-label="Popup kapat">
+            ×
+          </button>
+        </div>
+        <div className="grid gap-3">
+          {children}
+        </div>
+      </div>
     </div>
   )
 }
