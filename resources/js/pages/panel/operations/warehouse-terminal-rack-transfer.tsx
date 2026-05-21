@@ -90,11 +90,11 @@ const rackTransferUrl = '/api/operations/warehouse-terminal/rack-transfer/transf
 const rackTransferHistoryUrl = '/api/operations/warehouse-terminal/rack-transfer/history';
 
 const safeNotes = [
-    'Ayni depo ici raf transferleri Mikro’ya yazilmaz.',
-    'Raf lokasyonu Panel/PostgreSQL tarafinda tutulur.',
-    'Mikro resmi depo/stok miktari icin kaynak olmaya devam eder.',
-    'Seri takipli urunlerde seri no okutulmadan transfer yapilmaz.',
-    'Silme islemi yapilmayacak; ileride iptal/ters islem mantigi kurulacak.',
+    'Aynı depo içi raf transferleri Mikro’ya yazılmaz.',
+    'Raf lokasyonu Panel/PostgreSQL tarafında tutulur.',
+    'Mikro resmi depo/stok miktarı için kaynak olmaya devam eder.',
+    'Seri takipli ürünlerde seri no okutulmadan transfer yapılmaz.',
+    'Silme işlemi yapılmayacak; ileride iptal/ters işlem mantığı kurulacak.',
 ];
 
 function todayIso(): string {
@@ -208,7 +208,7 @@ export default function WarehouseTerminalRackTransfer() {
             setWarehouses(response.items ?? []);
             setLookupMessage(response.message ?? null);
         } catch (caught) {
-            setLookupMessage(caught instanceof Error ? caught.message : 'Depo listesi alinamadi.');
+            setLookupMessage(caught instanceof Error ? caught.message : 'Depo listesi alınamadı.');
         } finally {
             setLoadingWarehouses(false);
         }
@@ -228,7 +228,7 @@ export default function WarehouseTerminalRackTransfer() {
             setTargetRacks(targetResponse.items ?? []);
             setLookupMessage(sourceResponse.message ?? targetResponse.message ?? null);
         } catch (caught) {
-            setLookupMessage(caught instanceof Error ? caught.message : 'Raf listesi alinamadi.');
+            setLookupMessage(caught instanceof Error ? caught.message : 'Raf listesi alınamadı.');
         } finally {
             setLoadingRacks(false);
         }
@@ -245,7 +245,7 @@ export default function WarehouseTerminalRackTransfer() {
 
     const searchItems = async () => {
         if (!warehouseNo) {
-            setMessage({ type: 'error', text: 'Once depo secilmelidir.' });
+            setMessage({ type: 'error', text: 'Önce depo seçilmelidir.' });
 
             return;
         }
@@ -253,7 +253,7 @@ export default function WarehouseTerminalRackTransfer() {
         const query = itemQuery.trim();
 
         if (query.length < 2) {
-            setMessage({ type: 'error', text: 'Urun aramasi icin en az 2 karakter girilmelidir.' });
+            setMessage({ type: 'error', text: 'Ürün araması için en az 2 karakter girilmelidir.' });
 
             return;
         }
@@ -261,18 +261,18 @@ export default function WarehouseTerminalRackTransfer() {
         setSearchingItems(true);
         setSelectedItem(null);
         setItemResults([]);
-        resetTransferState('Urun araniyor');
+        resetTransferState('Ürün aranıyor');
 
         try {
             const response = await apiRequest(`${lookupItemsUrl}?${buildQuery({ warehouse_no: warehouseNo, q: query })}`) as LookupResponse<ItemLookup>;
             setItemResults(response.items ?? []);
             setMessage(response.message ? { type: 'info', text: response.message } : null);
-            setStatus('Urun secimi bekleniyor');
+            setStatus('Ürün seçimi bekleniyor');
         } catch (caught) {
-            setStatus('Uyari');
+            setStatus('Uyarı');
             setMessage({
                 type: 'error',
-                text: caught instanceof Error ? caught.message : 'Urun aramasi yapilamadi.',
+                text: caught instanceof Error ? caught.message : 'Ürün araması yapılamadı.',
             });
         } finally {
             setSearchingItems(false);
@@ -297,7 +297,7 @@ export default function WarehouseTerminalRackTransfer() {
         }
 
         if (serialNumbers.some((value) => value.toLocaleUpperCase('tr-TR') === serial.toLocaleUpperCase('tr-TR'))) {
-            setMessage({ type: 'error', text: 'Ayni seri ikinci kez eklenemez.' });
+            setMessage({ type: 'error', text: 'Aynı seri ikinci kez eklenemez.' });
 
             return;
         }
@@ -341,37 +341,37 @@ export default function WarehouseTerminalRackTransfer() {
         event.preventDefault();
 
         if (!warehouseNo) {
-            setMessage({ type: 'error', text: 'Depo secimi zorunludur.' });
+            setMessage({ type: 'error', text: 'Depo seçimi zorunludur.' });
 
             return;
         }
 
         if (!sourceRack || !targetRack) {
-            setMessage({ type: 'error', text: 'Kaynak ve hedef raf secilmelidir.' });
+            setMessage({ type: 'error', text: 'Kaynak ve hedef raf seçilmelidir.' });
 
             return;
         }
 
         if (sourceRack.toLocaleUpperCase('tr-TR') === targetRack.toLocaleUpperCase('tr-TR')) {
-            setMessage({ type: 'error', text: 'Kaynak raf ile hedef raf ayni olamaz.' });
+            setMessage({ type: 'error', text: 'Kaynak raf ile hedef raf aynı olamaz.' });
 
             return;
         }
 
         if (!selectedItem && !itemQuery.trim()) {
-            setMessage({ type: 'error', text: 'Urun secimi zorunludur.' });
+            setMessage({ type: 'error', text: 'Ürün seçimi zorunludur.' });
 
             return;
         }
 
         if (isSerialTracked && serialNumbers.length === 0) {
-            setMessage({ type: 'error', text: 'Seri takipli urunlerde seri no zorunludur.' });
+            setMessage({ type: 'error', text: 'Seri takipli ürünlerde seri no zorunludur.' });
 
             return;
         }
 
         if (!isSerialTracked && Number(normalizeQuantityInput(quantity)) <= 0) {
-            setMessage({ type: 'error', text: 'Miktar sifirdan buyuk olmalidir.' });
+            setMessage({ type: 'error', text: 'Miktar sıfırdan büyük olmalıdır.' });
 
             return;
         }
@@ -387,20 +387,20 @@ export default function WarehouseTerminalRackTransfer() {
             }) as TransferResponse;
 
             if (response.ok === false) {
-                throw new Error(response.message || 'Raf transferi tamamlanamadi.');
+                throw new Error(response.message || 'Raf transferi tamamlanamadı.');
             }
 
             setSummary(response.summary ?? null);
-            setStatus('Tamamlandi');
+            setStatus('Tamamlandı');
             setMessage({
                 type: 'success',
-                text: response.message || 'Raf transferi tamamlandi. Mikro’ya yazma yapilmadi.',
+                text: response.message || 'Raf transferi tamamlandı. Mikro’ya yazma yapılmadı.',
             });
         } catch (caught) {
             setStatus('Hata');
             setMessage({
                 type: 'error',
-                text: caught instanceof Error ? caught.message : 'Raf transferi tamamlanamadi.',
+                text: caught instanceof Error ? caught.message : 'Raf transferi tamamlanamadı.',
             });
         } finally {
             setTransferring(false);
@@ -420,11 +420,11 @@ export default function WarehouseTerminalRackTransfer() {
             })}`) as LookupResponse<HistoryRow>;
 
             setHistoryRows(response.items ?? []);
-            setHistoryMessage((response.items ?? []).length === 0 ? { type: 'info', text: 'Secilen aralikta transfer bulunamadi.' } : null);
+            setHistoryMessage((response.items ?? []).length === 0 ? { type: 'info', text: 'Seçilen aralıkta transfer bulunamadı.' } : null);
         } catch (caught) {
             setHistoryMessage({
                 type: 'error',
-                text: caught instanceof Error ? caught.message : 'Transfer gecmisi alinamadi.',
+                text: caught instanceof Error ? caught.message : 'Transfer geçmişi alınamadı.',
             });
         } finally {
             setHistoryLoading(false);
@@ -437,7 +437,7 @@ export default function WarehouseTerminalRackTransfer() {
         }
 
         if (messageValue.type === 'info') {
-            return 'border-blue-200 bg-blue-50 text-blue-800';
+            return 'border-amber-200 bg-amber-50 text-amber-900';
         }
 
         return 'border-amber-200 bg-amber-50 text-amber-900';
@@ -459,7 +459,7 @@ export default function WarehouseTerminalRackTransfer() {
                                     Raf Transferi
                                 </h1>
                                 <p className="mt-2 text-sm leading-6 text-slate-600 md:text-base">
-                                    Kaynak raf, urun/seri ve hedef raf secilerek ayni depo ici raf transferi Panel/PostgreSQL tarafinda tamamlanir.
+                                    Kaynak raf, ürün/seri ve hedef raf seçilerek aynı depo içi raf transferi Panel/PostgreSQL tarafında tamamlanır.
                                 </p>
                             </div>
                             <Link
@@ -467,7 +467,7 @@ export default function WarehouseTerminalRackTransfer() {
                                 className="inline-flex h-12 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
                             >
                                 <ArrowLeft className="size-5" />
-                                Geri Don
+                                Geri Dön
                             </Link>
                         </div>
                     </section>
@@ -491,7 +491,7 @@ export default function WarehouseTerminalRackTransfer() {
                             }`}
                         >
                             <History className="size-5" />
-                            Transfer Gecmisi
+                            Transfer Geçmişi
                         </button>
                     </div>
 
@@ -499,7 +499,7 @@ export default function WarehouseTerminalRackTransfer() {
                         <>
                             <form onSubmit={handleTransfer} className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-6">
                                 {lookupMessage ? (
-                                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-800">
+                                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
                                         {lookupMessage}
                                     </div>
                                 ) : null}
@@ -529,7 +529,7 @@ export default function WarehouseTerminalRackTransfer() {
                                         disabled={loadingWarehouses}
                                         className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                     >
-                                        <option value="">{loadingWarehouses ? 'Depolar yukleniyor' : 'Depo secin'}</option>
+                                        <option value="">{loadingWarehouses ? 'Depolar yükleniyor' : 'Depo seçin'}</option>
                                         {warehouses.map((warehouse) => (
                                             <option key={warehouse.warehouse_no} value={warehouse.warehouse_no}>
                                                 {warehouse.warehouse_name}
@@ -550,7 +550,7 @@ export default function WarehouseTerminalRackTransfer() {
                                             disabled={!warehouseNo || loadingRacks}
                                             className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                         >
-                                            <option value="">{loadingRacks ? 'Raflar yukleniyor' : 'Kaynak raf secin'}</option>
+                                            <option value="">{loadingRacks ? 'Raflar yükleniyor' : 'Kaynak raf seçin'}</option>
                                             {sourceRacks.map((rack) => (
                                                 <option key={rack.rack_code} value={rack.rack_code}>
                                                     {rack.rack_name}
@@ -570,7 +570,7 @@ export default function WarehouseTerminalRackTransfer() {
                                             disabled={!warehouseNo || loadingRacks}
                                             className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                         >
-                                            <option value="">{loadingRacks ? 'Raflar yukleniyor' : 'Hedef raf secin'}</option>
+                                            <option value="">{loadingRacks ? 'Raflar yükleniyor' : 'Hedef raf seçin'}</option>
                                             {targetRacks.map((rack) => (
                                                 <option key={rack.rack_code} value={rack.rack_code}>
                                                     {rack.rack_name}
@@ -582,7 +582,7 @@ export default function WarehouseTerminalRackTransfer() {
 
                                 <div className="grid gap-3">
                                     <label className="grid gap-2 text-sm font-bold text-slate-800">
-                                        Urun / Seri / Barkod
+                                        Ürün / Seri / Barkod
                                         <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                                             <input
                                                 value={itemQuery}
@@ -591,9 +591,9 @@ export default function WarehouseTerminalRackTransfer() {
                                                     setSelectedItem(null);
                                                     setItemResults([]);
                                                     setSerialNumbers([]);
-                                                    resetTransferState('Urun secimi bekleniyor');
+                                                    resetTransferState('Ürün seçimi bekleniyor');
                                                 }}
-                                                placeholder="Barkod, stok kodu, stok adi veya seri no okutun"
+                                                placeholder="Barkod, stok kodu, stok adı veya seri no okutun"
                                                 autoComplete="off"
                                                 className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                                             />
@@ -629,7 +629,7 @@ export default function WarehouseTerminalRackTransfer() {
 
                                     {selectedItem ? (
                                         <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
-                                            Secili urun: {selectedItem.display_label}
+                                            Seçili ürün: {selectedItem.display_label}
                                         </div>
                                     ) : null}
                                 </div>
@@ -664,7 +664,7 @@ export default function WarehouseTerminalRackTransfer() {
                                         <div className="grid gap-2">
                                             {serialNumbers.length === 0 ? (
                                                 <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-500">
-                                                    Henuz seri okutulmadi.
+                                                    Henüz seri okutulmadı.
                                                 </p>
                                             ) : serialNumbers.map((serial) => (
                                                 <div key={serial} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
@@ -673,7 +673,7 @@ export default function WarehouseTerminalRackTransfer() {
                                                         type="button"
                                                         onClick={() => removeSerial(serial)}
                                                         className="grid size-11 shrink-0 place-items-center rounded-lg border border-slate-200 text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700"
-                                                        aria-label={`${serial} serisini kaldir`}
+                                                        aria-label={`${serial} serisini kaldır`}
                                                     >
                                                         <Trash2 className="size-5" />
                                                     </button>
@@ -727,17 +727,17 @@ export default function WarehouseTerminalRackTransfer() {
                                         className="inline-flex h-14 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-5 text-base font-bold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
                                     >
                                         <ArrowLeft className="size-5" />
-                                        Geri Don
+                                        Geri Dön
                                     </Link>
                                 </div>
                             </form>
 
                             <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(280px,0.75fr)]">
                                 <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-5">
-                                    <h2 className="text-base font-bold text-slate-950">Islem ozeti</h2>
+                                    <h2 className="text-base font-bold text-slate-950">İşlem özeti</h2>
                                     <dl className="mt-4 grid gap-3 text-sm">
                                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                                            <dt className="font-semibold text-slate-500">Islem No</dt>
+                                            <dt className="font-semibold text-slate-500">İşlem No</dt>
                                             <dd className="mt-1 break-words text-lg font-bold text-slate-950">{formatValue(summary?.operation_no)}</dd>
                                         </div>
                                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -753,7 +753,7 @@ export default function WarehouseTerminalRackTransfer() {
                                             <dd className="mt-1 break-words text-lg font-bold text-slate-950">{formatValue(summary?.target_rack_code ?? targetRack)}</dd>
                                         </div>
                                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                                            <dt className="font-semibold text-slate-500">Urun / Stok</dt>
+                                            <dt className="font-semibold text-slate-500">Ürün / Stok</dt>
                                             <dd className="mt-1 break-words text-lg font-bold text-slate-950">{formatValue(summary?.stock_name ?? selectedItem?.stock_name ?? selectedItem?.display_label)}</dd>
                                         </div>
                                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -765,7 +765,7 @@ export default function WarehouseTerminalRackTransfer() {
                                             <dd className="mt-1 break-words text-lg font-bold text-slate-950">{formatValue(summary?.quantity ?? effectiveQuantity)}</dd>
                                         </div>
                                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                                            <dt className="font-semibold text-slate-500">Islem Durumu</dt>
+                                            <dt className="font-semibold text-slate-500">İşlem Durumu</dt>
                                             <dd className="mt-1 text-lg font-bold text-slate-950">{status}</dd>
                                         </div>
                                     </dl>
@@ -776,7 +776,7 @@ export default function WarehouseTerminalRackTransfer() {
                                         <span className="grid size-10 place-items-center rounded-lg bg-white text-blue-700">
                                             <ShieldCheck className="size-5" />
                                         </span>
-                                        <h2 className="text-base font-bold text-slate-950">Guvenlik notu</h2>
+                                        <h2 className="text-base font-bold text-slate-950">Güvenlik notu</h2>
                                     </div>
                                     <ul className="mt-4 grid gap-2 text-sm leading-6 text-blue-950">
                                         {safeNotes.map((note) => (
@@ -792,7 +792,7 @@ export default function WarehouseTerminalRackTransfer() {
                         <section className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-6">
                             <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto]">
                                 <label className="grid gap-2 text-sm font-bold text-slate-800">
-                                    Tarih Baslangic
+                                    Tarih Başlangıç
                                     <input
                                         type="date"
                                         value={historyFrom}
@@ -801,7 +801,7 @@ export default function WarehouseTerminalRackTransfer() {
                                     />
                                 </label>
                                 <label className="grid gap-2 text-sm font-bold text-slate-800">
-                                    Tarih Bitis
+                                    Tarih Bitiş
                                     <input
                                         type="date"
                                         value={historyTo}
@@ -816,7 +816,7 @@ export default function WarehouseTerminalRackTransfer() {
                                         onChange={(event) => setHistoryWarehouseNo(event.target.value)}
                                         className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-base font-semibold text-slate-950 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                                     >
-                                        <option value="">Tum depolar</option>
+                                        <option value="">Tüm depolar</option>
                                         {warehouses.map((warehouse) => (
                                             <option key={warehouse.warehouse_no} value={warehouse.warehouse_no}>
                                                 {warehouse.warehouse_name}
@@ -853,7 +853,7 @@ export default function WarehouseTerminalRackTransfer() {
                                                 <span className="text-sm font-bold text-slate-950">{formatValue(row.date)}</span>
                                             </span>
                                             <span>
-                                                <strong className="block text-xs text-slate-500">Islem No</strong>
+                                                <strong className="block text-xs text-slate-500">İşlem No</strong>
                                                 <span className="text-sm font-bold text-slate-950">{row.operation_no}</span>
                                             </span>
                                             <span>
@@ -867,8 +867,8 @@ export default function WarehouseTerminalRackTransfer() {
                                         </button>
                                         <div className="mt-3 grid gap-1 text-sm text-slate-700 md:grid-cols-3">
                                             <span>Depo: <strong>{formatValue(row.warehouse_name ?? row.warehouse_no)}</strong></span>
-                                            <span>Urun: <strong>{formatValue(row.stock_name ?? row.stock_code)}</strong></span>
-                                            <span>Kullanici: <strong>{formatValue(row.user)}</strong></span>
+                                            <span>Ürün: <strong>{formatValue(row.stock_name ?? row.stock_code)}</strong></span>
+                                            <span>Kullanıcı: <strong>{formatValue(row.user)}</strong></span>
                                         </div>
                                         {expandedOperation === row.operation_no ? (
                                             <div className="mt-3 grid gap-2">

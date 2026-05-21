@@ -3,6 +3,9 @@
 namespace App\Services;
 
 use App\Models\DataSource;
+use App\Models\WarehouseRack;
+use App\Models\WarehouseSerialLocation;
+use App\Models\WarehouseStockLocation;
 use RuntimeException;
 
 class WarehouseTerminalLookupService
@@ -21,7 +24,12 @@ class WarehouseTerminalLookupService
      */
     public function warehouses(): array
     {
-        $rows = $this->gatewayRows(self::SOURCE_WAREHOUSES, []);
+        $rows = $this->gatewayRows(
+            self::SOURCE_WAREHOUSES,
+            [],
+            fn (): array => $this->fallbackWarehouses(),
+            'Depo listesi boş. Önce lokasyon kaydı veya Mikro lookup kaynağı tanımı gerekir.',
+        );
 
         return [
             'items' => array_values(array_filter(array_map(fn (array $row): ?array => $this->warehouseRow($row), $rows['rows']))),
@@ -35,11 +43,16 @@ class WarehouseTerminalLookupService
      */
     public function racks(int $warehouseNo, string $type): array
     {
-        $rows = $this->gatewayRows(self::SOURCE_RACKS, [
-            'warehouse_no' => $warehouseNo,
-            'type' => $type,
-            'hgrp_no' => $type === 'source' ? 2 : 3,
-        ]);
+        $rows = $this->gatewayRows(
+            self::SOURCE_RACKS,
+            [
+                'warehouse_no' => $warehouseNo,
+                'type' => $type,
+                'hgrp_no' => $type === 'source' ? 2 : 3,
+            ],
+            fn (): array => $this->fallbackRacks($warehouseNo),
+            'Raf listesi boş. Önce lokasyon kaydı veya Mikro lookup kaynağı tanımı gerekir.',
+        );
 
         return [
             'items' => array_values(array_filter(array_map(fn (array $row): ?array => $this->rackRow($row), $rows['rows']))),
@@ -53,10 +66,15 @@ class WarehouseTerminalLookupService
      */
     public function items(int $warehouseNo, string $query): array
     {
-        $rows = $this->gatewayRows(self::SOURCE_ITEMS, [
-            'warehouse_no' => $warehouseNo,
-            'q' => trim($query),
-        ]);
+        $rows = $this->gatewayRows(
+            self::SOURCE_ITEMS,
+            [
+                'warehouse_no' => $warehouseNo,
+                'q' => trim($query),
+            ],
+            fn (): array => $this->fallbackItems($warehouseNo, trim($query)),
+            'Ürün arama sonucu bulunamadı.',
+        );
 
         return [
             'items' => array_values(array_filter(array_map(fn (array $row): ?array => $this->itemRow($row), $rows['rows']))),
@@ -67,32 +85,160 @@ class WarehouseTerminalLookupService
 
     /**
      * @param array<string, mixed> $payload
+     * @param callable(): array<int, array<string, mixed>> $fallback
      * @return array{rows: array<int, array<string, mixed>>, source: string, message: ?string}
      */
-    private function gatewayRows(string $sourceCode, array $payload): array
+    private function gatewayRows(string $sourceCode, array $payload, callable $fallback, string $emptyMessage): array
     {
-        $source = DataSource::query()->where('code', $sourceCode)->where('active', true)->first();
+        $source = DataSource::query()->where('code', $sourceCode)->first();
 
-        if (! $source) {
-            return [
-                'rows' => [],
-                'source' => 'not_configured',
-                'message' => "Mikro lookup veri kaynağı tanımlı değil: {$sourceCode}",
-            ];
+        if (! $source || ! $source->active) {
+            return $this->fallbackRows($fallback, $emptyMessage);
         }
 
-        $result = $this->dataSources->execute($source, $payload);
-        $rows = $result['rows'] ?? [];
+        try {
+            $result = $this->dataSources->execute($source, $payload);
+            $rows = $result['rows'] ?? [];
+        } catch (RuntimeException) {
+            return $this->fallbackRows($fallback, $emptyMessage);
+        }
 
         if (! is_array($rows)) {
-            throw new RuntimeException("Mikro lookup geçersiz satır döndürdü: {$sourceCode}");
+            return $this->fallbackRows($fallback, $emptyMessage);
         }
 
         return [
             'rows' => array_values(array_filter($rows, 'is_array')),
-            'source' => $sourceCode,
+            'source' => 'mikro',
             'message' => null,
         ];
+    }
+
+    /**
+     * @param callable(): array<int, array<string, mixed>> $fallback
+     * @return array{rows: array<int, array<string, mixed>>, source: string, message: ?string}
+     */
+    private function fallbackRows(callable $fallback, string $emptyMessage): array
+    {
+        $rows = $fallback();
+
+        return [
+            'rows' => $rows,
+            'source' => 'panel_fallback',
+            'message' => $rows === [] ? $emptyMessage : 'Mikro lookup kaynağı bulunamadı; panel lokasyon kayıtları gösteriliyor.',
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function fallbackWarehouses(): array
+    {
+        return collect()
+            ->merge(WarehouseRack::query()->whereNotNull('warehouse_no')->pluck('warehouse_no'))
+            ->merge(WarehouseSerialLocation::query()->whereNotNull('warehouse_no')->pluck('warehouse_no'))
+            ->merge(WarehouseStockLocation::query()->whereNotNull('warehouse_no')->pluck('warehouse_no'))
+            ->map(fn (mixed $warehouseNo): int => (int) $warehouseNo)
+            ->filter(fn (int $warehouseNo): bool => $warehouseNo > 0)
+            ->unique()
+            ->sort()
+            ->values()
+            ->map(fn (int $warehouseNo): array => [
+                'warehouse_no' => $warehouseNo,
+                'warehouse_name' => "Depo {$warehouseNo}",
+            ])
+            ->all();
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function fallbackRacks(int $warehouseNo): array
+    {
+        $rackNames = WarehouseRack::query()
+            ->where('warehouse_no', $warehouseNo)
+            ->get(['rack_code', 'rack_name'])
+            ->mapWithKeys(fn (WarehouseRack $rack): array => [
+                $rack->rack_code => $rack->rack_name ?: $rack->rack_code,
+            ]);
+
+        return collect()
+            ->merge($rackNames->keys())
+            ->merge(WarehouseSerialLocation::query()
+                ->where('warehouse_no', $warehouseNo)
+                ->whereNotNull('rack_code')
+                ->pluck('rack_code'))
+            ->merge(WarehouseStockLocation::query()
+                ->where('warehouse_no', $warehouseNo)
+                ->whereNotNull('rack_code')
+                ->pluck('rack_code'))
+            ->map(fn (mixed $rackCode): string => trim((string) $rackCode))
+            ->filter(fn (string $rackCode): bool => $rackCode !== '')
+            ->unique()
+            ->sort()
+            ->values()
+            ->map(fn (string $rackCode): array => [
+                'rack_code' => $rackCode,
+                'rack_name' => (string) ($rackNames[$rackCode] ?? $rackCode),
+            ])
+            ->all();
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function fallbackItems(int $warehouseNo, string $query): array
+    {
+        $needle = '%'.strtolower($query).'%';
+
+        $serialItems = WarehouseSerialLocation::query()
+            ->where('warehouse_no', $warehouseNo)
+            ->where(function ($builder) use ($needle): void {
+                $builder
+                    ->whereRaw('LOWER(serial_no) LIKE ?', [$needle])
+                    ->orWhereRaw('LOWER(COALESCE(stock_code, \'\')) LIKE ?', [$needle])
+                    ->orWhereRaw('LOWER(COALESCE(stock_name, \'\')) LIKE ?', [$needle]);
+            })
+            ->limit(20)
+            ->get()
+            ->map(fn (WarehouseSerialLocation $location): array => [
+                'match_type' => $this->serialMatchType($location, $query),
+                'stock_code' => $location->stock_code,
+                'stock_name' => $location->stock_name,
+                'barcode' => null,
+                'serial_no' => $location->serial_no,
+                'is_serial_tracked' => true,
+                'display_label' => implode(' - ', array_filter([$location->stock_code, $location->stock_name, $location->serial_no])),
+            ]);
+
+        $stockItems = WarehouseStockLocation::query()
+            ->where('warehouse_no', $warehouseNo)
+            ->where(function ($builder) use ($needle): void {
+                $builder
+                    ->whereRaw('LOWER(stock_code) LIKE ?', [$needle])
+                    ->orWhereRaw('LOWER(COALESCE(stock_name, \'\')) LIKE ?', [$needle]);
+            })
+            ->limit(20)
+            ->get()
+            ->map(fn (WarehouseStockLocation $location): array => [
+                'match_type' => str_contains(strtolower($location->stock_code), strtolower($query)) ? 'stock_code' : 'stock_name',
+                'stock_code' => $location->stock_code,
+                'stock_name' => $location->stock_name,
+                'barcode' => null,
+                'serial_no' => null,
+                'is_serial_tracked' => false,
+                'display_label' => implode(' - ', array_filter([$location->stock_code, $location->stock_name])),
+            ]);
+
+        return collect($serialItems->all())
+            ->merge($stockItems->all())
+            ->unique(fn (array $item): string => implode('|', [
+                $item['match_type'],
+                $item['stock_code'] ?? '',
+                $item['serial_no'] ?? '',
+            ]))
+            ->values()
+            ->all();
     }
 
     /**
@@ -212,5 +358,20 @@ class WarehouseTerminalLookupService
         }
 
         return false;
+    }
+
+    private function serialMatchType(WarehouseSerialLocation $location, string $query): string
+    {
+        $query = strtolower($query);
+
+        if (str_contains(strtolower($location->serial_no), $query)) {
+            return 'serial';
+        }
+
+        if ($location->stock_code && str_contains(strtolower($location->stock_code), $query)) {
+            return 'stock_code';
+        }
+
+        return 'stock_name';
     }
 }

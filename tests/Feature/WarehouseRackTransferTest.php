@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Models\WarehouseRack;
 use App\Models\WarehouseRackOperation;
 use App\Models\WarehouseRackOperationItem;
 use App\Models\WarehouseSerialLocation;
@@ -44,6 +45,115 @@ class WarehouseRackTransferTest extends TestCase
             ->assertOk()
             ->assertJsonPath('items.0.warehouse_no', 1)
             ->assertJsonPath('items.0.warehouse_name', 'MERKEZ DEPO');
+    }
+
+    public function test_warehouse_lookup_uses_panel_fallback_when_mikro_datasource_is_not_active(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'SN-FB-1',
+            'stock_code' => 'STK-FB-1',
+            'stock_name' => 'Fallback Seri',
+            'warehouse_no' => 4,
+            'rack_code' => 'A-01',
+            'status' => 'in_stock',
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 7,
+            'rack_code' => 'B-01',
+            'stock_code' => 'STK-FB-2',
+            'stock_name' => 'Fallback Stok',
+            'quantity' => 2,
+            'source' => 'manual',
+        ]);
+
+        $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/lookups/warehouses')
+            ->assertOk()
+            ->assertJsonPath('source', 'panel_fallback')
+            ->assertJsonPath('message', 'Mikro lookup kaynağı bulunamadı; panel lokasyon kayıtları gösteriliyor.')
+            ->assertJsonFragment(['warehouse_no' => 4, 'warehouse_name' => 'Depo 4'])
+            ->assertJsonFragment(['warehouse_no' => 7, 'warehouse_name' => 'Depo 7']);
+    }
+
+    public function test_fallback_rack_lookup_is_filtered_by_warehouse_no(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseRack::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'rack_name' => 'A Rafı',
+            'is_active' => true,
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'B-02',
+            'stock_code' => 'STK-RACK',
+            'quantity' => 1,
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 2,
+            'rack_code' => 'C-03',
+            'stock_code' => 'STK-RACK',
+            'quantity' => 1,
+            'source' => 'manual',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/lookups/racks?warehouse_no=1&type=source')
+            ->assertOk()
+            ->assertJsonPath('source', 'panel_fallback');
+
+        $this->assertContains('A-01', collect($response->json('items'))->pluck('rack_code'));
+        $this->assertContains('B-02', collect($response->json('items'))->pluck('rack_code'));
+        $this->assertNotContains('C-03', collect($response->json('items'))->pluck('rack_code'));
+    }
+
+    public function test_fallback_item_lookup_returns_stock_code_and_serial_matches(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'SN-LOOKUP-1',
+            'stock_code' => 'STK-SERIAL',
+            'stock_name' => 'Serili Lookup Ürün',
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'status' => 'in_stock',
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'B-02',
+            'stock_code' => 'STK-STOCK',
+            'stock_name' => 'Adetli Lookup Ürün',
+            'quantity' => 5,
+            'source' => 'manual',
+        ]);
+
+        $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/lookups/items?warehouse_no=1&q=SN-LOOKUP')
+            ->assertOk()
+            ->assertJsonPath('source', 'panel_fallback')
+            ->assertJsonFragment([
+                'match_type' => 'serial',
+                'serial_no' => 'SN-LOOKUP-1',
+                'is_serial_tracked' => true,
+            ]);
+
+        $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/lookups/items?warehouse_no=1&q=STK-STOCK')
+            ->assertOk()
+            ->assertJsonPath('source', 'panel_fallback')
+            ->assertJsonFragment([
+                'match_type' => 'stock_code',
+                'stock_code' => 'STK-STOCK',
+                'is_serial_tracked' => false,
+            ]);
     }
 
     public function test_serial_item_validates_when_it_is_in_the_source_rack(): void

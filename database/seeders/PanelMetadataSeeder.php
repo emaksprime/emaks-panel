@@ -435,6 +435,71 @@ SQL,
         ];
 
         foreach ([
+            [
+                'code' => 'warehouse_terminal_warehouses',
+                'name' => 'Depo Terminal Mikro Depo Listesi',
+                'description' => 'Depo Terminal Mikro depo listesi lookup',
+                'allowed_params' => [],
+                'query_template' => <<<'SQL'
+SELECT
+    CAST(NULL AS int) AS warehouse_no,
+    CAST(NULL AS nvarchar(255)) AS warehouse_name
+WHERE 1 = 0
+SQL,
+            ],
+            [
+                'code' => 'warehouse_terminal_racks',
+                'name' => 'Depo Terminal Mikro Raf Lookup',
+                'description' => 'Depo Terminal Mikro raf/hareket grup kodu lookup',
+                'allowed_params' => ['warehouse_no', 'type', 'hgrp_no'],
+                'query_template' => <<<'SQL'
+SELECT
+    CAST(NULL AS nvarchar(255)) AS rack_code,
+    CAST(NULL AS nvarchar(255)) AS rack_name
+WHERE 1 = 0
+SQL,
+            ],
+            [
+                'code' => 'warehouse_terminal_items',
+                'name' => 'Depo Terminal Mikro Ürün Arama',
+                'description' => 'Depo Terminal ürün, barkod, stok kodu, stok adı, seri no arama lookup',
+                'allowed_params' => ['warehouse_no', 'q'],
+                'query_template' => <<<'SQL'
+SELECT
+    CAST(NULL AS nvarchar(50)) AS match_type,
+    CAST(NULL AS nvarchar(255)) AS stock_code,
+    CAST(NULL AS nvarchar(255)) AS stock_name,
+    CAST(NULL AS nvarchar(255)) AS barcode,
+    CAST(NULL AS nvarchar(255)) AS serial_no,
+    CAST(0 AS bit) AS is_serial_tracked,
+    CAST(NULL AS nvarchar(512)) AS display_label
+WHERE 1 = 0
+SQL,
+            ],
+        ] as $index => $sourceDefinition) {
+            DataSource::query()->updateOrCreate(
+                ['code' => $sourceDefinition['code']],
+                [
+                    'name' => $sourceDefinition['name'],
+                    'db_type' => 'n8n_json',
+                    'query_template' => $sourceDefinition['query_template'],
+                    'allowed_params' => $sourceDefinition['allowed_params'],
+                    'connection_meta' => array_merge($n8nConnectionMeta, [
+                        'target' => 'warehouse_terminal.lookup',
+                        'lookup_code' => $sourceDefinition['code'],
+                    ]),
+                    'preview_payload' => [
+                        'mode' => 'panel_fallback',
+                        'message' => 'Mikro kolonları doğrulanana kadar panel lokasyon fallback kullanılır.',
+                    ],
+                    'active' => false,
+                    'sort_order' => 80 + $index,
+                    'description' => $sourceDefinition['description'],
+                ],
+            );
+        }
+
+        foreach ([
             ['code' => 'sales_online_perakende_detail', 'name' => 'Online / Perakende Detay', 'description' => 'Online ve perakende satış workflow metadata kaydı.'],
             ['code' => 'sales_bayi_proje_detail', 'name' => 'Bayi / Proje Detay', 'description' => 'Bayi ve proje satış workflow metadata kaydı.'],
             ['code' => 'stock_dashboard', 'name' => 'Stok Dashboard', 'description' => 'Stok modülü için n8n JSON metadata kaydı.'],
