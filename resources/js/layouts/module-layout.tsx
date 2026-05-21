@@ -31,6 +31,12 @@ const moduleItems = [
         tone: 'cyan',
     },
     {
+        label: 'Operasyon',
+        candidates: ['/operations/warehouse-terminal'],
+        match: ['/operations/warehouse-terminal'],
+        tone: 'sky',
+    },
+    {
         label: 'Teknik Servis',
         candidates: [
             '/technical-service',
@@ -92,6 +98,10 @@ const moduleToneClasses = {
     cyan: {
         active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
         idle: 'border-cyan-100 bg-cyan-50 text-cyan-800 hover:border-cyan-200 hover:bg-cyan-100',
+    },
+    sky: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-sky-100 bg-sky-50 text-sky-800 hover:border-sky-200 hover:bg-sky-100',
     },
     emerald: {
         active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
