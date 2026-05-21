@@ -114,7 +114,7 @@ class TechnicalServiceWorkflowService
             'Usta Ataması Bekleyen' => ['Usta Onayı Bekleyen', 'Usta Tarih Revize Talebi', 'Beklemede'],
             'Usta Onayı Bekleyen' => ['Planlı', 'Usta Tarih Revize Talebi', 'Beklemede'],
             'Usta Tarih Revize Talebi' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Randevu Planlandı', 'Usta Onayı Bekleyen'],
-            'Planlı' => ['Yolda', 'Sahada', 'Beklemede', 'İptal'],
+            'Planlı' => ['Usta Onayı Bekleyen', 'Yolda', 'Sahada', 'Beklemede', 'İptal'],
             'Yolda' => ['Sahada', 'Beklemede', 'İptal'],
             'Sahada' => ['Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı', 'Parça Bekleniyor', 'Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil'],
             'Beklemede' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Randevu Planlandı', 'Usta Ataması Bekleyen', 'Parça Bekleniyor', 'İptal'],
@@ -454,6 +454,9 @@ class TechnicalServiceWorkflowService
         if ($target === 'Planlı') {
             $request->technician_approval_status = 'onayladı';
             $request->technician_approved_at = $this->castDateTime($payload['technician_approved_at'] ?? now());
+        } elseif ($target === 'Usta Onayı Bekleyen') {
+            $request->technician_approval_status = 'bekliyor';
+            $request->technician_approved_at = null;
         }
 
         $this->applyDerivedState($request, $payload);

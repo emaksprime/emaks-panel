@@ -132,6 +132,8 @@ type ServiceJob = {
     checklist_required: boolean
     ops_final_check_required: boolean
     required_photo_labels?: string[]
+    missing_photo_labels?: string[]
+    photo_statuses?: Array<{ field: string, label: string, uploaded: boolean }>
   }
   badges: string[]
   card_priority: number
@@ -656,7 +658,26 @@ const portalPhotoFields = [
   ['warranty_document_photo', 'Garanti Belgesi'],
 ] as const
 
-const slotValidationMessage = (slots: Array<{ date: string, start_time: string, end_time: string }>) => {
+const appointmentSlotOptions = [
+  '10:00-11:00',
+  '11:00-12:00',
+  '12:00-13:00',
+  '13:00-14:00',
+  '14:00-15:00',
+  '15:00-16:00',
+  '16:00-17:00',
+] as const
+
+type AppointmentSlotValue = (typeof appointmentSlotOptions)[number]
+type AppointmentSlotDraft = { date: string, slot: AppointmentSlotValue }
+
+const slotTimeRange = (slot: AppointmentSlotValue) => {
+  const [start_time, end_time] = slot.split('-')
+
+  return { start_time, end_time }
+}
+
+const slotValidationMessage = (slots: AppointmentSlotDraft[]) => {
   if (slots.length < 1) {
     return 'En az bir randevu saati önerin.'
   }
@@ -667,26 +688,23 @@ const slotValidationMessage = (slots: Array<{ date: string, start_time: string, 
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  const sorted = [...slots].sort((a, b) => `${a.date} ${a.start_time}`.localeCompare(`${b.date} ${b.start_time}`))
+  const sorted = [...slots].sort((a, b) => `${a.date} ${a.slot}`.localeCompare(`${b.date} ${b.slot}`))
 
   for (let index = 0; index < sorted.length; index += 1) {
     const slot = sorted[index]
+    const range = slotTimeRange(slot.slot)
 
-    if (!slot.date || !slot.start_time || !slot.end_time) {
-      return 'Tarih, başlangıç ve bitiş saati zorunlu.'
+    if (!slot.date || !slot.slot) {
+      return 'Tarih ve randevu saati zorunlu.'
     }
 
     if (new Date(`${slot.date}T00:00:00`).getTime() < today.getTime()) {
       return 'Geçmiş tarih için randevu önerilemez.'
     }
 
-    if (slot.end_time <= slot.start_time) {
-      return 'Bitiş saati başlangıçtan sonra olmalı.'
-    }
-
     const previous = sorted[index - 1]
 
-    if (previous && previous.date === slot.date && slot.start_time < previous.end_time) {
+    if (previous && previous.date === slot.date && range.start_time < slotTimeRange(previous.slot).end_time) {
       return 'Randevu saatleri aynı gün içinde çakışamaz.'
     }
   }
@@ -807,7 +825,7 @@ function ServiceJobDetail({
 }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [acceptNote, setAcceptNote] = useState('')
-  const [appointmentSlots, setAppointmentSlots] = useState([{ date: tomorrowDateValue(), start_time: '10:00', end_time: '11:00' }])
+  const [appointmentSlots, setAppointmentSlots] = useState<AppointmentSlotDraft[]>([{ date: tomorrowDateValue(), slot: '10:00-11:00' }])
   const [proposalNote, setProposalNote] = useState('')
   const [revisitReason, setRevisitReason] = useState('')
   const [rejectReason, setRejectReason] = useState('not_available')
@@ -824,7 +842,21 @@ function ServiceJobDetail({
   const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | null>(null)
   const photosReady = job.completion_requirements.photos_ready
   const confirmationReady = job.completion_requirements.customer_confirmation_ready
-  const completionBlocked = !photosReady || !confirmationReady || completionNote.trim().length < 3
+  const missingPhotoLabels = job.completion_requirements.missing_photo_labels ?? []
+  const completionMissingReasons = [
+    ...missingPhotoLabels.map((label) => `${label} eksik`),
+    ...(confirmationReady ? [] : ['Müşteri onayı bekleniyor']),
+    ...(completionNote.trim().length >= 3 ? [] : ['İşlem notu gerekli']),
+  ]
+  const completionBlocked = completionMissingReasons.length > 0
+  const showPhotoSection = Boolean(job.can_upload_photos || ['final_check', 'completed'].includes(job.kanban_column))
+  const photoStatuses = job.completion_requirements.photo_statuses ?? portalPhotoFields.map(([field, label]) => ({
+    field,
+    label,
+    uploaded: (field === 'before_photo' && job.photo_counts.before > 0)
+      || (field === 'after_photo' && job.photo_counts.after > 0)
+      || (field === 'warranty_document_photo' && job.photo_counts.general > 0),
+  }))
   const appointmentSlotError = slotValidationMessage(appointmentSlots)
   const canAcceptAppointment = Boolean(job.can_accept)
   const canProposeAppointment = Boolean(job.can_propose_appointment ?? true)
@@ -889,13 +921,13 @@ function ServiceJobDetail({
     }
   }
 
-  const updateAppointmentSlot = (index: number, patch: Partial<{ date: string, start_time: string, end_time: string }>) => {
+  const updateAppointmentSlot = (index: number, patch: Partial<AppointmentSlotDraft>) => {
     setAppointmentSlots((current) => current.map((slot, slotIndex) => (slotIndex === index ? { ...slot, ...patch } : slot)))
   }
 
   const addAppointmentSlot = () => {
     setAppointmentSlots((current) => (
-      current.length >= 3 ? current : [...current, { date: tomorrowDateValue(), start_time: '10:00', end_time: '11:00' }]
+      current.length >= 3 ? current : [...current, { date: tomorrowDateValue(), slot: '10:00-11:00' }]
     ))
   }
 
@@ -988,11 +1020,8 @@ function ServiceJobDetail({
           <InfoTile label="Harita" value={job.maps_link ? <a className="font-semibold text-blue-700 hover:underline" href={job.maps_link} target="_blank" rel="noreferrer">Google Maps aç</a> : '-'} />
           <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
           <InfoTile label="Ürün" value={[job.product_name, job.model].filter(Boolean).join(' / ') || '-'} />
-          <InfoTile label="Seri" value={job.serial_no ?? '-'} />
-          <InfoTile label="Randevu" value={job.appointment_label ?? job.appointment_at ?? '-'} />
-          <InfoTile label="Sonraki aksiyon" value={job.next_action ?? '-'} />
+          <InfoTile label="Aktivasyon / seri" value={job.serial_no ?? '-'} />
           <InfoTile label="Yol" value={job.route_distance_summary ?? '-'} />
-          <InfoTile label="Ödeme" value={job.payment_status_summary ?? '-'} />
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-950">
@@ -1050,6 +1079,7 @@ function ServiceJobDetail({
               ))}
             </div>
           </div>
+          {showPhotoSection && (
           <div className="rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fotoğraf / belge</p>
             <p className="mt-2 text-sm text-slate-700">Öncesi / Sonrası / Garanti Belgesi</p>
@@ -1057,6 +1087,13 @@ function ServiceJobDetail({
               <p className="font-semibold">Tamamlama şartı</p>
               <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} fotoğraf/belge yüklendi.</p>
               <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri OTP/onay bekliyor.'}</p>
+              <div className="mt-2 grid gap-1">
+                {photoStatuses.map((photo) => (
+                  <p key={photo.field} className={photo.uploaded ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>
+                    {photo.label}: {photo.uploaded ? 'yüklendi' : 'eksik'}
+                  </p>
+                ))}
+              </div>
             </div>
             {job.photos.length === 0 ? (
               <p className="mt-3 text-sm text-slate-500">Mevcut fotoğraf kaydı yok.</p>
@@ -1090,6 +1127,7 @@ function ServiceJobDetail({
               </button>
             </div>
           </div>
+          )}
         </div>
         {job.portal_actions.length > 0 && (
           <div className="mt-5 rounded-2xl bg-slate-50 p-4">
@@ -1130,10 +1168,18 @@ function ServiceJobDetail({
                       <button type="button" onClick={() => removeAppointmentSlot(index)} className="text-xs font-semibold text-rose-700" disabled={readOnly}>Kaldır</button>
                     )}
                   </div>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px_120px]">
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px]">
                     <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.date} onChange={(event) => updateAppointmentSlot(index, { date: event.target.value })} disabled={readOnly} />
-                    <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.start_time} onChange={(event) => updateAppointmentSlot(index, { start_time: event.target.value })} disabled={readOnly} />
-                    <input type="time" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.end_time} onChange={(event) => updateAppointmentSlot(index, { end_time: event.target.value })} disabled={readOnly} />
+                    <select
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm"
+                      value={slot.slot}
+                      onChange={(event) => updateAppointmentSlot(index, { slot: event.target.value as AppointmentSlotValue })}
+                      disabled={readOnly}
+                    >
+                      {appointmentSlotOptions.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               ))}
@@ -1147,7 +1193,7 @@ function ServiceJobDetail({
               type="button"
               disabled={readOnly || appointmentSlotError !== null || actionLoading === 'appointment-proposal'}
               onClick={() => void submitAction('appointment-proposal', {
-                slots: appointmentSlots,
+                slots: appointmentSlots.map((slot) => ({ ...slot, ...slotTimeRange(slot.slot) })),
                 note: proposalNote || null,
               }, 'Randevu önerisi operasyona gönderildi.')}
               className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1194,8 +1240,15 @@ function ServiceJobDetail({
               <option value="parts_pending">Parça/ürün bekleniyor</option>
             </select>
             <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
-              <p>{photosReady ? '3 fotoğraf hazır.' : '3 fotoğraf yüklenmeden tamamlamaya gönderilemez.'}</p>
+              <p>{photosReady ? '3 fotoğraf hazır.' : '3 ayrı fotoğraf türü yüklenmeden tamamlamaya gönderilemez.'}</p>
               <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
+              {completionMissingReasons.length > 0 && (
+                <ul className="mt-2 grid gap-1">
+                  {completionMissingReasons.map((reason) => (
+                    <li key={reason}>- {reason}</li>
+                  ))}
+                </ul>
+              )}
             </div>
             <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İşlem notu" disabled={readOnly || !job.can_submit_completion} />
             <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">

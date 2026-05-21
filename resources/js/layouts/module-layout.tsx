@@ -106,8 +106,17 @@ const moduleToneClasses = {
 };
 
 export default function ModuleLayout({ children }: { children: React.ReactNode }) {
-    const { auth, panelNavigation, page } = usePage<SharedPageProps & { page?: { routePath?: string } }>().props;
-    const routePath = page?.routePath ?? (typeof window !== 'undefined' ? window.location.pathname : '/dashboard');
+    const inertiaPage = usePage<SharedPageProps & { page?: { routePath?: string } }>();
+    const { auth, panelNavigation, page } = inertiaPage.props;
+    const inertiaPath = typeof inertiaPage.url === 'string' ? inertiaPage.url.split('?')[0] : null;
+    const routePath = page?.routePath ?? inertiaPath ?? (typeof window !== 'undefined' ? window.location.pathname : '/dashboard');
+    const isTechnicalServiceRoute = routePath === '/technical-service' || routePath.startsWith('/technical-service/');
+    const headerContainerClassName = isTechnicalServiceRoute
+        ? 'mx-auto grid w-full max-w-none gap-3 px-3 py-2.5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center xl:px-4 2xl:px-6'
+        : 'mx-auto grid max-w-7xl gap-3 px-4 py-2.5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center xl:px-6';
+    const mainClassName = isTechnicalServiceRoute
+        ? 'w-full max-w-none'
+        : 'mx-auto w-full max-w-7xl';
     const moduleNavRef = useRef<HTMLElement | null>(null);
     const visibleHrefs = new Set(
         panelNavigation.groups.flatMap((group) => group.items.map((item) => item.href)),
@@ -119,7 +128,7 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
     return (
         <div className="min-h-screen bg-slate-100">
             <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-                <div className="mx-auto grid max-w-7xl gap-3 px-4 py-2.5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center xl:px-6">
+                <div className={headerContainerClassName}>
                     <div className="flex min-w-0 items-center justify-center lg:justify-start">
                         <Link href="/dashboard" className="flex min-w-[160px] shrink-0 items-center justify-center">
                             <AppLogo />
@@ -197,7 +206,7 @@ export default function ModuleLayout({ children }: { children: React.ReactNode }
                 </div>
             </header>
 
-            <main className="mx-auto w-full max-w-7xl">
+            <main className={mainClassName}>
                 {children}
             </main>
         </div>

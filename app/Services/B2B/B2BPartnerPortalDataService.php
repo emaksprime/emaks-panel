@@ -16,6 +16,18 @@ use Illuminate\Support\Collection;
 
 class B2BPartnerPortalDataService
 {
+    private const REQUIRED_PORTAL_PHOTO_FIELDS = [
+        'before_photo' => 'Öncesi',
+        'after_photo' => 'Sonrası',
+        'warranty_document_photo' => 'Garanti Belgesi',
+    ];
+
+    private const LEGACY_PORTAL_PHOTO_FIELDS = [
+        'door_front_photo' => 'before_photo',
+        'door_side_photo' => 'after_photo',
+        'door_back_photo' => 'warranty_document_photo',
+    ];
+
     public function __construct(
         private readonly B2BPartnerAccessService $partnerAccess,
         private readonly B2BPartnerServiceJobScopeService $serviceJobScope,
@@ -294,17 +306,26 @@ class B2BPartnerPortalDataService
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
         $stateAction = $this->stateAction($request);
         $assignmentOffer = $request->latestAssignmentOffer;
-        $photoEvidenceCount = $this->doorPhotoEvidenceCount($request);
+        $photoReadiness = $this->portalPhotoReadiness($request);
         $customerConfirmationReady = in_array($request->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±'], true)
             || $latestOtpRequest instanceof TechnicalServicePartnerJobAction;
         $completionRequirements = [
-            'door_photos_required' => 3,
-            'door_photos_uploaded' => $photoEvidenceCount,
-            'photos_ready' => $photoEvidenceCount >= 3,
+            'door_photos_required' => $photoReadiness['required'],
+            'door_photos_uploaded' => $photoReadiness['count'],
+            'photos_ready' => $photoReadiness['ready'],
             'customer_confirmation_ready' => $customerConfirmationReady,
             'checklist_required' => true,
             'ops_final_check_required' => true,
-            'required_photo_labels' => ['Öncesi', 'Sonrası', 'Garanti Belgesi'],
+            'required_photo_labels' => array_values(self::requiredPortalPhotoFields()),
+            'missing_photo_labels' => $photoReadiness['missing_labels'],
+            'photo_statuses' => collect(self::requiredPortalPhotoFields())
+                ->map(fn (string $label, string $field): array => [
+                    'field' => $field,
+                    'label' => $label,
+                    'uploaded' => in_array($field, $photoReadiness['present_fields'], true),
+                ])
+                ->values()
+                ->all(),
         ];
         $hasOpsAppointment = $this->hasOpsAppointment($request);
         $isTerminal = $this->isTerminalStatus($request);
@@ -354,9 +375,9 @@ class B2BPartnerPortalDataService
             'checklist_status' => $request->checklist_status,
             'checklist_payload' => [],
             'photo_counts' => [
-                'before' => (int) ($request->before_photo_count ?? 0),
-                'after' => (int) ($request->after_photo_count ?? 0),
-                'general' => (int) ($request->general_photo_count ?? 0),
+                'before' => in_array('before_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
+                'after' => in_array('after_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
+                'general' => in_array('warranty_document_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
             ],
             'photos' => $request->uploads
                 ->map(fn (TechnicalServiceRequestUpload $upload): array => [
@@ -782,21 +803,63 @@ class B2BPartnerPortalDataService
 
     private function doorPhotoEvidenceCount(TechnicalServiceRequest $request): int
     {
-        $request->loadMissing('uploads');
-        $fieldCodes = $request->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO)
-            ->pluck('field_code')
-            ->filter()
-            ->unique()
-            ->count();
-        $legacyCount = max(
-            0,
-            (int) ($request->before_photo_count ?? 0),
-            (int) ($request->after_photo_count ?? 0),
-            (int) ($request->general_photo_count ?? 0),
-        );
+        return $this->portalPhotoReadiness($request)['count'];
+    }
 
-        return max($fieldCodes, $legacyCount);
+    /**
+     * @return array{present_fields: array<int, string>, missing_fields: array<int, string>, missing_labels: array<int, string>, count: int, required: int, ready: bool}
+     */
+    private function portalPhotoReadiness(TechnicalServiceRequest $request): array
+    {
+        $request->loadMissing('uploads');
+        $uploadedFields = $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO)
+            ->map(fn (TechnicalServiceRequestUpload $upload): ?string => $this->canonicalPortalPhotoField($upload->field_code))
+            ->filter(fn (?string $field): bool => $field !== null && array_key_exists($field, self::REQUIRED_PORTAL_PHOTO_FIELDS))
+            ->unique()
+            ->values();
+
+        $presentFields = $uploadedFields->isNotEmpty()
+            ? $uploadedFields
+            : collect([
+                (int) ($request->before_photo_count ?? 0) > 0 ? 'before_photo' : null,
+                (int) ($request->after_photo_count ?? 0) > 0 ? 'after_photo' : null,
+                (int) ($request->general_photo_count ?? 0) > 0 ? 'warranty_document_photo' : null,
+            ])->filter()->values();
+
+        $missingFields = collect(array_keys(self::REQUIRED_PORTAL_PHOTO_FIELDS))
+            ->reject(fn (string $field): bool => $presentFields->contains($field))
+            ->values();
+
+        return [
+            'present_fields' => $presentFields->all(),
+            'missing_fields' => $missingFields->all(),
+            'missing_labels' => $missingFields
+                ->map(fn (string $field): string => self::REQUIRED_PORTAL_PHOTO_FIELDS[$field])
+                ->all(),
+            'count' => $presentFields->count(),
+            'required' => count(self::REQUIRED_PORTAL_PHOTO_FIELDS),
+            'ready' => $missingFields->isEmpty(),
+        ];
+    }
+
+    private function canonicalPortalPhotoField(?string $fieldCode): ?string
+    {
+        $field = trim((string) $fieldCode);
+
+        if ($field === '') {
+            return null;
+        }
+
+        return self::LEGACY_PORTAL_PHOTO_FIELDS[$field] ?? $field;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function requiredPortalPhotoFields(): array
+    {
+        return self::REQUIRED_PORTAL_PHOTO_FIELDS;
     }
 
     private function serviceJobColumn(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $latestAction): string
@@ -835,9 +898,7 @@ class B2BPartnerPortalDataService
     {
         return in_array($request->workflow_status, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)
             && $request->checklist_status === 'tamamlandı'
-            && (int) ($request->before_photo_count ?? 0) >= 3
-            && (int) ($request->after_photo_count ?? 0) >= 3
-            && (int) ($request->general_photo_count ?? 0) >= 1
+            && $this->portalPhotoReadiness($request)['ready']
             && in_array($request->document_status, ['tamamlandı', 'tamam', 'gerekli_degil'], true)
             && $request->customer_closure_approval_status === 'onaylandı';
     }

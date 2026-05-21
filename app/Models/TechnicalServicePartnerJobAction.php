@@ -29,6 +29,8 @@ class TechnicalServicePartnerJobAction extends Model
 
     public const ACTION_SUPPORT_REQUESTED = 'support_requested';
 
+    public const ACTION_PHOTOS_UPLOADED = 'photos_uploaded';
+
     public const STATUS_SUBMITTED = 'submitted';
 
     public const STATUS_APPLIED = 'applied';

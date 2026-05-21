@@ -159,6 +159,20 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
       badges.push(badge)
     }
   }
+  const latestPortalOpsAction = (request.partnerPortalActions ?? []).find((action) => action.status === 'ops_review') ?? null
+
+  if (latestPortalOpsAction?.action === 'job_rejected') {
+    addBadge({ label: 'Usta reddetti', tone: 'rose', icon: 'warning', important: true })
+  } else if (latestPortalOpsAction?.action === 'completion_submitted') {
+    addBadge({ label: 'Son kontrol bekliyor', tone: 'purple', icon: 'warning', important: true })
+  } else if (latestPortalOpsAction?.action === 'appointment_proposed') {
+    addBadge({ label: 'Randevu önerisi', tone: 'amber', icon: 'warning', important: true })
+  } else if (latestPortalOpsAction?.action === 'support_requested') {
+    addBadge({ label: 'Ek talep', tone: 'purple', icon: 'warning', important: true })
+  } else if (latestPortalOpsAction?.action === 'revisit_requested') {
+    addBadge({ label: 'Tekrar ziyaret talebi', tone: 'amber', icon: 'warning', important: true })
+  }
+
   const qrSourceChannel = request.qrSource?.source_channel ?? request.channel
   const canonicalPaymentStatus = request.saleAndPayment?.payment_status ?? null
   const mountPaymentStatus = request.saleAndPayment?.mount_payment_status
@@ -353,7 +367,72 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     addBadge({ label: 'Servis Reddetti', tone: 'rose' })
   }
 
-  return badges.slice(0, 8)
+  return badges.slice(0, 4)
+}
+
+const latestPortalOpsAction = (request: ServiceRequest) =>
+  (request.partnerPortalActions ?? []).find((action) => action.status === 'ops_review') ?? null
+
+const portalActionLabel = (action: string) => ({
+  appointment_proposed: 'Randevu önerisi',
+  job_rejected: 'Usta reddetti',
+  support_requested: 'Ek talep',
+  revisit_requested: 'Tekrar ziyaret',
+  completion_submitted: 'Tamamlama gönderildi',
+}[action] ?? action)
+
+const columnDetailRows = (
+  request: ServiceRequest,
+  column: ReturnType<typeof getTechnicalServiceKanbanColumn>,
+  technicianPhone: string | null,
+): Array<{ label: string, value: string }> => {
+  const portalAction = latestPortalOpsAction(request)
+
+  if (column === 'new') {
+    return [
+      { label: 'Müşteri', value: truncateText(request.customer) },
+      { label: 'Ürün', value: truncateText([request.product, request.model].filter(Boolean).join(' / ')) },
+      { label: 'Sıradaki', value: truncateText(request.nextAction ?? 'Operasyon kontrolü') },
+    ]
+  }
+
+  if (column === 'assignment_pending') {
+    return [
+      { label: 'Usta', value: truncateText(request.technician || 'Atama bekliyor') },
+      { label: 'Telefon', value: truncateText(technicianPhone ?? '') },
+      { label: 'Onay', value: portalAction ? portalActionLabel(portalAction.action) : truncateText(request.technicianApprovalStatus ?? 'Usta/onay bekliyor') },
+    ]
+  }
+
+  if (column === 'assigned') {
+    return [
+      { label: 'Randevu', value: formatTechnicalServiceDateTime(request.scheduledAt ?? request.scheduledDate ?? null, '-') },
+      { label: 'Usta', value: truncateText(request.technician || 'Usta') },
+      { label: 'Müşteri tel', value: truncateText(resolveCustomerPhone(request) ?? '') },
+    ]
+  }
+
+  if (column === 'final_check') {
+    return [
+      { label: 'Son kontrol', value: portalAction ? portalActionLabel(portalAction.action) : 'Operasyon onayı bekliyor' },
+      { label: 'Fotoğraf', value: truncateText(request.photoStatus ?? 'Kontrol edilecek') },
+      { label: 'Kapanış', value: truncateText(request.customerClosureApprovalStatus ?? 'Onay kontrolü') },
+    ]
+  }
+
+  if (column === 'completed') {
+    return [
+      { label: 'Tamamlanma', value: formatTechnicalServiceDateTime(request.completedAt ?? null, '-') },
+      { label: 'Usta', value: truncateText(request.technician || '-') },
+      { label: 'Hakediş', value: truncateText(request.assignmentOffer?.status ?? 'Kontrol edilecek') },
+    ]
+  }
+
+  return [
+    { label: 'İnceleme', value: portalAction ? portalActionLabel(portalAction.action) : truncateText(request.pendingReason ?? request.incompleteReason ?? 'Operasyon incelemesi') },
+    { label: 'Usta', value: truncateText(request.technician || '-') },
+    { label: 'Not', value: truncateText(portalAction?.note ?? request.nextAction ?? '-') },
+  ]
 }
 
 export function TechnicalServiceKanbanCard({
@@ -375,6 +454,8 @@ export function TechnicalServiceKanbanCard({
   const badges = buildBadges(request)
   const customerPhone = resolveCustomerPhone(request)
   const technicianPhone = resolveTechnicianPhone(request)
+  const column = getTechnicalServiceKanbanColumn(request)
+  const detailRows = columnDetailRows(request, column, technicianPhone)
 
   const technicianLabel = request.technician && normalizeTechnicalServiceText(request.technician) !== 'atanmadi'
     ? `TS - ${request.technician} - ${request.city || '-'}`
@@ -385,7 +466,7 @@ export function TechnicalServiceKanbanCard({
       type="button"
       onClick={onClick}
       className={[
-        'group relative min-w-0 w-full overflow-hidden rounded-[24px] border p-4 text-left shadow-[0_10px_28px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_34px_rgba(15,23,42,0.1)]',
+        'group relative min-w-0 w-full overflow-hidden rounded-[18px] border p-2.5 text-left shadow-[0_8px_20px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_26px_rgba(15,23,42,0.09)] xl:p-3',
         selected
           ? 'border-[#06143A] bg-white ring-2 ring-[#06143A]/15'
           : isUnread
@@ -396,7 +477,7 @@ export function TechnicalServiceKanbanCard({
       {isUnread ? <span className="absolute inset-x-0 top-0 h-1 bg-amber-400" aria-hidden="true" /> : null}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="grid min-w-0 gap-1 rounded-[16px] border border-slate-100 bg-[#F8FAFD] px-3 py-2">
+          <div className="grid min-w-0 gap-1 rounded-[14px] border border-slate-100 bg-[#F8FAFD] px-2.5 py-2">
             <p className="flex min-w-0 items-center justify-between gap-2 text-[11px] font-semibold uppercase text-slate-500">
               <span>MRN</span>
               <span className="truncate text-slate-950">{displayMrn}</span>
@@ -407,7 +488,7 @@ export function TechnicalServiceKanbanCard({
             </p>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {isUnread ? (
               <span className="rounded-full border border-amber-200 bg-amber-100 px-2.5 py-1 text-[11px] font-bold uppercase text-amber-900">
                 Yeni
@@ -432,28 +513,26 @@ export function TechnicalServiceKanbanCard({
         </span>
       </div>
 
-      <div className="mt-4 rounded-[20px] border border-slate-100 bg-[#F8FAFD] p-3">
-        <p className="truncate text-base font-semibold text-slate-950">{truncateText(request.customer)}</p>
+      <div className="mt-3 grid gap-1.5 rounded-[14px] border border-slate-100 bg-[#F8FAFD] p-2.5 text-[11px] text-slate-600 xl:text-xs">
+        <p className="truncate text-sm font-semibold text-slate-950">{truncateText(request.customer)}</p>
         {customerPhone ? (
-          <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-slate-500">
+          <p className="flex items-center gap-1.5 font-medium text-slate-500">
             <Phone className="h-3.5 w-3.5 text-slate-400" />
             <span className="truncate">{customerPhone}</span>
           </p>
         ) : null}
-        <div className="mt-3 grid gap-2 text-xs text-slate-600">
-          <p className="flex min-w-0 items-center gap-2">
-            <MapPin className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-            <span className="truncate">{locationLabel}</span>
-          </p>
-          <p className="flex min-w-0 items-start gap-2">
-            <Package className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
-            <span className="line-clamp-2">{productLabel}</span>
-          </p>
-        </div>
+        <p className="flex min-w-0 items-center gap-2">
+          <MapPin className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          <span className="truncate">{locationLabel}</span>
+        </p>
+        <p className="flex min-w-0 items-start gap-2">
+          <Package className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
+          <span className="line-clamp-1">{productLabel}</span>
+        </p>
       </div>
 
       {technicianLabel ? (
-        <div className="mt-4 space-y-2">
+        <div className="mt-3 space-y-1.5">
           <span className="inline-flex max-w-full rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
             <span className="truncate">{technicianLabel}</span>
           </span>
@@ -466,14 +545,20 @@ export function TechnicalServiceKanbanCard({
         </div>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 text-xs font-medium text-slate-500">
+      <div className="mt-3 grid gap-1.5 rounded-[16px] border border-slate-100 bg-white/80 p-2.5 text-[11px] xl:text-xs">
+        {detailRows.map((row) => (
+          <p key={row.label} className="flex min-w-0 items-center justify-between gap-2 text-slate-500">
+            <span className="shrink-0 font-semibold">{row.label}</span>
+            <span className="truncate text-right text-slate-800">{row.value}</span>
+          </p>
+        ))}
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-2.5 text-[11px] font-medium text-slate-500 xl:text-xs">
         <span>#{request.id}</span>
         <span className="inline-flex min-w-0 items-center gap-1.5">
           <CalendarDays className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           <span className="truncate">{appointmentLabel}</span>
-        </span>
-        <span className={[badgeClassName, badgeTone(request.priority === 'Kritik' ? 'rose' : request.priority === 'Yüksek' ? 'amber' : 'neutral')].join(' ')}>
-          {request.priority}
         </span>
       </div>
     </button>

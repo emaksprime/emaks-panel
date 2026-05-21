@@ -39,6 +39,9 @@ const requestSignalText = (request: ServiceRequest) => normalizeTechnicalService
   ...(request.auditLogs ?? []).flatMap((log) => [log.action_type, log.note]),
 ].filter(Boolean).join(' '))
 
+const latestOpsReviewPartnerAction = (request: ServiceRequest) =>
+  (request.partnerPortalActions ?? []).find((action) => action.status === 'ops_review') ?? null
+
 export const hasTechnicalServiceTechnician = (request: ServiceRequest) =>
   Boolean(request.technicianId || (request.technician && normalizeTechnicalServiceText(request.technician) !== 'atanmadi'))
 
@@ -130,6 +133,19 @@ export function getTechnicalServiceKanbanColumn(request: ServiceRequest): Techni
   const hasTechnician = hasTechnicalServiceTechnician(request)
   const technicianApproved = isTechnicalServiceTechnicianApproved(request)
   const customerApproved = isTechnicalServiceCustomerApproved(request)
+  const partnerAction = latestOpsReviewPartnerAction(request)
+
+  if (partnerAction?.action === 'completion_submitted') {
+    return 'final_check'
+  }
+
+  if (partnerAction?.action === 'appointment_proposed') {
+    return 'assignment_pending'
+  }
+
+  if (['job_rejected', 'support_requested', 'revisit_requested'].includes(partnerAction?.action ?? '')) {
+    return 'review'
+  }
 
   if (includesAny(combinedText, ['iptal'])) {
     return 'cancelled'
@@ -161,7 +177,7 @@ export function getTechnicalServiceKanbanColumn(request: ServiceRequest): Techni
     return 'final_check'
   }
 
-  if (includesAny(combinedText, ['inceleniyor', 'eksik', 'parça', 'parca', 'beklemede', 'revizyon', 'ikinci ziyaret'])) {
+  if (includesAny(combinedText, ['inceleniyor', 'parça', 'parca', 'beklemede', 'revizyon', 'ikinci ziyaret'])) {
     return 'review'
   }
 

@@ -68,23 +68,23 @@ export function TechnicalServiceKanbanColumn({
   const Icon = meta.icon
 
   return (
-    <section className="flex min-w-0 w-full flex-col rounded-[30px] border border-white bg-white p-3 shadow-[0_14px_36px_rgba(15,23,42,0.07)] ring-1 ring-slate-200/70">
-      <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span className={['inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] ring-1', meta.tint].join(' ')}>
-            <Icon className="h-4 w-4" />
+    <section className="flex min-w-0 w-full flex-col rounded-[22px] border border-white bg-white p-2 shadow-[0_10px_28px_rgba(15,23,42,0.06)] ring-1 ring-slate-200/70 xl:p-3">
+      <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2 xl:mb-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={['inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] ring-1', meta.tint].join(' ')}>
+            <Icon className="h-3.5 w-3.5" />
           </span>
-          <h2 className="truncate text-sm font-semibold text-slate-950">{title}</h2>
+          <h2 className="truncate text-xs font-semibold text-slate-950 xl:text-sm">{title}</h2>
         </div>
-        <span className="inline-flex min-w-8 items-center justify-center rounded-full bg-[#06143A] px-2.5 py-1 text-xs font-semibold text-white">
+        <span className="inline-flex min-w-7 items-center justify-center rounded-full bg-[#06143A] px-2 py-0.5 text-[11px] font-semibold text-white">
           {count}
         </span>
       </div>
 
-      <div className="flex min-h-[220px] flex-1 flex-col gap-3">
+      <div className="flex min-h-[220px] flex-1 flex-col gap-2 xl:gap-3">
         {hasContent ? children : (
-          <div className="flex min-h-[220px] flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-300 bg-[#F8FAFD] px-4 text-center text-sm font-medium text-slate-500">
-            <Icon className={['mb-3 h-8 w-8', meta.emptyIcon].join(' ')} />
+          <div className="flex min-h-[220px] flex-col items-center justify-center rounded-[18px] border border-dashed border-slate-300 bg-[#F8FAFD] px-3 text-center text-xs font-medium text-slate-500 xl:text-sm">
+            <Icon className={['mb-3 h-7 w-7', meta.emptyIcon].join(' ')} />
             <span>{empty}</span>
           </div>
         )}

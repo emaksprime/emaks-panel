@@ -2884,6 +2884,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('columns.3.count', 0)
             ->assertJsonPath('columns.4.key', 'completed')
             ->assertJsonPath('columns.4.count', 1)
+            ->assertJsonPath('appointment_slot_options.0.value', '10:00-11:00')
+            ->assertJsonPath('appointment_slot_options.6.value', '16:00-17:00')
             ->assertJsonMissing(['mrn' => 'MRN-KANBAN-CONTRACTED']);
 
         $this->actingAs($portalUser)
@@ -3054,8 +3056,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
                 'slots' => [
-                    ['date' => '2026-05-25', 'start_time' => '10:00', 'end_time' => '12:00'],
-                    ['date' => '2026-05-25', 'start_time' => '11:30', 'end_time' => '13:00'],
+                    ['date' => '2026-05-25', 'slot' => '10:00-11:00'],
+                    ['date' => '2026-05-25', 'slot' => '10:00-11:00'],
                 ],
             ])
             ->assertUnprocessable()
@@ -3064,8 +3066,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
                 'slots' => [
-                    ['date' => '2026-05-25', 'start_time' => '10:00', 'end_time' => '11:00'],
-                    ['date' => '2026-05-25', 'start_time' => '15:00', 'end_time' => '16:00'],
+                    ['date' => '2026-05-25', 'slot' => '10:00-11:00'],
+                    ['date' => '2026-05-25', 'slot' => '15:00-16:00'],
                 ],
                 'note' => 'Sabah uygunum.',
             ])
@@ -3087,7 +3089,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('status', 'applied')
-            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.technician_approval_status', 'bekliyor')
             ->assertJsonPath('message_payloads.customer.slot_text', 'öğleden önce')
             ->assertJsonPath('message_payloads.technician.mrn', 'MRN-APPOINTMENT-PROPOSE');
 

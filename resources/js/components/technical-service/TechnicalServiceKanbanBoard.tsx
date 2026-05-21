@@ -82,6 +82,7 @@ export function TechnicalServiceKanbanBoard({
   const otherColumns = groupedRequests.filter((column) => !primaryColumnIds.includes(column.id))
   const otherCount = otherColumns.reduce((total, column) => total + column.items.length, 0)
   const visibleColumns = showOtherColumns ? [...primaryColumns, ...otherColumns] : primaryColumns
+  const columnsToRender = loading ? primaryColumns : visibleColumns
 
   if (error) {
     return (
@@ -108,9 +109,12 @@ export function TechnicalServiceKanbanBoard({
           </button>
         </div>
       )}
-      <div className="w-full min-w-0 overflow-x-hidden pb-3">
-        <div className="grid w-full min-w-0 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
-          {(loading ? TECHNICAL_SERVICE_KANBAN_COLUMNS.filter((column) => primaryColumnIds.includes(column.id)) : visibleColumns).map((column) => (
+      <div className="w-full min-w-0 overflow-hidden pb-3">
+        <div
+          className="grid w-full min-w-0 gap-2 2xl:gap-3"
+          style={{ gridTemplateColumns: `repeat(${columnsToRender.length}, minmax(0, 1fr))` }}
+        >
+          {columnsToRender.map((column) => (
             <TechnicalServiceKanbanColumn
               key={column.id}
               columnId={column.id}

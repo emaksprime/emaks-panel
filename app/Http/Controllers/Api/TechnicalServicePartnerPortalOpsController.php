@@ -47,28 +47,23 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             }
 
             $from = $technicalServiceRequest->workflow_status;
+            $hadAppointment = $technicalServiceRequest->scheduled_at !== null
+                || ($technicalServiceRequest->scheduled_date !== null && filled($technicalServiceRequest->scheduled_time));
             $job = $this->workflow->updateSchedule($technicalServiceRequest, [
                 'scheduled_date' => $scheduledDate,
                 'scheduled_time' => $scheduledTime,
-                'approve_technician' => true,
-                'technician_approved_at' => now(),
+                'approve_technician' => false,
                 'note' => $validated['note'] ?? 'Partner portal randevu önerisi onaylandı.',
             ], $request->user());
 
-            if (! in_array($job->workflow_status, ['Planlı', 'PlanlÄ±'], true)) {
-                $job = $this->workflow->transition($job, 'Planlı', [
-                    'technician_approved_at' => now(),
-                    'note' => $validated['note'] ?? 'Partner portal randevu önerisi operasyon tarafından onaylandı.',
-                ], $request->user(), 'partner_appointment_approved');
-            }
-
-            $messages = $this->appointmentApprovalMessages($job->refresh(), $slot);
+            $messages = $this->appointmentApprovalMessages($job->refresh(), $slot, $hadAppointment);
             $payload['approval'] = [
                 'approved_at' => now()->toISOString(),
                 'approved_by_user_id' => $request->user()?->id,
                 'scheduled_date' => $scheduledDate,
                 'scheduled_time' => $scheduledTime,
                 'selected_slot' => $slot,
+                'technician_confirmation_required' => true,
                 'note' => $validated['note'] ?? null,
                 'messages' => $messages,
             ];
@@ -79,7 +74,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
             $job->events()->create([
                 'event_type' => 'partner_appointment_approved',
-                'title' => 'Partner portal randevu Ã¶nerisi onaylandÄ±',
+                'title' => 'Partner portal randevu önerisi onaylandı',
                 'note' => $validated['note'] ?? null,
                 'from_status' => $from,
                 'to_status' => $job->workflow_status,
@@ -326,12 +321,13 @@ class TechnicalServicePartnerPortalOpsController extends Controller
      * @param  array<string, mixed>  $proposal
      * @return array<string, array<string, mixed>>
      */
-    private function appointmentApprovalMessages(TechnicalServiceRequest $request, array $proposal): array
+    private function appointmentApprovalMessages(TechnicalServiceRequest $request, array $proposal, bool $appointmentUpdated = false): array
     {
         $slotText = $this->slotTextFromRange((string) ($proposal['start_time'] ?? ''), (string) ($proposal['end_time'] ?? ''));
         $timeRange = trim((string) ($proposal['start_time'] ?? '').' - '.(string) ($proposal['end_time'] ?? ''));
         $assignmentOffer = $request->latestAssignmentOffer;
         $technician = $request->technicianRecord;
+        $customerPrefix = $appointmentUpdated ? 'Randevunuz güncellenmiştir.' : "{$request->mrn} numaralı servisiniz";
 
         return [
             'customer' => [
@@ -342,7 +338,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'appointment_date' => $request->scheduled_date?->toDateString(),
                 'appointment_time_range' => $timeRange !== '-' ? $timeRange : null,
                 'slot_text' => $slotText,
-                'message_text' => trim("{$request->mrn} numaralÄ± servisiniz {$request->scheduled_date?->format('d.m.Y')} tarihinde {$slotText} iÃ§in planlandÄ±. Emaks Prime operasyon ekibi."),
+                'message_text' => trim("{$customerPrefix} {$request->scheduled_date?->format('d.m.Y')} tarihinde {$slotText} için planlandı. Emaks Prime operasyon ekibi."),
             ],
             'technician' => [
                 'channel' => 'system_payload',

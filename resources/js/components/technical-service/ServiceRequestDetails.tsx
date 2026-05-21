@@ -866,6 +866,12 @@ export function ServiceRequestDetails({
   const saleAndPayment = request.saleAndPayment ?? null
   const documentInfo = request.documentInfo ?? null
   const invoiceSerials = request.invoiceSerials ?? null
+  const partnerPortalActions = request.partnerPortalActions ?? []
+  const openAppointmentProposals = partnerPortalActions.filter((action) => action.action === 'appointment_proposed' && action.status === 'ops_review')
+  const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
+  const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
+  const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
+  const hasPortalActionNeedingOps = openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0
   const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
   const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? Boolean(invoiceSerials?.has_multi_product)
   const setInvoiceSerialsOpen = (open: boolean) => {
@@ -882,12 +888,12 @@ export function ServiceRequestDetails({
     setCustomerInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [assignmentInfoOpenByRequest, setAssignmentInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? true
+  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? (!hasPortalActionNeedingOps || openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0)
   const setAssignmentInfoOpen = (open: boolean) => {
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [finalCheckOpenByRequest, setFinalCheckOpenByRequest] = useState<Record<string, boolean>>({})
-  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? false
+  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? completionSubmissions.length > 0
   const setFinalCheckOpen = (open: boolean) => {
     setFinalCheckOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -919,11 +925,6 @@ export function ServiceRequestDetails({
   const locationInfo = request.location ?? null
   const doorPhotos = request.doorPhotos ?? []
   const routeQuote = request.routeQuote ?? null
-  const partnerPortalActions = request.partnerPortalActions ?? []
-  const openAppointmentProposals = partnerPortalActions.filter((action) => action.action === 'appointment_proposed' && action.status === 'ops_review')
-  const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
-  const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
-  const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
   const assignmentOffer = request.assignmentOffer ?? null
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
   const selectedTechnicianIdString = selectedTechnicianId ? String(selectedTechnicianId) : null
@@ -1041,7 +1042,7 @@ export function ServiceRequestDetails({
   const paymentControlMissing = operationControl.payment_checked !== 'yes'
   const doorPhotoControlMissing = !operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed'
   const [operationInfoOpenByRequest, setOperationInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? (doorPhotoControlMissing || paymentControlMissing)
+  const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? (doorPhotoControlMissing || paymentControlMissing || supportRequests.length > 0 || completionSubmissions.length > 0)
   const setOperationInfoOpen = (open: boolean) => {
     setOperationInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -1375,7 +1376,27 @@ export function ServiceRequestDetails({
       : { title: 'Tamamlama / saha süreci', status: 'Bekliyor', message: 'Saha tamamlaması bekliyor.' },
   ]
   const sortedEvents = [...events].sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
+  const hiddenOpsWorkflowActions = new Set([
+    'on_the_way',
+    'on_site',
+    'field_travel_started',
+    'field_arrived',
+    'field_work_started',
+  ])
   const workflowActions = Object.entries(request.allowedWorkflowActions ?? {})
+    .filter(([key, action]) => {
+      if (hiddenOpsWorkflowActions.has(key)) {
+        return false
+      }
+
+      const normalized = `${key} ${action.label}`.toLocaleLowerCase('tr-TR')
+
+      return !normalized.includes('usta yolda')
+        && !normalized.includes('sahaya çıktı')
+        && !normalized.includes('sahaya cikti')
+        && !normalized.includes('sahaya vardı')
+        && !normalized.includes('sahaya vardi')
+    })
   const footerWorkflowActions = [...workflowActions].sort(([leftKey, leftAction], [rightKey, rightAction]) => {
     const priority = (key: string, label: string) => {
       const normalized = `${key} ${label}`.toLocaleLowerCase('tr-TR')
