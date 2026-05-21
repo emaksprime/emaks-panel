@@ -5,6 +5,7 @@ import {
     Boxes,
     ClipboardList,
     FileCheck2,
+    FileSearch,
     Layers3,
     ReceiptText,
     RotateCcw,
@@ -29,6 +30,13 @@ const terminalCards: TerminalCard[] = [
         description: 'Kaynak raf, ürün/seri ve hedef raf okutularak transfer yapılacak.',
         Icon: RotateCcw,
         href: '/operations/warehouse-terminal/rack-transfer',
+    },
+    {
+        title: 'Raf Raporu',
+        status: 'Pilot',
+        description: 'Panel raf lokasyon kayıtlarına göre güncel depo/raf durumu listelenecek.',
+        Icon: FileSearch,
+        href: '/operations/warehouse-terminal/rack-report',
     },
     {
         title: 'Seri / Raf Sorgu',

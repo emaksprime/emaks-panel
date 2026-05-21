@@ -166,6 +166,22 @@ class PanelMetadataSeeder extends Seeder
             $page['code'] => Page::query()->updateOrCreate(['code' => $page['code']], $page),
         ]);
 
+        Page::query()->updateOrCreate(
+            ['code' => 'warehouse_terminal_rack_report'],
+            [
+                'code' => 'warehouse_terminal_rack_report',
+                'name' => 'Raf Raporu',
+                'route' => '/operations/warehouse-terminal/rack-report',
+                'component' => 'panel/operations/warehouse-terminal-rack-report',
+                'layout_type' => 'module',
+                'icon' => 'boxes',
+                'description' => 'Panel raf lokasyon kayıtlarına göre güncel depo/raf durumunu gösterir.',
+                'resource_code' => 'warehouse_terminal',
+                'page_order' => 74,
+                'active' => true,
+            ],
+        );
+
         $menuItems = [
             ['menu_group' => 'executive', 'page' => 'dashboard', 'label' => 'Yönetim Özeti', 'icon' => 'layout-grid', 'sort_order' => 10],
             ['menu_group' => 'sales', 'page' => 'sales_main', 'label' => 'Genel Satış', 'icon' => 'chart-column', 'sort_order' => 20],
