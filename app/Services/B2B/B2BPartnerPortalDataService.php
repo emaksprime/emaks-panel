@@ -8,7 +8,9 @@ use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
 use Illuminate\Support\Collection;
 
@@ -83,6 +85,7 @@ class B2BPartnerPortalDataService
             'orders' => $this->ordersFor($partner),
             'products' => $this->safeProductCatalog(),
             'serviceJobs' => $this->serviceJobsFor($partner),
+            'serviceJobBoard' => $this->serviceJobBoardFor($partner),
             'earnings' => $this->earningsFor($partner),
             'settings' => $this->settingsFor($partner),
             'messages' => [
@@ -223,29 +226,119 @@ class B2BPartnerPortalDataService
     {
         return $this->serviceJobScope
             ->serviceJobsQuery($partner)
+            ->with([
+                'partnerJobActions' => fn ($query) => $query->latest(),
+                'uploads',
+            ])
             ->latest('updated_at')
             ->limit(50)
             ->get()
-            ->map(fn (TechnicalServiceRequest $request): array => [
-                'id' => $request->id,
-                'mrn' => $request->mrn,
-                'customer_name' => $request->customer_name,
-                'customer_phone' => $request->customer_phone,
-                'customer_city' => $request->customer_city,
-                'customer_district' => $request->customer_district,
-                'address_summary' => $request->service_address,
-                'product_name' => $request->product_name,
-                'product_model' => $request->product_model,
-                'service_type' => $request->service_type,
-                'scheduled_at' => $request->scheduled_at?->toIso8601String(),
-                'scheduled_date' => $request->scheduled_date?->toDateString(),
-                'status' => $request->status,
-                'workflow_status' => $request->workflow_status,
-                'next_action' => $request->next_action,
-                'updated_at' => $request->updated_at?->toIso8601String(),
-            ])
+            ->map(fn (TechnicalServiceRequest $request): array => $this->safeServiceJobSummary($request))
             ->values()
             ->all();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function serviceJobBoardFor(B2BPartner $partner): array
+    {
+        $jobs = collect($this->serviceJobsFor($partner));
+        $columns = collect([
+            ['key' => 'new_jobs', 'label' => 'Yeni işler', 'tone' => 'blue'],
+            ['key' => 'appointment_confirmed', 'label' => 'Randevu onaylandı', 'tone' => 'green'],
+            ['key' => 'revisit', 'label' => 'Tekrar ziyaret', 'tone' => 'amber'],
+            ['key' => 'completed', 'label' => 'Tamamlanan işler', 'tone' => 'slate'],
+        ])->map(function (array $column) use ($jobs): array {
+            $column['jobs'] = $jobs
+                ->where('kanban_column', $column['key'])
+                ->values()
+                ->all();
+            $column['count'] = count($column['jobs']);
+
+            return $column;
+        });
+
+        return [
+            'columns' => $columns->values()->all(),
+            'total' => $jobs->count(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function safeServiceJobSummary(TechnicalServiceRequest $request): array
+    {
+        $request->loadMissing([
+            'partnerJobActions' => fn ($query) => $query->latest(),
+            'uploads',
+        ]);
+        $latestAction = $request->partnerJobActions->first();
+
+        return [
+            'id' => $request->id,
+            'mrn' => $request->mrn,
+            'status_label' => $request->status,
+            'service_stage_label' => $request->workflow_status,
+            'customer_name' => $request->customer_name,
+            'customer_phone' => $request->customer_phone,
+            'city' => $request->customer_city,
+            'district' => $request->customer_district,
+            'address_summary' => $request->service_address,
+            'product_name' => $request->product_name,
+            'product_model' => $request->product_model,
+            'model' => $request->product_model,
+            'serial_no' => $request->serial_number,
+            'service_type' => $request->service_type,
+            'scheduled_at' => $request->scheduled_at?->toIso8601String(),
+            'scheduled_date' => $request->scheduled_date?->toDateString(),
+            'appointment_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
+            'priority' => $request->priority,
+            'status' => $request->status,
+            'workflow_status' => $request->workflow_status,
+            'next_action' => $request->next_action,
+            'route_distance_summary' => $request->travel_round_trip_km !== null ? ((float) $request->travel_round_trip_km).' km' : null,
+            'payment_status_summary' => $request->mount_payment_label ?? $request->mount_payment_status,
+            'checklist_status' => $request->checklist_status,
+            'checklist_payload' => is_array($request->checklist_payload) ? $request->checklist_payload : [],
+            'photo_counts' => [
+                'before' => (int) ($request->before_photo_count ?? 0),
+                'after' => (int) ($request->after_photo_count ?? 0),
+                'general' => (int) ($request->general_photo_count ?? 0),
+            ],
+            'photos' => $request->uploads
+                ->map(fn (TechnicalServiceRequestUpload $upload): array => [
+                    'id' => $upload->id,
+                    'label' => $upload->original_name,
+                    'category' => $upload->category,
+                    'field_code' => $upload->field_code,
+                ])
+                ->values()
+                ->all(),
+            'latest_partner_action' => $latestAction ? [
+                'action' => $latestAction->action,
+                'status' => $latestAction->status,
+                'note' => $latestAction->note,
+                'created_at' => $latestAction->created_at?->toIso8601String(),
+            ] : null,
+            'portal_actions' => $request->partnerJobActions
+                ->take(8)
+                ->map(fn (TechnicalServicePartnerJobAction $action): array => [
+                    'action' => $action->action,
+                    'status' => $action->status,
+                    'note' => $action->note,
+                    'created_at' => $action->created_at?->toIso8601String(),
+                ])
+                ->values()
+                ->all(),
+            'kanban_column' => $this->serviceJobColumn($request, $latestAction),
+            'can_accept' => $request->workflow_status === 'Usta Onayı Bekleyen',
+            'can_request_revisit' => ! in_array($request->workflow_status, ['Tamamlandı', 'İptal'], true),
+            'can_submit_completion' => in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true),
+            'can_complete_directly' => $this->canCompleteDirectly($request),
+            'updated_at' => $request->updated_at?->toIso8601String(),
+        ];
     }
 
     /**
@@ -296,6 +389,42 @@ class B2BPartnerPortalDataService
                 'grand_total' => $rows->sum('grand_total'),
             ],
         ];
+    }
+
+    private function serviceJobColumn(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $latestAction): string
+    {
+        if (
+            $request->workflow_status === 'Tamamlandı'
+            || $request->completed_at !== null
+            || $latestAction?->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED
+        ) {
+            return 'completed';
+        }
+
+        if (
+            $latestAction?->action === TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED
+            || (bool) $request->requires_second_visit
+            || in_array($request->workflow_status, ['Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil', 'Parça Bekleniyor', 'Usta Tarih Revize Talebi'], true)
+        ) {
+            return 'revisit';
+        }
+
+        if (in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)) {
+            return 'appointment_confirmed';
+        }
+
+        return 'new_jobs';
+    }
+
+    private function canCompleteDirectly(TechnicalServiceRequest $request): bool
+    {
+        return in_array($request->workflow_status, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)
+            && $request->checklist_status === 'tamamlandı'
+            && (int) ($request->before_photo_count ?? 0) >= 3
+            && (int) ($request->after_photo_count ?? 0) >= 3
+            && (int) ($request->general_photo_count ?? 0) >= 1
+            && in_array($request->document_status, ['tamamlandı', 'tamam', 'gerekli_degil'], true)
+            && $request->customer_closure_approval_status === 'onaylandı';
     }
 
     /**

@@ -1,6 +1,6 @@
 import { Head, Link } from '@inertiajs/react'
 import { useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api'
 
 type Capability = 'dealer' | 'locksmith' | 'manufacturer' | 'seller'
@@ -72,20 +72,47 @@ type PartnerOrder = {
 type ServiceJob = {
   id: number
   mrn: string
+  status_label: string | null
+  service_stage_label: string | null
   customer_name: string | null
   customer_phone: string | null
-  customer_city: string | null
-  customer_district: string | null
+  city: string | null
+  district: string | null
   address_summary: string | null
   product_name: string | null
   product_model: string | null
+  model: string | null
+  serial_no: string | null
   service_type: string | null
   scheduled_at: string | null
   scheduled_date: string | null
+  appointment_at: string | null
+  priority: string | null
   status: string | null
   workflow_status: string | null
   next_action: string | null
+  route_distance_summary: string | null
+  payment_status_summary: string | null
+  checklist_status: string | null
+  checklist_payload: Record<string, boolean>
+  photo_counts: { before: number, after: number, general: number }
+  photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null }>
+  latest_partner_action: { action: string, status: string, note: string | null, created_at: string | null } | null
+  portal_actions: Array<{ action: string, status: string, note: string | null, created_at: string | null }>
+  kanban_column: 'new_jobs' | 'appointment_confirmed' | 'revisit' | 'completed'
+  can_accept: boolean
+  can_request_revisit: boolean
+  can_submit_completion: boolean
+  can_complete_directly: boolean
   updated_at: string | null
+}
+
+type ServiceJobColumn = {
+  key: ServiceJob['kanban_column']
+  label: string
+  tone: 'blue' | 'green' | 'amber' | 'slate'
+  count: number
+  jobs: ServiceJob[]
 }
 
 type EarningRow = {
@@ -136,6 +163,10 @@ type PartnerPortalProps = {
     orders: PartnerOrder[]
     products: Product[]
     serviceJobs: ServiceJob[]
+    serviceJobBoard: {
+      columns: ServiceJobColumn[]
+      total: number
+    }
     earnings: {
       status: string
       rows: EarningRow[]
@@ -293,7 +324,7 @@ function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
           <ProductsView products={partnerPortal.products} readOnly={isPreview} />
         )}
         {partnerPortal.allowed && view === 'service-jobs' && (
-          <ServiceJobsView jobs={partnerPortal.serviceJobs} />
+          <ServiceJobsView board={partnerPortal.serviceJobBoard} readOnly={isPreview} />
         )}
         {partnerPortal.allowed && view === 'earnings' && (
           <EarningsView earnings={partnerPortal.earnings} />
@@ -489,30 +520,261 @@ function ProductsView({ products, readOnly }: { products: Product[], readOnly: b
   )
 }
 
-function ServiceJobsView({ jobs }: { jobs: ServiceJob[] }) {
+const serviceJobColumns: Array<Omit<ServiceJobColumn, 'count' | 'jobs'>> = [
+  { key: 'new_jobs', label: 'Yeni işler', tone: 'blue' },
+  { key: 'appointment_confirmed', label: 'Randevu onaylandı', tone: 'green' },
+  { key: 'revisit', label: 'Tekrar ziyaret', tone: 'amber' },
+  { key: 'completed', label: 'Tamamlanan işler', tone: 'slate' },
+]
+
+const columnToneClass = (tone: ServiceJobColumn['tone']) => ({
+  blue: 'border-blue-100 bg-blue-50 text-blue-800',
+  green: 'border-emerald-100 bg-emerald-50 text-emerald-800',
+  amber: 'border-amber-100 bg-amber-50 text-amber-800',
+  slate: 'border-slate-200 bg-slate-50 text-slate-700',
+}[tone])
+
+const actionLabel = (action: string) => ({
+  accepted: 'Randevu onaylandı',
+  revisit_requested: 'Tekrar ziyaret istendi',
+  completion_submitted: 'Tamamlama gönderildi',
+  note_added: 'Not eklendi',
+}[action] ?? action)
+
+const requiredChecklist = [
+  ['customer_contacted', 'Müşteri ile iletişim kuruldu'],
+  ['address_confirmed', 'Adres doğrulandı'],
+  ['appointment_confirmed', 'Randevu teyit edildi'],
+  ['door_product_checked', 'Kapı/ürün kontrol edildi'],
+  ['job_completed', 'İşlem tamamlandı'],
+  ['customer_informed', 'Müşteri bilgilendirildi'],
+] as const
+
+function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
+  const initialJobs = useMemo(() => board.columns.flatMap((column) => column.jobs), [board.columns])
+  const [jobs, setJobs] = useState<ServiceJob[]>(initialJobs)
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(initialJobs[0]?.id ?? null)
+  const [message, setMessage] = useState<string | null>(null)
+  const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null
+  const columns = serviceJobColumns.map((column) => {
+    const columnJobs = jobs.filter((job) => job.kanban_column === column.key)
+
+    return { ...column, count: columnJobs.length, jobs: columnJobs }
+  })
+
+  const updateJob = (job: ServiceJob) => {
+    setJobs((current) => current.map((item) => (item.id === job.id ? job : item)))
+    setSelectedJobId(job.id)
+  }
+
   return (
-    <section className="grid gap-3">
+    <div className="grid gap-5">
+      {message && <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">{message}</div>}
       {jobs.length === 0 && <EmptyState title="Atanmış iş yok" message="Bu partner kapsamındaki aktif usta işlerinde kayıt bulunamadı." />}
-      {jobs.map((job) => (
-        <article key={job.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-950">{job.mrn}</h2>
-              <p className="mt-1 text-sm text-slate-500">{job.service_type ?? 'Servis'} · {[job.customer_city, job.customer_district].filter(Boolean).join(' / ') || '-'}</p>
+      <section className="grid gap-4 lg:grid-cols-4">
+        {columns.map((column) => (
+          <div key={column.key} className={`min-w-0 rounded-2xl border p-3 ${columnToneClass(column.tone)}`}>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold">{column.label}</h2>
+              <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs font-semibold">{column.count}</span>
             </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{job.workflow_status ?? job.status ?? '-'}</span>
+            <div className="mt-3 grid gap-3">
+              {column.jobs.length === 0 ? (
+                <p className="rounded-xl bg-white/70 p-3 text-xs text-slate-500">Bu kolonda iş yok.</p>
+              ) : column.jobs.map((job) => (
+                <button
+                  key={job.id}
+                  type="button"
+                  onClick={() => setSelectedJobId(job.id)}
+                  className={`w-full rounded-xl border bg-white p-3 text-left shadow-sm transition hover:border-slate-300 ${selectedJob?.id === job.id ? 'border-slate-900' : 'border-white'}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-semibold text-slate-950">{job.mrn}</span>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{job.service_stage_label ?? job.status_label ?? '-'}</span>
+                  </div>
+                  <p className="mt-2 text-sm font-medium text-slate-800">{job.customer_name ?? 'Müşteri'}</p>
+                  <p className="mt-1 text-xs text-slate-500">{[job.city, job.district].filter(Boolean).join(' / ') || '-'}</p>
+                  <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <InfoTile label="Müşteri" value={job.customer_name ?? '-'} />
-            <InfoTile label="İletişim" value={job.customer_phone ?? '-'} />
-            <InfoTile label="Adres" value={job.address_summary ?? '-'} />
-            <InfoTile label="Ürün" value={[job.product_name, job.product_model].filter(Boolean).join(' / ') || '-'} />
-            <InfoTile label="Randevu" value={job.scheduled_at ?? job.scheduled_date ?? '-'} />
-            <InfoTile label="Sonraki aksiyon" value={job.next_action ?? '-'} />
+        ))}
+      </section>
+      {selectedJob && (
+        <ServiceJobDetail
+          job={selectedJob}
+          readOnly={readOnly}
+          onJobUpdated={updateJob}
+          onMessage={setMessage}
+        />
+      )}
+    </div>
+  )
+}
+
+function ServiceJobDetail({
+  job,
+  readOnly,
+  onJobUpdated,
+  onMessage,
+}: {
+  job: ServiceJob
+  readOnly: boolean
+  onJobUpdated: (job: ServiceJob) => void
+  onMessage: (message: string | null) => void
+}) {
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [acceptNote, setAcceptNote] = useState('')
+  const [revisitReason, setRevisitReason] = useState('')
+  const [completionNote, setCompletionNote] = useState('')
+  const [completionResult, setCompletionResult] = useState('completed')
+  const [note, setNote] = useState('')
+  const checklist = Object.fromEntries(requiredChecklist.map(([key]) => [key, true]))
+
+  const submitAction = async (action: string, payload: Record<string, unknown>, successMessage: string) => {
+    if (readOnly) {
+      onMessage('Önizleme modunda işlem yapılamaz.')
+
+      return
+    }
+
+    setActionLoading(action)
+    onMessage(null)
+
+    try {
+      const response = await apiRequest(`/api/partner/service-jobs/${job.id}/${action}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }) as { job?: ServiceJob }
+
+      if (response.job) {
+        onJobUpdated(response.job)
+      }
+
+      onMessage(successMessage)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'İşlem tamamlanamadı.')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  return (
+    <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">İş detayı</p>
+            <h2 className="mt-1 text-2xl font-semibold text-slate-950">{job.mrn}</h2>
+            <p className="mt-1 text-sm text-slate-500">{job.service_stage_label ?? job.status_label ?? '-'}</p>
           </div>
-        </article>
-      ))}
+          {job.latest_partner_action && (
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+              {actionLabel(job.latest_partner_action.action)}
+            </span>
+          )}
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <InfoTile label="Müşteri" value={job.customer_name ?? '-'} />
+          <InfoTile label="Telefon" value={job.customer_phone ?? '-'} />
+          <InfoTile label="Adres" value={job.address_summary ?? '-'} />
+          <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
+          <InfoTile label="Ürün" value={[job.product_name, job.model].filter(Boolean).join(' / ') || '-'} />
+          <InfoTile label="Seri" value={job.serial_no ?? '-'} />
+          <InfoTile label="Randevu" value={job.appointment_at ?? '-'} />
+          <InfoTile label="Sonraki aksiyon" value={job.next_action ?? '-'} />
+          <InfoTile label="Yol" value={job.route_distance_summary ?? '-'} />
+          <InfoTile label="Ödeme" value={job.payment_status_summary ?? '-'} />
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Checklist</p>
+            <div className="mt-3 grid gap-2">
+              {requiredChecklist.map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" checked readOnly className="h-4 w-4 rounded border-slate-300" />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-slate-500">Teknik Servis checklist durumu: {job.checklist_status ?? '-'}</p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fotoğraf / belge</p>
+            <p className="mt-2 text-sm text-slate-700">Önce: {job.photo_counts.before} · Sonra: {job.photo_counts.after} · Genel: {job.photo_counts.general}</p>
+            {job.photos.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-500">Mevcut fotoğraf kaydı yok. Fotoğraf yükleme sonraki portal fazında güçlendirilecek.</p>
+            ) : (
+              <div className="mt-3 grid gap-2">
+                {job.photos.map((photo) => (
+                  <div key={photo.id} className="rounded-xl bg-white px-3 py-2 text-sm text-slate-600">{photo.label ?? `Fotoğraf #${photo.id}`}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        {job.portal_actions.length > 0 && (
+          <div className="mt-5 rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Portal aksiyonları</p>
+            <div className="mt-3 grid gap-2">
+              {job.portal_actions.map((action, index) => (
+                <div key={`${action.action}-${action.created_at ?? index}`} className="rounded-xl bg-white px-3 py-2 text-sm">
+                  <div className="font-semibold text-slate-900">{actionLabel(action.action)} · {action.status}</div>
+                  {action.note && <div className="mt-1 text-slate-500">{action.note}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      <aside className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <p className="text-sm font-semibold text-slate-950">Aksiyonlar</p>
+        {readOnly && <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">Önizleme modu: işlem yapılamaz.</p>}
+        <div className="mt-4 grid gap-4">
+          <ActionBox title="Randevuyu onayla">
+            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={acceptNote} onChange={(event) => setAcceptNote(event.target.value)} placeholder="İsteğe bağlı not" disabled={readOnly || !job.can_accept} />
+            <button type="button" disabled={readOnly || !job.can_accept || actionLoading === 'accept'} onClick={() => void submitAction('accept', { note: acceptNote }, 'Randevu onayı gönderildi.')} className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+              {job.can_accept ? 'Randevu onayla' : 'Bu iş onay beklemiyor'}
+            </button>
+          </ActionBox>
+          <ActionBox title="Tekrar ziyaret iste">
+            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={revisitReason} onChange={(event) => setRevisitReason(event.target.value)} placeholder="Tekrar ziyaret nedeni" disabled={readOnly || !job.can_request_revisit} />
+            <button type="button" disabled={readOnly || !job.can_request_revisit || revisitReason.trim().length < 3 || actionLoading === 'request-revisit'} onClick={() => void submitAction('request-revisit', { reason: revisitReason }, 'Tekrar ziyaret talebi gönderildi.')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50">
+              Tekrar ziyaret iste
+            </button>
+          </ActionBox>
+          <ActionBox title="Tamamlamaya gönder">
+            <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionResult} onChange={(event) => setCompletionResult(event.target.value)} disabled={readOnly || !job.can_submit_completion}>
+              <option value="completed">Tamamlandı</option>
+              <option value="revisit_required">Tekrar ziyaret gerekli</option>
+              <option value="customer_not_available">Müşteri yok</option>
+              <option value="missing_info_or_photo">Eksik bilgi/fotoğraf</option>
+              <option value="parts_pending">Parça/ürün bekleniyor</option>
+            </select>
+            <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İşlem notu" disabled={readOnly || !job.can_submit_completion} />
+            <button type="button" disabled={readOnly || !job.can_submit_completion || completionNote.trim().length < 3 || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, checklist, note: completionNote }, job.can_complete_directly ? 'İş tamamlandı.' : 'Tamamlama gönderimi operasyon onayına düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+              {job.can_complete_directly ? 'Tamamla' : 'Tamamlamaya gönder'}
+            </button>
+          </ActionBox>
+          <ActionBox title="Operasyona not">
+            <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Not yaz" disabled={readOnly} />
+            <button type="button" disabled={readOnly || note.trim().length < 3 || actionLoading === 'note'} onClick={() => void submitAction('note', { note, visibility: 'ops' }, 'Not eklendi.')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
+              Not ekle
+            </button>
+          </ActionBox>
+        </div>
+      </aside>
     </section>
+  )
+}
+
+function ActionBox({ title, children }: { title: string, children: ReactNode }) {
+  return (
+    <div className="grid gap-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3>
+      {children}
+    </div>
   )
 }
 

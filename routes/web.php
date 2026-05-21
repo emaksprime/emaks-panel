@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\PageConfigController;
 use App\Http\Controllers\Api\PageDataController;
+use App\Http\Controllers\Api\PartnerServiceJobController;
 use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\StockCriticalSettingController;
@@ -145,6 +146,27 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('orders', [PartnerPortalController::class, 'storeOrder'])
                     ->middleware('panel.access:partner.orders.view')
                     ->name('api.partner.orders.store');
+                Route::get('service-jobs', [PartnerServiceJobController::class, 'index'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.index');
+                Route::get('service-jobs/{technicalServiceRequest}', [PartnerServiceJobController::class, 'show'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.show');
+                Route::post('service-jobs/{technicalServiceRequest}/accept', [PartnerServiceJobController::class, 'accept'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.accept');
+                Route::post('service-jobs/{technicalServiceRequest}/request-revisit', [PartnerServiceJobController::class, 'requestRevisit'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.request-revisit');
+                Route::post('service-jobs/{technicalServiceRequest}/submit-completion', [PartnerServiceJobController::class, 'submitCompletion'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.submit-completion');
+                Route::post('service-jobs/{technicalServiceRequest}/note', [PartnerServiceJobController::class, 'note'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.note');
+                Route::get('earnings', [PartnerServiceJobController::class, 'earnings'])
+                    ->middleware('panel.access:partner.earnings.view')
+                    ->name('api.partner.earnings');
             });
 
         Route::prefix('technical-service')->group(function () {

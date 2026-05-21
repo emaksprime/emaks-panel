@@ -21,6 +21,7 @@ use App\Models\RoleResourcePermission;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
@@ -2806,6 +2807,262 @@ class B2BPartnerPanelAccessTest extends TestCase
             );
     }
 
+    public function test_locksmith_partner_service_jobs_api_returns_scoped_kanban_columns(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Kanban Locksmith',
+        ]);
+        $owner = $this->technician(['name' => 'Owner Portal Usta']);
+        $field = $this->technician(['name' => 'Field Portal Usta']);
+        $contracted = $this->technician(['name' => 'Contracted Dealer Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $owner->id,
+            'relationship_type' => 'owner',
+            'is_primary' => true,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $field->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $contracted->id,
+            'relationship_type' => 'contracted_technician',
+            'active' => true,
+        ]);
+
+        $newJob = $this->serviceRequestForTechnician($owner, 'MRN-KANBAN-NEW', [
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+        ]);
+        $this->serviceRequestForTechnician($field, 'MRN-KANBAN-PLANLI', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $this->serviceRequestForTechnician($field, 'MRN-KANBAN-REVISIT', [
+            'workflow_status' => 'Beklemede',
+            'status' => 'Devam Ediyor',
+            'requires_second_visit' => true,
+        ]);
+        $this->serviceRequestForTechnician($field, 'MRN-KANBAN-DONE', [
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+        $this->serviceRequestForTechnician($contracted, 'MRN-KANBAN-CONTRACTED', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->getJson('/api/partner/service-jobs')
+            ->assertOk()
+            ->assertJsonPath('columns.0.key', 'new_jobs')
+            ->assertJsonPath('columns.0.count', 1)
+            ->assertJsonPath('columns.1.key', 'appointment_confirmed')
+            ->assertJsonPath('columns.1.count', 1)
+            ->assertJsonPath('columns.2.key', 'revisit')
+            ->assertJsonPath('columns.2.count', 1)
+            ->assertJsonPath('columns.3.key', 'completed')
+            ->assertJsonPath('columns.3.count', 1)
+            ->assertJsonMissing(['mrn' => 'MRN-KANBAN-CONTRACTED']);
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$newJob->id}")
+            ->assertOk()
+            ->assertJsonPath('job.can_accept', true);
+    }
+
+    public function test_locksmith_partner_service_job_actions_are_scoped_and_audited(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Action Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Action Portal Usta']);
+        $otherTechnician = $this->technician(['name' => 'Other Portal Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $acceptJob = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-ACCEPT', [
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+        ]);
+        $revisitJob = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-REVISIT', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $completionJob = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-COMPLETE', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $otherJob = $this->serviceRequestForTechnician($otherTechnician, 'MRN-ACTION-FORBIDDEN', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$acceptJob->id}/accept", ['note' => 'Randevu uygundur'])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
+            ->assertJsonPath('job.kanban_column', 'appointment_confirmed');
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $acceptJob->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_ACCEPTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $acceptJob->id,
+            'event_type' => 'partner_portal_accepted',
+        ]);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$revisitJob->id}/request-revisit", ['reason' => 'Müşteri yeni tarih istedi'])
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'revisit');
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $revisitJob->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+        ]);
+
+        $checklist = [
+            'customer_contacted' => true,
+            'address_confirmed' => true,
+            'appointment_confirmed' => true,
+            'door_product_checked' => true,
+            'job_completed' => true,
+            'customer_informed' => true,
+        ];
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$completionJob->id}/submit-completion", [
+                'result' => 'completed',
+                'checklist' => $checklist,
+                'note' => 'İşlem tamamlandı, operasyon onayı bekleniyor.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'completed');
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $completionJob->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$completionJob->id}/note", ['note' => 'Ek operasyon notu', 'visibility' => 'ops'])
+            ->assertOk();
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $completionJob->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_NOTE_ADDED,
+        ]);
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$otherJob->id}")
+            ->assertForbidden();
+        $this->actingAs($portalUser)
+            ->getJson('/api/technical-service/requests')
+            ->assertForbidden();
+    }
+
+    public function test_locksmith_partner_completion_can_use_existing_safe_workflow_when_requirements_are_met(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Direct Complete Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Direct Complete Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-DIRECT-COMPLETE', [
+            'workflow_status' => 'Sahada',
+            'status' => 'Devam Ediyor',
+            'checklist_status' => 'tamamlandı',
+            'checklist_payload' => [
+                'Ürün seri numarası kontrol edildi' => true,
+                'Kapı / montaj yeri kontrol edildi' => true,
+                'Montaj uygunluğu kontrol edildi' => true,
+                'Ürün çalışır durumda test edildi' => true,
+                'Müşteriye kullanım bilgisi verildi' => true,
+                'Garanti / servis formu bilgisi kontrol edildi' => true,
+            ],
+            'before_photo_count' => 3,
+            'after_photo_count' => 3,
+            'general_photo_count' => 1,
+            'document_status' => 'tamam',
+            'customer_closure_approval_status' => 'onaylandı',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+                'checklist' => [
+                    'customer_contacted' => true,
+                    'address_confirmed' => true,
+                    'appointment_confirmed' => true,
+                    'door_product_checked' => true,
+                    'job_completed' => true,
+                    'customer_informed' => true,
+                ],
+                'note' => 'Doğrudan tamamlanabilir şartlar sağlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
+            ->assertJsonPath('job.workflow_status', 'Tamamlandı');
+
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+    }
+
     public function test_partner_portal_users_stay_out_of_internal_panel_routes(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -2980,9 +3237,12 @@ class B2BPartnerPanelAccessTest extends TestCase
         ], $attributes));
     }
 
-    private function serviceRequestForTechnician(TechnicalServiceTechnician $technician, string $mrn): TechnicalServiceRequest
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function serviceRequestForTechnician(TechnicalServiceTechnician $technician, string $mrn, array $attributes = []): TechnicalServiceRequest
     {
-        return TechnicalServiceRequest::query()->create([
+        return TechnicalServiceRequest::query()->create(array_merge([
             'mrn' => $mrn,
             'customer_name' => 'Portal Musteri',
             'customer_phone' => '+905550000001',
@@ -2995,7 +3255,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => TechnicalServiceRequest::STATUS_NEW,
             'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
             'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
-        ]);
+        ], $attributes));
     }
 
     /**
