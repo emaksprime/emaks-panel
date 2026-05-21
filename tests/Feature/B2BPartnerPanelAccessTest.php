@@ -2218,6 +2218,87 @@ class B2BPartnerPanelAccessTest extends TestCase
                 ->missing('partnerPortal.serviceJobs.1'));
     }
 
+    public function test_internal_user_can_open_b2b_operations_dashboard(): void
+    {
+        $user = $this->userWithRole('b2b_ops_user');
+        $this->grantPanelResource('b2b_ops_user', 'b2b.dashboard.view');
+
+        $this->actingAs($user)
+            ->get('/panel/b2b')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('panel/b2b/dashboard')
+                ->where('page.routePath', '/panel/b2b'));
+    }
+
+    public function test_partner_user_cannot_access_b2b_operations_dashboard(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $user = $this->userWithRole('b2b_dealer');
+
+        $this->actingAs($user)
+            ->get('/panel/b2b')
+            ->assertForbidden();
+
+        $this->actingAs($user)
+            ->getJson('/api/b2b/dashboard/summary')
+            ->assertForbidden();
+    }
+
+    public function test_b2b_dashboard_summary_counts_partners_and_placeholders(): void
+    {
+        $user = $this->userWithRole('b2b_ops_summary');
+        $this->grantPanelResource('b2b_ops_summary', 'b2b.dashboard.view');
+        $dealer = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'address' => 'Bayi adresi',
+        ]);
+        $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $technician = $this->technician(['name' => 'Kokpit Usta']);
+        $hybrid = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+            'technical_service_technician_id' => $technician->id,
+            'address' => 'Karma adres',
+        ]);
+        B2BPartnerUserProfile::query()->create([
+            'user_id' => $user->id,
+            'partner_id' => $dealer->id,
+            'active' => true,
+        ]);
+        $this->serviceRequestForTechnician($technician, 'MRN-B2B-DASHBOARD');
+
+        $this->actingAs($user)
+            ->getJson('/api/b2b/dashboard/summary?capability=dealer')
+            ->assertOk()
+            ->assertJsonPath('partner_counts.total', 3)
+            ->assertJsonPath('partner_counts.active_dealers', 2)
+            ->assertJsonPath('partner_counts.active_locksmiths', 2)
+            ->assertJsonPath('partner_counts.active_dealer_locksmith', 1)
+            ->assertJsonPath('missing_data_counts.partners_without_users', 2)
+            ->assertJsonPath('missing_data_counts.locksmiths_without_technicians', 1)
+            ->assertJsonPath('service_counts.open_service_jobs', 1)
+            ->assertJsonPath('stock_order_placeholders.orders.status', 'not_configured')
+            ->assertJsonCount(2, 'partner_status');
+
+        $this->actingAs($user)
+            ->getJson('/api/b2b/dashboard/orders')
+            ->assertOk()
+            ->assertJsonPath('status', 'not_configured')
+            ->assertJsonPath('reason', 'datasource_required');
+
+        $this->actingAs($user)
+            ->getJson('/api/b2b/dashboard/stock')
+            ->assertOk()
+            ->assertJsonPath('status', 'not_configured');
+
+        $this->assertTrue($hybrid->fresh()->activePartnerTechnicians()->exists());
+    }
+
     private function partnerUser(): User
     {
         $user = $this->userWithRole('partner_user');

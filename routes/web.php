@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\B2B\B2BDashboardController;
 use App\Http\Controllers\Api\B2B\B2BPartnerController;
 use App\Http\Controllers\Api\B2B\B2BPartnerUserController;
 use App\Http\Controllers\Api\CariBilgiDataController;
@@ -54,8 +55,23 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         });
 
         Route::prefix('b2b')
-            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.dealers.manage,b2b.locksmiths.view,b2b.locksmiths.manage,b2b.manufacturers.view,b2b.manufacturers.manage,b2b.sellers.view,b2b.sellers.manage,b2b.partner_users.manage')
+            ->middleware('panel.access:b2b.dashboard.view,b2b.view,b2b.manage,b2b.dealers.view,b2b.dealers.manage,b2b.locksmiths.view,b2b.locksmiths.manage,b2b.manufacturers.view,b2b.manufacturers.manage,b2b.sellers.view,b2b.sellers.manage,b2b.partner_users.manage')
             ->group(function () {
+                Route::get('dashboard/summary', [B2BDashboardController::class, 'summary'])
+                    ->middleware('panel.access:b2b.dashboard.view,b2b.view,b2b.manage')
+                    ->name('api.b2b.dashboard.summary');
+                Route::get('dashboard/orders', [B2BDashboardController::class, 'orders'])
+                    ->middleware('panel.access:b2b.dashboard.view,b2b.view,b2b.manage')
+                    ->name('api.b2b.dashboard.orders');
+                Route::get('dashboard/stock', [B2BDashboardController::class, 'stock'])
+                    ->middleware('panel.access:b2b.dashboard.view,b2b.view,b2b.manage')
+                    ->name('api.b2b.dashboard.stock');
+                Route::get('dashboard/locksmiths', [B2BDashboardController::class, 'locksmiths'])
+                    ->middleware('panel.access:b2b.dashboard.view,b2b.view,b2b.manage')
+                    ->name('api.b2b.dashboard.locksmiths');
+                Route::get('dashboard/earnings', [B2BDashboardController::class, 'earnings'])
+                    ->middleware('panel.access:b2b.dashboard.view,b2b.view,b2b.manage')
+                    ->name('api.b2b.dashboard.earnings');
                 Route::get('partners', [B2BPartnerController::class, 'index'])
                     ->name('api.b2b.partners.index');
                 Route::post('partners', [B2BPartnerController::class, 'store'])
@@ -251,6 +267,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
     ]))->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.manufacturers.view,b2b.sellers.view')->name('b2b.partners');
+
+    Route::get('panel/b2b', fn () => Inertia::render('panel/b2b/dashboard', [
+        'page' => [
+            'title' => 'Bayi & Çilingir Kokpiti',
+            'slug' => 'b2b_dashboard',
+            'routePath' => '/panel/b2b',
+            'component' => 'panel/b2b/dashboard',
+            'layoutType' => 'module',
+            'description' => 'Operasyon ve yönetim için B2B partner durum ekranı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:b2b.dashboard.view,b2b.view,b2b.manage')->name('b2b.dashboard');
 
     Route::get('panel/b2b/users', fn () => Inertia::render('panel/b2b/users', [
         'page' => [

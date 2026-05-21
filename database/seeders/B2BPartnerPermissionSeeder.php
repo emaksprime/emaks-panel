@@ -21,6 +21,7 @@ class B2BPartnerPermissionSeeder extends Seeder
             );
         });
 
+        $this->upsertB2BDashboardPage();
         $this->upsertPartnerDirectoryPage();
         $this->upsertPartnerUsersPage();
         $this->upsertB2BRoles();
@@ -37,6 +38,7 @@ class B2BPartnerPermissionSeeder extends Seeder
             ['code' => 'b2b.sellers.view', 'name' => 'B2B Satıcı Görünümü', 'type' => 'scope', 'description' => 'Satıcı partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
             ['code' => 'b2b.sellers.manage', 'name' => 'B2B Satıcı Yönetimi', 'type' => 'action', 'description' => 'Satıcı partner kayıtlarını yönetme yetkisi.', 'active' => true],
             ['code' => 'b2b.view', 'name' => 'B2B Partner Görünümü', 'type' => 'page', 'description' => 'B2B partner modülü giriş yetkisi.', 'active' => true],
+            ['code' => 'b2b.dashboard.view', 'name' => 'B2B Kokpit Görünümü', 'type' => 'page', 'description' => 'Operasyon B2B kokpit ekranı.', 'active' => true],
             ['code' => 'b2b.manage', 'name' => 'B2B Partner Yönetimi', 'type' => 'action', 'description' => 'B2B partner yönetim aksiyonları.', 'active' => true],
             ['code' => 'b2b.dealers.view', 'name' => 'B2B Bayi Görünümü', 'type' => 'scope', 'description' => 'Bayi partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
             ['code' => 'b2b.dealers.manage', 'name' => 'B2B Bayi Yönetimi', 'type' => 'action', 'description' => 'Bayi partner kayıtlarını yönetme yetkisi.', 'active' => true],
@@ -55,6 +57,47 @@ class B2BPartnerPermissionSeeder extends Seeder
             ['code' => 'partner.stock.view', 'name' => 'Partner Stock', 'type' => 'page', 'description' => 'Partner stock placeholder.', 'active' => true],
             ['code' => 'partner.service_jobs.view', 'name' => 'Partner Service Jobs', 'type' => 'page', 'description' => 'Partner technical service jobs.', 'active' => true],
         ];
+    }
+
+    private function upsertB2BDashboardPage(): void
+    {
+        $group = MenuGroup::query()->updateOrCreate(
+            ['code' => 'b2b'],
+            [
+                'name' => 'B2B',
+                'icon' => 'building-2',
+                'menu_order' => 84,
+                'active' => true,
+            ],
+        );
+
+        $page = Page::query()->updateOrCreate(
+            ['code' => 'b2b_dashboard'],
+            [
+                'resource_code' => 'b2b.dashboard.view',
+                'name' => 'Bayi & Çilingir Kokpiti',
+                'route' => '/panel/b2b',
+                'component' => 'panel/b2b/dashboard',
+                'layout_type' => 'module',
+                'icon' => 'layout-dashboard',
+                'description' => 'Operasyon ve yönetim için B2B partner durum ekranı',
+                'page_order' => 83,
+                'active' => true,
+            ],
+        );
+
+        PageMenu::query()->updateOrCreate(
+            [
+                'menu_group_id' => $group->id,
+                'page_id' => $page->id,
+            ],
+            [
+                'label' => 'Bayi & Çilingir Kokpiti',
+                'icon' => 'layout-dashboard',
+                'sort_order' => 83,
+                'is_visible' => true,
+            ],
+        );
     }
 
     private function upsertPartnerDirectoryPage(): void
@@ -221,6 +264,7 @@ class B2BPartnerPermissionSeeder extends Seeder
     {
         return [
             'b2b_manager' => [
+                'b2b.dashboard.view',
                 'b2b.view',
                 'b2b.manage',
                 'b2b.dealers.view',
