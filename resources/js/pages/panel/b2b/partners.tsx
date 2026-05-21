@@ -90,6 +90,8 @@ type TechnicianOption = {
   requires_type_review?: boolean
   linked_partner_id?: number | null
   linked_partner_name?: string | null
+  linked_partner_ids?: number[]
+  linked_partner_names?: string[]
   linked_to_current_partner?: boolean
   can_link?: boolean
   cannot_link_reason?: string | null
@@ -524,6 +526,7 @@ export default function B2BPartnersPage() {
 
   const hasLocksmithForm = form.capabilities.includes('locksmith')
   const hasMikroForm = form.capabilities.some((capability) => ['dealer', 'manufacturer', 'seller'].includes(capability))
+  const showTechnicianLinks = form.capabilities.length > 0
   const showLegacyTechnicianSelect = false
   const cariCandidates = useMemo(() => cariControl?.candidates ?? cariControl?.items ?? [], [cariControl])
   const cariControlStatus = cariControl?.status ?? 'idle'
@@ -614,7 +617,7 @@ export default function B2BPartnersPage() {
     }
   }, [])
 
-  const loadTechnicians = useCallback(async (search = technicianSearch) => {
+  const loadTechnicians = useCallback(async (search = technicianSearch, contextForm: PartnerForm = form, contextPartnerId: number | undefined = editingPartnerId) => {
     setTechnicianLoading(true)
 
     try {
@@ -624,20 +627,20 @@ export default function B2BPartnersPage() {
         params.set('search', search.trim())
       }
 
-      if (form.mikro_cari_kodu.trim() !== '') {
-        params.set('mikro_cari_kodu', form.mikro_cari_kodu.trim())
+      if (contextForm.mikro_cari_kodu.trim() !== '') {
+        params.set('mikro_cari_kodu', contextForm.mikro_cari_kodu.trim())
       }
 
-      if (form.phone.trim() !== '') {
-        params.set('phone', form.phone.trim())
+      if (contextForm.phone.trim() !== '') {
+        params.set('phone', contextForm.phone.trim())
       }
 
-      if (form.city.trim() !== '') {
-        params.set('city', form.city.trim())
+      if (contextForm.city.trim() !== '') {
+        params.set('city', contextForm.city.trim())
       }
 
-      if (editingPartnerId !== undefined) {
-        params.set('partner_id', String(editingPartnerId))
+      if (contextPartnerId !== undefined) {
+        params.set('partner_id', String(contextPartnerId))
       }
 
       const response = await apiRequest(`/api/b2b/locksmith-technicians?${params.toString()}`)
@@ -647,7 +650,7 @@ export default function B2BPartnersPage() {
     } finally {
       setTechnicianLoading(false)
     }
-  }, [editingPartnerId, form.city, form.mikro_cari_kodu, form.phone, technicianSearch])
+  }, [editingPartnerId, form, technicianSearch])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -658,7 +661,7 @@ export default function B2BPartnersPage() {
   }, [loadPartners])
 
   useEffect(() => {
-    if (hasLocksmithForm) {
+    if (showTechnicianLinks) {
       const timer = window.setTimeout(() => {
         void loadTechnicians()
       }, 0)
@@ -667,7 +670,7 @@ export default function B2BPartnersPage() {
     }
 
     return undefined
-  }, [hasLocksmithForm, loadTechnicians])
+  }, [showTechnicianLinks, loadTechnicians])
 
   const startCreate = () => {
     setSelectedPartnerId(null)
@@ -680,17 +683,17 @@ export default function B2BPartnersPage() {
   }
 
   const startEdit = (partner: Partner, mode: FormMode = 'edit') => {
+    const nextForm = partnerToFormValues(partner)
     setSelectedPartnerId(partner.id)
     setEditingPartner(partner)
     setPartnerTechnicianLinks(partner.linked_technicians ?? [])
-    setForm(partnerToFormValues(partner))
+    setForm(nextForm)
     setFormMode(mode)
     setMessage(null)
     setError(null)
 
-    if (partnerCapabilities(partner).includes('locksmith')) {
-      void loadPartnerTechnicians(partner.id)
-    }
+    void loadPartnerTechnicians(partner.id)
+    void loadTechnicians('', nextForm, partner.id)
   }
 
   const updateForm = <K extends keyof PartnerForm>(key: K, value: PartnerForm[K]) => {
@@ -987,7 +990,7 @@ export default function B2BPartnersPage() {
         method: 'POST',
         body: JSON.stringify({
           technical_service_technician_id: technicianId,
-          relationship_type: 'field_technician',
+          relationship_type: hasLocksmithForm ? 'field_technician' : 'contracted_technician',
           is_primary: isPrimary,
         }),
       })
@@ -1617,12 +1620,12 @@ export default function B2BPartnersPage() {
                 </section>
               )}
 
-              {hasLocksmithForm && (
+              {showTechnicianLinks && (
                 <section className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="text-sm font-semibold text-emerald-900">Bağlı Teknik Servis Ustaları</div>
-                      <p className="mt-1 text-xs text-emerald-700">Bir partner birden fazla ustaya bağlanabilir; birincil usta eski alanla senkron tutulur.</p>
+                      <p className="mt-1 text-xs text-emerald-700">Bir partner birden fazla ustaya bağlanabilir; cari kodu sadece öneri olarak kullanılır.</p>
                     </div>
                     {editingPartner && (
                       <Button type="button" variant="outline" onClick={() => void loadPartnerTechnicians(editingPartner.id)} disabled={technicianLinkLoading}>
@@ -1668,6 +1671,12 @@ export default function B2BPartnersPage() {
                     </div>
                   )}
 
+                  {!hasLocksmithForm && (
+                    <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-sm text-sky-800">
+                      Bu partner bayi kanalı olsa da anlaşmalı çilingir bağlanabilir. Bu işlem çilingir portal rolünü otomatik eklemez.
+                    </div>
+                  )}
+
                   {formMode !== 'detail' && (
                     <div className="mt-3 rounded-lg border border-emerald-100 bg-white p-3">
                       <div className="flex gap-2">
@@ -1686,14 +1695,14 @@ export default function B2BPartnersPage() {
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-semibold text-slate-900">{technician.name}</span>
                                 {technician.linked_to_current_partner && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">Zaten bağlı</span>}
-                                {technician.linked_partner_id && !technician.linked_to_current_partner && <span className="rounded-full bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700">Başka partnerde</span>}
+                                {technician.linked_partner_id && !technician.linked_to_current_partner && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">Başka partnerlarda da bağlı</span>}
                                 {technician.requires_type_review && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">Tip kontrol gerekli</span>}
                               </div>
                               <div className="mt-1 text-xs text-slate-500">
                                 {[technician.phone, locationLabel(technician.city, technician.district), technician.mikro_cari_kodu ?? technician.cari_code].filter(Boolean).join(' · ')}
                               </div>
-                              {technician.linked_partner_name && !technician.linked_to_current_partner && (
-                                <div className="mt-1 text-xs text-rose-600">Bağlı partner: {technician.linked_partner_name}</div>
+                              {(technician.linked_partner_names?.length ?? 0) > 0 && !technician.linked_to_current_partner && (
+                                <div className="mt-1 text-xs text-slate-500">Bağlı partnerler: {(technician.linked_partner_names ?? []).join(', ')}</div>
                               )}
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {!technician.linked_to_current_partner && (

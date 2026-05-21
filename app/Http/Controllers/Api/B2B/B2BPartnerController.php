@@ -85,7 +85,8 @@ class B2BPartnerController extends Controller
 
             if (! empty($data['technical_service_technician_id'])) {
                 $technician = TechnicalServiceTechnician::query()->findOrFail($data['technical_service_technician_id']);
-                $this->upsertPartnerTechnicianLink($partner->fresh('capabilities'), $technician, $request, $user->id, 'field_technician', true, 'manual', 'partner_form');
+                $freshPartner = $partner->fresh('capabilities');
+                $this->upsertPartnerTechnicianLink($freshPartner, $technician, $request, $user->id, $this->defaultTechnicianRelationshipType($freshPartner), true, 'manual', 'partner_form');
             }
 
             $this->writeAuditLog(
@@ -122,14 +123,10 @@ class B2BPartnerController extends Controller
             $this->syncCapabilities($partner, $capabilities, $request, $user->id, $oldCapabilities);
             $this->applyPartnerFormMetadata($partner, $data);
 
-            if (in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true) && ! empty($data['technical_service_technician_id'])) {
+            if (! empty($data['technical_service_technician_id'])) {
                 $technician = TechnicalServiceTechnician::query()->findOrFail($data['technical_service_technician_id']);
-                $this->upsertPartnerTechnicianLink($partner->fresh('capabilities'), $technician, $request, $user->id, 'field_technician', true, 'manual', 'partner_form');
-            }
-
-            if (! in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true)) {
-                $partner->partnerTechnicians()->update(['active' => false, 'is_primary' => false]);
-                $partner->forceFill(['technical_service_technician_id' => null])->save();
+                $freshPartner = $partner->fresh('capabilities');
+                $this->upsertPartnerTechnicianLink($freshPartner, $technician, $request, $user->id, $this->defaultTechnicianRelationshipType($freshPartner), true, 'manual', 'partner_form');
             }
 
             $partner->refresh();
@@ -158,13 +155,6 @@ class B2BPartnerController extends Controller
         ]);
         $user = $request->user();
         abort_unless($user && $this->access->canUpdatePartner($user, $partner), 403);
-
-        if ((bool) $data['active'] && $partner->technical_service_technician_id && $this->activeTechnicianLinked($partner->technical_service_technician_id, $partner)) {
-            throw ValidationException::withMessages([
-                'technical_service_technician_id' => 'Bu teknik servis ustası zaten aktif bir B2B partner kaydına bağlı.',
-            ]);
-        }
-
         if ((bool) $data['active'] && $this->activeMikroCariLinked($partner->mikro_cari_kodu, $partner, true)) {
             throw ValidationException::withMessages([
                 'mikro_cari_kodu' => 'Bu Mikro cari zaten aktif bir B2B partner kaydına bağlı.',
@@ -214,10 +204,6 @@ class B2BPartnerController extends Controller
             ])->save();
             $this->syncCapabilities($partner, $capabilities, $request, $user->id, $oldCapabilities);
 
-            if (! in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true)) {
-                $partner->partnerTechnicians()->update(['active' => false, 'is_primary' => false]);
-            }
-
             $partner->refresh();
 
             $this->writeAuditLog(
@@ -254,27 +240,36 @@ class B2BPartnerController extends Controller
         abort_unless($user && $this->access->canUpdatePartner($user, $partner), 403);
         $data = $this->validatedPartnerTechnicianData($request);
         $technician = TechnicalServiceTechnician::query()->findOrFail($data['technical_service_technician_id']);
+        $relationshipType = $data['relationship_type'] ?? $this->defaultTechnicianRelationshipType($partner);
 
-        $link = DB::transaction(function () use ($partner, $technician, $data, $request, $user): B2BPartnerTechnician {
+        if ($this->activeTechnicianLinkForPartner($partner, $technician->id)) {
+            throw ValidationException::withMessages([
+                'technical_service_technician_id' => 'Bu teknik servis ustası bu partnere zaten bağlı.',
+            ]);
+        }
+
+        $link = DB::transaction(function () use ($partner, $technician, $data, $relationshipType, $request, $user): B2BPartnerTechnician {
             $oldPrimary = $partner->primaryTechnicianLink()->first()?->technical_service_technician_id;
             $link = $this->upsertPartnerTechnicianLink(
                 $partner,
                 $technician,
                 $request,
                 $user->id,
-                $data['relationship_type'] ?? 'field_technician',
+                $relationshipType,
                 (bool) ($data['is_primary'] ?? false),
                 'manual',
                 'manual_link',
             );
             $partner->refresh();
             $this->writeAuditLog($partner, $request, 'b2b.partner.technician_linked', null, [
+                ...$this->partnerTechnicianAuditPayload($link),
                 'partner_id' => $partner->id,
                 'technician_id' => $technician->id,
                 'old_primary' => $oldPrimary,
                 'new_primary' => $partner->technical_service_technician_id,
                 'source' => 'manual',
                 'match_reason' => 'manual_link',
+                'linked_by' => $user->id,
             ], $user->id);
 
             return $link;
@@ -293,7 +288,7 @@ class B2BPartnerController extends Controller
         abort_unless($user && $this->access->canUpdatePartner($user, $partner), 403);
         abort_unless((int) $link->partner_id === (int) $partner->id, 404);
         $data = $request->validate([
-            'relationship_type' => ['nullable', 'string', Rule::in(['owner', 'field_technician', 'branch_technician', 'contact'])],
+            'relationship_type' => ['nullable', 'string', Rule::in(['owner', 'field_technician', 'contracted_technician', 'branch_technician', 'contact'])],
             'is_primary' => ['nullable', 'boolean'],
             'active' => ['nullable', 'boolean'],
         ]);
@@ -301,6 +296,7 @@ class B2BPartnerController extends Controller
         DB::transaction(function () use ($partner, $link, $data, $request, $user): void {
             $oldValues = $this->partnerTechnicianAuditPayload($link);
             $oldPrimary = $partner->primaryTechnicianLink()->first()?->technical_service_technician_id;
+            $relationshipChanged = array_key_exists('relationship_type', $data) && $data['relationship_type'] !== $link->relationship_type;
 
             if (($data['active'] ?? $link->active) === true) {
                 $link->loadMissing('technician');
@@ -326,11 +322,12 @@ class B2BPartnerController extends Controller
 
             $action = ((bool) ($data['is_primary'] ?? false)) === true
                 ? 'b2b.partner.technician_primary_changed'
-                : 'b2b.partner.technician_linked';
+                : ($relationshipChanged ? 'b2b.partner.technician_relationship_changed' : 'b2b.partner.technician_linked');
             $this->writeAuditLog($partner, $request, $action, $oldValues, [
                 ...$this->partnerTechnicianAuditPayload($link),
                 'old_primary' => $oldPrimary,
                 'new_primary' => $partner->technical_service_technician_id,
+                'linked_by' => $user->id,
             ], $user->id);
         });
 
@@ -360,6 +357,7 @@ class B2BPartnerController extends Controller
                 ...$this->partnerTechnicianAuditPayload($link->fresh()),
                 'old_primary' => $oldPrimary,
                 'new_primary' => $partner->technical_service_technician_id,
+                'linked_by' => $user->id,
             ], $user->id);
         });
 
@@ -1020,20 +1018,16 @@ class B2BPartnerController extends Controller
             'city' => ['nullable', 'string', 'max:128'],
             'mikro_cari_kodu' => ['nullable', 'string', 'max:128'],
             'phone' => ['nullable', 'string', 'max:64'],
+            'active' => ['nullable', 'boolean'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
             'partner_id' => ['nullable', 'integer', Rule::exists((new B2BPartner)->getTable(), 'id')],
         ]);
 
         $likeOperator = DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
-        $hasLegacyLookup = ! empty($filters['search']) || ! empty($filters['mikro_cari_kodu']) || ! empty($filters['phone']);
+        $limit = min((int) ($filters['limit'] ?? 50), 100);
+        $active = array_key_exists('active', $filters) ? (bool) $filters['active'] : true;
         $query = TechnicalServiceTechnician::query()
-            ->where('active', true)
-            ->where(function (Builder $query) use ($hasLegacyLookup): void {
-                $query->where('technician_type', 'locksmith');
-
-                if ($hasLegacyLookup) {
-                    $query->orWhereNull('technician_type');
-                }
-            });
+            ->where('active', $active);
 
         if (! empty($filters['city'])) {
             $query->where('city', $likeOperator, $filters['city']);
@@ -1049,16 +1043,24 @@ class B2BPartnerController extends Controller
 
         if (! empty($filters['phone'])) {
             $phone = $filters['phone'];
-            $query->where(function (Builder $query) use ($likeOperator, $phone): void {
+            $normalizedPhone = preg_replace('/\D+/', '', $phone) ?? '';
+            $query->where(function (Builder $query) use ($likeOperator, $phone, $normalizedPhone): void {
                 $query->where('phone', $likeOperator, '%'.$phone.'%')
                     ->orWhere('phone_display', $likeOperator, '%'.$phone.'%')
                     ->orWhere('phone_e164', $likeOperator, '%'.$phone.'%');
+
+                if ($normalizedPhone !== '') {
+                    $query->orWhere('phone', $likeOperator, '%'.$normalizedPhone.'%')
+                        ->orWhere('phone_display', $likeOperator, '%'.$normalizedPhone.'%')
+                        ->orWhere('phone_e164', $likeOperator, '%'.$normalizedPhone.'%');
+                }
             });
         }
 
         if (! empty($filters['search'])) {
             $search = $filters['search'];
-            $query->where(function (Builder $query) use ($likeOperator, $search): void {
+            $normalizedSearch = preg_replace('/\D+/', '', $search) ?? '';
+            $query->where(function (Builder $query) use ($likeOperator, $search, $normalizedSearch): void {
                 $query->where('name', $likeOperator, '%'.$search.'%')
                     ->orWhere('phone', $likeOperator, '%'.$search.'%')
                     ->orWhere('mikro_cari_kodu', $likeOperator, '%'.$search.'%')
@@ -1070,13 +1072,22 @@ class B2BPartnerController extends Controller
                     ->orWhere('address', $likeOperator, '%'.$search.'%')
                     ->orWhere('cari_address', $likeOperator, '%'.$search.'%')
                     ->orWhere('source_key', $likeOperator, '%'.$search.'%');
+
+                if ($normalizedSearch !== '') {
+                    $query->orWhere('phone', $likeOperator, '%'.$normalizedSearch.'%')
+                        ->orWhere('phone_display', $likeOperator, '%'.$normalizedSearch.'%')
+                        ->orWhere('phone_e164', $likeOperator, '%'.$normalizedSearch.'%');
+                }
             });
         }
 
         return response()->json([
             'items' => $query
+                ->with(['b2bPartnerLinks.partner'])
+                ->orderByDesc('active')
+                ->orderBy('city')
                 ->orderBy('name')
-                ->limit(50)
+                ->limit($limit)
                 ->get()
                 ->map(fn (TechnicalServiceTechnician $technician): array => $this->locksmithTechnicianPayload($technician, $filters))
                 ->values(),
@@ -1115,28 +1126,6 @@ class B2BPartnerController extends Controller
                 ->get()
                 ->each(function (TechnicalServiceTechnician $technician) use (&$result, $request, $user): void {
                     $partner = $this->partnerForTechnicianSync($technician);
-                    $existingLink = $this->activeTechnicianPartnerLink($technician->id);
-
-                    if ($existingLink && (! $partner || (int) $existingLink->partner_id !== (int) $partner->id)) {
-                        $result['skipped']++;
-                        $result['items'][] = [
-                            'technician_id' => $technician->id,
-                            'partner_id' => $existingLink->partner_id,
-                            'status' => 'skipped_duplicate_technician',
-                            'reason' => 'technician_already_linked_to_active_partner',
-                        ];
-                        if ($partner) {
-                            $this->writeAuditLog($partner, $request, 'b2b.partner.technician_sync_skipped_duplicate', null, [
-                                'partner_id' => $partner->id,
-                                'technician_id' => $technician->id,
-                                'linked_partner_id' => $existingLink->partner_id,
-                                'source' => 'sync',
-                                'match_reason' => 'duplicate_active_technician',
-                            ], $user->id);
-                        }
-
-                        return;
-                    }
 
                     if ($partner) {
                         $oldValues = $this->auditPayload($partner);
@@ -1166,6 +1155,7 @@ class B2BPartnerController extends Controller
                             'link_id' => $link->id,
                             'source' => 'sync',
                             'match_reason' => 'mikro_cari_match',
+                            'linked_by' => $user->id,
                         ], $user->id);
 
                         $result['updated']++;
@@ -1197,6 +1187,7 @@ class B2BPartnerController extends Controller
                         'link_id' => $link->id,
                         'source' => 'sync',
                         'match_reason' => 'new_locksmith_partner',
+                        'linked_by' => $user->id,
                     ], $user->id);
 
                     $result['created']++;
@@ -1273,9 +1264,16 @@ class B2BPartnerController extends Controller
                 'integer',
                 Rule::exists((new TechnicalServiceTechnician)->getTable(), 'id'),
             ],
-            'relationship_type' => ['nullable', 'string', Rule::in(['owner', 'field_technician', 'branch_technician', 'contact'])],
+            'relationship_type' => ['nullable', 'string', Rule::in(['owner', 'field_technician', 'contracted_technician', 'branch_technician', 'contact'])],
             'is_primary' => ['nullable', 'boolean'],
         ]);
+    }
+
+    private function defaultTechnicianRelationshipType(B2BPartner $partner): string
+    {
+        return $partner->hasCapability(B2BPartner::TYPE_LOCKSMITH)
+            ? 'field_technician'
+            : 'contracted_technician';
     }
 
     private function upsertPartnerTechnicianLink(
@@ -1324,34 +1322,19 @@ class B2BPartnerController extends Controller
 
     private function ensurePartnerCanLinkTechnician(B2BPartner $partner, TechnicalServiceTechnician $technician): void
     {
-        if (! $partner->hasCapability(B2BPartner::TYPE_LOCKSMITH)) {
+        if (! $technician->active) {
             throw ValidationException::withMessages([
-                'technical_service_technician_id' => 'Teknik servis ustası bağlantısı için çilingir / servis kanalı seçilmelidir.',
-            ]);
-        }
-
-        if (! $technician->active || ! in_array($technician->technician_type, ['locksmith', null], true)) {
-            throw ValidationException::withMessages([
-                'technical_service_technician_id' => 'Seçilen teknik servis kaydı aktif çilingir tipinde olmalıdır.',
-            ]);
-        }
-
-        $otherLink = $this->activeTechnicianPartnerLink($technician->id);
-
-        if ($otherLink && (int) $otherLink->partner_id !== (int) $partner->id) {
-            throw ValidationException::withMessages([
-                'technical_service_technician_id' => 'Bu teknik servis ustası zaten başka aktif bir B2B partner kaydına bağlı.',
+                'technical_service_technician_id' => 'Seçilen teknik servis ustası aktif olmalıdır.',
             ]);
         }
     }
 
-    private function activeTechnicianPartnerLink(int|string $technicianId): ?B2BPartnerTechnician
+    private function activeTechnicianLinkForPartner(B2BPartner $partner, int|string $technicianId): ?B2BPartnerTechnician
     {
         return B2BPartnerTechnician::query()
-            ->with('partner')
+            ->where('partner_id', $partner->id)
             ->where('technical_service_technician_id', $technicianId)
             ->where('active', true)
-            ->whereHas('partner', fn (Builder $query): Builder => $query->where('active', true))
             ->first();
     }
 
@@ -1408,10 +1391,24 @@ class B2BPartnerController extends Controller
         $cariCode = $technician->mikro_cari_kodu ?? $technician->cari_code;
         $cariTitle = $technician->mikro_cari_adi ?? $technician->cari_title;
         $currentPartnerId = $filters['partner_id'] ?? null;
-        $activeLink = $this->activeTechnicianPartnerLink($technician->id);
-        $linkedPartner = $activeLink?->partner;
-        $linkedToCurrentPartner = $currentPartnerId !== null && $activeLink !== null && (int) $activeLink->partner_id === (int) $currentPartnerId;
-        $linkedToOtherPartner = $activeLink !== null && ! $linkedToCurrentPartner;
+        $activeLinks = $technician->relationLoaded('b2bPartnerLinks')
+            ? $technician->b2bPartnerLinks
+                ->filter(fn (B2BPartnerTechnician $link): bool => (bool) $link->active && (bool) $link->partner?->active)
+                ->values()
+            : B2BPartnerTechnician::query()
+                ->with('partner')
+                ->where('technical_service_technician_id', $technician->id)
+                ->where('active', true)
+                ->whereHas('partner', fn (Builder $query): Builder => $query->where('active', true))
+                ->get();
+        $linkedToCurrentPartner = $currentPartnerId !== null && $activeLinks->contains(fn (B2BPartnerTechnician $link): bool => (int) $link->partner_id === (int) $currentPartnerId);
+        $linkedPartnerIds = $activeLinks->pluck('partner_id')->map(fn (mixed $id): int => (int) $id)->unique()->values()->all();
+        $linkedPartnerNames = $activeLinks
+            ->map(fn (B2BPartnerTechnician $link): ?string => $link->partner?->display_name)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
 
         return [
             'id' => $technician->id,
@@ -1430,24 +1427,20 @@ class B2BPartnerController extends Controller
             'source_key' => 'technical_service_technician:'.$technician->id,
             'match_reason' => $this->technicianMatchReason($technician, $filters),
             'requires_type_review' => $technician->technician_type === null,
-            'linked_partner_id' => $linkedPartner?->id,
-            'linked_partner_name' => $linkedPartner?->display_name,
+            'linked_partner_id' => $linkedPartnerIds[0] ?? null,
+            'linked_partner_name' => $linkedPartnerNames[0] ?? null,
+            'linked_partner_ids' => $linkedPartnerIds,
+            'linked_partner_names' => $linkedPartnerNames,
             'linked_to_current_partner' => $linkedToCurrentPartner,
-            'can_link' => ! $linkedToCurrentPartner && ! $linkedToOtherPartner,
+            'can_link' => ! $linkedToCurrentPartner,
             'cannot_link_reason' => $linkedToCurrentPartner
-                ? 'already_linked_to_current_partner'
-                : ($linkedToOtherPartner ? 'already_linked_to_another_partner' : null),
+                ? 'already_linked_to_this_partner'
+                : null,
         ];
     }
 
     private function partnerForTechnicianSync(TechnicalServiceTechnician $technician): ?B2BPartner
     {
-        $activeLink = $this->activeTechnicianPartnerLink($technician->id);
-
-        if ($activeLink?->partner) {
-            return $activeLink->partner;
-        }
-
         $partner = B2BPartner::query()
             ->where('active', true)
             ->where('technical_service_technician_id', $technician->id)
@@ -1576,9 +1569,19 @@ class B2BPartnerController extends Controller
     {
         $mikroCariKodu = $this->nullableString($filters['mikro_cari_kodu'] ?? null);
         $phone = $this->nullableString($filters['phone'] ?? null);
+        $city = $this->nullableString($filters['city'] ?? null);
+        $search = $this->nullableString($filters['search'] ?? null);
 
         if ($mikroCariKodu && in_array($mikroCariKodu, array_filter([$technician->mikro_cari_kodu, $technician->cari_code]), true)) {
             return 'cari_match';
+        }
+
+        if ($search && in_array($search, array_filter([$technician->mikro_cari_kodu, $technician->cari_code]), true)) {
+            return 'cari_match';
+        }
+
+        if ($city && strcasecmp($city, (string) $technician->city) === 0) {
+            return 'city_match';
         }
 
         if ($phone && str_contains((string) $technician->phone, $phone)) {
@@ -1589,7 +1592,7 @@ class B2BPartnerController extends Controller
             return 'legacy_type_review';
         }
 
-        return 'locksmith';
+        return $search ? 'search_match' : 'active_technician';
     }
 
     /**
@@ -1658,32 +1661,6 @@ class B2BPartnerController extends Controller
         ]);
         $data['capabilities'] = $this->normalizeCapabilities($data);
         $data['partner_type'] = $data['partner_type'] ?? $this->primaryPartnerType($data['capabilities']);
-
-        if (! in_array(B2BPartner::TYPE_LOCKSMITH, $data['capabilities'], true) && ! empty($data['technical_service_technician_id'])) {
-            throw ValidationException::withMessages([
-                'technical_service_technician_id' => 'Teknik servis ustası bağlantısı için çilingir / servis kanalı seçilmelidir.',
-            ]);
-        }
-
-        if (
-            in_array(B2BPartner::TYPE_LOCKSMITH, $data['capabilities'], true)
-            && ! empty($data['technical_service_technician_id'])
-            && ! TechnicalServiceTechnician::query()
-                ->whereKey($data['technical_service_technician_id'])
-                ->where('technician_type', 'locksmith')
-                ->exists()
-        ) {
-            throw ValidationException::withMessages([
-                'technical_service_technician_id' => 'Seçilen teknik servis kaydı çilingir tipinde olmalıdır.',
-            ]);
-        }
-
-        if (! empty($data['technical_service_technician_id']) && $this->activeTechnicianLinked($data['technical_service_technician_id'], $partner)) {
-            throw ValidationException::withMessages([
-                'technical_service_technician_id' => 'Bu teknik servis ustası zaten aktif bir B2B partner kaydına bağlı.',
-            ]);
-        }
-
         if ($this->activeMikroCariLinked($data['mikro_cari_kodu'] ?? null, $partner, array_key_exists('active', $data) ? (bool) $data['active'] : true)) {
             throw ValidationException::withMessages([
                 'mikro_cari_kodu' => 'Bu Mikro cari zaten partner olarak kayıtlı. Yeni kayıt oluşturmak yerine mevcut partner üzerinde rol ekleyin.',
@@ -1787,31 +1764,6 @@ class B2BPartnerController extends Controller
             ->where('partner_id', $partner->id)
             ->whereNotIn('capability', $capabilities)
             ->update(['active' => false]);
-    }
-
-    private function activeTechnicianLinked(int|string $technicianId, ?B2BPartner $currentPartner = null): bool
-    {
-        $linkedByPivot = B2BPartnerTechnician::query()
-            ->where('technical_service_technician_id', $technicianId)
-            ->where('active', true)
-            ->whereHas('partner', function (Builder $query) use ($currentPartner): void {
-                $query->where('active', true)
-                    ->when($currentPartner, fn (Builder $query): Builder => $query->whereKeyNot($currentPartner->id));
-            })
-            ->exists();
-
-        if ($linkedByPivot) {
-            return true;
-        }
-
-        return B2BPartner::query()
-            ->where('active', true)
-            ->where('technical_service_technician_id', $technicianId)
-            ->when($currentPartner, fn (Builder $query): Builder => $query->whereKeyNot($currentPartner->id))
-            ->whereHas('activeCapabilities', function (Builder $query): void {
-                $query->where('capability', B2BPartner::TYPE_LOCKSMITH);
-            })
-            ->exists();
     }
 
     private function activeMikroCariLinked(mixed $mikroCariKodu, ?B2BPartner $currentPartner, bool $willBeActive): bool

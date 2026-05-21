@@ -13,7 +13,12 @@ class B2BPartnerServiceJobScopeService
      */
     public function activeTechnicianIds(B2BPartner $partner): array
     {
+        if (! $partner->hasCapability(B2BPartner::TYPE_LOCKSMITH)) {
+            return [];
+        }
+
         return $partner->activePartnerTechnicians()
+            ->whereIn('relationship_type', ['owner', 'field_technician'])
             ->pluck('technical_service_technician_id')
             ->map(fn (mixed $id): int => (int) $id)
             ->unique()
