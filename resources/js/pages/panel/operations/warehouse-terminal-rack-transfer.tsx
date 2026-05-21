@@ -182,6 +182,8 @@ export default function WarehouseTerminalRackTransfer() {
     const isSerialTracked = Boolean(selectedItem?.is_serial_tracked || selectedItem?.serial_no);
     const effectiveQuantity = isSerialTracked ? String(serialNumbers.length) : quantity;
     const isBusy = loadingWarehouses || loadingRacks || searchingItems || transferring;
+    const transferCompleted = status === 'Tamamlandı' && Boolean(summary?.operation_no);
+    const transferButtonLabel = transferCompleted ? 'Transfer tamamlandı' : (transferring ? 'Transfer ediliyor' : 'Transfer Et');
 
     const resetTransferState = (nextStatus = 'Bekliyor') => {
         setSummary(null);
@@ -244,6 +246,10 @@ export default function WarehouseTerminalRackTransfer() {
     }, [loadWarehouses]);
 
     const searchItems = async () => {
+        if (transferCompleted) {
+            return;
+        }
+
         if (!warehouseNo) {
             setMessage({ type: 'error', text: 'Önce depo seçilmelidir.' });
 
@@ -280,6 +286,10 @@ export default function WarehouseTerminalRackTransfer() {
     };
 
     const selectItem = (item: ItemLookup) => {
+        if (transferCompleted) {
+            return;
+        }
+
         setSelectedItem(item);
         setItemQuery(item.display_label || item.serial_no || item.stock_code || item.barcode || '');
         setItemResults([]);
@@ -290,6 +300,10 @@ export default function WarehouseTerminalRackTransfer() {
     };
 
     const addSerial = () => {
+        if (transferCompleted) {
+            return;
+        }
+
         const serial = serialInput.trim();
 
         if (!serial) {
@@ -308,6 +322,10 @@ export default function WarehouseTerminalRackTransfer() {
     };
 
     const removeSerial = (serial: string) => {
+        if (transferCompleted) {
+            return;
+        }
+
         setSerialNumbers((current) => current.filter((value) => value !== serial));
         resetTransferState('Transfer bekliyor');
     };
@@ -339,6 +357,10 @@ export default function WarehouseTerminalRackTransfer() {
 
     const handleTransfer = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
+
+        if (transferCompleted) {
+            return;
+        }
 
         if (!warehouseNo) {
             setMessage({ type: 'error', text: 'Depo seçimi zorunludur.' });
@@ -526,7 +548,7 @@ export default function WarehouseTerminalRackTransfer() {
 
                                             void loadRacks(nextWarehouseNo);
                                         }}
-                                        disabled={loadingWarehouses}
+                                        disabled={loadingWarehouses || transferCompleted}
                                         className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                     >
                                         <option value="">{loadingWarehouses ? 'Depolar yükleniyor' : 'Depo seçin'}</option>
@@ -547,7 +569,7 @@ export default function WarehouseTerminalRackTransfer() {
                                                 setSourceRack(event.target.value);
                                                 resetTransferState('Transfer bekliyor');
                                             }}
-                                            disabled={!warehouseNo || loadingRacks}
+                                            disabled={!warehouseNo || loadingRacks || transferCompleted}
                                             className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                         >
                                             <option value="">{loadingRacks ? 'Raflar yükleniyor' : 'Kaynak raf seçin'}</option>
@@ -567,7 +589,7 @@ export default function WarehouseTerminalRackTransfer() {
                                                 setTargetRack(event.target.value);
                                                 resetTransferState('Transfer bekliyor');
                                             }}
-                                            disabled={!warehouseNo || loadingRacks}
+                                            disabled={!warehouseNo || loadingRacks || transferCompleted}
                                             className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                         >
                                             <option value="">{loadingRacks ? 'Raflar yükleniyor' : 'Hedef raf seçin'}</option>
@@ -595,12 +617,13 @@ export default function WarehouseTerminalRackTransfer() {
                                                 }}
                                                 placeholder="Barkod, stok kodu, stok adı veya seri no okutun"
                                                 autoComplete="off"
-                                                className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                                disabled={transferCompleted}
+                                                className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                             />
                                             <button
                                                 type="button"
                                                 onClick={searchItems}
-                                                disabled={searchingItems || !warehouseNo}
+                                                disabled={searchingItems || !warehouseNo || transferCompleted}
                                                 className="inline-flex h-14 items-center justify-center gap-2 rounded-lg bg-slate-900 px-5 text-base font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                                             >
                                                 <Search className="size-5" />
@@ -616,7 +639,8 @@ export default function WarehouseTerminalRackTransfer() {
                                                     type="button"
                                                     key={`${item.match_type}-${item.stock_code}-${item.serial_no}-${item.barcode}`}
                                                     onClick={() => selectItem(item)}
-                                                    className="grid gap-1 rounded-lg border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:bg-blue-50"
+                                                    disabled={transferCompleted}
+                                                    className="grid gap-1 rounded-lg border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
                                                 >
                                                     <span className="text-base font-bold text-slate-950">{item.display_label}</span>
                                                     <span className="text-xs font-semibold text-slate-500">
@@ -650,12 +674,14 @@ export default function WarehouseTerminalRackTransfer() {
                                                     }}
                                                     placeholder="Seri no okutun"
                                                     autoComplete="off"
-                                                    className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                                    disabled={transferCompleted}
+                                                    className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:opacity-60"
                                                 />
                                                 <button
                                                     type="button"
                                                     onClick={addSerial}
-                                                    className="inline-flex h-14 items-center justify-center rounded-lg bg-blue-700 px-5 text-base font-bold text-white transition hover:bg-blue-800"
+                                                    disabled={transferCompleted}
+                                                    className="inline-flex h-14 items-center justify-center rounded-lg bg-blue-700 px-5 text-base font-bold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
                                                 >
                                                     Ekle
                                                 </button>
@@ -672,7 +698,8 @@ export default function WarehouseTerminalRackTransfer() {
                                                     <button
                                                         type="button"
                                                         onClick={() => removeSerial(serial)}
-                                                        className="grid size-11 shrink-0 place-items-center rounded-lg border border-slate-200 text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+                                                        disabled={transferCompleted}
+                                                        className="grid size-11 shrink-0 place-items-center rounded-lg border border-slate-200 text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
                                                         aria-label={`${serial} serisini kaldır`}
                                                     >
                                                         <Trash2 className="size-5" />
@@ -693,7 +720,7 @@ export default function WarehouseTerminalRackTransfer() {
                                         }}
                                         placeholder="Miktar"
                                         inputMode="decimal"
-                                        readOnly={isSerialTracked}
+                                        readOnly={isSerialTracked || transferCompleted}
                                         className="h-14 rounded-lg border border-slate-300 bg-white px-4 text-lg font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 read-only:bg-slate-100"
                                     />
                                 </label>
@@ -707,20 +734,20 @@ export default function WarehouseTerminalRackTransfer() {
                                 <div className="grid gap-3 sm:grid-cols-3">
                                     <button
                                         type="submit"
-                                        disabled={isBusy}
+                                        disabled={isBusy || transferCompleted}
                                         className="inline-flex h-14 items-center justify-center gap-2 rounded-lg bg-slate-950 px-5 text-base font-bold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                         <CheckCircle2 className="size-5" />
-                                        {transferring ? 'Transfer ediliyor' : 'Transfer Et'}
+                                        {transferButtonLabel}
                                     </button>
                                     <button
                                         type="button"
                                         onClick={clearTransfer}
-                                        disabled={isBusy}
+                                        disabled={isBusy && !transferCompleted}
                                         className="inline-flex h-14 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-5 text-base font-bold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                         <RotateCcw className="size-5" />
-                                        Temizle
+                                        {transferCompleted ? 'Yeni Transfer' : 'Temizle'}
                                     </button>
                                     <Link
                                         href="/operations/warehouse-terminal"

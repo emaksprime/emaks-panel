@@ -228,13 +228,11 @@ class WarehouseRackTransferService
             /** @var WarehouseSerialLocation|null $serial */
             $serial = $serials->get($serialNo);
 
-            if (! $serial
-                || (int) $serial->warehouse_no !== $warehouseNo
-                || $serial->status !== 'in_stock'
-                || $serial->rack_code !== $sourceRackCode
-            ) {
+            if (! $serial) {
                 $this->fail('Bu ürün/seri belirtilen depoda ve kaynak rafta bulunamadı.');
             }
+
+            $this->assertSerialCanMove($serial, $warehouseNo, $sourceRackCode, $targetRackCode);
 
             if ($resolvedStockCode !== null && $serial->stock_code !== $resolvedStockCode) {
                 $this->fail('Okutulan seri seçili stok ile uyumlu değil.');
@@ -454,9 +452,7 @@ class WarehouseRackTransferService
             ->first();
 
         if ($serial) {
-            if ($serial->status !== 'in_stock' || $serial->rack_code !== $sourceRackCode) {
-                $this->fail('Bu ürün/seri belirtilen depoda ve kaynak rafta bulunamadı.');
-            }
+            $this->assertSerialCanMove($serial, $warehouseNo, $sourceRackCode, $targetRackCode);
 
             return [
                 'item_type' => 'serial',
@@ -494,9 +490,16 @@ class WarehouseRackTransferService
             ->lockForUpdate()
             ->first();
 
-        if (! $serial || $serial->status !== 'in_stock' || $serial->rack_code !== $operation->source_rack_code) {
+        if (! $serial) {
             $this->fail('Bu ürün/seri belirtilen depoda ve kaynak rafta bulunamadı.');
         }
+
+        $this->assertSerialCanMove(
+            $serial,
+            (int) $operation->source_warehouse_no,
+            (string) $operation->source_rack_code,
+            (string) $operation->target_rack_code,
+        );
 
         $serial->forceFill([
             'rack_code' => $operation->target_rack_code,
@@ -505,6 +508,27 @@ class WarehouseRackTransferService
         ])->save();
 
         return $serial->stock_name;
+    }
+
+    private function assertSerialCanMove(
+        WarehouseSerialLocation $serial,
+        int $warehouseNo,
+        string $sourceRackCode,
+        string $targetRackCode,
+    ): void {
+        $currentRack = $this->normalizedRack($serial->rack_code);
+
+        if ((int) $serial->warehouse_no !== $warehouseNo || $serial->status !== 'in_stock') {
+            $this->fail('Bu seri stokta değil veya transfer edilemez.');
+        }
+
+        if ($currentRack === $targetRackCode) {
+            $this->fail('Bu seri zaten hedef rafta.');
+        }
+
+        if ($currentRack !== $sourceRackCode) {
+            $this->fail("Bu seri şu an {$currentRack} rafında. {$sourceRackCode} kaynak rafından transfer edilemez.");
+        }
     }
 
     private function completeStockTransfer(WarehouseRackOperation $operation): ?string

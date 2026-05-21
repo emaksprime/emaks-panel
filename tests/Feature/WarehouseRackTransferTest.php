@@ -215,7 +215,7 @@ class WarehouseRackTransferTest extends TestCase
         ])
             ->assertUnprocessable()
             ->assertJsonPath('ok', false)
-            ->assertJsonPath('message', 'Bu ürün/seri belirtilen depoda ve kaynak rafta bulunamadı.');
+            ->assertJsonPath('message', 'Bu seri şu an A-01 rafında. X-99 kaynak rafından transfer edilemez.');
 
         $this->assertDatabaseMissing('panel.warehouse_rack_operations', [
             'serial_no' => 'SN-200',
@@ -422,6 +422,129 @@ class WarehouseRackTransferTest extends TestCase
 
         $this->assertSame(2, WarehouseRackOperationItem::query()->where('operation_id', $operationId)->count());
         $this->assertSame(2.0, (float) WarehouseRackOperation::query()->where('id', $operationId)->value('quantity'));
+    }
+
+    public function test_serial_cannot_be_transferred_twice_from_old_source_rack(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'TEST-SN-001',
+            'stock_code' => 'STK-TEST',
+            'stock_name' => 'Test Seri Ürünü',
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'status' => 'in_stock',
+            'source' => 'manual',
+        ]);
+
+        $payload = [
+            'warehouse_no' => 1,
+            'source_rack_code' => 'A-01',
+            'target_rack_code' => 'B-02',
+            'stock_code' => 'STK-TEST',
+            'item_code' => 'STK-TEST',
+            'quantity' => 1,
+            'serial_numbers' => ['TEST-SN-001'],
+            'is_serial_tracked' => true,
+        ];
+
+        $this->actingAs($user)
+            ->postJson('/api/operations/warehouse-terminal/rack-transfer/transfer', $payload)
+            ->assertOk()
+            ->assertJsonPath('ok', true);
+
+        $response = $this->actingAs($user)
+            ->postJson('/api/operations/warehouse-terminal/rack-transfer/transfer', $payload)
+            ->assertUnprocessable()
+            ->assertJsonPath('ok', false);
+
+        $this->assertContains($response->json('message'), [
+            'Bu seri şu an B-02 rafında. A-01 kaynak rafından transfer edilemez.',
+            'Bu seri zaten hedef rafta.',
+        ]);
+        $this->assertSame(1, WarehouseRackOperation::query()->where('status', 'completed')->count());
+        $this->assertSame(1, WarehouseRackOperationItem::query()->where('serial_no', 'TEST-SN-001')->count());
+    }
+
+    public function test_serial_already_in_target_rack_is_rejected(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'TEST-SN-002',
+            'stock_code' => 'STK-TEST',
+            'stock_name' => 'Test Seri Ürünü',
+            'warehouse_no' => 1,
+            'rack_code' => 'B-02',
+            'status' => 'in_stock',
+            'source' => 'manual',
+        ]);
+
+        $this->actingAs($user)
+            ->postJson('/api/operations/warehouse-terminal/rack-transfer/transfer', [
+                'warehouse_no' => 1,
+                'source_rack_code' => 'A-01',
+                'target_rack_code' => 'B-02',
+                'stock_code' => 'STK-TEST',
+                'item_code' => 'STK-TEST',
+                'quantity' => 1,
+                'serial_numbers' => ['TEST-SN-002'],
+                'is_serial_tracked' => true,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('ok', false)
+            ->assertJsonPath('message', 'Bu seri zaten hedef rafta.');
+
+        $this->assertSame(0, WarehouseRackOperation::query()->where('status', 'completed')->count());
+        $this->assertSame(0, WarehouseRackOperationItem::query()->where('serial_no', 'TEST-SN-002')->count());
+    }
+
+    public function test_legacy_complete_cannot_run_completed_operation_twice(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'TEST-SN-003',
+            'stock_code' => 'STK-LEGACY',
+            'stock_name' => 'Legacy Seri Ürünü',
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'status' => 'in_stock',
+            'source' => 'manual',
+        ]);
+
+        $operationNo = $this->actingAs($user)
+            ->postJson('/api/operations/warehouse-terminal/rack-transfer/validate', [
+                'warehouse_no' => 1,
+                'source_rack_code' => 'A-01',
+                'target_rack_code' => 'B-02',
+                'item_code' => 'TEST-SN-003',
+            ])
+            ->assertOk()
+            ->json('operation_no');
+
+        $this->actingAs($user)
+            ->postJson('/api/operations/warehouse-terminal/rack-transfer/complete', [
+                'operation_no' => $operationNo,
+            ])
+            ->assertOk()
+            ->assertJsonPath('ok', true);
+
+        $this->actingAs($user)
+            ->postJson('/api/operations/warehouse-terminal/rack-transfer/complete', [
+                'operation_no' => $operationNo,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('ok', false);
+
+        $this->assertDatabaseHas('panel.warehouse_serial_locations', [
+            'serial_no' => 'TEST-SN-003',
+            'rack_code' => 'B-02',
+            'last_operation_no' => $operationNo,
+        ]);
+        $this->assertSame('completed', WarehouseRackOperation::query()->where('operation_no', $operationNo)->value('status'));
+        $this->assertSame(1, WarehouseRackOperation::query()->where('operation_no', $operationNo)->where('status', 'completed')->count());
     }
 
     public function test_transfer_history_returns_completed_operations_in_date_range(): void
