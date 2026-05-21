@@ -3,14 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\B2B\B2BPartner;
-use App\Models\B2B\B2BPartnerTechnician;
-use App\Models\B2B\B2BPartnerUserProfile;
-use App\Models\TechnicalServiceRequest;
+use App\Models\B2B\B2BPartnerOrder;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
-use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\PanelAccessService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -18,7 +20,7 @@ class PartnerPortalController extends Controller
 {
     public function __construct(
         private readonly B2BPartnerAccessService $partnerAccess,
-        private readonly B2BPartnerServiceJobScopeService $serviceJobScope,
+        private readonly B2BPartnerPortalDataService $portalData,
         private readonly PanelAccessService $panelAccess,
     ) {}
 
@@ -29,7 +31,12 @@ class PartnerPortalController extends Controller
 
     public function profile(Request $request): Response
     {
-        return $this->renderPortal($request, 'profile', 'partner.profile.view', 'view');
+        return $this->renderPortal($request, 'settings', 'partner.profile.view', 'view');
+    }
+
+    public function settings(Request $request): Response
+    {
+        return $this->renderPortal($request, 'settings', 'partner.settings.view', 'view');
     }
 
     public function orders(Request $request): Response
@@ -47,43 +54,117 @@ class PartnerPortalController extends Controller
         return $this->renderPortal($request, 'service-jobs', 'partner.service_jobs.view', 'technical_service');
     }
 
+    public function earnings(Request $request): Response
+    {
+        return $this->renderPortal($request, 'earnings', 'partner.earnings.view', 'technical_service');
+    }
+
+    public function products(Request $request): JsonResponse
+    {
+        [$user, $partner] = $this->resolvePartnerFromRequest($request);
+        abort_unless(
+            $this->panelAccess->userCanAccess($user, 'partner.stock.view')
+                && $this->partnerAccess->canAccessScope($user, $partner, 'stock', 'view'),
+            403,
+        );
+
+        return response()->json([
+            'status' => 'ok',
+            'source' => 'local_safe_catalog',
+            'products' => $this->portalData->safeProductCatalog(),
+        ]);
+    }
+
+    public function orderIndex(Request $request): JsonResponse
+    {
+        [$user, $partner] = $this->resolvePartnerFromRequest($request);
+        abort_unless(
+            $this->panelAccess->userCanAccess($user, 'partner.orders.view')
+                && $this->partnerAccess->canAccessScope($user, $partner, 'orders', 'view'),
+            403,
+        );
+
+        return response()->json([
+            'status' => 'ok',
+            'orders' => $this->portalData->ordersFor($partner),
+        ]);
+    }
+
+    public function storeOrder(Request $request): JsonResponse
+    {
+        [$user, $partner] = $this->resolvePartnerFromRequest($request);
+        abort_unless(
+            $this->panelAccess->userCanAccess($user, 'partner.orders.view')
+                && $this->partnerAccess->canAccessScope($user, $partner, 'orders', 'create'),
+            403,
+        );
+
+        $catalogIds = collect($this->portalData->safeProductCatalog())
+            ->pluck('catalog_id')
+            ->all();
+
+        $payload = $request->validate([
+            'partner_id' => ['nullable', 'integer'],
+            'note' => ['nullable', 'string', 'max:1000'],
+            'items' => ['required', 'array', 'min:1', 'max:20'],
+            'items.*.catalog_id' => ['required', 'string', Rule::in($catalogIds)],
+            'items.*.requested_quantity' => ['required', 'integer', 'min:1', 'max:999'],
+            'items.*.note' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $order = DB::transaction(function () use ($payload, $partner, $user): B2BPartnerOrder {
+            $order = B2BPartnerOrder::query()->create([
+                'partner_id' => $partner->id,
+                'user_id' => $user->id,
+                'order_no' => $this->uniqueOrderNo(),
+                'status' => B2BPartnerOrder::STATUS_OPS_REVIEW,
+                'note' => $payload['note'] ?? null,
+                'metadata' => [
+                    'source' => 'partner_portal',
+                    'integration_status' => 'mikro_not_written',
+                ],
+                'submitted_at' => now(),
+            ]);
+
+            foreach ($payload['items'] as $item) {
+                $product = $this->portalData->productByCatalogId((string) $item['catalog_id']);
+                $order->items()->create([
+                    'product_code' => (string) $item['catalog_id'],
+                    'product_name' => (string) ($product['name'] ?? 'Ürün talebi'),
+                    'requested_quantity' => (int) $item['requested_quantity'],
+                    'stock_status' => (string) ($product['stock_status'] ?? 'unknown'),
+                    'note' => $item['note'] ?? null,
+                    'metadata' => [
+                        'catalog_model' => $product['model'] ?? null,
+                        'catalog_category' => $product['category'] ?? null,
+                        'stock_label' => $product['stock_label'] ?? null,
+                    ],
+                ]);
+            }
+
+            return $order->load('items');
+        });
+
+        return response()->json([
+            'status' => 'created',
+            'message' => 'Sipariş talebiniz operasyon incelemesine gönderildi.',
+            'order' => $this->portalData->safeOrderSummary($order),
+        ], 201);
+    }
+
     private function renderPortal(Request $request, string $view, string $resourceCode, string $scope): Response
     {
         $user = $request->user();
         abort_unless($user instanceof User, 403);
 
-        $partners = $this->visiblePartners($user);
-        abort_if($partners->isEmpty(), 403, 'Bu kullanici icin aktif partner erisimi yok.');
+        $partners = $this->portalData->visiblePartnersFor($user);
+        abort_if($partners->isEmpty(), 403, 'Bu kullanıcı için aktif partner erişimi yok.');
 
-        $requestedPartnerId = $request->integer('partner_id') ?: null;
-        $partner = $requestedPartnerId
-            ? $partners->firstWhere('id', $requestedPartnerId)
-            : $partners->first();
+        $partner = $this->portalData->selectedPartner($partners, $request->integer('partner_id') ?: null);
         abort_unless($partner instanceof B2BPartner, 403);
 
         $allowed = $this->panelAccess->userCanAccess($user, $resourceCode)
             && $this->scopeAllowed($user, $partner, $scope);
-
-        $serviceJobs = [];
-        if ($view === 'service-jobs' && $allowed) {
-            $serviceJobs = $this->serviceJobScope
-                ->serviceJobsQuery($partner)
-                ->latest('updated_at')
-                ->limit(50)
-                ->get()
-                ->map(fn (TechnicalServiceRequest $request): array => [
-                    'id' => $request->id,
-                    'mrn' => $request->mrn,
-                    'customer_name' => $request->customer_name,
-                    'customer_city' => $request->customer_city,
-                    'customer_district' => $request->customer_district,
-                    'status' => $request->status,
-                    'workflow_status' => $request->workflow_status,
-                    'updated_at' => optional($request->updated_at)->toIso8601String(),
-                ])
-                ->values()
-                ->all();
-        }
 
         return Inertia::render('partner/'.$view, [
             'page' => [
@@ -91,39 +172,32 @@ class PartnerPortalController extends Controller
                 'routePath' => '/partner/'.$view,
                 'layoutType' => 'partner',
             ],
-            'partnerPortal' => [
-                'view' => $view,
-                'allowed' => $allowed,
-                'deniedMessage' => $allowed ? null : 'Bu ekrana erisiminiz yok.',
-                'partners' => $partners->map(fn (B2BPartner $item): array => $this->partnerSummary($item))->values()->all(),
-                'selectedPartner' => $this->partnerSummary($partner),
-                'stats' => $this->statsFor($partner),
-                'serviceJobs' => $serviceJobs,
-                'placeholders' => $this->placeholdersFor($partner),
-            ],
+            'partnerPortal' => $this->portalData->payload(
+                $partner,
+                $view,
+                $allowed,
+                'Bu ekrana erişiminiz yok.',
+                $partners,
+                $user,
+            ),
         ]);
     }
 
-    private function visiblePartners(User $user)
+    /**
+     * @return array{0: User, 1: B2BPartner}
+     */
+    private function resolvePartnerFromRequest(Request $request): array
     {
-        $query = $this->partnerAccess
-            ->visiblePartnerQuery($user)
-            ->where('active', true)
-            ->with([
-                'capabilities',
-                'profiles',
-                'activePartnerTechnicians.technician',
-            ]);
+        $user = $request->user();
+        abort_unless($user instanceof User, 403);
 
-        if (! (bool) $user->role?->is_super_admin) {
-            $query->whereHas('profiles', fn ($query) => $query
-                ->where('user_id', $user->id)
-                ->where('active', true));
-        }
+        $partners = $this->portalData->visiblePartnersFor($user);
+        abort_if($partners->isEmpty(), 403, 'Bu kullanıcı için aktif partner erişimi yok.');
 
-        return $query
-            ->orderBy('display_name')
-            ->get();
+        $partner = $this->portalData->selectedPartner($partners, $request->integer('partner_id') ?: null);
+        abort_unless($partner instanceof B2BPartner, 403);
+
+        return [$user, $partner];
     }
 
     private function scopeAllowed(User $user, B2BPartner $partner, string $scope): bool
@@ -135,81 +209,24 @@ class PartnerPortalController extends Controller
         return $this->partnerAccess->canAccessScope($user, $partner, $scope, 'view');
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    private function partnerSummary(B2BPartner $partner): array
+    private function uniqueOrderNo(): string
     {
-        $metadata = is_array($partner->metadata) ? $partner->metadata : [];
-        $activeTechnicians = $partner->activePartnerTechnicians
-            ->map(fn (B2BPartnerTechnician $link): array => [
-                'id' => $link->id,
-                'technical_service_technician_id' => $link->technical_service_technician_id,
-                'relationship_type' => $link->relationship_type,
-                'is_primary' => (bool) $link->is_primary,
-                'name' => $link->technician?->name,
-                'phone' => $link->technician?->phone,
-                'city' => $link->technician?->city,
-                'district' => $link->technician?->district,
-            ])
-            ->values()
-            ->all();
+        do {
+            $orderNo = 'B2B-'.now()->format('ymd').'-'.Str::upper(Str::random(6));
+        } while (B2BPartnerOrder::query()->where('order_no', $orderNo)->exists());
 
-        return [
-            'id' => $partner->id,
-            'display_name' => $partner->display_name,
-            'partner_code' => $partner->partner_code,
-            'capabilities' => $partner->capabilityCodes(),
-            'mikro_cari_kodu' => $partner->mikro_cari_kodu,
-            'mikro_cari_unvan' => $partner->mikro_cari_unvan,
-            'phone' => $partner->phone,
-            'email' => $partner->email,
-            'city' => $partner->city,
-            'district' => $partner->district,
-            'address' => $partner->address ?? ($metadata['address'] ?? null),
-            'child_cari_accounts' => $metadata['child_cari_accounts'] ?? [],
-            'linked_technicians' => $activeTechnicians,
-            'users_count' => $partner->profiles->count(),
-            'active_users_count' => $partner->profiles->where('active', true)->count(),
-        ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function statsFor(B2BPartner $partner): array
-    {
-        return [
-            'linked_technicians_count' => $partner->activePartnerTechnicians->count(),
-            'users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->count(),
-            'active_users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->where('active', true)->count(),
-            'open_service_jobs_count' => $this->serviceJobScope->serviceJobsQuery($partner)->count(),
-        ];
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function placeholdersFor(B2BPartner $partner): array
-    {
-        return [
-            'orders' => 'Bayi siparis entegrasyonu sonraki fazda Mikro read-only datasource ile baglanacak.',
-            'stock' => 'Bayi stok entegrasyonu sonraki fazda Mikro read-only datasource ile baglanacak.',
-            'finance' => 'Cari ve risk ozeti sonraki fazda read-only cari datasource ile baglanacak.',
-            'service' => $partner->hasCapability(B2BPartner::TYPE_LOCKSMITH)
-                ? 'Servis isleri bagli owner/field usta kapsamindan okunur.'
-                : 'Bu partner icin cilingir portal kimligi aktif degil.',
-        ];
+        return $orderNo;
     }
 
     private function titleFor(string $view): string
     {
         return match ($view) {
-            'profile' => 'Partner Profil',
-            'orders' => 'Partner Siparisleri',
-            'stock' => 'Partner Stok',
-            'service-jobs' => 'Partner Servis Isleri',
-            default => 'Partner Dashboard',
+            'settings' => 'Partner Ayarları',
+            'orders' => 'Siparişlerim',
+            'stock' => 'Ürünler',
+            'service-jobs' => 'İşlerim',
+            'earnings' => 'Hakedişlerim',
+            default => 'Partner Ana Sayfa',
         };
     }
 }

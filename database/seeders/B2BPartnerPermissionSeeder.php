@@ -55,9 +55,11 @@ class B2BPartnerPermissionSeeder extends Seeder
             ['code' => 'partner.portal.view', 'name' => 'Partner Portal', 'type' => 'page', 'description' => 'B2B partner portal access.', 'active' => true],
             ['code' => 'partner.dashboard.view', 'name' => 'Partner Dashboard', 'type' => 'page', 'description' => 'Partner portal dashboard.', 'active' => true],
             ['code' => 'partner.profile.view', 'name' => 'Partner Profile', 'type' => 'page', 'description' => 'Partner profile and contact details.', 'active' => true],
+            ['code' => 'partner.settings.view', 'name' => 'Partner Settings', 'type' => 'page', 'description' => 'Partner portal settings and safe profile details.', 'active' => true],
             ['code' => 'partner.orders.view', 'name' => 'Partner Orders', 'type' => 'page', 'description' => 'Partner order placeholder.', 'active' => true],
             ['code' => 'partner.stock.view', 'name' => 'Partner Stock', 'type' => 'page', 'description' => 'Partner stock placeholder.', 'active' => true],
             ['code' => 'partner.service_jobs.view', 'name' => 'Partner Service Jobs', 'type' => 'page', 'description' => 'Partner technical service jobs.', 'active' => true],
+            ['code' => 'partner.earnings.view', 'name' => 'Partner Earnings', 'type' => 'page', 'description' => 'Partner locksmith earnings view.', 'active' => true],
         ];
     }
 
@@ -284,33 +286,45 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'partner.portal.view',
                 'partner.dashboard.view',
                 'partner.profile.view',
+                'partner.settings.view',
                 'partner.orders.view',
                 'partner.stock.view',
                 'partner.service_jobs.view',
+                'partner.earnings.view',
             ],
             'b2b_dealer' => [
                 'partner.portal.view',
                 'partner.dashboard.view',
                 'partner.profile.view',
+                'partner.settings.view',
                 'partner.orders.view',
                 'partner.stock.view',
+                'partner.service_jobs.view',
+                'partner.earnings.view',
             ],
             'b2b_locksmith' => [
                 'partner.portal.view',
                 'partner.dashboard.view',
                 'partner.profile.view',
+                'partner.settings.view',
                 'partner.service_jobs.view',
+                'partner.earnings.view',
             ],
             'b2b_manufacturer' => [
                 'partner.portal.view',
                 'partner.dashboard.view',
                 'partner.profile.view',
+                'partner.settings.view',
+                'partner.orders.view',
+                'partner.stock.view',
             ],
             'b2b_seller' => [
                 'partner.portal.view',
                 'partner.dashboard.view',
                 'partner.profile.view',
+                'partner.settings.view',
                 'partner.orders.view',
+                'partner.stock.view',
             ],
         ];
     }

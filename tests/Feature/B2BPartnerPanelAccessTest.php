@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerCapability;
+use App\Models\B2B\B2BPartnerOrder;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\B2B\B2BCariSnapshot;
 use App\Models\B2B\B2BCariSnapshotRun;
@@ -17,6 +18,9 @@ use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
+use App\Models\TechnicalServiceEarning;
+use App\Models\TechnicalServiceEarningItem;
+use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
@@ -2308,7 +2312,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('visibility.include_locksmiths', false)
             ->assertJsonPath('visibility.pure_locksmiths_hidden', true)
             ->assertJsonPath('service_counts.open_service_jobs', 1)
-            ->assertJsonPath('stock_order_placeholders.orders.status', 'not_configured')
+            ->assertJsonPath('stock_order_placeholders.orders.status', 'local_order_requests')
             ->assertJsonCount(2, 'partner_status');
 
         $this->actingAs($user)
@@ -2334,8 +2338,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($user)
             ->getJson('/api/b2b/dashboard/orders')
             ->assertOk()
-            ->assertJsonPath('status', 'not_configured')
-            ->assertJsonPath('reason', 'datasource_required');
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonPath('summary.pending', 0);
 
         $this->actingAs($user)
             ->getJson('/api/b2b/dashboard/stock')
@@ -2618,6 +2622,215 @@ class B2BPartnerPanelAccessTest extends TestCase
                 ->component('panel/b2b/portal-preview')
                 ->where('partnerPortal.selectedPartner.id', $otherPartner->id)
             );
+    }
+
+    public function test_dealer_partner_portal_creates_local_order_request_with_safe_product_fields(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'display_name' => 'Portal Dealer',
+            'mikro_cari_kodu' => '120.00.33.00005',
+            'partner_code' => 'INTERNAL-PARTNER-CODE',
+        ]);
+        $otherPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'display_name' => 'Other Dealer',
+            'mikro_cari_kodu' => '120.00.33.99999',
+        ]);
+        B2BPartnerOrder::query()->create([
+            'partner_id' => $otherPartner->id,
+            'user_id' => $admin->id,
+            'order_no' => 'B2B-OTHER',
+            'status' => B2BPartnerOrder::STATUS_OPS_REVIEW,
+            'submitted_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_dealer')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/dashboard')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/dashboard')
+                ->missing('partnerPortal.selectedPartner.partner_code')
+                ->missing('partnerPortal.selectedPartner.mikro_cari_kodu')
+            );
+
+        $this->actingAs($portalUser)
+            ->get('/partner/settings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/settings')
+                ->missing('partnerPortal.selectedPartner.partner_code')
+                ->missing('partnerPortal.selectedPartner.mikro_cari_kodu')
+            );
+
+        $this->actingAs($portalUser)
+            ->getJson('/api/partner/products')
+            ->assertOk()
+            ->assertJsonPath('source', 'local_safe_catalog')
+            ->assertJsonMissingPath('products.0.product_code')
+            ->assertJsonMissingPath('products.0.cost')
+            ->assertJsonMissingPath('products.0.mikro_cari_kodu');
+
+        $this->actingAs($portalUser)
+            ->postJson('/api/partner/orders', [
+                'partner_id' => $partner->id,
+                'note' => 'Portal order note',
+                'items' => [
+                    ['catalog_id' => 'smart_lock_prime', 'requested_quantity' => 2],
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('order.items.0.product_name', 'Akıllı kapı kilidi')
+            ->assertJsonMissingPath('order.items.0.product_code');
+
+        $this->assertDatabaseHas('b2b_partner_orders', [
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'status' => B2BPartnerOrder::STATUS_OPS_REVIEW,
+            'note' => 'Portal order note',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_order_items', [
+            'product_code' => 'smart_lock_prime',
+            'product_name' => 'Akıllı kapı kilidi',
+            'requested_quantity' => 2,
+        ]);
+
+        $this->actingAs($portalUser)
+            ->get('/partner/orders')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/orders')
+                ->has('partnerPortal.orders', 1)
+                ->where('partnerPortal.orders.0.note', 'Portal order note')
+            );
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/orders?partner_id={$otherPartner->id}")
+            ->assertForbidden();
+    }
+
+    public function test_locksmith_partner_portal_scopes_jobs_and_earnings_to_owner_field_technicians(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Portal Locksmith',
+            'mikro_cari_kodu' => '320.CLG.77.001',
+        ]);
+        $linkedTechnician = $this->technician(['name' => 'Portal Linked Usta']);
+        $otherTechnician = $this->technician(['name' => 'Portal Other Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $linkedTechnician->id,
+            'relationship_type' => 'owner',
+            'is_primary' => true,
+            'active' => true,
+        ]);
+        $linkedRequest = $this->serviceRequestForTechnician($linkedTechnician, 'MRN-PORTAL-LINKED');
+        $this->serviceRequestForTechnician($otherTechnician, 'MRN-PORTAL-OTHER');
+        $period = TechnicalServiceEarningsPeriod::query()->create([
+            'year' => 2026,
+            'month' => 5,
+            'status' => 'Hazır',
+            'calculated_at' => now(),
+        ]);
+        $earning = TechnicalServiceEarning::query()->create([
+            'period_id' => $period->id,
+            'technical_service_technician_id' => $linkedTechnician->id,
+            'technician_name_snapshot' => $linkedTechnician->name,
+            'city_snapshot' => 'İstanbul',
+            'job_count' => 1,
+            'installation_count' => 1,
+            'service_count' => 0,
+            'labor_total' => 1000,
+            'travel_fee_total' => 100,
+            'travel_round_trip_km_total' => 10,
+            'travel_billable_km_total' => 0,
+            'grand_total' => 1100,
+            'status' => 'Hazır',
+        ]);
+        TechnicalServiceEarningItem::query()->create([
+            'earning_id' => $earning->id,
+            'technical_service_request_id' => $linkedRequest->id,
+            'mrn' => 'MRN-PORTAL-LINKED',
+            'job_date' => now(),
+            'customer_city' => 'İstanbul',
+            'customer_district' => 'Kadıköy',
+            'service_type' => 'Montaj',
+            'product_name' => 'Test Kilit',
+            'labor_amount' => 1000,
+            'travel_round_trip_km' => 10,
+            'travel_billable_km' => 0,
+            'travel_fee_amount' => 100,
+            'line_total' => 1100,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/service-jobs')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/service-jobs')
+                ->has('partnerPortal.serviceJobs', 1)
+                ->where('partnerPortal.serviceJobs.0.mrn', 'MRN-PORTAL-LINKED')
+            );
+
+        $this->actingAs($portalUser)
+            ->get('/partner/earnings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/earnings')
+                ->has('partnerPortal.earnings.rows', 1)
+                ->where('partnerPortal.earnings.rows.0.items.0.mrn', 'MRN-PORTAL-LINKED')
+            );
+    }
+
+    public function test_partner_portal_users_stay_out_of_internal_panel_routes(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'display_name' => 'Portal Isolation Dealer',
+            'mikro_cari_kodu' => '120.00.33.12345',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_dealer')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)->get('/partner/dashboard')->assertOk();
+        $this->actingAs($portalUser)->get('/panel/b2b')->assertForbidden();
+        $this->actingAs($portalUser)->get('/panel/b2b/users')->assertForbidden();
+        $this->actingAs($portalUser)->get('/sales/main')->assertForbidden();
+        $this->actingAs($portalUser)->get('/stock')->assertForbidden();
+        $this->actingAs($portalUser)->get('/orders')->assertForbidden();
     }
 
     private function partnerUser(): User

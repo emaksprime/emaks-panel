@@ -54,7 +54,17 @@ type PlaceholderResponse = {
   status: string
   reason: string | null
   message: string | null
-  rows: unknown[]
+  rows: Array<{
+    id: number
+    order_no: string
+    partner_name: string | null
+    status: string
+    created_by: string | null
+    items_count: number
+    total_quantity: number
+    submitted_at: string | null
+    note: string | null
+  }>
   summary?: Record<string, number>
   snapshot_contract?: unknown[]
 }
@@ -540,6 +550,7 @@ function RecentActivity({ rows }: { rows: DashboardSummary['recent_activity'] })
 
 function OrdersSection({ orders }: { orders: PlaceholderResponse | null }) {
   const summary = orders?.summary ?? {}
+  const rows = orders?.rows ?? []
 
   return (
     <section className="grid gap-4">
@@ -553,7 +564,28 @@ function OrdersSection({ orders }: { orders: PlaceholderResponse | null }) {
           ['Eksik/fark bildirimi', summary.discrepancy ?? 0],
         ].map(([title, value]) => <KpiCard key={title} title={String(title)} value={Number(value)} />)}
       </div>
-      <EmptyContract title="Partner Siparişleri" message={orders?.message ?? 'Sipariş datasource sonraki fazda bağlanacak.'} />
+      {rows.length === 0 ? (
+        <EmptyContract title="Partner Siparişleri" message={orders?.message ?? 'Henüz partner sipariş talebi yok.'} />
+      ) : (
+        <div className="grid gap-3">
+          {rows.map((order) => (
+            <article key={order.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-slate-950">{order.order_no}</h3>
+                  <p className="mt-1 text-sm text-slate-500">{order.partner_name ?? 'Partner'} · {order.items_count} ürün · {order.total_quantity} adet</p>
+                </div>
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">{order.status}</span>
+              </div>
+              <div className="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-3">
+                <div><span className="font-semibold text-slate-800">Oluşturan:</span> {order.created_by ?? '-'}</div>
+                <div><span className="font-semibold text-slate-800">Tarih:</span> {order.submitted_at ?? '-'}</div>
+                <div><span className="font-semibold text-slate-800">Not:</span> {order.note ?? '-'}</div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
     </section>
   )
 }

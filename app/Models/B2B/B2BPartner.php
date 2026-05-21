@@ -187,4 +187,9 @@ class B2BPartner extends Model
     {
         return $this->hasMany(B2BPartnerAuditLog::class, 'partner_id');
     }
+
+    public function orders(): HasMany
+    {
+        return $this->hasMany(B2BPartnerOrder::class, 'partner_id');
+    }
 }

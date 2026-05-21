@@ -133,6 +133,20 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                     ->name('api.b2b.partners.update');
             });
 
+        Route::prefix('partner')
+            ->middleware('panel.access:partner.portal.view')
+            ->group(function () {
+                Route::get('products', [PartnerPortalController::class, 'products'])
+                    ->middleware('panel.access:partner.stock.view')
+                    ->name('api.partner.products');
+                Route::get('orders', [PartnerPortalController::class, 'orderIndex'])
+                    ->middleware('panel.access:partner.orders.view')
+                    ->name('api.partner.orders.index');
+                Route::post('orders', [PartnerPortalController::class, 'storeOrder'])
+                    ->middleware('panel.access:partner.orders.view')
+                    ->name('api.partner.orders.store');
+            });
+
         Route::prefix('technical-service')->group(function () {
             Route::get('technicians', [TechnicalServiceTechnicianController::class, 'index'])
                 ->middleware('panel.access:technical_service,technical_service_technicians')
@@ -248,9 +262,11 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         ->group(function () {
             Route::get('dashboard', [PartnerPortalController::class, 'dashboard'])->name('partner.dashboard');
             Route::get('profile', [PartnerPortalController::class, 'profile'])->name('partner.profile');
+            Route::get('settings', [PartnerPortalController::class, 'settings'])->name('partner.settings');
             Route::get('orders', [PartnerPortalController::class, 'orders'])->name('partner.orders');
             Route::get('stock', [PartnerPortalController::class, 'stock'])->name('partner.stock');
             Route::get('service-jobs', [PartnerPortalController::class, 'serviceJobs'])->name('partner.service-jobs');
+            Route::get('earnings', [PartnerPortalController::class, 'earnings'])->name('partner.earnings');
         });
 
     Route::get('support', [SupportController::class, 'index'])

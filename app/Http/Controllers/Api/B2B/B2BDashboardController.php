@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\B2B;
 use App\Http\Controllers\Controller;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
+use App\Models\B2B\B2BPartnerOrder;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\TechnicalServiceEarning;
@@ -59,14 +60,38 @@ class B2BDashboardController extends Controller
     {
         $this->authorizeDashboard($request->user());
 
+        $orders = B2BPartnerOrder::query()
+            ->with(['partner.capabilities', 'items', 'user'])
+            ->orderByDesc('submitted_at')
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get();
+
         return response()->json([
-            'status' => 'not_configured',
-            'reason' => 'datasource_required',
-            'message' => 'Sipariş datasource sonraki fazda bağlanacak.',
-            'rows' => [],
+            'status' => 'ok',
+            'reason' => null,
+            'message' => $orders->isEmpty()
+                ? 'Henüz partner sipariş talebi yok. Mikro sipariş entegrasyonu bu fazda yazmaz.'
+                : null,
+            'rows' => $orders
+                ->map(fn (B2BPartnerOrder $order): array => [
+                    'id' => $order->id,
+                    'order_no' => $order->order_no,
+                    'partner_id' => $order->partner_id,
+                    'partner_name' => $order->partner?->display_name,
+                    'capabilities' => $order->partner?->capabilityCodes() ?? [],
+                    'created_by' => $order->user?->name,
+                    'status' => $order->status,
+                    'items_count' => $order->items->count(),
+                    'total_quantity' => $order->items->sum('requested_quantity'),
+                    'submitted_at' => $order->submitted_at?->toIso8601String(),
+                    'note' => $order->note,
+                ])
+                ->values()
+                ->all(),
             'summary' => [
-                'pending' => 0,
-                'approval_pending' => 0,
+                'pending' => $orders->whereIn('status', [B2BPartnerOrder::STATUS_SUBMITTED, B2BPartnerOrder::STATUS_OPS_REVIEW])->count(),
+                'approval_pending' => $orders->where('status', B2BPartnerOrder::STATUS_OPS_REVIEW)->count(),
                 'preparing' => 0,
                 'in_transit' => 0,
                 'delivered' => 0,
@@ -419,10 +444,10 @@ class B2BDashboardController extends Controller
     {
         return [
             'orders' => [
-                'status' => 'not_configured',
-                'reason' => 'datasource_required',
-                'pending_orders' => 0,
-                'approval_pending' => 0,
+                'status' => 'local_order_requests',
+                'reason' => 'mikro_write_not_enabled',
+                'pending_orders' => B2BPartnerOrder::query()->whereIn('status', [B2BPartnerOrder::STATUS_SUBMITTED, B2BPartnerOrder::STATUS_OPS_REVIEW])->count(),
+                'approval_pending' => B2BPartnerOrder::query()->where('status', B2BPartnerOrder::STATUS_OPS_REVIEW)->count(),
             ],
             'stock' => [
                 'status' => 'not_configured',
