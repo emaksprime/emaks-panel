@@ -33,6 +33,7 @@ class B2BPartnerPermissionSeeder extends Seeder
     private function resources(): array
     {
         return [
+            ['code' => 'b2b.partners.view', 'name' => 'B2B Partner Yönetimi Görünümü', 'type' => 'page', 'description' => 'B2B partner yönetim ekranı giriş yetkisi.', 'active' => true],
             ['code' => 'b2b.manufacturers.view', 'name' => 'B2B Üretici Görünümü', 'type' => 'scope', 'description' => 'Üretici partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
             ['code' => 'b2b.manufacturers.manage', 'name' => 'B2B Üretici Yönetimi', 'type' => 'action', 'description' => 'Üretici partner kayıtlarını yönetme yetkisi.', 'active' => true],
             ['code' => 'b2b.sellers.view', 'name' => 'B2B Satıcı Görünümü', 'type' => 'scope', 'description' => 'Satıcı partner kayıtlarını görüntüleme yetkisi.', 'active' => true],
@@ -115,7 +116,7 @@ class B2BPartnerPermissionSeeder extends Seeder
         $page = Page::query()->updateOrCreate(
             ['code' => 'b2b_partners'],
             [
-                'resource_code' => 'b2b.view',
+                'resource_code' => 'b2b.partners.view',
                 'name' => 'B2B Partner Yönetimi',
                 'route' => '/panel/b2b/partners',
                 'component' => 'panel/b2b/partners',
@@ -264,13 +265,11 @@ class B2BPartnerPermissionSeeder extends Seeder
     {
         return [
             'b2b_manager' => [
-                'b2b.dashboard.view',
                 'b2b.view',
+                'b2b.partners.view',
                 'b2b.manage',
                 'b2b.dealers.view',
                 'b2b.dealers.manage',
-                'b2b.locksmiths.view',
-                'b2b.locksmiths.manage',
                 'b2b.manufacturers.view',
                 'b2b.manufacturers.manage',
                 'b2b.sellers.view',

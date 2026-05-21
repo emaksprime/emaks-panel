@@ -151,7 +151,9 @@ export default function B2BPartnerUsersPage() {
   const [partnerLoading, setPartnerLoading] = useState(false)
   const [usersLoading, setUsersLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [userSearch, setUserSearch] = useState('')
+  const [assignedUserSearch, setAssignedUserSearch] = useState('')
+  const [panelUserSearch, setPanelUserSearch] = useState('')
+  const [panelUsersLoading, setPanelUsersLoading] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -161,7 +163,7 @@ export default function B2BPartnerUsersPage() {
   )
 
   const filteredPartnerUsers = useMemo(() => {
-    const query = userSearch.trim().toLowerCase()
+    const query = assignedUserSearch.trim().toLowerCase()
 
     if (query === '') {
       return partnerUsers
@@ -174,7 +176,12 @@ export default function B2BPartnerUsersPage() {
       user.role_code ?? '',
       user.profile_title ?? '',
     ].some((value) => value.toLowerCase().includes(query)))
-  }, [partnerUsers, userSearch])
+  }, [assignedUserSearch, partnerUsers])
+
+  const selectedPanelUser = useMemo(
+    () => userOptions.find((user) => String(user.user_id) === form.user_id) ?? null,
+    [form.user_id, userOptions],
+  )
 
   const loadPartners = useCallback(async () => {
     setPartnerLoading(true)
@@ -223,14 +230,15 @@ export default function B2BPartnerUsersPage() {
     }
   }, [selectedPartnerId])
 
-  const searchPanelUsers = useCallback(async () => {
+  const searchPanelUsers = useCallback(async (search = panelUserSearch) => {
+    setPanelUsersLoading(true)
     setError(null)
 
     try {
       const params = new URLSearchParams()
 
-      if (userSearch.trim() !== '') {
-        params.set('search', userSearch.trim())
+      if (search.trim() !== '') {
+        params.set('search', search.trim())
       }
 
       params.set('active', '1')
@@ -239,8 +247,10 @@ export default function B2BPartnerUsersPage() {
       setUserOptions(response.items ?? [])
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Panel kullanıcıları aranamadı.')
+    } finally {
+      setPanelUsersLoading(false)
     }
-  }, [userSearch])
+  }, [panelUserSearch])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -257,6 +267,24 @@ export default function B2BPartnerUsersPage() {
 
     return () => window.clearTimeout(timer)
   }, [loadPartnerUsers, selectedPartnerId])
+
+  useEffect(() => {
+    if (editingUserId) {
+      return undefined
+    }
+
+    const search = panelUserSearch.trim()
+
+    if (search !== '' && search.length < 2) {
+      return undefined
+    }
+
+    const timer = window.setTimeout(() => {
+      void searchPanelUsers(search)
+    }, 300)
+
+    return () => window.clearTimeout(timer)
+  }, [editingUserId, panelUserSearch, searchPanelUsers])
 
   const resetForm = () => {
     setEditingUserId(null)
@@ -408,7 +436,7 @@ export default function B2BPartnerUsersPage() {
           </div>
         </section>
 
-        <div className="grid gap-6 grid-cols-1 xl:grid-cols-[minmax(320px,1fr)_minmax(360px,430px)]">
+        <div className="grid gap-6 grid-cols-1 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
           <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-4 py-3">
               <h2 className="text-base font-semibold text-slate-900">Partner seç</h2>
@@ -441,14 +469,14 @@ export default function B2BPartnerUsersPage() {
             </div>
           </section>
 
-          <div className="min-w-0 grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(360px,430px)]">
+          <div className="min-w-0 grid gap-6">
             <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
               <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Atanmış kullanıcılar</h2>
                 <p className="text-sm text-slate-500">{selectedPartner ? selectedPartner.display_name : 'Partner seçilmedi'}</p>
               </div>
-              <Input className="w-full min-w-0 max-w-full" value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="Kullanıcı ara" />
+              <Input className="w-full min-w-0 max-w-full" value={assignedUserSearch} onChange={(event) => setAssignedUserSearch(event.target.value)} placeholder="Atanmış kullanıcı ara" />
             </div>
 
               <div className="p-4">
@@ -502,8 +530,10 @@ export default function B2BPartnerUsersPage() {
                   <label className="grid gap-1 text-sm font-semibold text-slate-700">
                     Kullanıcı seç
                    <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-                     <Input className="w-full min-w-0 max-w-full" value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="Ad, e-posta veya rol" />
-                     <Button type="button" variant="outline" onClick={() => void searchPanelUsers()}>Ara</Button>
+                     <Input className="w-full min-w-0 max-w-full" value={panelUserSearch} onChange={(event) => setPanelUserSearch(event.target.value)} placeholder="Ad, e-posta veya rol" />
+                     <Button type="button" variant="outline" onClick={() => void searchPanelUsers(panelUserSearch)} disabled={panelUsersLoading}>
+                       {panelUsersLoading ? 'Aranıyor...' : 'Ara'}
+                     </Button>
                    </div>
                    <select className="mt-2 h-10 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={form.user_id} onChange={(event) => setForm((current) => ({ ...current, user_id: event.target.value }))}>
                     <option value="">Panel kullanıcısı seçin</option>
@@ -511,6 +541,16 @@ export default function B2BPartnerUsersPage() {
                       <option key={user.user_id} value={user.user_id}>{userSummary(user)}</option>
                     ))}
                   </select>
+                  {selectedPanelUser && (
+                    <div className="mt-2 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">
+                      Seçili kullanıcı: {selectedPanelUser.name} · {selectedPanelUser.email} · {selectedPanelUser.role_code ?? '-'}
+                    </div>
+                  )}
+                  {!panelUsersLoading && panelUserSearch.trim().length >= 2 && userOptions.length === 0 && (
+                    <div className="mt-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                      Eşleşen panel kullanıcısı yok. Yeni kullanıcı Admin &gt; Kullanıcı Yönetimi ekranından oluşturulur.
+                    </div>
+                  )}
                 </label>
               )}
 
@@ -544,16 +584,16 @@ export default function B2BPartnerUsersPage() {
                         <div className="font-semibold text-slate-800">{scope.label}</div>
                         <div className="text-xs text-slate-500">{scope.hint}</div>
                       </div>
-                       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                       <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-4">
                          {abilityColumns.map((ability) => (
-                         <label key={ability.key} className="inline-flex min-w-0 flex-1 items-center gap-2 rounded-lg bg-white px-3 py-2">
+                         <label key={ability.key} className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-white px-3 py-2">
                             <input
                               type="checkbox"
                               checked={form.scopes[scope.key][ability.key]}
                               onChange={(event) => setScopeAbility(scope.key, ability.key, event.target.checked)}
                               aria-label={`${scope.label} ${ability.label}`}
                             />
-                             <span className="min-w-0 truncate text-xs font-semibold text-slate-600">{ability.label}</span>
+                             <span className="min-w-0 break-words text-xs font-semibold text-slate-600">{ability.label}</span>
                           </label>
                         ))}
                       </div>

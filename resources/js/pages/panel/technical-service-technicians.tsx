@@ -155,6 +155,9 @@ const hasAddressInfo = (technician: ServiceTechnician) => [
   technician.cari_city_district_country,
 ].some((value) => typeof value === 'string' && value.trim() !== '')
 
+const activeB2BPartnerLinks = (technician: ServiceTechnician) => (technician.b2b_partner_links ?? [])
+  .filter((link) => link.active !== false && link.partner)
+
 const coordinateWatchedFields: Array<keyof TechnicianForm> = [
   'city',
   'district',
@@ -619,6 +622,20 @@ export default function TechnicalServiceTechnicians() {
                       <p className="line-clamp-2 break-words">{technician.cari_title || technician.mikro_cari_adi || '-'}</p>
                     </div>
                     <div className="min-w-0 sm:col-span-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bağlı B2B partnerlar</p>
+                      {activeB2BPartnerLinks(technician).length > 0 ? (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {activeB2BPartnerLinks(technician).map((link) => (
+                            <span key={link.id} className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                              {link.partner?.display_name ?? `Partner #${link.partner_id}`}{link.is_primary ? ' · Birincil' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-slate-500">B2B partner bağlantısı yok.</p>
+                      )}
+                    </div>
+                    <div className="min-w-0 sm:col-span-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Konum / Adres Kodu</p>
                       <p className="line-clamp-2 break-words">{technician.location_code || technician.google_plus_code || '-'}</p>
                       <div className="mt-2 flex flex-wrap gap-1">
@@ -673,6 +690,15 @@ export default function TechnicalServiceTechnicians() {
                       <p className="truncate font-semibold text-slate-950">{displayName(technician)}</p>
                       {technician.display_name ? <p className="mt-1 line-clamp-1 break-words text-xs text-slate-500">{technician.display_name}</p> : null}
                       {technician.note ? <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{technician.note}</p> : null}
+                      {activeB2BPartnerLinks(technician).length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {activeB2BPartnerLinks(technician).map((link) => (
+                            <span key={link.id} className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                              {link.partner?.display_name ?? `Partner #${link.partner_id}`}{link.is_primary ? ' · Birincil' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </td>
                     <td className="min-w-0 px-4 py-3">
                       <span className={[

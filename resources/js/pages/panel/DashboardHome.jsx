@@ -47,6 +47,13 @@ const moduleCards = [
         tone: 'from-emerald-700 to-teal-500',
     },
     {
+        title: 'Bayi & Çilingir Kokpiti',
+        description: 'Bayi, üretici, satıcı ve çok rollü partner durumlarını yönetin.',
+        candidates: ['/panel/b2b', '/panel/b2b/partners', '/panel/b2b/users'],
+        icon: UsersRound,
+        tone: 'from-violet-700 to-blue-500',
+    },
+    {
         title: 'Müşteri Yönetimi',
         description: 'Cari bilgi, bakiye ve ekstre ekranlarına hızlı erişim sağlayın.',
         candidates: ['/cari', '/cari/balance'],

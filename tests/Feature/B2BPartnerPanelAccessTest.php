@@ -599,6 +599,8 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $codes = [
             'b2b.view',
+            'b2b.dashboard.view',
+            'b2b.partners.view',
             'b2b.manage',
             'b2b.dealers.view',
             'b2b.dealers.manage',
@@ -618,7 +620,10 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->assertSame(count($codes), Resource::query()->whereIn('code', $codes)->count());
         $this->assertSame(1, Resource::query()->where('code', 'b2b.view')->count());
+        $this->assertSame(1, Resource::query()->where('code', 'b2b.dashboard.view')->count());
+        $this->assertSame(1, Resource::query()->where('code', 'b2b.partners.view')->count());
         $this->assertSame(1, Page::query()->where('code', 'b2b_partners')->count());
+        $this->assertSame(1, Page::query()->where('code', 'b2b_dashboard')->count());
         $this->assertSame(1, Page::query()->where('code', 'b2b_partner_users')->count());
         $this->assertSame(1, MenuGroup::query()->where('code', 'b2b')->count());
         $this->assertSame(1, PageMenu::query()
@@ -651,6 +656,14 @@ class B2BPartnerPanelAccessTest extends TestCase
             'role_code' => 'b2b_manager',
             'resource_code' => 'b2b.partner_users.manage',
             'can_view' => true,
+        ]);
+        $this->assertDatabaseMissing('panel.role_resource_permissions', [
+            'role_code' => 'b2b_manager',
+            'resource_code' => 'b2b.dashboard.view',
+        ]);
+        $this->assertDatabaseMissing('panel.role_resource_permissions', [
+            'role_code' => 'b2b_manager',
+            'resource_code' => 'b2b.locksmiths.view',
         ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_dealer',
@@ -2275,15 +2288,38 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($user)
             ->getJson('/api/b2b/dashboard/summary?capability=dealer')
             ->assertOk()
-            ->assertJsonPath('partner_counts.total', 3)
+            ->assertJsonPath('partner_counts.total', 2)
             ->assertJsonPath('partner_counts.active_dealers', 2)
-            ->assertJsonPath('partner_counts.active_locksmiths', 2)
+            ->assertJsonPath('partner_counts.active_locksmiths', 1)
             ->assertJsonPath('partner_counts.active_dealer_locksmith', 1)
-            ->assertJsonPath('missing_data_counts.partners_without_users', 2)
-            ->assertJsonPath('missing_data_counts.locksmiths_without_technicians', 1)
+            ->assertJsonPath('missing_data_counts.partners_without_users', 1)
+            ->assertJsonPath('missing_data_counts.locksmiths_without_technicians', 0)
+            ->assertJsonPath('visibility.can_include_locksmiths', false)
+            ->assertJsonPath('visibility.include_locksmiths', false)
+            ->assertJsonPath('visibility.pure_locksmiths_hidden', true)
             ->assertJsonPath('service_counts.open_service_jobs', 1)
             ->assertJsonPath('stock_order_placeholders.orders.status', 'not_configured')
             ->assertJsonCount(2, 'partner_status');
+
+        $this->actingAs($user)
+            ->getJson('/api/b2b/dashboard/summary?capability=locksmith')
+            ->assertOk()
+            ->assertJsonCount(1, 'partner_status')
+            ->assertJsonPath('partner_status.0.id', $hybrid->id);
+
+        $this->grantPanelResource('b2b_ops_summary', 'b2b.locksmiths.view');
+
+        $this->actingAs($user)
+            ->getJson('/api/b2b/dashboard/summary?include_locksmiths=1')
+            ->assertOk()
+            ->assertJsonPath('partner_counts.total', 3)
+            ->assertJsonPath('partner_counts.active_locksmiths', 2)
+            ->assertJsonPath('partner_counts.pure_locksmiths_visible', 1)
+            ->assertJsonPath('missing_data_counts.partners_without_users', 2)
+            ->assertJsonPath('missing_data_counts.locksmiths_without_technicians', 1)
+            ->assertJsonPath('visibility.can_include_locksmiths', true)
+            ->assertJsonPath('visibility.include_locksmiths', true)
+            ->assertJsonCount(3, 'partner_status');
 
         $this->actingAs($user)
             ->getJson('/api/b2b/dashboard/orders')
@@ -2297,6 +2333,21 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('status', 'not_configured');
 
         $this->assertTrue($hybrid->fresh()->activePartnerTechnicians()->exists());
+    }
+
+    public function test_b2b_dashboard_resource_is_required_separately_from_partner_management(): void
+    {
+        $user = $this->userWithRole('b2b_partner_manager');
+        $this->grantPanelResource('b2b_partner_manager', 'b2b.view');
+        $this->grantPanelResource('b2b_partner_manager', 'b2b.manage');
+
+        $this->actingAs($user)->get('/panel/b2b')->assertForbidden();
+        $this->actingAs($user)->getJson('/api/b2b/dashboard/summary')->assertForbidden();
+
+        $this->grantPanelResource('b2b_partner_manager', 'b2b.dashboard.view');
+
+        $this->actingAs($user)->get('/panel/b2b')->assertOk();
+        $this->actingAs($user)->getJson('/api/b2b/dashboard/summary')->assertOk();
     }
 
     private function partnerUser(): User

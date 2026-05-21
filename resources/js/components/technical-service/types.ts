@@ -356,6 +356,20 @@ export type ServiceTechnician = {
   import_note?: string | null
   needs_review?: boolean | null
   source_key?: string | null
+  b2b_partner_links?: Array<{
+    id: number | string
+    partner_id: number | string
+    relationship_type?: string | null
+    is_primary?: boolean | null
+    active?: boolean | null
+    partner?: {
+      id: number | string
+      display_name?: string | null
+      partner_code?: string | null
+      mikro_cari_kodu?: string | null
+      active?: boolean | null
+    } | null
+  }>
 }
 
 export type ServiceRequestEvent = {

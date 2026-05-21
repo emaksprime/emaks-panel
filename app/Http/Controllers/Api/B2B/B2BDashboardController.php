@@ -23,21 +23,31 @@ class B2BDashboardController extends Controller
 
     public function summary(Request $request): JsonResponse
     {
-        $this->authorizeDashboard($request->user());
+        $user = $this->authorizeDashboard($request->user());
 
         $filters = $this->dashboardFilters($request);
-        $partnersQuery = $this->filteredPartnerQuery($filters);
+        $canIncludePureLocksmiths = $this->canIncludePureLocksmiths($user);
+        $includePureLocksmiths = $canIncludePureLocksmiths && (bool) ($filters['include_locksmiths'] ?? false);
+        $partnersQuery = $this->filteredPartnerQuery($filters, $includePureLocksmiths);
         $partners = $this->partnerStatusItems($partnersQuery);
 
         return response()->json([
-            'partner_counts' => $this->partnerCounts(),
-            'missing_data_counts' => $this->missingDataCounts(),
+            'partner_counts' => $this->partnerCounts($includePureLocksmiths),
+            'missing_data_counts' => $this->missingDataCounts($includePureLocksmiths),
             'service_counts' => $this->serviceCounts(),
             'user_counts' => $this->userCounts(),
             'stock_order_placeholders' => $this->placeholderContracts(),
-            'recent_activity' => $this->recentActivity(),
+            'recent_activity' => $this->recentActivity($includePureLocksmiths),
             'partner_status' => $partners,
             'filters' => $filters,
+            'visibility' => [
+                'can_include_locksmiths' => $canIncludePureLocksmiths,
+                'include_locksmiths' => $includePureLocksmiths,
+                'pure_locksmiths_hidden' => ! $includePureLocksmiths,
+                'locksmith_notice' => $includePureLocksmiths
+                    ? null
+                    : 'Sadece çilingir olan kayıtlar Teknik Servis altında takip edilir.',
+            ],
         ]);
     }
 
@@ -65,7 +75,7 @@ class B2BDashboardController extends Controller
     {
         $this->authorizeDashboard($request->user());
 
-        $partnersWithChildCari = B2BPartner::query()
+        $partnersWithChildCari = $this->visiblePartnerBaseQuery(false)
             ->whereNotNull('metadata')
             ->get()
             ->filter(fn (B2BPartner $partner): bool => count($this->childCariAccounts($partner)) > 0)
@@ -89,7 +99,15 @@ class B2BDashboardController extends Controller
 
     public function locksmiths(Request $request): JsonResponse
     {
-        $this->authorizeDashboard($request->user());
+        $user = $this->authorizeDashboard($request->user());
+
+        if (! $this->canIncludePureLocksmiths($user)) {
+            return response()->json([
+                'items' => [],
+                'status' => 'restricted',
+                'message' => 'Çilingirler Teknik Servis altında takip edilir. B2B içinde görmek için b2b.locksmiths.view gerekir.',
+            ]);
+        }
 
         $today = Carbon::today();
         $technicians = TechnicalServiceTechnician::query()
@@ -144,7 +162,16 @@ class B2BDashboardController extends Controller
 
     public function earnings(Request $request): JsonResponse
     {
-        $this->authorizeDashboard($request->user());
+        $user = $this->authorizeDashboard($request->user());
+
+        if (! $this->canIncludePureLocksmiths($user)) {
+            return response()->json([
+                'status' => 'restricted',
+                'reason' => 'b2b_locksmith_scope_required',
+                'message' => 'Çilingir hakedişi Teknik Servis hakediş akışından yürür.',
+                'rows' => [],
+            ]);
+        }
 
         $earnings = TechnicalServiceEarning::query()
             ->with(['technician', 'period'])
@@ -176,15 +203,20 @@ class B2BDashboardController extends Controller
         ]);
     }
 
-    private function authorizeDashboard(?User $user): void
+    private function authorizeDashboard(?User $user): User
     {
         abort_unless($user, 403);
 
-        $allowed = $this->panelAccess->userCanAccess($user, 'b2b.dashboard.view')
-            || $this->panelAccess->userCanAccess($user, 'b2b.view')
-            || $this->panelAccess->userCanAccess($user, 'b2b.manage');
+        $allowed = $this->panelAccess->userCanAccess($user, 'b2b.dashboard.view');
 
         abort_unless($allowed, 403);
+
+        return $user;
+    }
+
+    private function canIncludePureLocksmiths(User $user): bool
+    {
+        return $this->panelAccess->userCanAccess($user, 'b2b.locksmiths.view');
     }
 
     /**
@@ -202,15 +234,16 @@ class B2BDashboardController extends Controller
             'technician_state' => ['nullable', 'string', 'in:with_technicians,without_technicians'],
             'data_state' => ['nullable', 'string', 'in:missing_invoice,complete_invoice'],
             'child_cari_state' => ['nullable', 'string', 'in:with_child_cari,without_child_cari'],
+            'include_locksmiths' => ['nullable', 'boolean'],
         ]);
     }
 
     /**
      * @param  array<string, mixed>  $filters
      */
-    private function filteredPartnerQuery(array $filters): Builder
+    private function filteredPartnerQuery(array $filters, bool $includePureLocksmiths): Builder
     {
-        $query = B2BPartner::query()
+        $query = $this->visiblePartnerBaseQuery($includePureLocksmiths)
             ->with(['capabilities', 'activePartnerTechnicians.technician'])
             ->withCount([
                 'profiles as users_count',
@@ -280,45 +313,76 @@ class B2BDashboardController extends Controller
         return $query;
     }
 
-    private function partnerCounts(): array
+    private function visiblePartnerBaseQuery(bool $includePureLocksmiths): Builder
     {
+        $query = B2BPartner::query();
+
+        if (! $includePureLocksmiths) {
+            $this->excludePureLocksmiths($query);
+        }
+
+        return $query;
+    }
+
+    private function excludePureLocksmiths(Builder $query): void
+    {
+        $query->where(function (Builder $query): void {
+            $query
+                ->whereDoesntHave('activeCapabilities', fn (Builder $query): Builder => $query->where('capability', B2BPartner::TYPE_LOCKSMITH))
+                ->orWhereHas('activeCapabilities', fn (Builder $query): Builder => $query->whereIn('capability', [
+                    B2BPartner::TYPE_DEALER,
+                    B2BPartner::TYPE_MANUFACTURER,
+                    B2BPartner::TYPE_SELLER,
+                ]));
+        });
+    }
+
+    private function partnerCounts(bool $includePureLocksmiths): array
+    {
+        $visibleQuery = fn (): Builder => $this->visiblePartnerBaseQuery($includePureLocksmiths);
+
         return [
-            'total' => B2BPartner::query()->count(),
-            'active_total' => B2BPartner::query()->where('active', true)->count(),
-            'active_dealers' => $this->activeCapabilityCount(B2BPartner::TYPE_DEALER),
-            'active_locksmiths' => $this->activeCapabilityCount(B2BPartner::TYPE_LOCKSMITH),
-            'active_dealer_locksmith' => B2BPartner::query()
+            'total' => $visibleQuery()->count(),
+            'active_total' => $visibleQuery()->where('active', true)->count(),
+            'active_dealers' => $this->activeCapabilityCount(B2BPartner::TYPE_DEALER, $includePureLocksmiths),
+            'active_locksmiths' => $this->activeCapabilityCount(B2BPartner::TYPE_LOCKSMITH, $includePureLocksmiths),
+            'active_dealer_locksmith' => $visibleQuery()
                 ->where('active', true)
                 ->whereHas('activeCapabilities', fn (Builder $query): Builder => $query->where('capability', B2BPartner::TYPE_DEALER))
                 ->whereHas('activeCapabilities', fn (Builder $query): Builder => $query->where('capability', B2BPartner::TYPE_LOCKSMITH))
                 ->count(),
-            'active_manufacturers' => $this->activeCapabilityCount(B2BPartner::TYPE_MANUFACTURER),
-            'active_sellers' => $this->activeCapabilityCount(B2BPartner::TYPE_SELLER),
+            'active_manufacturers' => $this->activeCapabilityCount(B2BPartner::TYPE_MANUFACTURER, $includePureLocksmiths),
+            'active_sellers' => $this->activeCapabilityCount(B2BPartner::TYPE_SELLER, $includePureLocksmiths),
+            'pure_locksmiths_visible' => $includePureLocksmiths
+                ? $this->activePureLocksmithQuery()->count()
+                : 0,
         ];
     }
 
-    private function activeCapabilityCount(string $capability): int
+    private function activeCapabilityCount(string $capability, bool $includePureLocksmiths): int
     {
-        return B2BPartner::query()
+        return $this->visiblePartnerBaseQuery($includePureLocksmiths)
             ->where('active', true)
             ->whereHas('activeCapabilities', fn (Builder $query): Builder => $query->where('capability', $capability))
             ->count();
     }
 
-    private function missingDataCounts(): array
+    private function missingDataCounts(bool $includePureLocksmiths): array
     {
         return [
-            'partners_without_users' => B2BPartner::query()
+            'partners_without_users' => $this->visiblePartnerBaseQuery($includePureLocksmiths)
                 ->where('active', true)
                 ->whereDoesntHave('profiles', fn (Builder $query): Builder => $query->where('active', true))
                 ->count(),
-            'locksmiths_without_technicians' => B2BPartner::query()
-                ->where('active', true)
-                ->whereHas('activeCapabilities', fn (Builder $query): Builder => $query->where('capability', B2BPartner::TYPE_LOCKSMITH))
-                ->whereDoesntHave('activePartnerTechnicians')
-                ->count(),
-            'partners_missing_cari_info' => tap(B2BPartner::query()->where('active', true), fn (Builder $query) => $this->whereMissingInvoiceData($query))->count(),
-            'partners_with_child_cari' => B2BPartner::query()
+            'locksmiths_without_technicians' => $includePureLocksmiths
+                ? $this->visiblePartnerBaseQuery(true)
+                    ->where('active', true)
+                    ->whereHas('activeCapabilities', fn (Builder $query): Builder => $query->where('capability', B2BPartner::TYPE_LOCKSMITH))
+                    ->whereDoesntHave('activePartnerTechnicians')
+                    ->count()
+                : 0,
+            'partners_missing_cari_info' => tap($this->visiblePartnerBaseQuery($includePureLocksmiths)->where('active', true), fn (Builder $query) => $this->whereMissingInvoiceData($query))->count(),
+            'partners_with_child_cari' => $this->visiblePartnerBaseQuery($includePureLocksmiths)
                 ->where('active', true)
                 ->whereNotNull('metadata')
                 ->get()
@@ -422,10 +486,25 @@ class B2BDashboardController extends Controller
     /**
      * @return array<int, array<string, mixed>>
      */
-    private function recentActivity(): array
+    private function activePureLocksmithQuery(): Builder
     {
+        return B2BPartner::query()
+            ->where('active', true)
+            ->whereHas('activeCapabilities', fn (Builder $query): Builder => $query->where('capability', B2BPartner::TYPE_LOCKSMITH))
+            ->whereDoesntHave('activeCapabilities', fn (Builder $query): Builder => $query->whereIn('capability', [
+                B2BPartner::TYPE_DEALER,
+                B2BPartner::TYPE_MANUFACTURER,
+                B2BPartner::TYPE_SELLER,
+            ]));
+    }
+
+    private function recentActivity(bool $includePureLocksmiths): array
+    {
+        $visiblePartnerIds = $this->visiblePartnerBaseQuery($includePureLocksmiths)->pluck('id');
+
         return B2BPartnerAuditLog::query()
             ->with('partner')
+            ->whereIn('partner_id', $visiblePartnerIds)
             ->orderByDesc('created_at')
             ->limit(10)
             ->get()

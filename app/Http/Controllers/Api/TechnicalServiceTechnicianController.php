@@ -44,7 +44,14 @@ class TechnicalServiceTechnicianController extends Controller
             'search' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $query = TechnicalServiceTechnician::query();
+        $query = TechnicalServiceTechnician::query()
+            ->with(['b2bPartnerLinks' => function ($query): void {
+                $query
+                    ->with('partner')
+                    ->where('active', true)
+                    ->orderByDesc('is_primary')
+                    ->orderBy('id');
+            }]);
         $likeOperator = DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
 
         if (array_key_exists('active', $filters)) {

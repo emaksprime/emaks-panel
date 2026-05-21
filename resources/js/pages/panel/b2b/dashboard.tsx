@@ -35,6 +35,12 @@ type DashboardSummary = {
   stock_order_placeholders: Record<string, { status: string, reason: string }>
   recent_activity: Array<{ id: number, partner_name: string | null, action: string, created_at: string | null }>
   partner_status: PartnerStatus[]
+  visibility: {
+    can_include_locksmiths: boolean
+    include_locksmiths: boolean
+    pure_locksmiths_hidden: boolean
+    locksmith_notice: string | null
+  }
 }
 
 type PlaceholderResponse = {
@@ -81,6 +87,7 @@ type Filters = {
   technician_state: '' | 'with_technicians' | 'without_technicians'
   data_state: '' | 'missing_invoice' | 'complete_invoice'
   child_cari_state: '' | 'with_child_cari' | 'without_child_cari'
+  include_locksmiths: boolean
 }
 
 const initialFilters: Filters = {
@@ -93,6 +100,7 @@ const initialFilters: Filters = {
   technician_state: '',
   data_state: '',
   child_cari_state: '',
+  include_locksmiths: false,
 }
 
 const capabilityLabel = (capability: Capability | 'multi_role') => {
@@ -118,6 +126,14 @@ function buildQuery(filters: Filters) {
   const params = new URLSearchParams()
 
   Object.entries(filters).forEach(([key, value]) => {
+    if (typeof value === 'boolean') {
+      if (value) {
+        params.set(key, '1')
+      }
+
+      return
+    }
+
     if (value !== '') {
       params.set(key, value)
     }
@@ -170,12 +186,17 @@ export default function B2BDashboard() {
 
     try {
       const query = buildQuery(nextFilters)
-      const [summaryPayload, ordersPayload, stockPayload, locksmithPayload, earningsPayload] = await Promise.all([
-        apiRequest(`/api/b2b/dashboard/summary${query ? `?${query}` : ''}`),
+      const summaryPayload = await apiRequest(`/api/b2b/dashboard/summary${query ? `?${query}` : ''}`) as DashboardSummary
+      const includeLocksmiths = Boolean(summaryPayload.visibility?.can_include_locksmiths && summaryPayload.visibility?.include_locksmiths)
+      const [ordersPayload, stockPayload, locksmithPayload, earningsPayload] = await Promise.all([
         apiRequest('/api/b2b/dashboard/orders'),
         apiRequest('/api/b2b/dashboard/stock'),
-        apiRequest('/api/b2b/dashboard/locksmiths'),
-        apiRequest('/api/b2b/dashboard/earnings'),
+        includeLocksmiths ? apiRequest('/api/b2b/dashboard/locksmiths') : Promise.resolve({ items: [] }),
+        includeLocksmiths ? apiRequest('/api/b2b/dashboard/earnings') : Promise.resolve({
+          status: 'restricted',
+          message: summaryPayload.visibility?.locksmith_notice ?? null,
+          rows: [],
+        }),
       ])
 
       setSummary(summaryPayload)
@@ -202,40 +223,61 @@ export default function B2BDashboard() {
     const partner = summary?.partner_counts ?? {}
     const missing = summary?.missing_data_counts ?? {}
     const service = summary?.service_counts ?? {}
+    const visibility = summary?.visibility
+    const includeLocksmiths = Boolean(visibility?.include_locksmiths)
 
-    return [
+    const rows: Array<[string, number | string, 'slate' | 'sky' | 'emerald' | 'amber' | 'rose', string]> = [
       ['Toplam partner', partner.total ?? 0, 'slate', 'Tüm kayıtlar'],
       ['Aktif bayi', partner.active_dealers ?? 0, 'sky', 'Bayi rolü'],
-      ['Aktif çilingir', partner.active_locksmiths ?? 0, 'emerald', 'Servis rolü'],
       ['Bayi + çilingir', partner.active_dealer_locksmith ?? 0, 'emerald', 'Çok rollü'],
       ['Üretici', partner.active_manufacturers ?? 0, 'slate', 'Kanal rolü'],
       ['Satıcı', partner.active_sellers ?? 0, 'slate', 'Kanal rolü'],
       ['Kullanıcısız', missing.partners_without_users ?? 0, 'amber', 'Aksiyon gerekli'],
-      ['Ustasız çilingir', missing.locksmiths_without_technicians ?? 0, 'rose', 'Bağlantı eksik'],
       ['Cari bilgisi eksik', missing.partners_missing_cari_info ?? 0, 'amber', 'Kod/adres kontrolü'],
       ['Açık servis işi', service.open_service_jobs ?? 0, 'sky', 'Teknik servis'],
-      ['Bekleyen hakediş', locksmiths.reduce((total, row) => total + row.pending_earnings, 0), 'amber', 'Usta bazlı'],
       ['Konsinye/teşhir uyarısı', missing.partners_with_child_cari ?? 0, 'slate', 'Snapshot sözleşmesi'],
-    ] as Array<[string, number, 'slate' | 'sky' | 'emerald' | 'amber' | 'rose', string]>
+    ]
+
+    if (includeLocksmiths) {
+      rows.splice(2, 0, ['Aktif çilingir', partner.active_locksmiths ?? 0, 'emerald', 'Yetkili görünüm'])
+      rows.push(['Ustasız çilingir', missing.locksmiths_without_technicians ?? 0, 'rose', 'Teknik Servis kontrolü'])
+      rows.push(['Bekleyen hakediş', locksmiths.reduce((total, row) => total + row.pending_earnings, 0), 'amber', 'Teknik Servis hakediş'])
+    } else {
+      rows.push(['Çilingir takibi', 'Teknik Servis', 'slate', visibility?.locksmith_notice ?? 'Sadece çilingir olan kayıtlar Teknik Servis altında takip edilir.'])
+    }
+
+    return rows
   }, [summary, locksmiths])
 
   const applyFilters = () => {
+    if (!filters.include_locksmiths && (activeTab === 'locksmiths' || activeTab === 'earnings')) {
+      setActiveTab('general')
+    }
+
     void loadDashboard(filters)
   }
 
   const clearFilters = () => {
     setFilters(initialFilters)
+
+    if (activeTab === 'locksmiths' || activeTab === 'earnings') {
+      setActiveTab('general')
+    }
+
     void loadDashboard(initialFilters)
   }
 
+  const includeLocksmiths = Boolean(summary?.visibility?.can_include_locksmiths && summary?.visibility?.include_locksmiths)
   const tabs: Array<[TabKey, string]> = [
     ['general', 'Genel'],
     ['partners', 'Partnerler'],
     ['orders', 'Siparişler'],
     ['stock', 'Stok/Konsinye'],
     ['deliveries', 'Teslimatlar'],
-    ['locksmiths', 'Çilingirler'],
-    ['earnings', 'Hakediş'],
+    ...(includeLocksmiths ? [
+      ['locksmiths', 'Çilingirler'],
+      ['earnings', 'Hakediş'],
+    ] as Array<[TabKey, string]> : []),
     ['alerts', 'Uyarılar'],
   ]
 
@@ -307,9 +349,24 @@ export default function B2BDashboard() {
           </select>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
+          {summary?.visibility?.can_include_locksmiths && (
+            <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={filters.include_locksmiths}
+                onChange={(event) => setFilters({ ...filters, include_locksmiths: event.target.checked })}
+              />
+              Çilingirleri dahil et
+            </label>
+          )}
           <Button type="button" onClick={applyFilters} disabled={loading}>{loading ? 'Yükleniyor...' : 'Filtrele'}</Button>
           <Button type="button" variant="outline" onClick={clearFilters}>Temizle</Button>
         </div>
+        {summary?.visibility?.pure_locksmiths_hidden && (
+          <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800">
+            {summary.visibility.locksmith_notice}
+          </div>
+        )}
       </section>
 
       <nav className="flex flex-wrap gap-2">
@@ -340,8 +397,8 @@ export default function B2BDashboard() {
           message="Bayi irsaliye ve teslimat doğrulama akışı için API/UI sözleşmesi hazırlandı. Gerçek irsaliye datasource bağlanmadan local teslimat tablosu açmak şu an gereksiz migration olur."
         />
       )}
-      {activeTab === 'locksmiths' && <LocksmithSection rows={locksmiths} />}
-      {activeTab === 'earnings' && <EarningsSection data={earnings} />}
+      {activeTab === 'locksmiths' && includeLocksmiths && <LocksmithSection rows={locksmiths} />}
+      {activeTab === 'earnings' && includeLocksmiths && <EarningsSection data={earnings} />}
       {activeTab === 'alerts' && <AlertsSection summary={summary} />}
     </div>
   )
@@ -501,11 +558,16 @@ function EarningsSection({ data }: { data: { status: string, message: string | n
 
 function AlertsSection({ summary }: { summary: DashboardSummary | null }) {
   const missing = summary?.missing_data_counts ?? {}
+  const includeLocksmiths = Boolean(summary?.visibility?.include_locksmiths)
 
   return (
     <section className="grid gap-3 md:grid-cols-3">
       <KpiCard title="Kullanıcısı olmayan partner" value={missing.partners_without_users ?? 0} tone="amber" />
-      <KpiCard title="Usta bağlantısı olmayan çilingir" value={missing.locksmiths_without_technicians ?? 0} tone="rose" />
+      {includeLocksmiths ? (
+        <KpiCard title="Usta bağlantısı olmayan çilingir" value={missing.locksmiths_without_technicians ?? 0} tone="rose" />
+      ) : (
+        <KpiCard title="Çilingir operasyonu" value="Teknik Servis" tone="slate" hint={summary?.visibility?.locksmith_notice ?? undefined} />
+      )}
       <KpiCard title="Cari/fatura bilgisi eksik" value={missing.partners_missing_cari_info ?? 0} tone="amber" />
     </section>
   )

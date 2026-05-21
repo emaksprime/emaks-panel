@@ -617,7 +617,7 @@ export default function B2BPartnersPage() {
     }
   }, [])
 
-  const loadTechnicians = useCallback(async (search = technicianSearch, contextForm: PartnerForm = form, contextPartnerId: number | undefined = editingPartnerId) => {
+  const loadTechnicians = useCallback(async (search = technicianSearch, contextPartnerId: number | undefined = editingPartnerId) => {
     setTechnicianLoading(true)
 
     try {
@@ -625,18 +625,6 @@ export default function B2BPartnersPage() {
 
       if (search.trim() !== '') {
         params.set('search', search.trim())
-      }
-
-      if (contextForm.mikro_cari_kodu.trim() !== '') {
-        params.set('mikro_cari_kodu', contextForm.mikro_cari_kodu.trim())
-      }
-
-      if (contextForm.phone.trim() !== '') {
-        params.set('phone', contextForm.phone.trim())
-      }
-
-      if (contextForm.city.trim() !== '') {
-        params.set('city', contextForm.city.trim())
       }
 
       if (contextPartnerId !== undefined) {
@@ -650,7 +638,7 @@ export default function B2BPartnersPage() {
     } finally {
       setTechnicianLoading(false)
     }
-  }, [editingPartnerId, form, technicianSearch])
+  }, [editingPartnerId, technicianSearch])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -693,7 +681,7 @@ export default function B2BPartnersPage() {
     setError(null)
 
     void loadPartnerTechnicians(partner.id)
-    void loadTechnicians('', nextForm, partner.id)
+    void loadTechnicians('', partner.id)
   }
 
   const updateForm = <K extends keyof PartnerForm>(key: K, value: PartnerForm[K]) => {
@@ -1687,6 +1675,11 @@ export default function B2BPartnersPage() {
                       </div>
                       {!editingPartner && (
                         <div className="mt-2 text-xs font-semibold text-amber-700">Usta bağlamak için önce partner kaydını oluşturun.</div>
+                      )}
+                      {!technicianLoading && editingPartner && technicians.length === 0 && (
+                        <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-600">
+                          Eşleşen usta bulunamadı.
+                        </div>
                       )}
                       {technicians.length > 0 && (
                         <div className="mt-3 grid gap-2">
