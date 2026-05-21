@@ -198,9 +198,6 @@ class B2BPartnerController extends Controller
             $oldCapabilities = $partner->capabilityCodes();
             $partner->forceFill([
                 'partner_type' => $this->primaryPartnerType($capabilities),
-                'technical_service_technician_id' => in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true)
-                    ? $partner->technical_service_technician_id
-                    : null,
             ])->save();
             $this->syncCapabilities($partner, $capabilities, $request, $user->id, $oldCapabilities);
 
@@ -1105,19 +1102,29 @@ class B2BPartnerController extends Controller
                 'updated' => 0,
                 'capability_added' => 0,
                 'skipped' => 0,
+                'created_partners' => 0,
+                'updated_partners' => 0,
+                'linked_technicians' => 0,
+                'already_linked' => 0,
                 'review_required' => 0,
+                'skipped_errors' => 0,
                 'items' => [],
             ];
 
             TechnicalServiceTechnician::query()
                 ->where('active', true)
                 ->where(function (Builder $query): void {
-                    $query->where('technician_type', 'locksmith')
+                    $query->whereIn('technician_type', ['locksmith', 'technician'])
                         ->orWhere(function (Builder $query): void {
-                            $query->whereNull('technician_type')
+                            $query->where(function (Builder $query): void {
+                                $query->whereNull('technician_type')
+                                    ->orWhereNotIn('technician_type', ['locksmith', 'technician']);
+                            })
                                 ->where(function (Builder $query): void {
                                     $query->whereNotNull('mikro_cari_kodu')
                                         ->orWhereNotNull('cari_code')
+                                        ->orWhereNotNull('phone')
+                                        ->orWhereNotNull('city')
                                         ->orWhereNotNull('source_key');
                                 });
                         });
@@ -1126,6 +1133,7 @@ class B2BPartnerController extends Controller
                 ->get()
                 ->each(function (TechnicalServiceTechnician $technician) use (&$result, $request, $user): void {
                     $partner = $this->partnerForTechnicianSync($technician);
+                    $reviewRequired = ! in_array($technician->technician_type, ['locksmith', 'technician'], true);
 
                     if ($partner) {
                         $oldValues = $this->auditPayload($partner);
@@ -1136,6 +1144,7 @@ class B2BPartnerController extends Controller
                         $partner->partner_type = $this->primaryPartnerType($capabilities);
                         $partner->save();
                         $this->syncCapabilities($partner, $capabilities, $request, $user->id, $oldCapabilities);
+                        $alreadyLinked = $this->activeTechnicianLinkForPartner($partner, $technician->id) !== null;
                         $link = $this->upsertPartnerTechnicianLink(
                             $partner->fresh('capabilities'),
                             $technician,
@@ -1144,7 +1153,7 @@ class B2BPartnerController extends Controller
                             'field_technician',
                             (int) $partner->technical_service_technician_id === (int) $technician->id,
                             'sync',
-                            'mikro_cari_match',
+                            $reviewRequired ? 'legacy_type_review' : 'mikro_cari_match',
                         );
                         $partner->refresh();
                         $this->writeAuditLog($partner, $request, 'b2b.partner.updated_from_technician', $oldValues, $this->auditPayload($partner), $user->id);
@@ -1159,6 +1168,15 @@ class B2BPartnerController extends Controller
                         ], $user->id);
 
                         $result['updated']++;
+                        $result['updated_partners']++;
+                        if ($alreadyLinked) {
+                            $result['already_linked']++;
+                        } else {
+                            $result['linked_technicians']++;
+                        }
+                        if ($reviewRequired) {
+                            $result['review_required']++;
+                        }
                         if (! in_array(B2BPartner::TYPE_LOCKSMITH, $oldCapabilities, true)) {
                             $result['capability_added']++;
                         }
@@ -1191,6 +1209,11 @@ class B2BPartnerController extends Controller
                     ], $user->id);
 
                     $result['created']++;
+                    $result['created_partners']++;
+                    $result['linked_technicians']++;
+                    if ($reviewRequired) {
+                        $result['review_required']++;
+                    }
                     $result['items'][] = [
                         'technician_id' => $technician->id,
                         'partner_id' => $partner->id,

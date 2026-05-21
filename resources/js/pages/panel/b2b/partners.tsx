@@ -950,7 +950,7 @@ export default function B2BPartnersPage() {
       const payload = await apiRequest('/api/b2b/locksmith-technicians/sync', {
         method: 'POST',
       })
-      setMessage(`Çilingir eşitleme tamamlandı. Oluşturulan: ${payload.created ?? 0}, güncellenen: ${payload.updated ?? 0}, rol eklenen: ${payload.capability_added ?? 0}, kontrol gerekli: ${payload.review_required ?? 0}, atlanan: ${payload.skipped ?? 0}.`)
+      setMessage(`Çilingir eşitleme tamamlandı. Oluşturulan partner: ${payload.created_partners ?? payload.created ?? 0}, güncellenen partner: ${payload.updated_partners ?? payload.updated ?? 0}, bağlanan usta: ${payload.linked_technicians ?? 0}, zaten bağlı: ${payload.already_linked ?? 0}, kontrol gerekli: ${payload.review_required ?? 0}, hata/atlanan: ${payload.skipped_errors ?? payload.skipped ?? 0}.`)
       await loadPartners()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Çilingirler eşitlenemedi.')

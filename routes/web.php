@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PanelPageController;
+use App\Http\Controllers\PartnerPortalController;
 use App\Http\Controllers\SupportController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -53,7 +54,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         });
 
         Route::prefix('b2b')
-            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.locksmiths.view,b2b.manufacturers.view,b2b.sellers.view,b2b.partner_users.manage')
+            ->middleware('panel.access:b2b.view,b2b.manage,b2b.dealers.view,b2b.dealers.manage,b2b.locksmiths.view,b2b.locksmiths.manage,b2b.manufacturers.view,b2b.manufacturers.manage,b2b.sellers.view,b2b.sellers.manage,b2b.partner_users.manage')
             ->group(function () {
                 Route::get('partners', [B2BPartnerController::class, 'index'])
                     ->name('api.b2b.partners.index');
@@ -80,13 +81,13 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::get('partners/{partner}/technicians', [B2BPartnerController::class, 'partnerTechnicians'])
                     ->name('api.b2b.partner-technicians.index');
                 Route::post('partners/{partner}/technicians', [B2BPartnerController::class, 'storePartnerTechnician'])
-                    ->middleware('panel.access:b2b.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partner-technicians.store');
                 Route::patch('partners/{partner}/technicians/{link}', [B2BPartnerController::class, 'updatePartnerTechnician'])
-                    ->middleware('panel.access:b2b.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partner-technicians.update');
                 Route::delete('partners/{partner}/technicians/{link}', [B2BPartnerController::class, 'destroyPartnerTechnician'])
-                    ->middleware('panel.access:b2b.manage,b2b.locksmiths.manage')
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partner-technicians.destroy');
                 Route::get('partners/{partner}/users', [B2BPartnerUserController::class, 'index'])
                     ->name('api.b2b.partner-users.index');
@@ -218,6 +219,17 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
 
     Route::get('dashboard', [PanelPageController::class, 'dashboard'])->name('dashboard');
     Route::get('orders', [PanelPageController::class, 'orders'])->name('orders.redirect');
+
+    Route::prefix('partner')
+        ->middleware('panel.access:partner.portal.view')
+        ->group(function () {
+            Route::get('dashboard', [PartnerPortalController::class, 'dashboard'])->name('partner.dashboard');
+            Route::get('profile', [PartnerPortalController::class, 'profile'])->name('partner.profile');
+            Route::get('orders', [PartnerPortalController::class, 'orders'])->name('partner.orders');
+            Route::get('stock', [PartnerPortalController::class, 'stock'])->name('partner.stock');
+            Route::get('service-jobs', [PartnerPortalController::class, 'serviceJobs'])->name('partner.service-jobs');
+        });
+
     Route::get('support', [SupportController::class, 'index'])
         ->middleware('panel.access:support')
         ->name('support.index');

@@ -70,6 +70,14 @@ const salesScopeResourceCodes = new Set([
     'sales_rep_bulent_saglam',
 ]);
 
+const b2bRoleCodes = new Set([
+    'b2b_manager',
+    'b2b_dealer',
+    'b2b_locksmith',
+    'b2b_manufacturer',
+    'b2b_seller',
+]);
+
 function resourceTypeLabel(type) {
     return typeLabels[type] ?? 'Diğer izinler';
 }
@@ -134,6 +142,7 @@ export default function AdminUsers() {
     );
     const selectedRole = data.roles.find((role) => role.code === form.role_code);
     const selectedRoleIsSuperAdmin = Boolean(selectedRole?.is_super_admin ?? selectedRole?.isSuperAdmin);
+    const selectedRoleIsB2B = b2bRoleCodes.has(form.role_code);
     const activeResourceCodes = data.resources.map((resource) => resource.code);
     const roleAllowedResources = new Set(data.rolePermissions?.[form.role_code] ?? []);
 
@@ -508,6 +517,11 @@ export default function AdminUsers() {
                                     </option>
                                 ))}
                             </select>
+                            {selectedRoleIsB2B && (
+                                <span className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">
+                                    Bu rol sadece partner portalına giriş verir. Hangi bayi/çilingir kayıtlarını göreceği B2B Partner Kullanıcıları ekranından atanır.
+                                </span>
+                            )}
                             <span className="text-xs font-medium text-slate-500">
                                 Rol seçilince varsayılan izinler otomatik işaretlenir. B2B rolleri şirket içi satış/stok/sipariş ekranlarını açmaz; partner bazlı entity yetkileri Partner Kullanıcıları ekranından yönetilir.
                             </span>

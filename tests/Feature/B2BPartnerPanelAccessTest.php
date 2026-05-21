@@ -22,10 +22,13 @@ use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\PanelAccessService;
+use App\Services\PanelNavigationService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
 class B2BPartnerPanelAccessTest extends TestCase
@@ -582,6 +585,16 @@ class B2BPartnerPanelAccessTest extends TestCase
         $seeder = new B2BPartnerPermissionSeeder;
 
         $seeder->run();
+        RoleResourcePermission::query()->updateOrCreate(
+            [
+                'role_code' => 'b2b_dealer',
+                'resource_code' => 'b2b.view',
+            ],
+            [
+                'can_view' => true,
+                'can_execute' => false,
+            ],
+        );
         $seeder->run();
 
         $codes = [
@@ -620,17 +633,19 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
         $this->assertDatabaseHas('panel.roles', [
             'code' => 'b2b_dealer',
-            'name' => 'B2B Bayi',
+            'name' => 'Bayi Kullanıcısı',
         ]);
         $this->assertDatabaseHas('panel.roles', [
             'code' => 'b2b_locksmith',
-            'name' => 'B2B Çilingir',
+            'name' => 'Çilingir Kullanıcısı',
         ]);
         $this->assertDatabaseHas('panel.roles', [
             'code' => 'b2b_manufacturer',
+            'name' => 'Üretici Kullanıcısı',
         ]);
         $this->assertDatabaseHas('panel.roles', [
             'code' => 'b2b_seller',
+            'name' => 'Satıcı Kullanıcısı',
         ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_manager',
@@ -639,22 +654,22 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_dealer',
-            'resource_code' => 'b2b.dealers.view',
+            'resource_code' => 'partner.portal.view',
             'can_view' => true,
         ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_locksmith',
-            'resource_code' => 'b2b.technical_service.view',
+            'resource_code' => 'partner.service_jobs.view',
             'can_view' => true,
         ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_manufacturer',
-            'resource_code' => 'b2b.manufacturers.view',
+            'resource_code' => 'partner.dashboard.view',
             'can_view' => true,
         ]);
         $this->assertDatabaseHas('panel.role_resource_permissions', [
             'role_code' => 'b2b_seller',
-            'resource_code' => 'b2b.sellers.view',
+            'resource_code' => 'partner.orders.view',
             'can_view' => true,
         ]);
 
@@ -665,6 +680,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 ->all();
 
             $this->assertNotContains('dashboard', $resourceCodes);
+            $this->assertNotContains('b2b.view', $resourceCodes);
             $this->assertNotContains('sales_main', $resourceCodes);
             $this->assertNotContains('sales_main_all', $resourceCodes);
             $this->assertNotContains('sales_online', $resourceCodes);
@@ -2025,6 +2041,183 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_dealer_manage_role_can_link_cari_mismatch_technician(): void
+    {
+        $manager = $this->userWithRole('dealer_tech_manager');
+        $this->grantPanelResource('dealer_tech_manager', 'b2b.dealers.manage');
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'mikro_cari_kodu' => '120.DEALER.001',
+        ]);
+        $this->grantPartnerAccess($manager, $partner, 'manage', ['can_update' => true]);
+        $technician = $this->technician([
+            'name' => 'Cari Mismatch Usta',
+            'mikro_cari_kodu' => '320.CLG.DIFFERENT',
+            'cari_code' => '320.CLG.DIFFERENT',
+        ]);
+
+        $this->actingAs($manager)
+            ->postJson("/api/b2b/partners/{$partner->id}/technicians", [
+                'technical_service_technician_id' => $technician->id,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('link.relationship_type', 'contracted_technician');
+
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'active' => true,
+        ]);
+    }
+
+    public function test_locksmith_sync_includes_technician_type_technician_and_legacy_candidates(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $typedTechnician = $this->technician([
+            'name' => 'Saha Teknisyeni',
+            'technician_type' => 'technician',
+            'mikro_cari_kodu' => '320.TECH.001',
+            'cari_code' => '320.TECH.001',
+        ]);
+        $legacyTechnician = $this->technician([
+            'name' => 'Legacy Aktif Usta',
+            'technician_type' => 'legacy',
+            'mikro_cari_kodu' => null,
+            'cari_code' => '320.LEGACY.001',
+            'phone' => '+905551112222',
+            'city' => 'Ankara',
+        ]);
+
+        $response = $this->actingAs($admin)
+            ->postJson('/api/b2b/locksmith-technicians/sync')
+            ->assertOk()
+            ->assertJsonPath('created_partners', 2)
+            ->assertJsonPath('linked_technicians', 2)
+            ->assertJsonPath('review_required', 1);
+
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'technical_service_technician_id' => $typedTechnician->id,
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'technical_service_technician_id' => $legacyTechnician->id,
+            'active' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/locksmith-technicians/sync')
+            ->assertOk()
+            ->assertJsonPath('already_linked', 2);
+    }
+
+    public function test_b2b_role_defaults_are_partner_portal_only_for_partner_users(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $dealerResources = RoleResourcePermission::query()
+            ->where('role_code', 'b2b_dealer')
+            ->where('can_view', true)
+            ->pluck('resource_code')
+            ->all();
+
+        $this->assertContains('partner.portal.view', $dealerResources);
+        $this->assertContains('partner.dashboard.view', $dealerResources);
+        $this->assertContains('partner.orders.view', $dealerResources);
+        $this->assertContains('partner.stock.view', $dealerResources);
+        $this->assertNotContains('b2b.view', $dealerResources);
+        $this->assertNotContains('sales_main', $dealerResources);
+        $this->assertNotContains('stock', $dealerResources);
+        $this->assertFalse(app(PanelAccessService::class)->userCanAccess($this->userWithRole('b2b_dealer'), 'sales_main'));
+    }
+
+    public function test_partner_user_without_entity_profile_cannot_open_partner_portal(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $user = $this->userWithRole('b2b_dealer');
+        $this->partner(['partner_type' => B2BPartner::TYPE_DEALER]);
+
+        $this->actingAs($user)
+            ->get('/partner/dashboard')
+            ->assertForbidden();
+    }
+
+    public function test_b2b_dealer_user_sees_own_partner_portal_and_not_internal_panel(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $user = $this->userWithRole('b2b_dealer');
+        $partner = $this->partner(['partner_type' => B2BPartner::TYPE_DEALER]);
+        B2BPartnerUserProfile::query()->create([
+            'user_id' => $user->id,
+            'partner_id' => $partner->id,
+            'active' => true,
+        ]);
+        $this->grantPartnerAccess($user, $partner, 'view');
+        $this->grantPartnerAccess($user, $partner, 'orders', ['can_create' => true]);
+        $this->grantPartnerAccess($user, $partner, 'stock');
+
+        $this->assertSame('/partner/dashboard', app(PanelNavigationService::class)->homePathFor($user));
+        $this->assertFalse(app(PanelAccessService::class)->userCanAccess($user, 'dashboard'));
+        $this->assertFalse(app(PanelAccessService::class)->userCanAccess($user, 'sales_main'));
+        $this->assertFalse(app(PanelAccessService::class)->userCanAccess($user, 'stock'));
+
+        $this->actingAs($user)
+            ->get('/partner/dashboard')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/dashboard')
+                ->where('partnerPortal.allowed', true)
+                ->where('partnerPortal.selectedPartner.id', $partner->id));
+
+        $this->actingAs($user)
+            ->get('/dashboard')
+            ->assertForbidden();
+    }
+
+    public function test_b2b_locksmith_user_sees_only_owner_field_service_jobs(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $user = $this->userWithRole('b2b_locksmith');
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        B2BPartnerUserProfile::query()->create([
+            'user_id' => $user->id,
+            'partner_id' => $partner->id,
+            'active' => true,
+        ]);
+        $this->grantPartnerAccess($user, $partner, 'view');
+        $this->grantPartnerAccess($user, $partner, 'technical_service');
+        $fieldTechnician = $this->technician(['name' => 'Portal Field Usta']);
+        $contractedTechnician = $this->technician(['name' => 'Portal Contracted Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $fieldTechnician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+            'is_primary' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $contractedTechnician->id,
+            'relationship_type' => 'contracted_technician',
+            'active' => true,
+            'is_primary' => false,
+        ]);
+        $visibleRequest = $this->serviceRequestForTechnician($fieldTechnician, 'MRN-PORTAL-FIELD');
+        $this->serviceRequestForTechnician($contractedTechnician, 'MRN-PORTAL-CONTRACTED');
+
+        $this->actingAs($user)
+            ->get('/partner/service-jobs')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/service-jobs')
+                ->where('partnerPortal.allowed', true)
+                ->where('partnerPortal.serviceJobs.0.mrn', $visibleRequest->mrn)
+                ->missing('partnerPortal.serviceJobs.1'));
+    }
+
     private function partnerUser(): User
     {
         $user = $this->userWithRole('partner_user');
@@ -2170,6 +2363,24 @@ class B2BPartnerPanelAccessTest extends TestCase
             'mikro_cari_adi' => 'Test Usta Cari '.$sequence,
             'active' => true,
         ], $attributes));
+    }
+
+    private function serviceRequestForTechnician(TechnicalServiceTechnician $technician, string $mrn): TechnicalServiceRequest
+    {
+        return TechnicalServiceRequest::query()->create([
+            'mrn' => $mrn,
+            'customer_name' => 'Portal Musteri',
+            'customer_phone' => '+905550000001',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Portal test adresi',
+            'product_name' => 'Test Kilit',
+            'service_type' => 'Montaj',
+            'technical_service_technician_id' => $technician->id,
+            'status' => TechnicalServiceRequest::STATUS_NEW,
+            'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+        ]);
     }
 
     /**

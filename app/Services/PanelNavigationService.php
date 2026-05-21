@@ -73,6 +73,10 @@ class PanelNavigationService
             return '/dashboard';
         }
 
+        if ($this->access->userCanAccess($user, 'partner.dashboard.view')) {
+            return '/partner/dashboard';
+        }
+
         return $this->firstAccessibleRouteFor($user) ?? '/dashboard';
     }
 

@@ -48,6 +48,12 @@ class B2BPartnerPermissionSeeder extends Seeder
             ['code' => 'b2b.finance.view', 'name' => 'B2B Finans Görünümü', 'type' => 'scope', 'description' => 'Partner cari/risk finans görünümü yetkisi.', 'active' => true],
             ['code' => 'b2b.technical_service.view', 'name' => 'B2B Teknik Servis Görünümü', 'type' => 'scope', 'description' => 'Partner teknik servis işleri görünümü yetkisi.', 'active' => true],
             ['code' => 'b2b.partner_users.manage', 'name' => 'B2B Partner Kullanıcı Yönetimi', 'type' => 'action', 'description' => 'Partner kullanıcılarını yönetme yetkisi.', 'active' => true],
+            ['code' => 'partner.portal.view', 'name' => 'Partner Portal', 'type' => 'page', 'description' => 'B2B partner portal access.', 'active' => true],
+            ['code' => 'partner.dashboard.view', 'name' => 'Partner Dashboard', 'type' => 'page', 'description' => 'Partner portal dashboard.', 'active' => true],
+            ['code' => 'partner.profile.view', 'name' => 'Partner Profile', 'type' => 'page', 'description' => 'Partner profile and contact details.', 'active' => true],
+            ['code' => 'partner.orders.view', 'name' => 'Partner Orders', 'type' => 'page', 'description' => 'Partner order placeholder.', 'active' => true],
+            ['code' => 'partner.stock.view', 'name' => 'Partner Stock', 'type' => 'page', 'description' => 'Partner stock placeholder.', 'active' => true],
+            ['code' => 'partner.service_jobs.view', 'name' => 'Partner Service Jobs', 'type' => 'page', 'description' => 'Partner technical service jobs.', 'active' => true],
         ];
     }
 
@@ -166,10 +172,12 @@ class B2BPartnerPermissionSeeder extends Seeder
             }
         }
 
-        RoleResourcePermission::query()
-            ->whereIn('role_code', array_keys($this->roleDefaults()))
-            ->whereNotIn('resource_code', collect($this->roleDefaults())->flatten()->unique()->all())
-            ->delete();
+        foreach ($this->roleDefaults() as $roleCode => $resourceCodes) {
+            RoleResourcePermission::query()
+                ->where('role_code', $roleCode)
+                ->whereNotIn('resource_code', $resourceCodes)
+                ->delete();
+        }
     }
 
     /**
@@ -181,27 +189,27 @@ class B2BPartnerPermissionSeeder extends Seeder
             [
                 'code' => 'b2b_manager',
                 'name' => 'B2B Yönetici',
-                'description' => 'B2B partner, cari bağlantısı ve partner kullanıcı yönetimi.',
+                'description' => 'B2B partner ve partner kullanıcı yönetimi.',
             ],
             [
                 'code' => 'b2b_dealer',
-                'name' => 'B2B Bayi',
+                'name' => 'Bayi Kullanıcısı',
                 'description' => 'Bayi partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
             ],
             [
                 'code' => 'b2b_locksmith',
-                'name' => 'B2B Çilingir',
-                'description' => 'Çilingir/servis partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
+                'name' => 'Çilingir Kullanıcısı',
+                'description' => 'Çilingir partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
             ],
             [
                 'code' => 'b2b_manufacturer',
-                'name' => 'B2B Üretici',
-                'description' => 'Üretici kanal partner kullanıcısı. Partner bazlı erişim ayrıca atanır.',
+                'name' => 'Üretici Kullanıcısı',
+                'description' => 'Üretici partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
             ],
             [
                 'code' => 'b2b_seller',
-                'name' => 'B2B Satıcı',
-                'description' => 'Satıcı kanal partner kullanıcısı. Partner bazlı erişim ayrıca atanır.',
+                'name' => 'Satıcı Kullanıcısı',
+                'description' => 'Satıcı partner portal kullanıcısı. Partner bazlı erişim ayrıca atanır.',
             ],
         ];
     }
@@ -229,32 +237,36 @@ class B2BPartnerPermissionSeeder extends Seeder
                 'b2b.finance.view',
                 'b2b.technical_service.view',
                 'b2b.partner_users.manage',
+                'partner.portal.view',
+                'partner.dashboard.view',
+                'partner.profile.view',
+                'partner.orders.view',
+                'partner.stock.view',
+                'partner.service_jobs.view',
             ],
             'b2b_dealer' => [
-                'b2b.view',
-                'b2b.dealers.view',
-                'b2b.orders.view',
-                'b2b.stock.view',
-                'b2b.finance.view',
+                'partner.portal.view',
+                'partner.dashboard.view',
+                'partner.profile.view',
+                'partner.orders.view',
+                'partner.stock.view',
             ],
             'b2b_locksmith' => [
-                'b2b.view',
-                'b2b.locksmiths.view',
-                'b2b.technical_service.view',
-                'b2b.finance.view',
+                'partner.portal.view',
+                'partner.dashboard.view',
+                'partner.profile.view',
+                'partner.service_jobs.view',
             ],
             'b2b_manufacturer' => [
-                'b2b.view',
-                'b2b.manufacturers.view',
-                'b2b.stock.view',
-                'b2b.finance.view',
+                'partner.portal.view',
+                'partner.dashboard.view',
+                'partner.profile.view',
             ],
             'b2b_seller' => [
-                'b2b.view',
-                'b2b.sellers.view',
-                'b2b.orders.view',
-                'b2b.stock.view',
-                'b2b.finance.view',
+                'partner.portal.view',
+                'partner.dashboard.view',
+                'partner.profile.view',
+                'partner.orders.view',
             ],
         ];
     }
