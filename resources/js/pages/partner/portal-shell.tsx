@@ -284,6 +284,32 @@ const viewTitle = (view: ViewKey) => ({
 
 const money = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', maximumFractionDigits: 0 })
 
+const numericAmount = (amount: number | string | null | undefined): number => {
+  const parsed = Number(amount ?? 0)
+
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const jobEarningTotal = (job: ServiceJob): number => {
+  return numericAmount(job.assignment_offer?.total_amount ?? job.earning_summary.total_amount)
+}
+
+const jobEarningLabor = (job: ServiceJob): number => {
+  return numericAmount(job.assignment_offer?.labor_amount ?? job.earning_summary.labor_amount)
+}
+
+const jobEarningRoute = (job: ServiceJob): number => {
+  return numericAmount(job.assignment_offer?.route_fee_amount ?? job.earning_summary.route_fee_amount)
+}
+
+const jobEarningStatus = (job: ServiceJob): string => {
+  if (job.assignment_offer?.status) {
+    return job.assignment_offer.status
+  }
+
+  return jobEarningTotal(job) > 0 ? 'tahmini' : 'gönderilmedi'
+}
+
 const portalHref = (path: string, partnerId: number) => `${path}?partner_id=${partnerId}`
 
 const locationLabel = (partner: PartnerSummary) => [partner.city, partner.district].filter(Boolean).join(' / ') || '-'
@@ -774,6 +800,17 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                   <p className="mt-2 text-sm font-medium text-slate-800">{job.customer_name ?? 'Müşteri'}</p>
                   <p className="mt-1 text-xs text-slate-500">{[job.city, job.district].filter(Boolean).join(' / ') || '-'}</p>
                   <p className="mt-1 text-xs font-semibold text-slate-600">Randevu: {job.appointment_label ?? job.appointment_at ?? '-'}</p>
+                  <div className="mt-2 rounded-lg border border-emerald-100 bg-white/80 px-2.5 py-2 text-xs text-emerald-900">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold">Hakediş</span>
+                      <strong>{jobEarningTotal(job) > 0 ? money.format(jobEarningTotal(job)) : 'Gönderilmedi'}</strong>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-emerald-700">
+                      <span>İşçilik {money.format(jobEarningLabor(job))}</span>
+                      <span>Yol {money.format(jobEarningRoute(job))}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] font-semibold text-emerald-700">Durum: {jobEarningStatus(job)}</p>
+                  </div>
                   <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
                   {job.badges.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
@@ -1047,13 +1084,13 @@ function ServiceJobDetail({
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-950">
             <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Hakediş</p>
-            {job.assignment_offer ? (
+            {job.assignment_offer || jobEarningTotal(job) > 0 ? (
               <div className="mt-3 grid gap-2">
-                <div className="flex justify-between gap-3"><span>İşçilik / montaj</span><strong>{money.format(job.assignment_offer.labor_amount)}</strong></div>
-                <div className="flex justify-between gap-3"><span>Usta yol hakedişi</span><strong>{money.format(job.assignment_offer.route_fee_amount)}</strong></div>
-                <div className="flex justify-between gap-3 border-t border-emerald-200 pt-2"><span>Toplam</span><strong>{money.format(job.assignment_offer.total_amount)}</strong></div>
-                <p className="text-xs text-emerald-700">Durum: {job.assignment_offer.status}</p>
-                {job.assignment_offer.note && <p className="text-xs text-emerald-800">{job.assignment_offer.note}</p>}
+                <div className="flex justify-between gap-3"><span>İşçilik / montaj</span><strong>{money.format(jobEarningLabor(job))}</strong></div>
+                <div className="flex justify-between gap-3"><span>Usta yol hakedişi</span><strong>{money.format(jobEarningRoute(job))}</strong></div>
+                <div className="flex justify-between gap-3 border-t border-emerald-200 pt-2"><span>Toplam</span><strong>{money.format(jobEarningTotal(job))}</strong></div>
+                <p className="text-xs text-emerald-700">Durum: {jobEarningStatus(job)}</p>
+                {job.assignment_offer?.note && <p className="text-xs text-emerald-800">{job.assignment_offer.note}</p>}
                 {job.price_revision_request?.status === 'ops_review' && (
                   <p className="rounded-lg bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-800">Hakediş revize talebi operasyon incelemesinde.</p>
                 )}

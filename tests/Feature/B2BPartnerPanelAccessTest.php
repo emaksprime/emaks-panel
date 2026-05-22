@@ -3372,6 +3372,17 @@ class B2BPartnerPanelAccessTest extends TestCase
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
         $technician = $this->technician(['name' => 'Offer Usta']);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Offer Locksmith',
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
         $job = TechnicalServiceRequest::query()->create([
             'mrn' => 'MRN-OFFER-ASSIGN',
             'customer_name' => 'Offer Musteri',
@@ -3426,6 +3437,22 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $job->id,
             'event_type' => 'assignment_offer_sent',
         ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.assignment_offer.labor_amount', 900)
+            ->assertJsonPath('job.assignment_offer.route_fee_amount', 180)
+            ->assertJsonPath('job.assignment_offer.total_amount', 1080)
+            ->assertJsonPath('job.earning_summary.total_amount', 1080);
     }
 
     public function test_locksmith_partner_completion_can_use_existing_safe_workflow_when_requirements_are_met(): void
