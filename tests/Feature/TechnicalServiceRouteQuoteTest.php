@@ -658,15 +658,15 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertIsString($techniciansSource);
 
         foreach ([
-            'için yol ücreti henüz hesaplanmadı.',
-            'Yol ücretini hesaplamak için seçili usta ve müşteri konumu kullanılacak.',
-            'Yol ücreti hesaplanıyor...',
+            'için usta yol hakedişi henüz hesaplanmadı.',
+            'Usta yol hakedişini hesaplamak için seçili usta ve müşteri konumu kullanılacak.',
+            'Usta yol hakedişi hesaplanıyor...',
             'Yeniden hesapla',
             'routeQuoteActiveForSelectedTechnician',
             'activeRouteQuote',
             'Usta ↔ müşteri düz çizgi mesafesi',
             'Google Routes tek yön mesafesi',
-            'Müşteriden istenecek ek ödeme tutarı',
+            'Usta yol hakedişi olarak kaydedilecek tutar',
             'Ödeme linki oluştur',
             'WhatsApp ile gönder',
             'Teknik detay',
@@ -738,16 +738,16 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Ücretsiz sınır',
             'Ücrete tabi km',
             'Km başı ücret',
-            'Yol ücreti hesaplanamadı',
-            'Yol ücreti onayı gerekli',
-            'Yol ücreti yok',
+            'Usta yol hakedişi hesaplanamadı',
+            'Usta yol hakedişi kontrolü',
+            'Usta yol hakedişi yok',
             'Usta konumu eksik',
             'Müşteri konumu eksik',
             'Atanan servis',
             'Servis telefonu',
             'Faturadaki diğer serileri gör',
-            'Yol ücreti / fiyat düzenle',
-            'Yol ücreti tutarı',
+            'Usta hakedişi / yol düzenle',
+            'Usta yol hakedişi',
             'Seri No Sorgu',
             'Montaja ekle',
             'İade - eklenemez',
@@ -761,11 +761,11 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
         foreach ([
             'Yeniden hesapla',
-            'Yol ücreti hesabı',
+            'Usta yol hakedişi hesabı',
             'Tek yön yol mesafesi',
             'Gidiş-geliş mesafe',
             'Ücrete tabi km',
-            'Tahmini yol ücreti',
+            'Tahmini usta yol hakedişi',
             'route-quote',
             'payments/mount-extra-payment',
             'handleExtraMountPaymentCreate',
@@ -777,12 +777,14 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringNotContainsString('Usta → müşteri mesafesi', $pageSource);
 
         foreach ([
-            'Yol ücreti onayı gerekli',
-            'Yol ücreti yok',
-            'Yol ücreti hesaplanamadı',
+            'Usta yol hakedişi kontrolü',
+            'Usta yol hakedişi hesaplanamadı',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $cardSource);
         }
+
+        $this->assertStringNotContainsString('Yol ücreti onayı gerekli', $cardSource);
+        $this->assertStringNotContainsString('Yol ücreti yok', $cardSource);
     }
 
     private function assertQuoteForRoundTripKm(float $roundTripKm, bool $feeRequired, float $extraKm, float $feeAmount): void

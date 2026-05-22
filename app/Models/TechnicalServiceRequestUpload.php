@@ -20,15 +20,28 @@ class TechnicalServiceRequestUpload extends Model
         'path',
         'mime',
         'size',
+        'review_status',
+        'review_note',
+        'reviewed_by',
+        'reviewed_at',
+        'review_payload',
     ];
 
     protected $casts = [
         'technical_service_request_id' => 'integer',
         'size' => 'integer',
+        'reviewed_by' => 'integer',
+        'reviewed_at' => 'datetime',
+        'review_payload' => 'array',
     ];
 
     public function request(): BelongsTo
     {
         return $this->belongsTo(TechnicalServiceRequest::class, 'technical_service_request_id');
+    }
+
+    public function reviewer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reviewed_by');
     }
 }

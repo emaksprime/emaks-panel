@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\PanelAccessService;
+use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
@@ -70,6 +71,7 @@ class PartnerServiceJobController extends Controller
         private readonly B2BPartnerPortalDataService $portalData,
         private readonly TechnicalServiceWorkflowService $workflow,
         private readonly PanelAccessService $panelAccess,
+        private readonly EvolutionWhatsAppMessageService $messages,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -208,6 +210,17 @@ class PartnerServiceJobController extends Controller
             ], $data['note'] ?? $this->rejectReasonLabel($data['reason']), $job->workflow_status);
         });
 
+        $this->messages->send(
+            'job_rejected_ops',
+            'ops',
+            null,
+            "Usta işi reddetti. MRN: {$job->mrn}. Neden: ".$this->rejectReasonLabel($data['reason']).". Açıklama: {$data['note']}",
+            ['reason' => $data['reason'], 'partner_id' => $partner->id],
+            $job,
+            $user,
+            $action,
+        );
+
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
@@ -304,6 +317,17 @@ class PartnerServiceJobController extends Controller
 
             return $this->jobResponse($job->refresh(), $status);
         });
+
+        $this->messages->send(
+            'completion_submitted_ops',
+            'ops',
+            null,
+            "Usta işi son kontrole gönderdi. MRN: {$job->mrn}. Not: {$data['note']}",
+            ['partner_id' => $partner->id, 'result' => $data['result']],
+            $job,
+            $user,
+            $job->partnerJobActions()->latest()->first(),
+        );
 
         return response()->json($result);
     }
@@ -411,7 +435,9 @@ class PartnerServiceJobController extends Controller
                 ],
             ]);
             $approvalUrl = route('service-job-confirmation.show', ['token' => $confirmation->token]);
-            $messageText = 'Montaj işleminizin tamamlandığını onaylamak için lütfen bağlantıya tıklayın ve "Montajı onaylıyorum" seçeneğini onaylayın. '.$approvalUrl;
+            $messageText = trim((string) config('services.evolution.customer_approval_text'))
+                .' Bağlantıda "Montajı onaylıyorum" veya "Onaylamıyorum" seçeneğini işaretleyebilirsiniz. '
+                .$approvalUrl;
             $whatsappUrl = 'https://wa.me/'.$this->normalizedPhoneForWa($job->customer_phone).'?text='.rawurlencode($messageText);
 
             $action = $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED, TechnicalServicePartnerJobAction::STATUS_SUBMITTED, [
@@ -431,11 +457,30 @@ class PartnerServiceJobController extends Controller
                 ],
             ], $data['note'] ?? 'Müşteri montaj onay bağlantısı hazırlandı.', $job->workflow_status);
 
+            $dispatch = $this->messages->send(
+                'customer_approval_request',
+                'customer',
+                $job->customer_phone,
+                $messageText,
+                [
+                    'approval_url' => $approvalUrl,
+                    'confirmation_id' => $confirmation->id,
+                    'whatsapp_url' => $whatsappUrl,
+                ],
+                $job,
+                $user,
+                $action,
+            );
+
             $confirmation->forceFill([
                 'payload' => [
                     ...(is_array($confirmation->payload) ? $confirmation->payload : []),
                     'partner_action_id' => $action->id,
-                    'message_payload' => $action->payload['message_payload'] ?? [],
+                    'message_payload' => [
+                        ...($action->payload['message_payload'] ?? []),
+                        'dispatch_id' => $dispatch->id,
+                        'dispatch_status' => $dispatch->status,
+                    ],
                 ],
             ])->save();
 
@@ -471,6 +516,64 @@ class PartnerServiceJobController extends Controller
                 'ops_review_required' => true,
             ], $data['description'], $job->workflow_status);
         });
+
+        $this->messages->send(
+            'support_request_ops',
+            'ops',
+            null,
+            "Usta ek talep oluşturdu. MRN: {$job->mrn}. Talep: ".$this->supportTypeLabel($data['type']).". Açıklama: {$data['description']}",
+            ['partner_id' => $partner->id, 'type' => $data['type']],
+            $job,
+            $user,
+            $action,
+        );
+
+        return response()->json([
+            'status' => $action->status,
+            'action' => $action->action,
+            'job' => $this->portalData->safeServiceJobSummary($job->refresh()),
+        ]);
+    }
+
+    public function priceRevisionRequest(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
+        $data = $request->validate([
+            'labor_amount' => ['nullable', 'numeric', 'min:0'],
+            'route_fee_amount' => ['nullable', 'numeric', 'min:0'],
+            'note' => ['required', 'string', 'min:3', 'max:2000'],
+        ]);
+
+        if (! array_key_exists('labor_amount', $data) && ! array_key_exists('route_fee_amount', $data)) {
+            throw ValidationException::withMessages([
+                'amount' => 'En az bir hakediş tutarı girilmelidir.',
+            ]);
+        }
+
+        $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
+            return $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
+                'labor_amount' => array_key_exists('labor_amount', $data) ? round((float) $data['labor_amount'], 2) : null,
+                'route_fee_amount' => array_key_exists('route_fee_amount', $data) ? round((float) $data['route_fee_amount'], 2) : null,
+                'note' => $data['note'],
+                'submitted_at' => now()->toISOString(),
+                'ops_review_required' => true,
+            ], $data['note'], $job->workflow_status);
+        });
+
+        $this->messages->send(
+            'price_revision_requested_ops',
+            'ops',
+            null,
+            "Usta hakediş revize talebi oluşturdu. MRN: {$job->mrn}. Açıklama: {$data['note']}",
+            [
+                'labor_amount' => $data['labor_amount'] ?? null,
+                'route_fee_amount' => $data['route_fee_amount'] ?? null,
+                'partner_id' => $partner->id,
+            ],
+            $job,
+            $user,
+            $action,
+        );
 
         return response()->json([
             'status' => $action->status,

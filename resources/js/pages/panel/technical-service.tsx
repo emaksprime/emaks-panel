@@ -824,6 +824,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
     partnerPortalActions: request.partner_portal_actions ?? [],
+    attention: request.attention ?? null,
   }
 }
 
@@ -1753,7 +1754,7 @@ export function TechnicalServiceOperationCenter() {
         locationCode: match.technician.location_code ?? null,
         routeLocationMessage: hasTechnicianCoordinates
           ? match.technician.needs_review === true
-            ? 'Usta koordinatı kontrol gerekli. Yol ücreti otomatik onaylanmamalı.'
+            ? 'Usta koordinatı kontrol gerekli. Usta yol hakedişi otomatik onaylanmamalı.'
             : 'Yol hesabı için koordinat var.'
           : hasPlusCodeInfo || hasAddressInfo
             ? 'Usta adres/Plus Code var, gerçek koordinat eksik. Yol hesabı için lat/lng gerekli.'
@@ -2451,7 +2452,7 @@ export function TechnicalServiceOperationCenter() {
     }
 
     if (!assignTechnicianOption || assignTechnicianOption === 'other' || !selectedAssignTechnicianRecord) {
-      setRouteQuoteError('Yol ücreti hesaplamak için kayıtlı bir usta seçin.')
+      setRouteQuoteError('Usta yol hakedişini hesaplamak için kayıtlı bir usta seçin.')
 
       return
     }
@@ -2480,7 +2481,7 @@ export function TechnicalServiceOperationCenter() {
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
       if (!updatedRequest) {
-        setRouteQuoteError('Yol ücreti hesaplandı ancak talep detayı güncellenemedi.')
+        setRouteQuoteError('Usta yol hakedişi hesaplandı ancak talep detayı güncellenemedi.')
 
         return
       }
@@ -2509,10 +2510,10 @@ export function TechnicalServiceOperationCenter() {
       const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
 
       setRouteQuoteError(routeQuoteFailed
-        ? (typeof response.message === 'string' ? response.message : 'Yol ücreti hesaplanamadı.')
+        ? (typeof response.message === 'string' ? response.message : 'Usta yol hakedişi hesaplanamadı.')
         : null)
     } catch (caught) {
-      setRouteQuoteError(caught instanceof Error ? caught.message : 'Yol ücreti hesaplanamadı.')
+      setRouteQuoteError(caught instanceof Error ? caught.message : 'Usta yol hakedişi hesaplanamadı.')
     } finally {
       if (routeQuoteAutoRequestSeq.current === requestSeq) {
         setRouteQuoteLoading(false)
@@ -2585,7 +2586,7 @@ export function TechnicalServiceOperationCenter() {
           const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
           if (!updatedRequest) {
-            setRouteQuoteError('Yol ücreti hesaplandı ancak talep detayı güncellenemedi.')
+            setRouteQuoteError('Usta yol hakedişi hesaplandı ancak talep detayı güncellenemedi.')
 
             return
           }
@@ -2614,12 +2615,12 @@ export function TechnicalServiceOperationCenter() {
           const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
 
           setRouteQuoteError(routeQuoteFailed
-            ? (typeof response.message === 'string' ? response.message : 'Yol ücreti hesaplanamadı.')
+            ? (typeof response.message === 'string' ? response.message : 'Usta yol hakedişi hesaplanamadı.')
             : null)
         })
         .catch((caught: unknown) => {
           if (!cancelled && routeQuoteAutoRequestSeq.current === requestSeq) {
-            setRouteQuoteError(caught instanceof Error ? caught.message : 'Yol ücreti hesaplanamadı.')
+            setRouteQuoteError(caught instanceof Error ? caught.message : 'Usta yol hakedişi hesaplanamadı.')
           }
         })
         .finally(() => {
@@ -2684,10 +2685,10 @@ export function TechnicalServiceOperationCenter() {
       const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
 
       setRouteQuoteError(routeQuoteFailed
-        ? (typeof response.message === 'string' ? response.message : 'Yol ücreti kaydedilemedi.')
+        ? (typeof response.message === 'string' ? response.message : 'Usta yol hakedişi kaydedilemedi.')
         : null)
     } catch (caught) {
-      setRouteQuoteManualSaveError(caught instanceof Error ? caught.message : 'Yol ücreti kaydedilemedi.')
+      setRouteQuoteManualSaveError(caught instanceof Error ? caught.message : 'Usta yol hakedişi kaydedilemedi.')
 
       throw caught
     } finally {
@@ -3747,7 +3748,7 @@ export function TechnicalServiceOperationCenter() {
                 <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <p className="font-semibold">Yol ücreti hesabı</p>
+                      <p className="font-semibold">Usta yol hakedişi hesabı</p>
                       <p className="mt-1 text-xs text-blue-800">30 km ücretsiz sınır gidiş-geliş mesafe üzerinden değerlendirilir.</p>
                     </div>
                     <Button
@@ -3785,15 +3786,15 @@ export function TechnicalServiceOperationCenter() {
                       <p className="mt-1 font-semibold text-slate-950">{assignmentRouteExtraKmLabel}</p>
                     </div>
                     <div className="rounded-xl bg-white/80 p-3">
-                      <p className="text-xs font-semibold text-blue-700">Tahmini yol ücreti</p>
+                      <p className="text-xs font-semibold text-blue-700">Tahmini usta yol hakedişi</p>
                       <p className="mt-1 font-semibold text-slate-950">{assignmentRouteFeeLabel}</p>
                     </div>
                     <div className="rounded-xl bg-white/80 p-3">
                       <p className="text-xs font-semibold text-blue-700">Durum</p>
                       <p className="mt-1 font-semibold text-slate-950">
                         {assignmentRouteQuote?.status === 'calculated'
-                          ? assignmentRouteQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
-                          : assignmentRouteQuote ? 'Yol ücreti hesaplanamadı' : 'Hesap bekliyor'}
+                          ? assignmentRouteQuote.travel_fee_required ? 'Usta yol hakedişi kontrolü' : 'Usta yol hakedişi yok'
+                          : assignmentRouteQuote ? 'Usta yol hakedişi hesaplanamadı' : 'Hesap bekliyor'}
                       </p>
                     </div>
                   </div>
@@ -3809,7 +3810,7 @@ export function TechnicalServiceOperationCenter() {
                     <span className="font-semibold text-slate-900">{assignPaymentPreview.billableKmLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-slate-600">Yol ücreti</span>
+                    <span className="font-medium text-slate-600">Usta yol hakedişi</span>
                     <span className="font-semibold text-slate-900">{assignmentTravelAmountLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
@@ -3817,7 +3818,7 @@ export function TechnicalServiceOperationCenter() {
                     <span className="font-semibold text-slate-950">{assignmentTotalTechnicianCostLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
-                    <span className="font-medium text-slate-600">Müşteriden alınan ücret</span>
+                    <span className="font-medium text-slate-600">Müşteriden alınan montaj ödemesi</span>
                     <span className="font-semibold text-slate-950">{modalPayment.customerAmountLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
@@ -3848,7 +3849,7 @@ export function TechnicalServiceOperationCenter() {
                       />
                     </label>
                     <label className="grid gap-1 text-xs font-semibold text-emerald-800">
-                      Yol ücreti
+                      Usta yol hakedişi
                       <Input
                         type="number"
                         min="0"
@@ -4244,7 +4245,7 @@ export function TechnicalServiceOperationCenter() {
                 </DialogDescription>
                 {modalRequest?.serviceType ? (
                   <p className="text-sm leading-6 text-slate-600">
-                    Müşteriden alınacak tutar: {modalPayment.customerAmountLabel}
+                    Montaj ödeme durumu: {modalPayment.customerAmountLabel}
                   </p>
                 ) : null}
               </DialogHeader>

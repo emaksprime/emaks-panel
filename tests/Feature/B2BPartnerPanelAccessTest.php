@@ -3083,6 +3083,13 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_PENDING, $confirmation->status);
         $this->assertStringContainsString('Montajı onaylıyorum', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $job->id,
+            'event' => 'customer_approval_request',
+            'target_type' => 'customer',
+            'target_phone' => '905467647428',
+            'test_mode' => true,
+        ]);
 
         $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
             'customer_note' => 'Montajı onaylıyorum.',
@@ -3247,6 +3254,20 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $job->id,
             'event_type' => 'partner_appointment_approved',
         ]);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $job->id,
+            'event' => 'appointment_approved_customer',
+            'target_type' => 'customer',
+            'target_phone' => '905467647428',
+            'test_mode' => true,
+        ]);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $job->id,
+            'event' => 'appointment_approved_technician',
+            'target_type' => 'technician',
+            'target_phone' => '905467647428',
+            'test_mode' => true,
+        ]);
     }
 
     public function test_locksmith_partner_can_reject_job_without_removing_assignment(): void
@@ -3299,6 +3320,51 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $job->id,
             'event_type' => 'partner_portal_job_rejected',
         ]);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $job->id,
+            'event' => 'job_rejected_ops',
+            'target_type' => 'ops',
+            'target_phone' => '905467647428',
+            'test_mode' => true,
+        ]);
+
+        $newTechnician = $this->technician(['name' => 'Reject Replacement Usta']);
+        $job->forceFill([
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ])->save();
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/assign", [
+                'technical_service_technician_id' => $newTechnician->id,
+                'travel_round_trip_km' => 20,
+                'assignment_offer' => [
+                    'labor_amount' => 500,
+                    'route_fee_amount' => 50,
+                    'total_amount' => 550,
+                    'note' => 'Red sonrasi yeni usta atandi.',
+                ],
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('technical_service_requests', [
+            'id' => $job->id,
+            'technical_service_technician_id' => $newTechnician->id,
+        ]);
+        $this->assertDatabaseHas('technical_service_assignment_archives', [
+            'technical_service_request_id' => $job->id,
+            'old_technician_id' => $technician->id,
+            'new_technician_id' => $newTechnician->id,
+        ]);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertForbidden();
     }
 
     public function test_technical_service_assignment_creates_assignment_offer_for_portal(): void
@@ -3347,6 +3413,15 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_SENT, $offer->status);
         $this->assertSame(1080.0, (float) $offer->total_amount);
         $this->assertIsArray($offer->metadata['message_payload'] ?? null);
+        $this->assertStringContainsString('/partner/service-jobs?job_id='.$job->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $job->id,
+            'technical_service_assignment_offer_id' => $offer->id,
+            'event' => 'assignment_offer_technician',
+            'target_type' => 'technician',
+            'target_phone' => '905467647428',
+            'test_mode' => true,
+        ]);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $job->id,
             'event_type' => 'assignment_offer_sent',

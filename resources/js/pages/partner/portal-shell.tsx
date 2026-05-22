@@ -99,14 +99,15 @@ type ServiceJob = {
   checklist_status: string | null
   checklist_payload: Record<string, boolean>
   photo_counts: { before: number, after: number, general: number }
-  photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null }>
+  photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null, preview_url?: string | null, review_status?: string | null, review_note?: string | null }>
   latest_partner_action: { action: string, status: string, note: string | null, payload?: Record<string, unknown>, created_at: string | null } | null
   portal_actions: Array<{ id?: number, action: string, status: string, note: string | null, payload?: Record<string, unknown>, created_at: string | null }>
   appointment_proposal: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   rejection: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   support_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  price_revision_request?: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   customer_otp_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
-  customer_confirmation?: { id: number, status: string, approved_at: string | null, customer_note: string | null, approval_url: string | null } | null
+  customer_confirmation?: { id: number, status: string, approved_at: string | null, rejected_at?: string | null, customer_note: string | null, approval_url: string | null } | null
   completion_submission: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   assignment_offer: {
     id: number
@@ -145,6 +146,7 @@ type ServiceJob = {
   can_propose_appointment?: boolean
   can_request_revisit: boolean
   can_request_support?: boolean
+  can_request_price_revision?: boolean
   can_request_customer_otp?: boolean
   can_upload_photos?: boolean
   can_submit_completion: boolean
@@ -846,7 +848,10 @@ function ServiceJobDetail({
   const [supportDescription, setSupportDescription] = useState('')
   const [supportProduct, setSupportProduct] = useState('')
   const [supportQuantity, setSupportQuantity] = useState('')
-  const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | null>(null)
+  const [priceLaborAmount, setPriceLaborAmount] = useState(job.assignment_offer?.labor_amount ? String(job.assignment_offer.labor_amount) : '')
+  const [priceRouteAmount, setPriceRouteAmount] = useState(job.assignment_offer?.route_fee_amount ? String(job.assignment_offer.route_fee_amount) : '')
+  const [priceRevisionNote, setPriceRevisionNote] = useState('')
+  const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | 'price' | null>(null)
   const photosReady = job.completion_requirements.photos_ready
   const confirmationReady = job.completion_requirements.customer_confirmation_ready
   const otpPayload = job.customer_otp_request?.payload
@@ -1045,10 +1050,13 @@ function ServiceJobDetail({
             {job.assignment_offer ? (
               <div className="mt-3 grid gap-2">
                 <div className="flex justify-between gap-3"><span>İşçilik / montaj</span><strong>{money.format(job.assignment_offer.labor_amount)}</strong></div>
-                <div className="flex justify-between gap-3"><span>Yol</span><strong>{money.format(job.assignment_offer.route_fee_amount)}</strong></div>
+                <div className="flex justify-between gap-3"><span>Usta yol hakedişi</span><strong>{money.format(job.assignment_offer.route_fee_amount)}</strong></div>
                 <div className="flex justify-between gap-3 border-t border-emerald-200 pt-2"><span>Toplam</span><strong>{money.format(job.assignment_offer.total_amount)}</strong></div>
                 <p className="text-xs text-emerald-700">Durum: {job.assignment_offer.status}</p>
                 {job.assignment_offer.note && <p className="text-xs text-emerald-800">{job.assignment_offer.note}</p>}
+                {job.price_revision_request?.status === 'ops_review' && (
+                  <p className="rounded-lg bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-800">Hakediş revize talebi operasyon incelemesinde.</p>
+                )}
               </div>
             ) : (
               <p className="mt-2 text-sm text-emerald-800">Bu iş için hakediş bilgisi henüz gönderilmedi.</p>
@@ -1116,7 +1124,16 @@ function ServiceJobDetail({
             ) : (
               <div className="mt-3 grid gap-2">
                 {job.photos.map((photo) => (
-                  <div key={photo.id} className="rounded-xl bg-white px-3 py-2 text-sm text-slate-600">{photo.label ?? `Fotoğraf #${photo.id}`}</div>
+                  <div key={photo.id} className="overflow-hidden rounded-xl bg-white text-sm text-slate-600">
+                    {photo.preview_url ? (
+                      <img src={photo.preview_url} alt={photo.label ?? `Fotoğraf #${photo.id}`} className="h-32 w-full object-cover" />
+                    ) : null}
+                    <div className="px-3 py-2">
+                      <p className="font-semibold text-slate-900">{photo.label ?? `Fotoğraf #${photo.id}`}</p>
+                      {photo.review_status ? <p className="text-xs text-slate-500">Ops uygunluk: {photo.review_status}</p> : null}
+                      {photo.review_note ? <p className="text-xs text-slate-500">{photo.review_note}</p> : null}
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -1261,6 +1278,13 @@ function ServiceJobDetail({
             </button>
           </ActionBox>
           )}
+          {job.can_request_price_revision && (
+          <ActionBox title="Hakediş revize talebi">
+            <button type="button" disabled={readOnly || !job.can_request_price_revision} onClick={() => setActiveActionDialog('price')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50">
+              Hakediş revize talep et
+            </button>
+          </ActionBox>
+          )}
           {job.can_submit_completion && (
           <ActionBox title="Tamamlamaya gönder">
             <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionResult} onChange={(event) => setCompletionResult(event.target.value)} disabled={readOnly || !job.can_submit_completion}>
@@ -1358,6 +1382,41 @@ function ServiceJobDetail({
           className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Ek talep gönder
+        </button>
+      </ActionDialog>
+      <ActionDialog title="Hakediş revize talebi" open={activeActionDialog === 'price'} onClose={() => setActiveActionDialog(null)}>
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          className="w-full rounded-xl border border-slate-200 p-3 text-sm"
+          value={priceLaborAmount}
+          onChange={(event) => setPriceLaborAmount(event.target.value)}
+          placeholder="Talep edilen işçilik / montaj"
+          disabled={readOnly || !job.can_request_price_revision}
+        />
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          className="w-full rounded-xl border border-slate-200 p-3 text-sm"
+          value={priceRouteAmount}
+          onChange={(event) => setPriceRouteAmount(event.target.value)}
+          placeholder="Talep edilen usta yol hakedişi"
+          disabled={readOnly || !job.can_request_price_revision}
+        />
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={priceRevisionNote} onChange={(event) => setPriceRevisionNote(event.target.value)} placeholder="Açıklama zorunlu" disabled={readOnly || !job.can_request_price_revision} />
+        <button
+          type="button"
+          disabled={readOnly || !job.can_request_price_revision || priceRevisionNote.trim().length < 3 || actionLoading === 'price-revision-request'}
+          onClick={() => void submitAction('price-revision-request', {
+            labor_amount: priceLaborAmount ? Number(priceLaborAmount) : null,
+            route_fee_amount: priceRouteAmount ? Number(priceRouteAmount) : null,
+            note: priceRevisionNote,
+          }, 'Hakediş revize talebi operasyona gönderildi.').then(() => setActiveActionDialog(null))}
+          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Revize talebi gönder
         </button>
       </ActionDialog>
     </section>

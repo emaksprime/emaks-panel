@@ -7,17 +7,21 @@ use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Services\TechnicalService\WarrantyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class TechnicalServicePartnerPortalOpsController extends Controller
 {
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflow,
+        private readonly EvolutionWhatsAppMessageService $messages,
     ) {}
 
     public function approveAppointmentProposal(
@@ -57,6 +61,28 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             ], $request->user());
 
             $messages = $this->appointmentApprovalMessages($job->refresh(), $slot, $hadAppointment);
+            $customerDispatch = $this->messages->send(
+                $hadAppointment ? 'appointment_updated_customer' : 'appointment_approved_customer',
+                'customer',
+                $job->customer_phone,
+                (string) ($messages['customer']['message_text'] ?? ''),
+                $messages['customer'] ?? [],
+                $job,
+                $request->user(),
+                $partnerJobAction,
+            );
+            $technicianPhone = $job->technicianRecord?->phone_e164
+                ?: ($job->technicianRecord?->phone_display ?: $job->technicianRecord?->phone);
+            $technicianDispatch = $this->messages->send(
+                $hadAppointment ? 'appointment_updated_technician' : 'appointment_approved_technician',
+                'technician',
+                $technicianPhone,
+                $this->technicianAppointmentMessageText($messages['technician'] ?? []),
+                $messages['technician'] ?? [],
+                $job,
+                $request->user(),
+                $partnerJobAction,
+            );
             $payload['approval'] = [
                 'approved_at' => now()->toISOString(),
                 'approved_by_user_id' => $request->user()?->id,
@@ -66,6 +92,10 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'technician_confirmation_required' => true,
                 'note' => $validated['note'] ?? null,
                 'messages' => $messages,
+                'message_dispatches' => [
+                    'customer' => ['id' => $customerDispatch->id, 'status' => $customerDispatch->status],
+                    'technician' => ['id' => $technicianDispatch->id, 'status' => $technicianDispatch->status],
+                ],
             ];
             $partnerJobAction->forceFill([
                 'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
@@ -193,6 +223,38 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ],
             ]);
 
+            if ($job->serial_number && $job->service_type === 'Montaj') {
+                try {
+                    $warranty = app(WarrantyService::class)->statusForSerial((string) $job->serial_number);
+                    $job->events()->create([
+                        'event_type' => 'product_warranty_start_checked',
+                        'title' => 'Garanti başlangıcı kontrol edildi',
+                        'note' => null,
+                        'from_status' => $job->workflow_status,
+                        'to_status' => $job->workflow_status,
+                        'author_user_id' => $request->user()?->id,
+                        'metadata' => [
+                            'serial_no' => $job->serial_number,
+                            'warranty' => $warranty,
+                            'source' => 'partner_completion_approved',
+                        ],
+                    ]);
+                } catch (Throwable $exception) {
+                    $job->events()->create([
+                        'event_type' => 'product_warranty_start_failed',
+                        'title' => 'Garanti başlangıcı kontrol edilemedi',
+                        'note' => $exception->getMessage(),
+                        'from_status' => $job->workflow_status,
+                        'to_status' => $job->workflow_status,
+                        'author_user_id' => $request->user()?->id,
+                        'metadata' => [
+                            'serial_no' => $job->serial_number,
+                            'source' => 'partner_completion_approved',
+                        ],
+                    ]);
+                }
+            }
+
             return [
                 'status' => 'applied',
                 'request' => $this->workflow->serialize($job->refresh(), true),
@@ -231,6 +293,23 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         ]);
         $metadata['revised_at'] = now()->toISOString();
         $metadata['revised_by_user_id'] = $request->user()?->id;
+        $technicianPhone = $assignmentOffer->technician?->phone_e164
+            ?: ($assignmentOffer->technician?->phone_display ?: $assignmentOffer->technician?->phone);
+        $dispatch = $this->messages->send(
+            'price_revision_response_technician',
+            'technician',
+            $technicianPhone,
+            $this->assignmentOfferMessageText($metadata['message_payload'] ?? []),
+            is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : [],
+            $technicalServiceRequest,
+            $request->user(),
+            null,
+            $assignmentOffer,
+        );
+        $metadata['message_dispatch'] = [
+            'id' => $dispatch->id,
+            'status' => $dispatch->status,
+        ];
 
         $assignmentOffer->forceFill([
             'labor_amount' => $laborAmount,
@@ -416,6 +495,48 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function assignmentOfferMessageText(?array $payload): string
+    {
+        if (! is_array($payload)) {
+            return 'Usta hakediş bilgisi güncellendi.';
+        }
+
+        return trim(implode("\n", array_filter([
+            'Emaks Prime teknik servis işi',
+            'MRN: '.($payload['mrn'] ?? '-'),
+            'Müşteri: '.($payload['customer_name'] ?? '-'),
+            'Telefon: '.($payload['customer_tel_link'] ?? ($payload['customer_phone'] ?? '-')),
+            'Adres: '.($payload['address'] ?? '-'),
+            'Harita: '.($payload['maps_link'] ?? '-'),
+            'İşçilik / montaj: '.($payload['labor_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            'Usta yol hakedişi: '.($payload['route_fee_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            'Toplam: '.($payload['total_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            $payload['note'] ?? null,
+        ], fn ($line) => is_string($line) && trim($line) !== '')));
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function technicianAppointmentMessageText(array $payload): string
+    {
+        return trim(implode("\n", array_filter([
+            'Emaks Prime randevu bilgisi',
+            'MRN: '.($payload['mrn'] ?? '-'),
+            'Müşteri: '.($payload['customer_name'] ?? '-'),
+            'Telefon: '.($payload['customer_tel_link'] ?? ($payload['customer_phone'] ?? '-')),
+            'Adres: '.($payload['address'] ?? '-'),
+            'Harita: '.($payload['maps_link'] ?? '-'),
+            'Randevu: '.trim((string) ($payload['appointment_date'] ?? '').' '.(string) ($payload['appointment_time_range'] ?? '')),
+            'İşçilik / montaj: '.($payload['labor_amount'] ?? 0).' TRY',
+            'Usta yol hakedişi: '.($payload['route_fee_amount'] ?? 0).' TRY',
+            'Toplam: '.($payload['total_amount'] ?? 0).' TRY',
+        ], fn ($line) => is_string($line) && trim($line) !== '')));
     }
 
     private function telLink(?string $phone): ?string

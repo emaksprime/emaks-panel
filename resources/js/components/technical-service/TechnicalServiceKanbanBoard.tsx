@@ -43,6 +43,18 @@ const getNewestRequestTime = (request: ServiceRequest): number => Math.max(
 )
 
 const compareRequestsNewestFirst = (a: ServiceRequest, b: ServiceRequest): number => {
+  const priorityDifference = (a.attention?.sort_priority ?? 50) - (b.attention?.sort_priority ?? 50)
+
+  if (priorityDifference !== 0) {
+    return priorityDifference
+  }
+
+  const actionTimeDifference = toSortTime(b.attention?.last_action_at ?? null) - toSortTime(a.attention?.last_action_at ?? null)
+
+  if (actionTimeDifference !== 0) {
+    return actionTimeDifference
+  }
+
   const timeDifference = getNewestRequestTime(b) - getNewestRequestTime(a)
 
   if (timeDifference !== 0) {

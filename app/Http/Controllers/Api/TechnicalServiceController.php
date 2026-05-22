@@ -13,6 +13,8 @@ use App\Http\Requests\UpdateTechnicalServiceScheduleRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
 use App\Http\Requests\UpdateTechnicalServiceWorkflowRequest;
 use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceAssignmentArchive;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
@@ -23,6 +25,7 @@ use App\Models\TechnicalServiceTechnician;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\MountRequestSubmitService;
+use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\Payments\PaymentProviderManager;
@@ -39,6 +42,7 @@ class TechnicalServiceController extends Controller
 {
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflowService,
+        private readonly EvolutionWhatsAppMessageService $messages,
     ) {
     }
 
@@ -382,6 +386,21 @@ class TechnicalServiceController extends Controller
             $validated,
             $request->user(),
         );
+        $this->messages->send(
+            'earnings_message_technician',
+            'technician',
+            $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
+            $result['message_text'],
+            [
+                'copy_text' => $result['copy_text'],
+                'whatsapp_url' => $result['whatsapp_url'],
+                'labor_amount' => $validated['labor_amount'] ?? null,
+                'route_fee_amount' => $validated['route_fee_amount'] ?? null,
+                'total_amount' => $validated['total_amount'],
+            ],
+            $technicalServiceRequest,
+            $request->user(),
+        );
 
         return response()->json([
             'ok' => true,
@@ -712,6 +731,57 @@ class TechnicalServiceController extends Controller
         ]);
     }
 
+    public function reviewFieldDocument(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        mixed $upload,
+    ): JsonResponse {
+        if (! $upload instanceof TechnicalServiceRequestUpload) {
+            $upload = TechnicalServiceRequestUpload::query()->findOrFail($upload);
+        }
+
+        abort_unless((int) $upload->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+        abort_unless($upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT, 404);
+
+        $validated = $request->validate([
+            'status' => ['required', 'string', 'in:accepted,rejected'],
+            'note' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        if ($validated['status'] === 'rejected' && trim((string) ($validated['note'] ?? '')) === '') {
+            throw ValidationException::withMessages([
+                'note' => 'Uygun değil işaretlemek için açıklama zorunludur.',
+            ]);
+        }
+
+        $upload->forceFill([
+            'review_status' => $validated['status'],
+            'review_note' => $validated['note'] ?? null,
+            'reviewed_by' => $request->user()?->id,
+            'reviewed_at' => now(),
+            'review_payload' => ['source' => 'technical_service_ops'],
+        ])->save();
+
+        $technicalServiceRequest->events()->create([
+            'event_type' => 'field_document_reviewed',
+            'title' => $validated['status'] === 'accepted' ? 'Saha belgesi uygun işaretlendi' : 'Saha belgesi uygun değil işaretlendi',
+            'note' => $validated['note'] ?? null,
+            'from_status' => $technicalServiceRequest->workflow_status,
+            'to_status' => $technicalServiceRequest->workflow_status,
+            'author_user_id' => $request->user()?->id,
+            'metadata' => [
+                'upload_id' => $upload->id,
+                'field_code' => $upload->field_code,
+                'review_status' => $validated['status'],
+            ],
+        ]);
+
+        return response()->json([
+            'status' => 'ok',
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
     public function storeContactLog(StoreTechnicalServiceContactLogRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         $payload = $request->validated();
@@ -832,6 +902,15 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
+        $oldPartnerId = $oldTechnicianId
+            ? \App\Models\B2B\B2BPartnerTechnician::query()
+                ->where('technical_service_technician_id', $oldTechnicianId)
+                ->where('active', true)
+                ->whereIn('relationship_type', ['owner', 'field_technician'])
+                ->value('partner_id')
+            : null;
+
         $technicianPayload = [
             'technical_service_technician_id' => $technician?->id,
             'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
@@ -845,6 +924,68 @@ class TechnicalServiceController extends Controller
             $technicianPayload,
             $request->user()
         );
+
+        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0)) {
+            $newPartnerId = $technician
+                ? \App\Models\B2B\B2BPartnerTechnician::query()
+                    ->where('technical_service_technician_id', $technician->id)
+                    ->where('active', true)
+                    ->whereIn('relationship_type', ['owner', 'field_technician'])
+                    ->value('partner_id')
+                : null;
+
+            TechnicalServiceAssignmentArchive::query()->create([
+                'technical_service_request_id' => $technicalServiceRequest->id,
+                'old_technician_id' => $oldTechnicianId,
+                'new_technician_id' => $technician?->id,
+                'old_partner_id' => $oldPartnerId,
+                'new_partner_id' => $newPartnerId,
+                'reason' => $payload['note'] ?? 'reassignment',
+                'archived_by' => $request->user()?->id,
+                'archived_at' => now(),
+                'metadata' => [
+                    'source' => 'technical_service_assign',
+                    'old_workflow_status' => $technicalServiceRequest->workflow_status,
+                ],
+            ]);
+
+            TechnicalServicePartnerJobAction::query()
+                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+                ->whereIn('action', [
+                    TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+                    TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+                ])
+                ->get()
+                ->each(function (TechnicalServicePartnerJobAction $action) use ($request, $technician): void {
+                    $payload = is_array($action->payload) ? $action->payload : [];
+                    $action->forceFill([
+                        'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                        'payload' => [
+                            ...$payload,
+                            'resolved_by_reassignment' => true,
+                            'new_technician_id' => $technician?->id,
+                            'resolved_by_user_id' => $request->user()?->id,
+                            'resolved_at' => now()->toISOString(),
+                        ],
+                    ])->save();
+                });
+
+            $technicalServiceRequest->events()->create([
+                'event_type' => 'assignment_archived',
+                'title' => 'Önceki usta ataması arşivlendi',
+                'note' => $payload['note'] ?? null,
+                'from_status' => $technicalServiceRequest->workflow_status,
+                'to_status' => $technicalServiceRequest->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'old_technician_id' => $oldTechnicianId,
+                    'new_technician_id' => $technician?->id,
+                    'old_partner_id' => $oldPartnerId,
+                    'new_partner_id' => $newPartnerId,
+                ],
+            ]);
+        }
 
         if (! $routeQuote instanceof TechnicalServiceRouteQuote && isset($payload['travel_round_trip_km'])) {
             $technicalServiceRequest->fill($this->calculateTravelCosts((float) $payload['travel_round_trip_km']));
@@ -1277,6 +1418,24 @@ class TechnicalServiceController extends Controller
             ],
         ]);
 
+        $dispatch = $this->messages->send(
+            'assignment_offer_technician',
+            'technician',
+            $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
+            $this->technicianAssignmentMessageText($messagePayload),
+            $messagePayload,
+            $request,
+            $user,
+            null,
+            $offer,
+        );
+        $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+        $metadata['message_dispatch'] = [
+            'id' => $dispatch->id,
+            'status' => $dispatch->status,
+        ];
+        $offer->forceFill(['metadata' => $metadata])->save();
+
         return $offer;
     }
 
@@ -1302,6 +1461,7 @@ class TechnicalServiceController extends Controller
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'address' => $address,
             'maps_link' => $this->mapsLink($request, $address),
+            'job_link' => url('/partner/service-jobs?job_id='.$request->id),
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
@@ -1310,6 +1470,27 @@ class TechnicalServiceController extends Controller
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function technicianAssignmentMessageText(array $payload): string
+    {
+        return trim(implode("\n", array_filter([
+            'Emaks Prime teknik servis işi',
+            'MRN: '.($payload['mrn'] ?? '-'),
+            'Müşteri: '.($payload['customer_name'] ?? '-'),
+            'Telefon: '.($payload['customer_tel_link'] ?? ($payload['customer_phone'] ?? '-')),
+            'Adres: '.($payload['address'] ?? '-'),
+            'Harita: '.($payload['maps_link'] ?? '-'),
+            'İş linki: '.($payload['job_link'] ?? '-'),
+            'Randevu: '.trim((string) ($payload['appointment_date'] ?? '').' '.(string) ($payload['appointment_time'] ?? '')),
+            'İşçilik / montaj: '.($payload['labor_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            'Usta yol hakedişi: '.($payload['route_fee_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            'Toplam: '.($payload['total_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            $payload['note'] ?? null,
+        ], fn ($line) => is_string($line) && trim($line) !== '')));
     }
 
     private function nullableMoney(mixed $value): ?float

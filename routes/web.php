@@ -34,6 +34,8 @@ Route::get('service-job-confirmation/{token}', [ServiceJobConfirmationController
     ->name('service-job-confirmation.show');
 Route::post('service-job-confirmation/{token}/approve', [ServiceJobConfirmationController::class, 'approve'])
     ->name('service-job-confirmation.approve');
+Route::post('service-job-confirmation/{token}/reject', [ServiceJobConfirmationController::class, 'reject'])
+    ->name('service-job-confirmation.reject');
 
 Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::prefix('api')->group(function () {
@@ -179,6 +181,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('service-jobs/{technicalServiceRequest}/support-request', [PartnerServiceJobController::class, 'supportRequest'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.support-request');
+                Route::post('service-jobs/{technicalServiceRequest}/price-revision-request', [PartnerServiceJobController::class, 'priceRevisionRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.price-revision-request');
                 Route::post('service-jobs/{technicalServiceRequest}/request-revisit', [PartnerServiceJobController::class, 'requestRevisit'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.request-revisit');
@@ -239,6 +244,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/partner-completions/{partnerJobAction}/approve', [TechnicalServicePartnerPortalOpsController::class, 'approveCompletionSubmission'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.partner-completions.approve');
+            Route::patch('requests/{technicalServiceRequest}/field-documents/{upload}/review', [TechnicalServiceController::class, 'reviewFieldDocument'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.field-documents.review');
             Route::patch('requests/{technicalServiceRequest}/assignment-offers/{assignmentOffer}', [TechnicalServicePartnerPortalOpsController::class, 'updateAssignmentOffer'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.assignment-offers.update');

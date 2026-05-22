@@ -300,6 +300,10 @@ class B2BPartnerPortalDataService
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED);
         $latestOtpRequest = $request->partnerJobActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
+        $latestPriceRevisionRequest = $request->partnerJobActions
+            ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED);
+        $latestCustomerApprovalRejection = $request->partnerJobActions
+            ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request);
         $assignmentOffer = $request->latestAssignmentOffer;
         $photoReadiness = $this->portalPhotoReadiness($request);
@@ -385,6 +389,12 @@ class B2BPartnerPortalDataService
                     'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
                     'category' => $upload->category,
                     'field_code' => $upload->field_code,
+                    'preview_url' => route('api.technical-service.requests.uploads.show', [
+                        'technicalServiceRequest' => $request->id,
+                        'upload' => $upload->id,
+                    ]),
+                    'review_status' => $upload->review_status,
+                    'review_note' => $upload->review_note,
                 ])
                 ->values()
                 ->all(),
@@ -428,6 +438,13 @@ class B2BPartnerPortalDataService
                 'payload' => is_array($latestSupportRequest->payload) ? $latestSupportRequest->payload : [],
                 'created_at' => $latestSupportRequest->created_at?->toIso8601String(),
             ] : null,
+            'price_revision_request' => $latestPriceRevisionRequest ? [
+                'id' => $latestPriceRevisionRequest->id,
+                'status' => $latestPriceRevisionRequest->status,
+                'note' => $latestPriceRevisionRequest->note,
+                'payload' => is_array($latestPriceRevisionRequest->payload) ? $latestPriceRevisionRequest->payload : [],
+                'created_at' => $latestPriceRevisionRequest->created_at?->toIso8601String(),
+            ] : null,
             'customer_otp_request' => $latestOtpRequest ? [
                 'id' => $latestOtpRequest->id,
                 'status' => $latestOtpRequest->status,
@@ -439,6 +456,7 @@ class B2BPartnerPortalDataService
                 'id' => $latestCustomerConfirmation->id,
                 'status' => $latestCustomerConfirmation->status,
                 'approved_at' => $latestCustomerConfirmation->approved_at?->toIso8601String(),
+                'rejected_at' => $latestCustomerConfirmation->rejected_at?->toIso8601String(),
                 'customer_note' => $latestCustomerConfirmation->customer_note,
                 'approval_url' => $latestCustomerConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_PENDING
                     ? route('service-job-confirmation.show', ['token' => $latestCustomerConfirmation->token])
@@ -483,6 +501,7 @@ class B2BPartnerPortalDataService
             'can_request_customer_otp' => $canFieldActions,
             'can_upload_photos' => $canFieldActions,
             'can_submit_completion' => $canFieldActions,
+            'can_request_price_revision' => ! $isTerminal && ! $isRejectedInReview && $assignmentOffer !== null,
             'can_complete_directly' => false,
             'can_reject' => ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview,
             'updated_at' => $request->updated_at?->toIso8601String(),
@@ -667,7 +686,9 @@ class B2BPartnerPortalDataService
             ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
 
         foreach ([
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+            TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
@@ -703,6 +724,14 @@ class B2BPartnerPortalDataService
             $badges[] = 'Reddedildi';
         }
 
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED) {
+            $badges[] = 'Müşteri onayı reddedildi';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED) {
+            $badges[] = 'Hakediş revize talebi';
+        }
+
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED) {
             $badges[] = 'Son kontrol bekliyor';
         }
@@ -730,6 +759,16 @@ class B2BPartnerPortalDataService
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
             && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             return 'rejected_ops_review';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'customer_approval_rejected';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'price_revision_requested';
         }
 
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED
@@ -782,11 +821,13 @@ class B2BPartnerPortalDataService
         }
 
         return match ($action->action) {
-            TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => 1,
-            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 2,
-            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 3,
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => 1,
+            TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => 2,
+            TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => 3,
+            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 4,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 5,
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
-            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 4,
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 6,
             default => 20,
         };
     }
@@ -794,6 +835,13 @@ class B2BPartnerPortalDataService
     private function serviceJobTone(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $action): string
     {
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'rose';
+        }
+
+        if (in_array($action?->action, [
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+        ], true) && $action?->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             return 'rose';
         }
 
@@ -896,7 +944,11 @@ class B2BPartnerPortalDataService
             return 'revisit';
         }
 
-        if ($latestAction?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED) {
+        if (in_array($latestAction?->action, [
+            TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+        ], true)) {
             return 'new_jobs';
         }
 

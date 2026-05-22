@@ -9,6 +9,7 @@ class TechnicalServiceCustomerConfirmation extends Model
 {
     public const STATUS_PENDING = 'pending';
     public const STATUS_APPROVED = 'approved';
+    public const STATUS_REJECTED = 'rejected';
     public const STATUS_EXPIRED = 'expired';
     public const STATUS_CANCELLED = 'cancelled';
 
@@ -19,6 +20,7 @@ class TechnicalServiceCustomerConfirmation extends Model
         'token',
         'status',
         'approved_at',
+        'rejected_at',
         'expires_at',
         'customer_note',
         'payload',
@@ -28,6 +30,7 @@ class TechnicalServiceCustomerConfirmation extends Model
     {
         return [
             'approved_at' => 'datetime',
+            'rejected_at' => 'datetime',
             'expires_at' => 'datetime',
             'payload' => 'array',
         ];

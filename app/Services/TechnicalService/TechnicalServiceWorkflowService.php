@@ -860,6 +860,7 @@ class TechnicalServiceWorkflowService
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
         $payload['partner_portal_actions'] = $this->partnerPortalActionPayload($request);
+        $payload['attention'] = $this->attentionPayload($request);
         $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request);
 
         if ($includeHistory) {
@@ -1647,6 +1648,9 @@ class TechnicalServiceWorkflowService
                     'url' => $authenticatedUrl,
                     'preview_url' => $authenticatedUrl,
                     'download_url' => $authenticatedUrl,
+                    'review_status' => $upload->review_status,
+                    'review_note' => $upload->review_note,
+                    'reviewed_at' => $this->dateTimeString($upload->reviewed_at),
                 ];
             })
             ->values()
@@ -1803,6 +1807,47 @@ class TechnicalServiceWorkflowService
             ])
             ->values()
             ->all();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function attentionPayload(TechnicalServiceRequest $request): array
+    {
+        $request->loadMissing(['partnerJobActions' => fn ($query) => $query->latest()->limit(12)]);
+        $opsReview = $request->partnerJobActions
+            ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+
+        $orderedActions = [
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => ['priority' => 1, 'level' => 'critical', 'reason' => 'Hakediş revize talebi'],
+            TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => ['priority' => 2, 'level' => 'critical', 'reason' => 'Usta işi reddetti'],
+            TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => ['priority' => 3, 'level' => 'critical', 'reason' => 'Müşteri onayı reddedildi'],
+            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => ['priority' => 4, 'level' => 'warning', 'reason' => 'Son kontrol bekliyor'],
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => ['priority' => 5, 'level' => 'warning', 'reason' => 'Randevu önerisi bekliyor'],
+            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => ['priority' => 6, 'level' => 'warning', 'reason' => 'Ek talep var'],
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => ['priority' => 7, 'level' => 'warning', 'reason' => 'Tekrar ziyaret talebi'],
+        ];
+
+        foreach ($orderedActions as $actionType => $payload) {
+            $action = $opsReview->firstWhere('action', $actionType);
+            if ($action instanceof TechnicalServicePartnerJobAction) {
+                return [
+                    'sort_priority' => $payload['priority'],
+                    'attention_level' => $payload['level'],
+                    'attention_reason' => $payload['reason'],
+                    'last_action_at' => $this->dateTimeString($action->created_at),
+                    'action' => $action->action,
+                ];
+            }
+        }
+
+        return [
+            'sort_priority' => in_array($request->workflow_status, ['TamamlandÄ±', 'Tamamlandı', 'Ä°ptal', 'İptal'], true) ? 100 : 50,
+            'attention_level' => 'normal',
+            'attention_reason' => null,
+            'last_action_at' => $this->dateTimeString($request->updated_at),
+            'action' => null,
+        ];
     }
 
     private function saleMountLabel(?string $status): string

@@ -29,9 +29,13 @@ class TechnicalServicePartnerJobAction extends Model
 
     public const ACTION_CUSTOMER_APPROVAL_CONFIRMED = 'customer_approval_confirmed';
 
+    public const ACTION_CUSTOMER_APPROVAL_REJECTED = 'customer_approval_rejected';
+
     public const ACTION_SUPPORT_REQUESTED = 'support_requested';
 
     public const ACTION_PHOTOS_UPLOADED = 'photos_uploaded';
+
+    public const ACTION_PRICE_REVISION_REQUESTED = 'price_revision_requested';
 
     public const STATUS_SUBMITTED = 'submitted';
 

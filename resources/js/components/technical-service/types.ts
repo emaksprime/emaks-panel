@@ -49,6 +49,13 @@ export type ServiceRequest = {
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
   partnerPortalActions?: ServiceRequestPartnerPortalAction[]
+  attention?: {
+    sort_priority?: number | null
+    attention_level?: 'normal' | 'info' | 'warning' | 'critical' | string | null
+    attention_reason?: string | null
+    last_action_at?: string | null
+    action?: string | null
+  } | null
 }
 
 export type ServiceRequestAssignmentOffer = {
@@ -288,6 +295,9 @@ export type ServiceRequestDoorPhoto = {
 
 export type ServiceRequestFieldCompletionDocument = ServiceRequestDoorPhoto & {
   label?: string | null
+  review_status?: string | null
+  review_note?: string | null
+  reviewed_at?: string | null
 }
 
 export type ServiceRequestRouteQuote = {

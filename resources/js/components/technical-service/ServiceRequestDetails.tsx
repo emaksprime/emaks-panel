@@ -232,14 +232,14 @@ const routeQuoteMatchesCoordinates = (
 
 const routeQuoteMessage = (message: string | null | undefined): string => {
   if (message === 'Usta konumu eksik.') {
-    return 'Usta konumu eksik. Yol ücreti hesaplanamadı.'
+    return 'Usta konumu eksik. Usta yol hakedişi hesaplanamadı.'
   }
 
   if (message === 'Müşteri konumu eksik.') {
-    return 'Müşteri konumu eksik. Yol ücreti hesaplanamadı.'
+    return 'Müşteri konumu eksik. Usta yol hakedişi hesaplanamadı.'
   }
 
-  return displayOrEmpty(message, 'Yol ücreti hesaplanamadı')
+  return displayOrEmpty(message, 'Usta yol hakedişi hesaplanamadı')
 }
 
 type OperationStepStatus = 'Tamamlandı' | 'Bekliyor' | 'Kontrol gerekli' | 'Engelleyici hata'
@@ -980,8 +980,8 @@ export function ServiceRequestDetails({
   const hasActiveRouteQuote = Boolean(activeRouteQuote)
   const routeFeeNeedsApproval = Boolean(activeRouteQuote?.travel_fee_required)
   const selectedTechnicianName = selectedTechnician?.name ?? request.technician ?? 'Seçili usta'
-  const routeFeeNotCalculatedMessage = `${selectedTechnicianName} için yol ücreti henüz hesaplanmadı.`
-  const routeFeeNotCalculatedHint = 'Yol ücretini hesaplamak için seçili usta ve müşteri konumu kullanılacak.'
+  const routeFeeNotCalculatedMessage = `${selectedTechnicianName} için usta yol hakedişi henüz hesaplanmadı.`
+  const routeFeeNotCalculatedHint = 'Usta yol hakedişini hesaplamak için seçili usta ve müşteri konumu kullanılacak.'
   const shouldShowRouteFeeNotCalculatedMessage = Boolean(
     selectedTechnician && !routeQuoteLoading && !hasActiveRouteQuote,
   )
@@ -989,10 +989,10 @@ export function ServiceRequestDetails({
     ? 'Hesaplanıyor...'
     : 'Yeniden hesapla'
   const routeFeeStatusText = routeQuoteStaleForSelectedTechnician
-    ? routeQuoteLoading ? 'Yol ücreti hesaplanıyor' : 'Yol ücreti hesaplanmadı'
+    ? routeQuoteLoading ? 'Usta yol hakedişi hesaplanıyor' : 'Usta yol hakedişi hesaplanmadı'
     : hasActiveRouteQuote && activeRouteQuote
-      ? activeRouteQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'
-      : selectedTechnician ? 'Yol ücreti hesaplanmadı' : routeQuote ? 'Yol ücreti hesaplanamadı' : 'Yol ücreti hesaplanmadı'
+      ? activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi kontrolü' : 'Usta yol hakedişi yok'
+      : selectedTechnician ? 'Usta yol hakedişi hesaplanmadı' : routeQuote ? 'Usta yol hakedişi hesaplanamadı' : 'Usta yol hakedişi hesaplanmadı'
   const routeRoundTripKm = hasActiveRouteQuote
     ? typeof activeRouteQuote?.round_trip_distance_km === 'number' && Number.isFinite(activeRouteQuote.round_trip_distance_km)
       ? activeRouteQuote.round_trip_distance_km
@@ -1375,10 +1375,10 @@ export function ServiceRequestDetails({
       ? { title: 'Usta seçimi', status: 'Tamamlandı', message: `${selectedTechnician.name} seçildi.` }
       : { title: 'Usta seçimi', status: 'Bekliyor', message: 'Usta seçimi bekliyor.' },
     hasActiveRouteQuote
-      ? { title: 'Yol ücreti kontrolü', status: 'Tamamlandı', message: 'Usta seçildi, yol ücreti hesaplandı.' }
+      ? { title: 'Usta yol hakedişi kontrolü', status: 'Tamamlandı', message: 'Usta seçildi, yol hakedişi hesaplandı.' }
       : selectedTechnician
-        ? { title: 'Yol ücreti kontrolü', status: 'Kontrol gerekli', message: 'Seçili usta için yol ücreti bekliyor.' }
-        : { title: 'Yol ücreti kontrolü', status: 'Bekliyor', message: 'Önce usta seçilmeli.' },
+        ? { title: 'Usta yol hakedişi kontrolü', status: 'Kontrol gerekli', message: 'Seçili usta için yol hakedişi bekliyor.' }
+        : { title: 'Usta yol hakedişi kontrolü', status: 'Bekliyor', message: 'Önce usta seçilmeli.' },
     !assignmentSubmitDisabled
       ? { title: 'Servis atama', status: 'Tamamlandı', message: 'Servis atanabilir.' }
       : { title: 'Servis atama', status: 'Bekliyor', message: combinedAssignmentBlockerMessages[0] ?? (mountExclusionAckRequired && !mountExclusionAckComplete ? 'Montaj hariç çoklu ürün onayı gerekiyor.' : 'Atama koşulları tamamlanmalı.') },
@@ -1622,7 +1622,7 @@ export function ServiceRequestDetails({
             </span>
             {(request.qrSource?.source_channel ?? request.channel) === 'qr_mount_form' ? <Badge variant="outline">QR Montaj Formu</Badge> : null}
             {hasMultiProductRequest ? <Badge variant="warning">Çoklu ürün talebi</Badge> : null}
-            {routeFeeNeedsApproval ? <Badge variant="warning">Yol ücreti onayı gerekli</Badge> : null}
+            {routeFeeNeedsApproval ? <Badge variant="warning">Usta yol hakedişi kontrolü</Badge> : null}
           </div>
           <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-3 text-sm sm:grid-cols-3">
             <div>
@@ -2021,10 +2021,10 @@ export function ServiceRequestDetails({
             </span>
             {hasActiveRouteQuote && activeRouteQuote ? (
               <Badge variant={activeRouteQuote.travel_fee_required ? 'warning' : 'positive'}>
-                {activeRouteQuote.travel_fee_required ? 'Yol ücreti onayı gerekli' : 'Yol ücreti yok'}
+                {activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi kontrolü' : 'Usta yol hakedişi yok'}
               </Badge>
             ) : routeQuote ? (
-              <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Yol ücreti hesaplanmadı' : 'Yol ücreti hesaplanamadı'}</Badge>
+              <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Usta yol hakedişi hesaplanmadı' : 'Usta yol hakedişi hesaplanamadı'}</Badge>
             ) : null}
             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
               Mevcut etiketler: {currentPriorityLabel} / {currentSlaLabel}
@@ -2050,14 +2050,14 @@ export function ServiceRequestDetails({
 
         <DetailPanel
           title="Usta / Çilingir Atama"
-          summary="Usta seçimi, yol ücreti, hakediş ve servis bilgileri"
+          summary="Usta seçimi, yol hakedişi ve servis bilgileri"
           tone="technician"
           open={assignmentInfoOpen}
           onOpenChange={setAssignmentInfoOpen}
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="max-w-3xl text-sm text-slate-600">
-                Seçili usta, yol ücreti ve atama aksiyonları aynı akışta takip edilir.
+                Seçili usta, yol hakedişi ve atama aksiyonları aynı akışta takip edilir.
               </p>
               <Button
                 type="button"
@@ -2334,7 +2334,7 @@ export function ServiceRequestDetails({
 
               <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="font-semibold">Yol ücreti</p>
+                  <p className="font-semibold">Usta yol hakedişi</p>
                   <div className="flex flex-wrap gap-2">
                     <Badge variant={routeFeeNeedsApproval ? 'warning' : hasActiveRouteQuote ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
                     <Button
@@ -2354,7 +2354,7 @@ export function ServiceRequestDetails({
                       onClick={openRouteFeeEditor}
                       className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
                     >
-                      Yol ücreti / fiyat düzenle
+                      Usta hakedişi / yol düzenle
                     </Button>
                   </div>
                 </div>
@@ -2380,7 +2380,7 @@ export function ServiceRequestDetails({
                 ) : null}
                 {routeQuoteLoading ? (
                   <div className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-900">
-                    Yol ücreti hesaplanıyor...
+                    Usta yol hakedişi hesaplanıyor...
                   </div>
                 ) : null}
                 {shouldShowRouteFeeNotCalculatedMessage ? (
@@ -2400,7 +2400,7 @@ export function ServiceRequestDetails({
                   <MiniMetric label="Google Routes tek yön mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasActiveRouteQuote && activeRouteQuote?.duration_text ? `Tahmini süre: ${activeRouteQuote.duration_text}` : 'Yol hesabı yapılınca gösterilir.'} />
                   <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasActiveRouteQuote ? undefined : 'Yol hesabı sonucu yok.'} />
                   <MiniMetric
-                    label="Tahmini yol ücreti"
+                    label="Tahmini usta yol hakedişi"
                     value={hasActiveRouteQuote ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
                     hint={hasActiveRouteQuote && activeRouteQuote ? routeQuoteMessage(activeRouteQuote.message) : routeFeeNotCalculatedHint}
                   />
@@ -2436,7 +2436,7 @@ export function ServiceRequestDetails({
                   <div className="grid gap-3 rounded-2xl border border-blue-200 bg-white p-3 text-sm text-slate-700">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
-                        <p className="font-semibold text-slate-950">Yol ücreti / fiyat düzenle</p>
+                        <p className="font-semibold text-slate-950">Usta hakedişi / yol düzenle</p>
                         <p className="mt-1 text-xs text-slate-500">Bu panel hesaplanan yol bilgisini operasyon notuyla birlikte gözden geçirmek içindir.</p>
                       </div>
                       <Button type="button" size="sm" variant="ghost" onClick={() => setRouteFeeEditorOpen(false)}>
@@ -2475,11 +2475,11 @@ export function ServiceRequestDetails({
                         <Input type="number" min="0" step="0.01" value={routeFeeBillableKmInput} onChange={(event) => handleRouteFeeBillableChange(event.target.value)} />
                       </label>
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                        Yol ücreti tutarı
+                        Usta yol hakedişi
                         <Input type="number" min="0" step="0.01" value={routeFeeAmountInput} onChange={(event) => handleRouteFeeAmountChange(event.target.value)} />
                       </label>
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                        Müşteriden istenecek ek ödeme tutarı
+                        Usta yol hakedişi olarak kaydedilecek tutar
                         <Input type="number" min="0" step="0.01" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
                       </label>
                     </div>
@@ -2489,7 +2489,7 @@ export function ServiceRequestDetails({
                         value={routeFeeNote}
                         onChange={(event) => setRouteFeeNote(event.target.value)}
                         className="min-h-[84px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                        placeholder="Yol ücreti veya müşteri onayı için operasyon notu"
+                        placeholder="Usta yol hakedişi veya müşteri onayı için operasyon notu"
                       />
                     </label>
                     {extraMountPayment?.payment_url ? (
@@ -2539,7 +2539,7 @@ export function ServiceRequestDetails({
                 <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : 'Belirlenmedi'} />
                 <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
                 <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} />
-                <MiniMetric label="Usta yol ücreti" value={travelCostLabel} />
+                <MiniMetric label="Usta yol hakedişi" value={travelCostLabel} />
                 <MiniMetric label="Ustaya gönderilecek toplam hakediş" value={earningTotalAmount !== null ? formatMoneyValue(earningTotalAmount) : totalTechnicianCostLabel} />
                 <MiniMetric label="Net fark / kâr" value={netProfitLabel} />
                 <MiniMetric
@@ -2642,8 +2642,8 @@ export function ServiceRequestDetails({
               <MiniMetric label="Atanan servis" value={hasAssignedTechnician ? displayOrEmpty(request.technician, 'Bilgi yok') : 'Atanmadı'} />
               <MiniMetric label="Servis telefonu" value={hasAssignedTechnician ? displayOrEmpty(request.technicianPhone, 'Bilgi yok') : 'Bilgi yok'} />
               <MiniMetric label="Şehir" value={hasAssignedTechnician ? displayOrEmpty(selectedTechnician?.location, request.city || 'Bilgi yok') : 'Bilgi yok'} />
-              <MiniMetric label="Yol ücreti durumu" value={routeFeeStatusText} />
-              <MiniMetric label="Tahmini yol ücreti" value={travelCostLabel} />
+              <MiniMetric label="Usta yol hakedişi durumu" value={routeFeeStatusText} />
+              <MiniMetric label="Tahmini usta yol hakedişi" value={travelCostLabel} />
               {hasAssignedTechnician && approvalState.title.toLocaleLowerCase('tr-TR').includes('bek') ? (
                 <div className="sm:col-span-2">
                   <Badge variant="warning">Usta onayı bekleniyor</Badge>
