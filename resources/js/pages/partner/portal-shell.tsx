@@ -1485,36 +1485,36 @@ function ServiceJobDetail({
       {!readOnly && !activeActionDialog && (
         <div className="fixed inset-x-0 bottom-0 z-[80] grid max-h-[36vh] grid-cols-2 gap-1.5 overflow-y-auto border-t border-slate-200 bg-white/95 p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
           {job.can_reject && (
-            <button type="button" onClick={() => setActiveActionDialog('reject')} className="min-h-9 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] font-semibold leading-tight text-rose-800">
+            <button type="button" onClick={() => setActiveActionDialog('reject')} className="min-h-10 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
               İşi reddet
             </button>
           )}
           {job.can_request_revisit && (
-            <button type="button" onClick={() => setActiveActionDialog('revisit')} className="min-h-9 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] font-semibold leading-tight text-amber-800">
+            <button type="button" onClick={() => setActiveActionDialog('revisit')} className="min-h-10 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold leading-tight text-amber-800">
               Tekrar ziyaret
             </button>
           )}
           {job.can_request_support && (
-            <button type="button" onClick={() => setActiveActionDialog('support')} className="min-h-9 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] font-semibold leading-tight text-amber-800">
+            <button type="button" onClick={() => setActiveActionDialog('support')} className="min-h-10 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold leading-tight text-amber-800">
               Ek talep
             </button>
           )}
           {job.can_request_customer_otp && (
-            <button type="button" onClick={() => setActiveActionDialog('otp')} className="min-h-9 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] font-semibold leading-tight text-violet-800">
+            <button type="button" onClick={() => setActiveActionDialog('otp')} className="min-h-10 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-semibold leading-tight text-violet-800">
               Müşteri onayı
             </button>
           )}
           {job.can_request_price_revision && (
-            <button type="button" onClick={() => setActiveActionDialog('price')} className="min-h-9 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] font-semibold leading-tight text-rose-800">
+            <button type="button" onClick={() => setActiveActionDialog('price')} className="min-h-10 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
               Hakediş revize
             </button>
           )}
           {job.can_submit_completion && (
-            <button type="button" onClick={() => setActiveActionDialog('completion')} className="min-h-9 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] font-semibold leading-tight text-emerald-800">
+            <button type="button" onClick={() => setActiveActionDialog('completion')} className="min-h-10 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-semibold leading-tight text-emerald-800">
               Tamamlamaya gönder
             </button>
           )}
-          <button type="button" onClick={() => setActiveActionDialog('note')} className="min-h-9 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-semibold leading-tight text-slate-700">
+          <button type="button" onClick={() => setActiveActionDialog('note')} className="min-h-10 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold leading-tight text-slate-700">
             Not ekle
           </button>
         </div>

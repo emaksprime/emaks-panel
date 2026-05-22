@@ -193,6 +193,9 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
 
+        $this->assertStringContainsString('backendControlComplete', $source);
+        $this->assertStringContainsString('Atanan Usta', $source);
+        $this->assertStringContainsString('!isFinalCheckStage', $source);
         $this->assertStringContainsString('Saha belgeleri uygun', $source);
         $this->assertStringContainsString('Saha belgeleri uygun değil', $source);
         $this->assertStringContainsString('Kararı değiştir', $source);

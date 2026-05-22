@@ -18,6 +18,7 @@ export type ServiceRequest = {
   priority: ServicePriority
   technician: string
   technicianId?: string | null
+  technicianPhone?: string | null
   appointment: string
   status: ServiceStatus
   workflowStatus?: string | null

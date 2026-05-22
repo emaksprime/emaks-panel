@@ -876,6 +876,7 @@ export function ServiceRequestDetails({
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
   const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
+  const isFinalCheckStage = completionSubmissions.length > 0 || request.workflowStatus === 'Son Kontrol'
   const portalActionLabels: Record<string, string> = {
     appointment_proposed: 'Randevu önerildi',
     appointment_accepted_by_technician: 'Usta randevuyu onayladı',
@@ -889,12 +890,12 @@ export function ServiceRequestDetails({
   }
   const hasPortalActionNeedingOps = openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0
   const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
-  const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? Boolean(invoiceSerials?.has_multi_product)
+  const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? (!isFinalCheckStage && Boolean(invoiceSerials?.has_multi_product))
   const setInvoiceSerialsOpen = (open: boolean) => {
     setInvoiceSerialsOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [productInfoOpenByRequest, setProductInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const productInfoOpen = productInfoOpenByRequest[request.id] ?? true
+  const productInfoOpen = productInfoOpenByRequest[request.id] ?? !isFinalCheckStage
   const setProductInfoOpen = (open: boolean) => {
     setProductInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -904,17 +905,18 @@ export function ServiceRequestDetails({
     setCustomerInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [assignmentInfoOpenByRequest, setAssignmentInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? (!hasPortalActionNeedingOps || openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0)
+  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? (!isFinalCheckStage && (!hasPortalActionNeedingOps || openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0))
   const setAssignmentInfoOpen = (open: boolean) => {
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [finalCheckOpenByRequest, setFinalCheckOpenByRequest] = useState<Record<string, boolean>>({})
-  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? completionSubmissions.length > 0
+  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? false
   const setFinalCheckOpen = (open: boolean) => {
     setFinalCheckOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [fieldCompletionOpenByRequest, setFieldCompletionOpenByRequest] = useState<Record<string, boolean>>({})
   const shouldOpenFieldCompletion = completionSubmissions.length > 0
+    || isFinalCheckStage
     || ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı'].includes(request.workflowStatus ?? '')
   const fieldCompletionOpen = fieldCompletionOpenByRequest[request.id] ?? shouldOpenFieldCompletion
   const setFieldCompletionOpen = (open: boolean) => {
@@ -1066,7 +1068,7 @@ export function ServiceRequestDetails({
   const paymentControlMissing = operationControl.payment_checked !== 'yes'
   const doorPhotoControlMissing = !operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed'
   const [operationInfoOpenByRequest, setOperationInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? (doorPhotoControlMissing || paymentControlMissing || supportRequests.length > 0 || completionSubmissions.length > 0)
+  const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? (!isFinalCheckStage && (doorPhotoControlMissing || paymentControlMissing || supportRequests.length > 0))
   const setOperationInfoOpen = (open: boolean) => {
     setOperationInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -1467,6 +1469,7 @@ export function ServiceRequestDetails({
   const checklistCompletedCount = checklistEntries.filter((item) => item.completed).length
   const checklistTotalCount = checklistEntries.length
   const checklistMissingCount = Math.max(checklistTotalCount - checklistCompletedCount, 0)
+  const backendControlComplete = request.checklistStatus === 'tamamlandı' || (checklistTotalCount > 0 && checklistMissingCount === 0)
   const fieldCompletionDocumentTypes = [
     { field: 'before_photo', label: 'Öncesi' },
     { field: 'after_photo', label: 'Sonrası' },
@@ -1518,7 +1521,7 @@ export function ServiceRequestDetails({
         : 'Saha belgeleri uygunluk kararı bekliyor',
     ]),
     ...(request.customerClosureApprovalStatus === 'onaylandı' ? [] : ['Müşteri onayı bekliyor']),
-    ...(checklistTotalCount > 0 && checklistMissingCount === 0 ? [] : ['Backend kontrol eksik']),
+    ...(backendControlComplete ? [] : ['Backend kontrol eksik']),
   ]
   const reviewFieldDocumentsOverall = async (status: 'accepted' | 'rejected') => {
     if (! onFieldDocumentReview || reviewableFieldDocuments.length === 0) {
@@ -1626,7 +1629,7 @@ export function ServiceRequestDetails({
         ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50 p-4 text-slate-950 shadow-sm lg:p-5">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Talep Referansı</p>
               <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -1663,6 +1666,11 @@ export function ServiceRequestDetails({
               <p className="text-[11px] font-semibold uppercase text-slate-400">Randevu</p>
               <p className="mt-1 text-lg font-semibold">{scheduledDateLabel}</p>
               <p className="mt-1 text-xs text-slate-300">{scheduledTimeLabel}</p>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase text-slate-400">Atanan Usta</p>
+              <p className="mt-1 truncate text-lg font-semibold">{hasAssignedTechnician ? displayOrEmpty(request.technician, 'Bilgi yok') : 'Atanmadı'}</p>
+              <p className="mt-1 text-xs font-semibold text-blue-700">{hasAssignedTechnician ? displayOrEmpty(request.technicianPhone, 'Telefon yok') : 'Usta atanmadı'}</p>
             </div>
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Sıradaki Aksiyon</p>
@@ -2847,8 +2855,8 @@ export function ServiceRequestDetails({
               <MiniMetric label="Eksik / hatalı evrak" value={displayOrEmpty(request.completionBlockReason || request.incompleteReason, 'Yok')} />
               <MiniMetric
                 label="Backend kontrol"
-                value={checklistTotalCount > 0 ? `${checklistCompletedCount}/${checklistTotalCount} tamam` : 'Kayıt yok'}
-                hint={checklistTotalCount > 0 ? `${checklistMissingCount} eksik adım` : 'Checklist bu işte üretilmemiş'}
+                value={backendControlComplete ? 'Tamam' : checklistTotalCount > 0 ? `${checklistCompletedCount}/${checklistTotalCount} tamam` : 'Bekliyor'}
+                hint={backendControlComplete ? 'Backend kontrol tamam' : checklistTotalCount > 0 ? `${checklistMissingCount} eksik adım` : 'Checklist bu işte henüz tamamlanmadı'}
               />
             </div>
             {finalCheckCompletionAction ? (
@@ -2875,11 +2883,6 @@ export function ServiceRequestDetails({
                   Son kontrol notu
                   <Input value={completionReviewNote} onChange={(event) => setCompletionReviewNote(event.target.value)} placeholder="Operasyon son kontrol notu" />
                 </label>
-                <div className="flex justify-end">
-                  <Button type="button" onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, { note: completionReviewNote || null })}>
-                    Son kontrolü tamamla
-                  </Button>
-                </div>
               </div>
             ) : null}
             {onFieldDocumentReview ? (
@@ -3063,6 +3066,17 @@ export function ServiceRequestDetails({
               {workflowActionInFlight === actionKey ? 'İşleniyor...' : action.label}
             </Button>
           ))}
+          {finalCheckCompletionAction ? (
+            <Button
+              className="h-9 w-full text-xs sm:text-sm lg:w-auto"
+              type="button"
+              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove}
+              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : undefined}
+              onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, { note: completionReviewNote || null })}
+            >
+              Son kontrolü tamamla
+            </Button>
+          ) : null}
           <Button
             asChild
             className="h-9 w-full text-[0.72rem] sm:text-sm lg:w-auto"
