@@ -3091,14 +3091,25 @@ class B2BPartnerPanelAccessTest extends TestCase
             'test_mode' => true,
         ]);
 
+        $this->get("/service-job-confirmation/{$confirmation->token}")
+            ->assertOk()
+            ->assertSee("/service-job-confirmation/{$confirmation->token}/approve", false)
+            ->assertSee('Onaylıyorum', false);
+
         $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
             'customer_note' => 'Montajı onaylıyorum.',
-        ])->assertOk();
+        ])
+            ->assertOk()
+            ->assertSee('Teşekkür ederiz', false)
+            ->assertSee('Operasyon ekibi süreci kontrol edecektir', false);
 
         $this->assertDatabaseHas('technical_service_customer_confirmations', [
             'id' => $confirmation->id,
             'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
         ]);
+        $job->refresh();
+        $this->assertNull($job->completed_at);
+        $this->assertNotSame('Tamamlandı', $job->workflow_status);
         $this->assertDatabaseHas('technical_service_partner_job_actions', [
             'technical_service_request_id' => $job->id,
             'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
@@ -3117,6 +3128,70 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
             ->assertJsonPath('job.kanban_column', 'final_check');
+    }
+
+    public function test_customer_approval_after_pending_completion_stays_in_final_check(): void
+    {
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Final Check Approval Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Pending Approval Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-CUSTOMER-FINAL-CHECK', [
+            'workflow_status' => 'Sahada',
+            'status' => 'Devam Ediyor',
+            'completed_at' => now(),
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $portalUser = $this->userWithRole('b2b_locksmith');
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => ['note' => 'Müşteri onayı bekleniyor.'],
+            'note' => 'Müşteri onayı bekleniyor.',
+        ]);
+        $otpAction = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_SUBMITTED,
+            'payload' => ['note' => 'Müşteri bağlantıdan onaylayacak.'],
+            'note' => 'Müşteri bağlantıdan onaylayacak.',
+        ]);
+        $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $job->id,
+            'token' => 'customer-final-check-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+            'payload' => ['partner_action_id' => $otpAction->id],
+        ]);
+
+        $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
+            'customer_note' => 'Montajı onaylıyorum.',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('technical_service_requests', [
+            'id' => $job->id,
+            'status' => 'Son Kontrol',
+            'workflow_status' => 'Müşteri Kapanış Onayı Bekleyen',
+            'completed_at' => null,
+        ]);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
     }
 
     public function test_public_customer_door_photos_do_not_count_as_partner_field_documents(): void
@@ -3241,10 +3316,16 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('status', 'applied')
-            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
-            ->assertJsonPath('request.technician_approval_status', 'bekliyor')
+            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('request.technician_approval_status', 'onayladı')
             ->assertJsonPath('message_payloads.customer.slot_text', 'öğleden önce')
             ->assertJsonPath('message_payloads.technician.mrn', 'MRN-APPOINTMENT-PROPOSE');
+
+        $portalJobResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'appointment_confirmed');
+        $this->assertNotContains('Randevu önerildi', $portalJobResponse->json('job.badges'));
 
         $this->assertDatabaseHas('technical_service_partner_job_actions', [
             'id' => $action->id,

@@ -3833,7 +3833,7 @@ export function TechnicalServiceOperationCenter() {
                       <p className="text-xs font-semibold text-blue-700">Durum</p>
                       <p className="mt-1 font-semibold text-slate-950">
                         {assignmentRouteQuote?.status === 'calculated'
-                          ? assignmentRouteQuote.travel_fee_required ? 'Usta yol hakedişi kontrolü' : 'Usta yol hakedişi yok'
+                          ? assignmentRouteQuote.travel_fee_required ? 'Usta yol hakedişi gönderilmeli' : 'Usta yol hakedişi yok'
                           : assignmentRouteQuote ? 'Usta yol hakedişi hesaplanamadı' : 'Hesap bekliyor'}
                       </p>
                     </div>

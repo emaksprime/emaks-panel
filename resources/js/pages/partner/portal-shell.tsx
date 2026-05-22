@@ -302,12 +302,31 @@ const jobEarningRoute = (job: ServiceJob): number => {
   return numericAmount(job.assignment_offer?.route_fee_amount ?? job.earning_summary.route_fee_amount)
 }
 
+const statusLabel = (status: string | null | undefined): string => ({
+  ops_review: 'Operasyon incelemesinde',
+  applied: 'Uygulandı',
+  submitted: 'Gönderildi',
+  sent: 'Gönderildi',
+  pending: 'Bekliyor',
+  revised: 'Revize edildi',
+  accepted: 'Kabul edildi',
+  approved: 'Onaylandı',
+  rejected: 'Reddedildi',
+  revision_requested: 'Revize istendi',
+  completed: 'Tamamlandı',
+  final_check: 'Son kontrol',
+  final_check_waiting: 'Son kontrol bekliyor',
+  draft: 'Taslak',
+  cancelled: 'İptal edildi',
+  superseded: 'Yenilendi',
+}[String(status ?? '').trim()] ?? (String(status ?? '').trim() || '-'))
+
 const jobEarningStatus = (job: ServiceJob): string => {
   if (job.assignment_offer?.status) {
-    return job.assignment_offer.status
+    return statusLabel(job.assignment_offer.status)
   }
 
-  return jobEarningTotal(job) > 0 ? 'tahmini' : 'gönderilmedi'
+  return jobEarningTotal(job) > 0 ? 'Tahmini' : 'Gönderilmedi'
 }
 
 const portalHref = (path: string, partnerId: number) => `${path}?partner_id=${partnerId}`
@@ -653,7 +672,12 @@ const cardToneClass = (tone: ServiceJob['card_tone']) => ({
   slate: 'border-slate-200 bg-white',
 }[tone])
 
-const actionLabel = (action: string) => ({
+const actionLabel = (action: string, status?: string | null) => {
+  if (action === 'appointment_proposed' && status === 'applied') {
+    return 'Randevu onaylandı'
+  }
+
+  return ({
   accepted: 'Randevu onaylandı',
   appointment_accepted_by_technician: 'Randevu onaylandı',
   appointment_proposed: 'Randevu önerildi',
@@ -661,9 +685,14 @@ const actionLabel = (action: string) => ({
   revisit_requested: 'Tekrar ziyaret istendi',
   completion_submitted: 'Tamamlama gönderildi',
   customer_otp_requested: 'Müşteri onayı istendi',
+  customer_approval_confirmed: 'Müşteri onayı alındı',
+  customer_approval_rejected: 'Müşteri onayı reddedildi',
   support_requested: 'Ek talep',
+  photos_uploaded: 'Fotoğraf yüklendi',
+  price_revision_requested: 'Hakediş revize talebi',
   note_added: 'Not eklendi',
 }[action] ?? action)
+}
 
 const tomorrowDateValue = () => {
   const date = new Date()
@@ -1067,9 +1096,20 @@ function ServiceJobDetail({
           </div>
           {job.latest_partner_action && (
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
-              {actionLabel(job.latest_partner_action.action)}
+              {actionLabel(job.latest_partner_action.action, job.latest_partner_action.status)}
             </span>
           )}
+        </div>
+        <div className="mt-5 rounded-2xl bg-slate-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Aksiyon planı</p>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{statusPlan}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {job.badges.length === 0 ? (
+              <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">Normal akış</span>
+            ) : job.badges.map((badge) => (
+              <span key={badge} className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{badge}</span>
+            ))}
+          </div>
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <InfoTile label="Müşteri" value={job.customer_name ?? '-'} />
@@ -1103,7 +1143,7 @@ function ServiceJobDetail({
             <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Randevu / bildirim</p>
             {job.appointment_proposal ? (
               <div className="mt-3 rounded-xl bg-white/80 p-3 text-xs text-blue-900">
-                <p className="font-semibold">Randevu önerisi: {job.appointment_proposal.status}</p>
+                <p className="font-semibold">{job.appointment_proposal.status === 'applied' ? 'Randevu onaylandı' : `Randevu: ${statusLabel(job.appointment_proposal.status)}`}</p>
                 <div className="mt-1 grid gap-1">
                   {appointmentSlotLabels(job.appointment_proposal.payload).length === 0 ? (
                     <p>-</p>
@@ -1128,20 +1168,8 @@ function ServiceJobDetail({
             ) : null}
           </div>
         </div>
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Aksiyon planı</p>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{statusPlan}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {job.badges.length === 0 ? (
-                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">Normal akış</span>
-              ) : job.badges.map((badge) => (
-                <span key={badge} className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{badge}</span>
-              ))}
-            </div>
-          </div>
-          {showPhotoSection && (
-          <div className="rounded-2xl bg-slate-50 p-4">
+        {showPhotoSection && (
+          <div className="mt-5 rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fotoğraf / belge</p>
             <p className="mt-2 text-sm text-slate-700">Öncesi / Sonrası / Garanti Belgesi</p>
             <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
@@ -1159,11 +1187,11 @@ function ServiceJobDetail({
             {job.photos.length === 0 ? (
               <p className="mt-3 text-sm text-slate-500">Mevcut fotoğraf kaydı yok.</p>
             ) : (
-              <div className="mt-3 grid gap-2">
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
                 {job.photos.map((photo) => (
                   <div key={photo.id} className="overflow-hidden rounded-xl bg-white text-sm text-slate-600">
                     {photo.preview_url ? (
-                      <img src={photo.preview_url} alt={photo.label ?? `Fotoğraf #${photo.id}`} className="h-32 w-full object-cover" />
+                      <img src={photo.preview_url} alt={photo.label ?? `Fotoğraf #${photo.id}`} className="h-44 w-full object-cover sm:h-52" />
                     ) : null}
                     <div className="px-3 py-2">
                       <p className="font-semibold text-slate-900">{photo.label ?? `Fotoğraf #${photo.id}`}</p>
@@ -1174,7 +1202,7 @@ function ServiceJobDetail({
                 ))}
               </div>
             )}
-            <div className="mt-3 grid gap-2">
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
               {portalPhotoFields.map(([field, label]) => (
                 <label key={field} className="grid gap-1 text-xs font-semibold text-slate-600">
                   {label}
@@ -1197,15 +1225,14 @@ function ServiceJobDetail({
               </button>
             </div>
           </div>
-          )}
-        </div>
+        )}
         {job.portal_actions.length > 0 && (
           <div className="mt-5 rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Portal aksiyonları</p>
             <div className="mt-3 grid gap-2">
               {job.portal_actions.map((action, index) => (
                 <div key={`${action.action}-${action.created_at ?? index}`} className="rounded-xl bg-white px-3 py-2 text-sm">
-                  <div className="font-semibold text-slate-900">{actionLabel(action.action)} · {action.status}</div>
+                  <div className="font-semibold text-slate-900">{actionLabel(action.action, action.status)} · {statusLabel(action.status)}</div>
                   {action.note && <div className="mt-1 text-slate-500">{action.note}</div>}
                 </div>
               ))}
@@ -1273,21 +1300,21 @@ function ServiceJobDetail({
           </ActionBox>
           )}
           {job.can_reject && (
-          <ActionBox title="İşi reddet">
+          <ActionBox title="İşi reddet" className="hidden lg:grid">
             <button type="button" disabled={readOnly || !job.can_reject} onClick={() => setActiveActionDialog('reject')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50">
-              Reddetme formunu aç
+              İşi reddet
             </button>
           </ActionBox>
           )}
           {job.can_request_revisit && (
-          <ActionBox title="Tekrar ziyaret iste">
+          <ActionBox title="Tekrar ziyaret iste" className="hidden lg:grid">
             <button type="button" disabled={readOnly || !job.can_request_revisit} onClick={() => setActiveActionDialog('revisit')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50">
-              Tekrar ziyaret formunu aç
+              Tekrar ziyaret iste
             </button>
           </ActionBox>
           )}
           {job.can_request_customer_otp && (
-          <ActionBox title="Müşteri OTP / onay">
+          <ActionBox title="Müşteri OTP / onay" className="hidden lg:grid">
             {approvalUrl || whatsappUrl ? (
               <div className="rounded-xl border border-violet-100 bg-white p-3 text-xs text-slate-600">
                 <p className="font-semibold text-violet-900">Müşteri onay mesajı hazırlandı.</p>
@@ -1304,19 +1331,19 @@ function ServiceJobDetail({
               </div>
             ) : null}
             <button type="button" disabled={readOnly} onClick={() => setActiveActionDialog('otp')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
-              OTP/onay popup aç
+              Müşteri onayı iste
             </button>
           </ActionBox>
           )}
           {job.can_request_support && (
-          <ActionBox title="Yedek parça / ek talep">
+          <ActionBox title="Yedek parça / ek talep" className="hidden lg:grid">
             <button type="button" disabled={readOnly || !job.can_request_support} onClick={() => setActiveActionDialog('support')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50">
-              Ek talep popup aç
+              Ek talep oluştur
             </button>
           </ActionBox>
           )}
           {job.can_request_price_revision && (
-          <ActionBox title="Hakediş revize talebi">
+          <ActionBox title="Hakediş revize talebi" className="hidden lg:grid">
             <button type="button" disabled={readOnly || !job.can_request_price_revision} onClick={() => setActiveActionDialog('price')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50">
               Hakediş revize talep et
             </button>
@@ -1361,6 +1388,35 @@ function ServiceJobDetail({
           </ActionBox>
         </div>
       </aside>
+      {!readOnly && (
+        <div className="sticky bottom-0 z-20 col-span-full -mx-4 mt-2 grid grid-cols-2 gap-2 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] lg:hidden">
+          {job.can_reject && (
+            <button type="button" onClick={() => setActiveActionDialog('reject')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800">
+              İşi reddet
+            </button>
+          )}
+          {job.can_request_revisit && (
+            <button type="button" onClick={() => setActiveActionDialog('revisit')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+              Tekrar ziyaret
+            </button>
+          )}
+          {job.can_request_support && (
+            <button type="button" onClick={() => setActiveActionDialog('support')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+              Ek talep
+            </button>
+          )}
+          {job.can_request_customer_otp && (
+            <button type="button" onClick={() => setActiveActionDialog('otp')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800">
+              Müşteri onayı
+            </button>
+          )}
+          {job.can_request_price_revision && (
+            <button type="button" onClick={() => setActiveActionDialog('price')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800">
+              Hakediş revize
+            </button>
+          )}
+        </div>
+      )}
       <ActionDialog title="İşi reddet" open={activeActionDialog === 'reject'} onClose={() => setActiveActionDialog(null)}>
         <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} disabled={readOnly || !job.can_reject}>
           <option value="not_available">Uygun değilim</option>
@@ -1460,9 +1516,9 @@ function ServiceJobDetail({
   )
 }
 
-function ActionBox({ title, children }: { title: string, children: ReactNode }) {
+function ActionBox({ title, children, className = 'grid' }: { title: string, children: ReactNode, className?: string }) {
   return (
-    <div className="grid gap-2">
+    <div className={`${className} gap-2`}>
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3>
       {children}
     </div>

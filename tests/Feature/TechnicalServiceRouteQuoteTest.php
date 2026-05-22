@@ -739,7 +739,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Ücrete tabi km',
             'Km başı ücret',
             'Usta yol hakedişi hesaplanamadı',
-            'Usta yol hakedişi kontrolü',
+            'Usta yol hakedişi gönderilmeli',
             'Usta yol hakedişi yok',
             'Usta konumu eksik',
             'Müşteri konumu eksik',
@@ -777,12 +777,12 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringNotContainsString('Usta → müşteri mesafesi', $pageSource);
 
         foreach ([
-            'Usta yol hakedişi kontrolü',
             'Usta yol hakedişi hesaplanamadı',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $cardSource);
         }
 
+        $this->assertStringNotContainsString('Usta yol hakedişi kontrolü', $cardSource);
         $this->assertStringNotContainsString('Yol ücreti onayı gerekli', $cardSource);
         $this->assertStringNotContainsString('Yol ücreti yok', $cardSource);
     }

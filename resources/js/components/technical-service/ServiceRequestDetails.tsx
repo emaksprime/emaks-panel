@@ -997,7 +997,7 @@ export function ServiceRequestDetails({
   const routeFeeStatusText = routeQuoteStaleForSelectedTechnician
     ? routeQuoteLoading ? 'Usta yol hakedişi hesaplanıyor' : 'Usta yol hakedişi hesaplanmadı'
     : hasActiveRouteQuote && activeRouteQuote
-      ? activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi kontrolü' : 'Usta yol hakedişi yok'
+      ? activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi gönderilmeli' : 'Usta yol hakedişi yok'
       : selectedTechnician ? 'Usta yol hakedişi hesaplanmadı' : routeQuote ? 'Usta yol hakedişi hesaplanamadı' : 'Usta yol hakedişi hesaplanmadı'
   const routeRoundTripKm = hasActiveRouteQuote
     ? typeof activeRouteQuote?.round_trip_distance_km === 'number' && Number.isFinite(activeRouteQuote.round_trip_distance_km)
@@ -1396,10 +1396,10 @@ export function ServiceRequestDetails({
       ? { title: 'Usta seçimi', status: 'Tamamlandı', message: `${selectedTechnician.name} seçildi.` }
       : { title: 'Usta seçimi', status: 'Bekliyor', message: 'Usta seçimi bekliyor.' },
     hasActiveRouteQuote
-      ? { title: 'Usta yol hakedişi kontrolü', status: 'Tamamlandı', message: 'Usta seçildi, yol hakedişi hesaplandı.' }
+      ? { title: 'Usta yol hakedişi hesaplandı', status: 'Tamamlandı', message: 'Usta seçildi, yol hakedişi hesaplandı.' }
       : selectedTechnician
-        ? { title: 'Usta yol hakedişi kontrolü', status: 'Kontrol gerekli', message: 'Seçili usta için yol hakedişi bekliyor.' }
-        : { title: 'Usta yol hakedişi kontrolü', status: 'Bekliyor', message: 'Önce usta seçilmeli.' },
+        ? { title: 'Usta yol hakedişi gönderilmeli', status: 'İşlem gerekli', message: 'Seçili usta için yol hakedişi bekliyor.' }
+        : { title: 'Usta yol hakedişi bekliyor', status: 'Bekliyor', message: 'Önce usta seçilmeli.' },
     !assignmentSubmitDisabled
       ? { title: 'Servis atama', status: 'Tamamlandı', message: 'Servis atanabilir.' }
       : { title: 'Servis atama', status: 'Bekliyor', message: combinedAssignmentBlockerMessages[0] ?? (mountExclusionAckRequired && !mountExclusionAckComplete ? 'Montaj hariç çoklu ürün onayı gerekiyor.' : 'Atama koşulları tamamlanmalı.') },
@@ -1643,7 +1643,7 @@ export function ServiceRequestDetails({
             </span>
             {(request.qrSource?.source_channel ?? request.channel) === 'qr_mount_form' ? <Badge variant="outline">QR Montaj Formu</Badge> : null}
             {hasMultiProductRequest ? <Badge variant="warning">Çoklu ürün talebi</Badge> : null}
-            {routeFeeNeedsApproval ? <Badge variant="warning">Usta yol hakedişi kontrolü</Badge> : null}
+            {routeFeeNeedsApproval ? <Badge variant="warning">Usta yol hakedişi gönderilmeli</Badge> : null}
           </div>
           <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-3 text-sm sm:grid-cols-3">
             <div>
@@ -2042,7 +2042,7 @@ export function ServiceRequestDetails({
             </span>
             {hasActiveRouteQuote && activeRouteQuote ? (
               <Badge variant={activeRouteQuote.travel_fee_required ? 'warning' : 'positive'}>
-                {activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi kontrolü' : 'Usta yol hakedişi yok'}
+                {activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi gönderilmeli' : 'Usta yol hakedişi yok'}
               </Badge>
             ) : routeQuote ? (
               <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Usta yol hakedişi hesaplanmadı' : 'Usta yol hakedişi hesaplanamadı'}</Badge>

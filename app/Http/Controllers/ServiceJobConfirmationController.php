@@ -46,12 +46,26 @@ class ServiceJobConfirmationController extends Controller
             ])->save();
 
             $job = $confirmation->request;
-            $job->forceFill([
+            $pendingCompletion = $job->partnerJobActions()
+                ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
+                ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+                ->latest()
+                ->first();
+            $jobPayload = [
                 'customer_closure_approval_status' => 'onaylandı',
                 'customer_closure_approval_method' => 'customer_link',
                 'customer_closure_approved_at' => now(),
                 'customer_closure_approval_code' => substr($confirmation->token, 0, 12),
-            ])->save();
+            ];
+
+            if ($pendingCompletion instanceof TechnicalServicePartnerJobAction) {
+                $jobPayload['workflow_status'] = 'Müşteri Kapanış Onayı Bekleyen';
+                $jobPayload['status'] = 'Son Kontrol';
+                $jobPayload['completed_at'] = null;
+                $jobPayload['technician_completed_at'] = null;
+            }
+
+            $job->forceFill($jobPayload)->save();
 
             $payload = is_array($confirmation->payload) ? $confirmation->payload : [];
             $sourceAction = isset($payload['partner_action_id'])
@@ -66,6 +80,7 @@ class ServiceJobConfirmationController extends Controller
                         ...$sourcePayload,
                         'confirmation_status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
                         'customer_approved_at' => now()->toIso8601String(),
+                        'ops_final_check_required' => $pendingCompletion instanceof TechnicalServicePartnerJobAction,
                     ],
                 ])->save();
 
@@ -220,16 +235,16 @@ class ServiceJobConfirmationController extends Controller
         $approvalText = (string) config('services.evolution.customer_approval_text');
         $legalNote = (string) config('services.evolution.customer_approval_legal_note');
         $button = match (true) {
-            $approved => '<div class="success">Montajı onayladınız. Teşekkür ederiz.</div>',
-            $rejected => '<div class="danger">Onaylamama açıklamanız operasyona iletildi.</div>',
-            default => '<div class="notice">'.e($approvalText).'</div><form method="POST"><input type="hidden" name="_token" value="'.e(csrf_token()).'"><label>İsteğe bağlı müşteri notu <textarea name="customer_note" rows="3"></textarea></label><button type="submit">Onaylıyorum</button></form><form method="POST" action="'.e(route('service-job-confirmation.reject', ['token' => $confirmation->token])).'"><input type="hidden" name="_token" value="'.e(csrf_token()).'"><label>Onaylamama açıklaması <textarea required name="customer_note" rows="3"></textarea></label><button class="danger-button" type="submit">Onaylamıyorum</button></form>',
+            $approved => '<div class="success"><strong>Teşekkür ederiz.</strong><br>Montaj onayınız alınmıştır. Operasyon ekibi süreci kontrol edecektir.</div>',
+            $rejected => '<div class="danger"><strong>Geri bildiriminiz alınmıştır.</strong><br>Açıklamanız operasyon ekibine iletildi.</div>',
+            default => '<div class="notice">'.e($approvalText).'</div><form method="POST" action="'.e(route('service-job-confirmation.approve', ['token' => $confirmation->token])).'"><input type="hidden" name="_token" value="'.e(csrf_token()).'"><label>İsteğe bağlı müşteri notu <textarea name="customer_note" rows="3"></textarea></label><button type="submit">Onaylıyorum</button></form><form method="POST" action="'.e(route('service-job-confirmation.reject', ['token' => $confirmation->token])).'"><input type="hidden" name="_token" value="'.e(csrf_token()).'"><label>Onaylamama açıklaması <textarea required name="customer_note" rows="3"></textarea></label><button class="danger-button" type="submit">Onaylamıyorum</button></form>',
         };
 
         return '<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
             .e($title).
             '</title><style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f3f7fb;color:#0f172a}.wrap{max-width:680px;margin:40px auto;padding:24px}.card{background:white;border:1px solid #dbe4ef;border-radius:24px;padding:24px;box-shadow:0 24px 70px rgba(15,23,42,.08)}h1{font-size:28px;margin:0 0 12px}.muted{color:#64748b}.grid{display:grid;gap:12px;margin:20px 0}.row{border:1px solid #e2e8f0;border-radius:16px;padding:12px;background:#f8fafc}.notice{border:1px solid #bfdbfe;background:#eff6ff;color:#1e3a8a;border-radius:16px;padding:14px;font-weight:650}form{margin-top:16px}label{display:grid;gap:8px;font-weight:600}textarea{border:1px solid #cbd5e1;border-radius:12px;padding:10px;font:inherit}button{margin-top:14px;border:0;border-radius:14px;background:#06143a;color:white;font-weight:700;padding:12px 16px}.danger-button{background:#be123c}.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857;border-radius:16px;padding:14px;font-weight:700}.danger{border:1px solid #fecdd3;background:#fff1f2;color:#be123c;border-radius:16px;padding:14px;font-weight:700}.legal{margin-top:16px;color:#64748b;font-size:12px}</style></head><body><main class="wrap"><section class="card"><h1>'
             .e($title).
-            '</h1><p class="muted">Montaj işleminizin tamamlandığını onaylamak için bilgileri kontrol edin.</p><div class="grid"><div class="row"><strong>MRN</strong><br>'
+            '</h1><p class="muted">'.($approved || $rejected ? 'Bu sayfayı kapatabilirsiniz.' : 'Montaj işleminizin tamamlandığını onaylamak için bilgileri kontrol edin.').'</p><div class="grid"><div class="row"><strong>MRN</strong><br>'
             .e((string) $job->mrn).
             '</div><div class="row"><strong>Müşteri</strong><br>'
             .e((string) $job->customer_name).

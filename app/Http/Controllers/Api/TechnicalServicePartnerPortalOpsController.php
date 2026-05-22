@@ -56,7 +56,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $job = $this->workflow->updateSchedule($technicalServiceRequest, [
                 'scheduled_date' => $scheduledDate,
                 'scheduled_time' => $scheduledTime,
-                'approve_technician' => false,
+                'approve_technician' => true,
                 'note' => $validated['note'] ?? 'Partner portal randevu önerisi onaylandı.',
             ], $request->user());
 
@@ -89,7 +89,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'scheduled_date' => $scheduledDate,
                 'scheduled_time' => $scheduledTime,
                 'selected_slot' => $slot,
-                'technician_confirmation_required' => true,
+                'technician_confirmation_required' => false,
                 'note' => $validated['note'] ?? null,
                 'messages' => $messages,
                 'message_dispatches' => [

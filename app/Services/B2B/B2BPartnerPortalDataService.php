@@ -781,7 +781,8 @@ class B2BPartnerPortalDataService
             $badges[] = 'Ops onayı bekliyor';
         }
 
-        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED) {
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $badges[] = 'Randevu önerildi';
         }
 

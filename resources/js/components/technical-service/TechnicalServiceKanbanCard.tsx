@@ -139,6 +139,16 @@ const actionBadgeLabel = (request: ServiceRequest, column: ReturnType<typeof get
   return `Aksiyon: ${rawAction.length > 36 ? `${rawAction.slice(0, 33)}...` : rawAction}`
 }
 
+const assignmentOfferStatusLabel = (status: string | null | undefined): string => ({
+  sent: 'Gönderildi',
+  revised: 'Revize edildi',
+  accepted: 'Kabul edildi',
+  cancelled: 'İptal edildi',
+  superseded: 'Yenilendi',
+  draft: 'Taslak',
+  pending: 'Bekliyor',
+}[String(status ?? '').trim()] ?? truncateText(String(status ?? ''), 'Kontrol edilecek'))
+
 const buildBadges = (request: ServiceRequest): RequestBadge[] => {
   const badges: RequestBadge[] = []
   const column = getTechnicalServiceKanbanColumn(request)
@@ -150,30 +160,41 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
   }
 
   const latestPortalOpsAction = latestPortalOpsActionForCard(request)
+  let primaryActionBadgeAdded = false
 
   if (request.attention?.attention_reason && request.attention.attention_level !== 'normal') {
     addBadge({ label: `Aksiyon: ${request.attention.attention_reason}`, tone: request.attention.attention_level === 'critical' ? 'rose' : 'amber', icon: 'warning', important: true })
+    primaryActionBadgeAdded = true
   }
 
-  if (latestPortalOpsAction?.action === 'price_revision_requested') {
-    addBadge({ label: 'Hakediş revize talebi', tone: 'rose', icon: 'warning', important: true })
-  } else if (latestPortalOpsAction?.action === 'customer_approval_rejected') {
-    addBadge({ label: 'Müşteri onayı reddetti', tone: 'rose', icon: 'warning', important: true })
-  } else if (latestPortalOpsAction?.action === 'job_rejected') {
-    addBadge({ label: 'Usta reddetti', tone: 'rose', icon: 'warning', important: true })
-  } else if (latestPortalOpsAction?.action === 'completion_submitted') {
-    addBadge({ label: 'Son kontrol bekliyor', tone: 'purple', icon: 'warning', important: true })
-  } else if (latestPortalOpsAction?.action === 'appointment_proposed') {
-    addBadge({ label: 'Randevu önerisi bekliyor', tone: 'amber', icon: 'warning', important: true })
-  } else if (latestPortalOpsAction?.action === 'support_requested') {
-    addBadge({ label: 'Ek talep', tone: 'purple', icon: 'warning', important: true })
-  } else if (latestPortalOpsAction?.action === 'revisit_requested') {
-    addBadge({ label: 'Tekrar ziyaret talebi', tone: 'amber', icon: 'warning', important: true })
+  if (!primaryActionBadgeAdded) {
+    if (latestPortalOpsAction?.action === 'price_revision_requested') {
+      addBadge({ label: 'Aksiyon: Hakediş revize talebi', tone: 'rose', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
+    } else if (latestPortalOpsAction?.action === 'customer_approval_rejected') {
+      addBadge({ label: 'Aksiyon: Müşteri onayı reddetti', tone: 'rose', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
+    } else if (latestPortalOpsAction?.action === 'job_rejected') {
+      addBadge({ label: 'Aksiyon: Usta reddetti', tone: 'rose', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
+    } else if (latestPortalOpsAction?.action === 'completion_submitted') {
+      addBadge({ label: 'Aksiyon: Son kontrol bekliyor', tone: 'purple', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
+    } else if (latestPortalOpsAction?.action === 'appointment_proposed') {
+      addBadge({ label: 'Aksiyon: Randevu önerisi bekliyor', tone: 'amber', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
+    } else if (latestPortalOpsAction?.action === 'support_requested') {
+      addBadge({ label: 'Aksiyon: Ek talep', tone: 'purple', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
+    } else if (latestPortalOpsAction?.action === 'revisit_requested') {
+      addBadge({ label: 'Aksiyon: Tekrar ziyaret talebi', tone: 'amber', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
+    }
   }
 
   const currentActionBadge = actionBadgeLabel(request, column)
 
-  if (currentActionBadge) {
+  if (currentActionBadge && !primaryActionBadgeAdded) {
     addBadge({ label: currentActionBadge, tone: 'blue', important: true })
   }
 
@@ -225,11 +246,7 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     addBadge({ label: 'Usta seçilmeli', tone: 'amber', icon: 'warning', important: true })
   }
 
-  if (routeQuote?.status === 'calculated' && routeQuoteMatchesAssignedTechnician && routeQuoteHasCurrentFee) {
-    if (routeQuote.travel_fee_required && column !== 'completed') {
-      addBadge({ label: 'Usta yol hakedişi kontrolü', tone: 'amber', icon: 'warning', important: true })
-    }
-  } else if (routeQuote && routeQuoteMatchesAssignedTechnician) {
+  if (routeQuote && routeQuoteMatchesAssignedTechnician && !(routeQuote?.status === 'calculated' && routeQuoteHasCurrentFee)) {
     addBadge({ label: 'Usta yol hakedişi hesaplanamadı', tone: 'amber', icon: 'warning' })
   }
 
@@ -330,7 +347,7 @@ const columnDetailRows = (
     return [
       { label: 'Tamamlanma', value: formatTechnicalServiceDateTime(request.completedAt ?? null, '-') },
       { label: 'Usta', value: truncateText(request.technician || '-') },
-      { label: 'Hakediş', value: truncateText(request.assignmentOffer?.status ?? 'Kontrol edilecek') },
+      { label: 'Hakediş', value: assignmentOfferStatusLabel(request.assignmentOffer?.status) },
     ]
   }
 
