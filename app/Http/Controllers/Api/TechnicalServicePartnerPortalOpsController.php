@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
@@ -195,8 +196,19 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'note' => ['nullable', 'string', 'max:2000'],
         ]);
 
+        $blockers = $this->completionApprovalBlockers($technicalServiceRequest->refresh());
+        if ($blockers !== []) {
+            throw ValidationException::withMessages([
+                'completion' => $blockers,
+            ]);
+        }
+
         $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
             $from = $technicalServiceRequest->workflow_status;
+            $technicalServiceRequest->forceFill([
+                'photo_status' => 'tamamlandı',
+                'document_status' => 'tamamlandı',
+            ])->save();
             $job = $this->workflow->updateFieldWorkflow($technicalServiceRequest, 'complete', [
                 'note' => $validated['note'] ?? 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.',
             ], $request->user());
@@ -340,6 +352,56 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'status' => 'revised',
             'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
         ]);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function completionApprovalBlockers(TechnicalServiceRequest $request): array
+    {
+        $documents = $request->uploads()
+            ->whereIn('category', [
+                TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+                TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
+            ])
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->get()
+            ->groupBy('field_code');
+        $labels = [
+            'before_photo' => 'Öncesi fotoğrafı',
+            'after_photo' => 'Sonrası fotoğrafı',
+            'warranty_document_photo' => 'Garanti Belgesi',
+        ];
+        $blockers = [];
+
+        foreach ($labels as $field => $label) {
+            $fieldDocuments = $documents->get($field, collect());
+            if ($fieldDocuments->isEmpty()) {
+                $blockers[] = $label.' eksik.';
+
+                continue;
+            }
+
+            if ($fieldDocuments->contains(fn (TechnicalServiceRequestUpload $upload): bool => $upload->review_status === 'rejected')) {
+                $blockers[] = $label.' uygun değil.';
+
+                continue;
+            }
+
+            if (! $fieldDocuments->contains(fn (TechnicalServiceRequestUpload $upload): bool => $upload->review_status === 'accepted')) {
+                $blockers[] = $label.' uygunluk kararı bekliyor.';
+            }
+        }
+
+        if ($request->customer_closure_approval_status !== 'onaylandı') {
+            $blockers[] = 'Müşteri onayı bekliyor.';
+        }
+
+        if ($request->checklist_status !== 'tamamlandı') {
+            $blockers[] = 'Backend kontrol eksik.';
+        }
+
+        return $blockers;
     }
 
     private function assertProposalBelongsToRequest(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): void

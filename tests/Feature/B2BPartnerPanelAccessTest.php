@@ -3050,9 +3050,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
         ]);
-        $this->createPortalFieldDocument($job, 'before_photo');
-        $this->createPortalFieldDocument($job, 'after_photo');
-        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+        $beforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
+        $afterDocument = $this->createPortalFieldDocument($job, 'after_photo');
+        $warrantyDocument = $this->createPortalFieldDocument($job, 'warranty_document_photo');
 
         $this->actingAs($admin)
             ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
@@ -3075,6 +3075,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
@@ -3682,9 +3683,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
 
-        $this->createPortalFieldDocument($job, 'before_photo');
-        $this->createPortalFieldDocument($job, 'after_photo');
-        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+        $beforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
+        $afterDocument = $this->createPortalFieldDocument($job, 'after_photo');
+        $warrantyDocument = $this->createPortalFieldDocument($job, 'warranty_document_photo');
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
@@ -3705,6 +3706,17 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('technical_service_request_id', $job->id)
             ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
             ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-completions/{$action->id}/approve", [
+                'note' => 'Operasyon son kontrolu tamamlanmadan evrak uygunlugu kontrol edilir.',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('completion');
+
+        $beforeDocument->forceFill(['review_status' => 'accepted'])->save();
+        $afterDocument->forceFill(['review_status' => 'accepted'])->save();
+        $warrantyDocument->forceFill(['review_status' => 'accepted'])->save();
 
         $this->actingAs($admin)
             ->postJson("/api/technical-service/requests/{$job->id}/partner-completions/{$action->id}/approve", [

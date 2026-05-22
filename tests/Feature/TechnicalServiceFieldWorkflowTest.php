@@ -189,6 +189,17 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
         $this->assertSame('otp', $request->customer_closure_approval_method);
     }
 
+    public function test_ops_field_documents_ui_exposes_clear_review_and_final_completion_controls(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+
+        $this->assertStringContainsString('Saha belgeleri uygun', $source);
+        $this->assertStringContainsString('Saha belgeleri uygun değil', $source);
+        $this->assertStringContainsString('Kararı değiştir', $source);
+        $this->assertStringContainsString('Son kontrolü tamamla', $source);
+        $this->assertStringContainsString('Saha belgeleri uygunluk kararı bekliyor', $source);
+    }
+
     public function test_request_can_complete_when_checklist_photos_and_customer_closure_are_ready(): void
     {
         $request = $this->technicalServiceRequest([

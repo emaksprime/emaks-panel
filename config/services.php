@@ -41,6 +41,10 @@ return [
         'n8n_webhook_url' => env('EVOLUTION_N8N_WEBHOOK_URL'),
         'test_mode' => env('EVOLUTION_TEST_MODE', true),
         'test_phone' => env('EVOLUTION_TEST_PHONE', '905467647428'),
+        'real_send_enabled' => env('EVOLUTION_REAL_SEND_ENABLED', false),
+        'allow_test_fixture_send' => env('EVOLUTION_ALLOW_TEST_FIXTURE_SEND', false),
+        'allow_browser_smoke_send' => env('EVOLUTION_ALLOW_BROWSER_SMOKE_SEND', false),
+        'idempotency_window_minutes' => env('EVOLUTION_IDEMPOTENCY_WINDOW_MINUTES', 10),
         'customer_approval_text' => env(
             'TECHNICAL_SERVICE_CUSTOMER_APPROVAL_TEXT',
             'Montaj işleminin tamamlandığını ve montaj sonrası görünür hasar veya kusur bulunmadığını kontrol ederek onay verebilirsiniz.'

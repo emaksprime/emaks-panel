@@ -942,9 +942,13 @@ function ServiceJobDetail({
   const dispatchTestMode = messagePayload?.test_mode === true
   const otpDispatchTitle = dispatchStatus === 'sent'
     ? 'WhatsApp onay mesajı gönderildi.'
-    : dispatchStatus === 'failed'
-      ? 'WhatsApp mesajı gönderilemedi.'
-      : 'Müşteriden montaj onayı alınmalı.'
+    : dispatchStatus === 'suppressed_duplicate'
+      ? 'Bu mesaj daha önce gönderildi.'
+      : dispatchStatus && dispatchStatus.startsWith('suppressed_')
+        ? 'Test mesajı gerçek WhatsApp’a gönderilmedi.'
+        : dispatchStatus === 'failed' || dispatchStatus === 'not_configured'
+          ? 'WhatsApp mesajı gönderilemedi.'
+          : 'Müşteriden montaj onayı alınmalı.'
   useEffect(() => () => {
     Object.values(photoPreviewUrls).forEach((url) => {
       if (url) {

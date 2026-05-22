@@ -20,6 +20,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
@@ -82,6 +83,8 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $this->assertSame('350 TRY', $payload['route_fee_amount']);
         $this->assertSame('3.350 TRY', $payload['total_amount']);
         $this->assertStringContainsString('/partner/service-jobs?job_id='.$request->id, $payload['job_link']);
+        $this->assertStringContainsString('İş linki:', $payload['text']);
+        $this->assertStringContainsString((string) $payload['job_link'], $payload['text']);
 
         Http::assertSent(fn ($httpRequest): bool => $httpRequest->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
             && $httpRequest['target_phone'] === '905467647428'
@@ -95,6 +98,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
             'services.evolution.test_mode' => false,
             'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
@@ -114,6 +118,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $this->assertSame('905321112233', $payload['original_phone']);
         $this->assertFalse($payload['test_mode']);
         $this->assertSame('https://panel.test/service-job-confirmation/token', $payload['confirmation_url']);
+        $this->assertStringNotContainsString('İş linki:', $payload['text']);
     }
 
     public function test_missing_webhook_url_records_not_configured_without_http_call(): void
@@ -122,6 +127,7 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
             'services.evolution.n8n_webhook_url' => '',
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
         ]);
         Http::fake();
 
@@ -138,5 +144,116 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $this->assertSame('905467647428', $payload['target_phone']);
         $this->assertTrue($payload['test_mode']);
         Http::assertNothingSent();
+    }
+
+    public function test_testing_environment_suppresses_real_send_by_default(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => false,
+        ]);
+        Http::fake();
+
+        $dispatch = app(EvolutionWhatsAppMessageService::class)->send(
+            'customer_approval_request',
+            'customer',
+            '05321112233',
+            'Onay linki hazir.',
+            ['confirmation_url' => 'https://panel.test/service-job-confirmation/token'],
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT, $dispatch->refresh()->status);
+        Http::assertNothingSent();
+    }
+
+    public function test_test_fixture_mrn_is_suppressed_even_when_real_send_is_enabled(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+        ]);
+        Http::fake();
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-ACTION-WP-SUPPRESS',
+            'customer_name' => 'Fixture Musteri',
+            'customer_phone' => '05551112233',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Fixture adresi',
+            'product_name' => 'Test Kilit',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+        ]);
+
+        $dispatch = app(EvolutionWhatsAppMessageService::class)->send(
+            'customer_approval_request',
+            'customer',
+            '05321112233',
+            'Onay linki hazir.',
+            ['confirmation_url' => 'https://panel.test/service-job-confirmation/token'],
+            $request,
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE, $dispatch->refresh()->status);
+        Http::assertNothingSent();
+    }
+
+    public function test_idempotency_suppresses_duplicate_dispatch_within_window(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.evolution.idempotency_window_minutes' => 10,
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['ok' => true], 200),
+        ]);
+        $request = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-WP-IDEMPOTENCY',
+            'customer_name' => 'Idempotent Musteri',
+            'customer_phone' => '05551112233',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Idempotent adresi',
+            'product_name' => 'Test Kilit',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+        ]);
+
+        $first = app(EvolutionWhatsAppMessageService::class)->send(
+            'customer_approval_request',
+            'customer',
+            '05321112233',
+            'Onay linki hazir.',
+            ['confirmation_url' => 'https://panel.test/service-job-confirmation/token'],
+            $request,
+        );
+        $second = app(EvolutionWhatsAppMessageService::class)->send(
+            'customer_approval_request',
+            'customer',
+            '05321112233',
+            'Onay linki hazir.',
+            ['confirmation_url' => 'https://panel.test/service-job-confirmation/token'],
+            $request,
+        );
+        $third = app(EvolutionWhatsAppMessageService::class)->send(
+            'customer_approval_request',
+            'customer',
+            '05321112233',
+            'Onay linki hazir.',
+            ['confirmation_url' => 'https://panel.test/service-job-confirmation/token', 'force_resend' => true],
+            $request,
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $first->refresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE, $second->refresh()->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $third->refresh()->status);
+        Http::assertSentCount(2);
     }
 }

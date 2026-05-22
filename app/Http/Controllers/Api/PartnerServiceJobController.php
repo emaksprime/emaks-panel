@@ -1079,9 +1079,7 @@ class PartnerServiceJobController extends Controller
         $requestPayload = is_array($dispatch->request_payload) ? $dispatch->request_payload : [];
         $responseStatusCode = $responsePayload['status'] ?? null;
         $responseBody = $responsePayload['body'] ?? null;
-        $status = $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENT
-            ? TechnicalServiceMessageDispatch::STATUS_SENT
-            : TechnicalServiceMessageDispatch::STATUS_FAILED;
+        $status = $dispatch->status;
         $errorMessage = $dispatch->error_message;
 
         if ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED && ! filled($errorMessage)) {
@@ -1126,6 +1124,18 @@ class PartnerServiceJobController extends Controller
             $warning = trim((string) ($summary['public_url_warning'] ?? ''));
 
             return 'WhatsApp onay mesajı gönderildi.'.($warning !== '' ? ' '.$warning : '');
+        }
+
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE) {
+            return 'Bu mesaj daha önce gönderildi; tekrar WhatsApp gönderilmedi.';
+        }
+
+        if (in_array(($summary['dispatch_status'] ?? null), [
+            TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE,
+            TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,
+            TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+        ], true)) {
+            return 'Test mesajı gerçek WhatsApp’a gönderilmedi.';
         }
 
         $reason = trim((string) ($summary['error_message'] ?? ''));

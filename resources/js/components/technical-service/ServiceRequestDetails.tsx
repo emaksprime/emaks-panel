@@ -944,6 +944,7 @@ export function ServiceRequestDetails({
   const [offerNoteInput, setOfferNoteInput] = useState('')
   const [fieldDocumentOverallRejectNote, setFieldDocumentOverallRejectNote] = useState('')
   const [fieldDocumentOverallReviewLoading, setFieldDocumentOverallReviewLoading] = useState(false)
+  const [fieldDocumentOverallReviewEditing, setFieldDocumentOverallReviewEditing] = useState(false)
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
   const locationInfo = request.location ?? null
   const doorPhotos = request.doorPhotos ?? []
@@ -1500,12 +1501,25 @@ export function ServiceRequestDetails({
         ? 'rejected'
         : 'pending'
   const fieldDocumentOverallReviewLabel = {
-    accepted: 'Uygun',
-    rejected: 'Uygun değil',
-    pending: 'İncelenmedi',
+    accepted: 'Saha belgeleri uygun',
+    rejected: 'Saha belgeleri uygun değil',
+    pending: 'Uygunluk bekliyor',
     missing: 'Belge bekleniyor',
   }[fieldDocumentOverallReviewStatus]
   const isFieldDocumentOverallReviewBusy = fieldDocumentOverallReviewLoading || fieldDocumentReviewInFlight !== null
+  const showFieldDocumentOverallReviewControls = reviewableFieldDocuments.length > 0
+    && (fieldDocumentOverallReviewStatus === 'pending' || fieldDocumentOverallReviewEditing)
+  const finalCheckCompletionAction = completionSubmissions[0] ?? null
+  const finalCompletionMissingReasons = [
+    ...missingFieldDocumentLabels.map((label) => `${label} eksik`),
+    ...(fieldDocumentOverallReviewStatus === 'accepted' ? [] : [
+      fieldDocumentOverallReviewStatus === 'rejected'
+        ? 'Saha belgeleri uygun değil'
+        : 'Saha belgeleri uygunluk kararı bekliyor',
+    ]),
+    ...(request.customerClosureApprovalStatus === 'onaylandı' ? [] : ['Müşteri onayı bekliyor']),
+    ...(checklistTotalCount > 0 && checklistMissingCount === 0 ? [] : ['Backend kontrol eksik']),
+  ]
   const reviewFieldDocumentsOverall = async (status: 'accepted' | 'rejected') => {
     if (! onFieldDocumentReview || reviewableFieldDocuments.length === 0) {
       return
@@ -1530,10 +1544,13 @@ export function ServiceRequestDetails({
       if (status === 'accepted') {
         setFieldDocumentOverallRejectNote('')
       }
+
+      setFieldDocumentOverallReviewEditing(false)
     } finally {
       setFieldDocumentOverallReviewLoading(false)
     }
   }
+
   const scheduledDateLabel = request.scheduledDate
     ? formatTechnicalServiceDate(request.scheduledDate)
     : dateTimeOrEmpty(request.scheduledAt, 'Randevu planlanmadı')
@@ -2181,7 +2198,7 @@ export function ServiceRequestDetails({
                 {assignError}
               </div>
             ) : null}
-            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0 || assignmentOffer) ? (
+            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || assignmentOffer) ? (
               <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
                 <div>
                   <p className="font-semibold">Çilingir Portal Aksiyonları</p>
@@ -2264,26 +2281,6 @@ export function ServiceRequestDetails({
                         <p className="mt-1 text-xs">{String(action.payload?.description ?? action.note ?? 'Açıklama yok')}</p>
                       </div>
                       <Badge variant="warning">Operasyon incelemede</Badge>
-                    </div>
-                  </div>
-                ))}
-                {completionSubmissions.slice(0, 2).map((action) => (
-                  <div key={String(action.id)} className="grid gap-2 rounded-xl border border-violet-100 bg-violet-50 p-3 text-violet-950">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <p className="font-semibold">Son kontrol bekliyor</p>
-                        <p className="mt-1 text-xs">{String(action.note ?? 'Usta tamamlama gönderdi; core workflow operasyon onayı bekliyor.')}</p>
-                      </div>
-                      <Badge variant="warning">Tamamlama onayı</Badge>
-                    </div>
-                    <label className="grid gap-1 text-xs font-semibold text-violet-900">
-                      Son kontrol notu
-                      <Input value={completionReviewNote} onChange={(event) => setCompletionReviewNote(event.target.value)} placeholder="Operasyon son kontrol notu" />
-                    </label>
-                    <div className="flex justify-end">
-                      <Button type="button" onClick={() => void onPartnerCompletionApprove?.(action.id, { note: completionReviewNote || null })}>
-                        İşi tamamla
-                      </Button>
                     </div>
                   </div>
                 ))}
@@ -2854,6 +2851,37 @@ export function ServiceRequestDetails({
                 hint={checklistTotalCount > 0 ? `${checklistMissingCount} eksik adım` : 'Checklist bu işte üretilmemiş'}
               />
             </div>
+            {finalCheckCompletionAction ? (
+              <div className="grid gap-3 rounded-2xl border border-violet-200 bg-violet-50 p-3 text-violet-950">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold">Son kontrol tamamlanabilir</p>
+                    <p className="mt-1 text-xs text-violet-800">
+                      Ustanın tamamlama gönderimi ops son kontrolünde. Eksik varsa aşağıda net görünür.
+                    </p>
+                  </div>
+                  <Badge variant={finalCompletionMissingReasons.length === 0 ? 'secondary' : 'warning'}>
+                    {finalCompletionMissingReasons.length === 0 ? 'Tamamlamaya hazır' : 'Eksik kontrol var'}
+                  </Badge>
+                </div>
+                {finalCompletionMissingReasons.length > 0 ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
+                    {finalCompletionMissingReasons.map((reason) => (
+                      <p key={reason}>- {reason}</p>
+                    ))}
+                  </div>
+                ) : null}
+                <label className="grid gap-1 text-xs font-semibold text-violet-900">
+                  Son kontrol notu
+                  <Input value={completionReviewNote} onChange={(event) => setCompletionReviewNote(event.target.value)} placeholder="Operasyon son kontrol notu" />
+                </label>
+                <div className="flex justify-end">
+                  <Button type="button" onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, { note: completionReviewNote || null })}>
+                    Son kontrolü tamamla
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             {onFieldDocumentReview ? (
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2870,32 +2898,43 @@ export function ServiceRequestDetails({
                     {fieldDocumentRejectedNotes[0]}
                   </div>
                 ) : null}
-                <Input
-                  value={fieldDocumentOverallRejectNote}
-                  onChange={(event) => setFieldDocumentOverallRejectNote(event.target.value)}
-                  placeholder="Uygun değil açıklaması"
-                  disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0}
-                />
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0}
-                    onClick={() => void reviewFieldDocumentsOverall('accepted')}
-                    className="border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
-                  >
-                    {isFieldDocumentOverallReviewBusy ? 'Kaydediliyor...' : 'Uygun'}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0 || fieldDocumentOverallRejectNote.trim() === ''}
-                    onClick={() => void reviewFieldDocumentsOverall('rejected')}
-                    className="border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100"
-                  >
-                    {isFieldDocumentOverallReviewBusy ? 'Kaydediliyor...' : 'Uygun değil'}
-                  </Button>
-                </div>
+                {showFieldDocumentOverallReviewControls ? (
+                  <>
+                    <Input
+                      value={fieldDocumentOverallRejectNote}
+                      onChange={(event) => setFieldDocumentOverallRejectNote(event.target.value)}
+                      placeholder="Uygun değil açıklaması"
+                      disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0}
+                    />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0}
+                        onClick={() => void reviewFieldDocumentsOverall('accepted')}
+                        className="border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      >
+                        {isFieldDocumentOverallReviewBusy ? 'Kaydediliyor...' : 'Uygun'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={isFieldDocumentOverallReviewBusy || reviewableFieldDocuments.length === 0 || fieldDocumentOverallRejectNote.trim() === ''}
+                        onClick={() => void reviewFieldDocumentsOverall('rejected')}
+                        className="border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100"
+                      >
+                        {isFieldDocumentOverallReviewBusy ? 'Kaydediliyor...' : 'Uygun değil'}
+                      </Button>
+                    </div>
+                  </>
+                ) : reviewableFieldDocuments.length > 0 ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <span className="text-sm font-semibold text-slate-700">{fieldDocumentOverallReviewLabel}</span>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setFieldDocumentOverallReviewEditing(true)}>
+                      Kararı değiştir
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <div className="grid gap-2 md:grid-cols-3">

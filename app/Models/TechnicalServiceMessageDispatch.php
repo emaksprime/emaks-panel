@@ -10,6 +10,10 @@ class TechnicalServiceMessageDispatch extends Model
     public const STATUS_SENT = 'sent';
     public const STATUS_FAILED = 'failed';
     public const STATUS_NOT_CONFIGURED = 'not_configured';
+    public const STATUS_SUPPRESSED_TEST_FIXTURE = 'suppressed_test_fixture';
+    public const STATUS_SUPPRESSED_TESTING_ENVIRONMENT = 'suppressed_testing_environment';
+    public const STATUS_SUPPRESSED_REAL_SEND_DISABLED = 'suppressed_real_send_disabled';
+    public const STATUS_SUPPRESSED_DUPLICATE = 'suppressed_duplicate';
 
     protected $table = 'technical_service_message_dispatches';
 

@@ -47,6 +47,12 @@ class EvolutionWhatsAppMessageService
             $originalPhone,
             $testMode,
         );
+        $messageText = $this->messageTextWithJobLink(
+            $messageText,
+            $targetType,
+            $workflowPayload['job_link'] ?? null,
+        );
+        $workflowPayload['text'] = $messageText;
 
         $payload = [
             ...$workflowPayload,
@@ -58,6 +64,8 @@ class EvolutionWhatsAppMessageService
             'mrn' => $request?->mrn,
             'technical_service_request_id' => $request?->id,
             'text' => $messageText,
+            'message_type' => (string) ($context['message_type'] ?? $event),
+            'force_resend' => (bool) ($context['force_resend'] ?? false),
             'context' => $context,
             'metadata' => [
                 'source' => 'emaks_panel',
@@ -80,6 +88,23 @@ class EvolutionWhatsAppMessageService
             'request_payload' => $payload,
             'sent_by' => $user?->id,
         ]);
+
+        $suppression = $this->suppressionStatus($request, $context);
+        if ($suppression !== null) {
+            return $this->markSuppressed($dispatch, $suppression['status'], $suppression['message']);
+        }
+
+        if (! (bool) ($context['force_resend'] ?? false)) {
+            $duplicate = $this->recentSentDuplicate($dispatch, $event, $targetType, $resolvedPhone, $request, $assignmentOffer, $earning);
+            if ($duplicate instanceof TechnicalServiceMessageDispatch) {
+                return $this->markSuppressed(
+                    $dispatch,
+                    TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE,
+                    'Bu mesaj son 10 dakika içinde gönderildi.',
+                    ['duplicate_dispatch_id' => $duplicate->id],
+                );
+            }
+        }
 
         $url = trim((string) config('services.evolution.n8n_webhook_url', ''));
         if ($url === '' || $resolvedPhone === '') {
@@ -113,6 +138,11 @@ class EvolutionWhatsAppMessageService
     public function testMode(): bool
     {
         return filter_var(config('services.evolution.test_mode', true), FILTER_VALIDATE_BOOL);
+    }
+
+    public function realSendEnabled(): bool
+    {
+        return filter_var(config('services.evolution.real_send_enabled', false), FILTER_VALIDATE_BOOL);
     }
 
     public function normalizePhone(?string $phone): string
@@ -220,6 +250,127 @@ class EvolutionWhatsAppMessageService
             'note' => $this->firstFilled($flat['note'] ?? null),
             'text' => $messageText,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array{status:string,message:string}|null
+     */
+    private function suppressionStatus(?TechnicalServiceRequest $request, array $context): ?array
+    {
+        $mrn = (string) ($request?->mrn ?? ($context['mrn'] ?? ''));
+        if ($this->isTestFixtureMrn($mrn) && ! filter_var(config('services.evolution.allow_test_fixture_send', false), FILTER_VALIDATE_BOOL)) {
+            return [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE,
+                'message' => 'Test fixture MRN için gerçek WhatsApp gönderimi engellendi.',
+            ];
+        }
+
+        if (app()->environment('testing') && ! $this->realSendEnabled()) {
+            return [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,
+                'message' => 'PHPUnit/test ortamında gerçek WhatsApp gönderimi engellendi.',
+            ];
+        }
+
+        if (($context['browser_smoke'] ?? false) && ! filter_var(config('services.evolution.allow_browser_smoke_send', false), FILTER_VALIDATE_BOOL)) {
+            return [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+                'message' => 'Browser smoke için gerçek WhatsApp gönderimi engellendi.',
+            ];
+        }
+
+        if (! $this->realSendEnabled()) {
+            return [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+                'message' => 'Gerçek WhatsApp gönderimi kapalı. EVOLUTION_REAL_SEND_ENABLED=true olmalı.',
+            ];
+        }
+
+        return null;
+    }
+
+    private function isTestFixtureMrn(string $mrn): bool
+    {
+        foreach (['MRN-TEST', 'MRN-ACTION', 'ACCEPT-', 'TEST-'] as $prefix) {
+            if (str_starts_with($mrn, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $extraResponse
+     */
+    private function markSuppressed(
+        TechnicalServiceMessageDispatch $dispatch,
+        string $status,
+        string $message,
+        array $extraResponse = [],
+    ): TechnicalServiceMessageDispatch {
+        $dispatch->forceFill([
+            'status' => $status,
+            'response_payload' => [
+                'status' => 'suppressed',
+                'message' => $message,
+                ...$extraResponse,
+            ],
+            'error_message' => $message,
+        ])->save();
+
+        return $dispatch;
+    }
+
+    private function recentSentDuplicate(
+        TechnicalServiceMessageDispatch $current,
+        string $event,
+        string $targetType,
+        string $resolvedPhone,
+        ?TechnicalServiceRequest $request,
+        ?TechnicalServiceAssignmentOffer $assignmentOffer,
+        ?TechnicalServiceEarning $earning,
+    ): ?TechnicalServiceMessageDispatch {
+        if ($resolvedPhone === '') {
+            return null;
+        }
+
+        $minutes = max(1, (int) config('services.evolution.idempotency_window_minutes', 10));
+        $query = TechnicalServiceMessageDispatch::query()
+            ->where('id', '<>', $current->id)
+            ->where('event', $event)
+            ->where('target_type', $targetType)
+            ->where('target_phone', $resolvedPhone)
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)
+            ->where('created_at', '>=', now()->subMinutes($minutes));
+
+        $this->whereNullableKey($query, 'technical_service_request_id', $request?->id);
+        $this->whereNullableKey($query, 'technical_service_assignment_offer_id', $assignmentOffer?->id);
+        $this->whereNullableKey($query, 'technical_service_earning_id', $earning?->id);
+
+        return $query->latest('id')->first();
+    }
+
+    private function whereNullableKey($query, string $column, mixed $value): void
+    {
+        if ($value === null) {
+            $query->whereNull($column);
+
+            return;
+        }
+
+        $query->where($column, $value);
+    }
+
+    private function messageTextWithJobLink(string $messageText, string $targetType, mixed $jobLink): string
+    {
+        $link = trim((string) $jobLink);
+        if ($link === '' || ! in_array($targetType, ['technician', 'ops'], true) || str_contains($messageText, $link)) {
+            return $messageText;
+        }
+
+        return rtrim($messageText)."\n\nİş linki:\n".$link;
     }
 
     /**
