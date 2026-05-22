@@ -52,4 +52,9 @@ class WarehouseRackOperation extends Model
     {
         return $this->belongsTo(User::class, 'completed_by');
     }
+
+    public function createdBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
 }

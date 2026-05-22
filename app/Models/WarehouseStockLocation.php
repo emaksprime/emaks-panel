@@ -13,6 +13,7 @@ class WarehouseStockLocation extends Model
         'rack_code',
         'stock_code',
         'stock_name',
+        'category_name',
         'quantity',
         'source',
         'last_operation_no',

@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\WarehouseRackReportRequest;
+use App\Http\Requests\WarehouseSerialHistoryRequest;
 use App\Services\WarehouseRackReportService;
+use App\Services\WarehouseSerialHistoryService;
 use Illuminate\Http\JsonResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -12,6 +14,7 @@ class WarehouseRackReportController extends Controller
 {
     public function __construct(
         private readonly WarehouseRackReportService $reports,
+        private readonly WarehouseSerialHistoryService $serialHistory,
     ) {
     }
 
@@ -45,6 +48,7 @@ class WarehouseRackReportController extends Controller
                 'Depo',
                 'Raf',
                 'Tip',
+                'Kategori Adı',
                 'Stok Kodu',
                 'Stok Adı',
                 'Seri No',
@@ -63,5 +67,10 @@ class WarehouseRackReportController extends Controller
             'Content-Type' => 'text/csv; charset=UTF-8',
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
         ]);
+    }
+
+    public function serialHistory(WarehouseSerialHistoryRequest $request): JsonResponse
+    {
+        return response()->json($this->serialHistory->history($request->validated('serial_no')));
     }
 }

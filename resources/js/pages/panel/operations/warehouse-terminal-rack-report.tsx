@@ -1,5 +1,5 @@
 import { Head, Link } from '@inertiajs/react';
-import { ArrowLeft, ChevronDown, ChevronRight, Download, RotateCcw, Search } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Download, Eye, RotateCcw, Search, X } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '@/lib/api';
@@ -14,6 +14,7 @@ type RackReportItem = {
     rack_name: string | null;
     stock_code: string | null;
     stock_name: string | null;
+    category_name: string | null;
     serial_no: string | null;
     quantity: number | string;
     status: string | null;
@@ -36,6 +37,41 @@ type WarehouseLookupResponse = {
     items?: WarehouseLookup[];
 };
 
+type SerialHistoryItem = {
+    source: 'panel' | 'mikro';
+    date: string | null;
+    movement_type: string | null;
+    operation_no: string | null;
+    source_warehouse_no: number | string | null;
+    source_warehouse_name: string | null;
+    source_rack_code: string | null;
+    source_rack_name: string | null;
+    target_warehouse_no: number | string | null;
+    target_warehouse_name: string | null;
+    target_rack_code: string | null;
+    target_rack_name: string | null;
+    document_no: string | null;
+    user: string | null;
+    description: string | null;
+};
+
+type SerialHistoryResponse = {
+    serial_no: string;
+    stock_code: string | null;
+    stock_name: string | null;
+    category_name: string | null;
+    current_location: {
+        warehouse_no: number | string | null;
+        warehouse_name: string | null;
+        rack_code: string | null;
+        rack_name: string | null;
+        status: string | null;
+        last_seen_at: string | null;
+    } | null;
+    items: SerialHistoryItem[];
+    message: string | null;
+};
+
 type RackReportGroup = {
     key: string;
     rack_code: string;
@@ -49,6 +85,7 @@ type RackReportGroup = {
 
 const rackReportUrl = '/api/operations/warehouse-terminal/rack-report';
 const rackReportExportUrl = '/api/operations/warehouse-terminal/rack-report/export';
+const rackReportSerialHistoryUrl = '/api/operations/warehouse-terminal/rack-report/serial-history';
 const lookupWarehousesUrl = '/api/operations/warehouse-terminal/lookups/warehouses';
 
 function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
@@ -94,6 +131,10 @@ function serialLabel(item: RackReportItem): string {
 
 function rackMovementDateLabel(item: RackReportItem): string {
     return formatValue(item.last_seen_at || item.updated_at);
+}
+
+function categoryLabel(value: string | null | undefined): string {
+    return formatValue(value);
 }
 
 function compareText(left: string | number | null | undefined, right: string | number | null | undefined): number {
@@ -157,6 +198,9 @@ export default function WarehouseTerminalRackReport() {
     const [expandedRacks, setExpandedRacks] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
     const [exporting, setExporting] = useState(false);
+    const [historyLoadingSerial, setHistoryLoadingSerial] = useState<string | null>(null);
+    const [serialHistory, setSerialHistory] = useState<SerialHistoryResponse | null>(null);
+    const [serialHistoryError, setSerialHistoryError] = useState<string | null>(null);
     const [message, setMessage] = useState<string | null>(null);
     const rackGroups = useMemo(() => buildRackGroups(items), [items]);
 
@@ -280,6 +324,35 @@ export default function WarehouseTerminalRackReport() {
             setExporting(false);
         }
     }, [itemType, rackCode, search, warehouseNo]);
+
+    const openSerialHistory = useCallback(async (serialNo: string) => {
+        setHistoryLoadingSerial(serialNo);
+        setSerialHistoryError(null);
+
+        try {
+            const response = await apiRequest(`${rackReportSerialHistoryUrl}?${buildQuery({ serial_no: serialNo })}`) as SerialHistoryResponse;
+            setSerialHistory(response);
+        } catch {
+            setSerialHistoryError('Seri hareket geçmişi alınamadı.');
+            setSerialHistory({
+                serial_no: serialNo,
+                stock_code: null,
+                stock_name: null,
+                category_name: null,
+                current_location: null,
+                items: [],
+                message: null,
+            });
+        } finally {
+            setHistoryLoadingSerial(null);
+        }
+    }, []);
+
+    const closeSerialHistory = () => {
+        setSerialHistory(null);
+        setSerialHistoryError(null);
+        setHistoryLoadingSerial(null);
+    };
 
     return (
         <>
@@ -452,16 +525,46 @@ export default function WarehouseTerminalRackReport() {
 
                                         {isExpanded ? (
                                             <div className="divide-y divide-slate-100 border-t border-slate-100">
+                                                <div className="hidden bg-slate-50 px-4 py-2 text-xs font-bold uppercase text-slate-500 md:grid md:grid-cols-[minmax(180px,1.2fr)_minmax(140px,0.8fr)_minmax(170px,1fr)_80px_160px_auto] md:items-center md:gap-3">
+                                                    <span>Stok Adı</span>
+                                                    <span>Kategori Adı</span>
+                                                    <span>Seri No</span>
+                                                    <span>Miktar</span>
+                                                    <span>Son Raf Hareketi</span>
+                                                    <span>Tip</span>
+                                                </div>
                                                 {group.items.map((item) => (
                                                     <div
                                                         key={`${item.item_type}-${item.warehouse_no}-${item.rack_code}-${item.stock_code}-${item.serial_no ?? 'stock'}`}
-                                                        className="grid gap-2 px-3 py-2.5 text-sm md:grid-cols-[minmax(220px,1.4fr)_minmax(170px,1fr)_90px_170px_auto] md:items-center md:gap-3 md:px-4"
+                                                        className="grid gap-2 px-3 py-2.5 text-sm md:grid-cols-[minmax(180px,1.2fr)_minmax(140px,0.8fr)_minmax(170px,1fr)_80px_160px_auto] md:items-center md:gap-3 md:px-4"
                                                     >
-                                                        <p className="break-words font-semibold leading-5 text-slate-950">{formatValue(item.stock_name)}</p>
-                                                        <p className="break-words leading-5 text-slate-700">
-                                                            <span className="font-semibold text-slate-500">Seri: </span>
-                                                            <span className="font-semibold text-slate-800">{serialLabel(item)}</span>
-                                                        </p>
+                                                        <div className="grid gap-1">
+                                                            <p className="break-words font-semibold leading-5 text-slate-950">{formatValue(item.stock_name)}</p>
+                                                            <p className="break-words text-xs font-semibold leading-4 text-slate-500 md:hidden">
+                                                                Kategori: {categoryLabel(item.category_name)}
+                                                            </p>
+                                                        </div>
+                                                        <p className="hidden break-words font-semibold leading-5 text-slate-700 md:block">{categoryLabel(item.category_name)}</p>
+                                                        <div className="flex min-w-0 items-center gap-1.5 leading-5 text-slate-700">
+                                                            <span className="shrink-0 font-semibold text-slate-500">Seri: </span>
+                                                            <span className="min-w-0 break-words font-semibold text-slate-800">{serialLabel(item)}</span>
+                                                            {item.item_type === 'serial' && item.serial_no ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void openSerialHistory(item.serial_no as string)}
+                                                                    disabled={historyLoadingSerial === item.serial_no}
+                                                                    className="inline-grid size-8 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-wait disabled:opacity-60"
+                                                                    aria-label={`${item.serial_no} seri hareket geçmişini aç`}
+                                                                    title="Seri hareket geçmişi"
+                                                                >
+                                                                    {historyLoadingSerial === item.serial_no ? (
+                                                                        <span className="text-xs font-bold">...</span>
+                                                                    ) : (
+                                                                        <Eye className="size-4" />
+                                                                    )}
+                                                                </button>
+                                                            ) : null}
+                                                        </div>
                                                         <p className="font-bold text-slate-950">
                                                             <span className="font-semibold text-slate-500 md:hidden">Miktar: </span>
                                                             {formatQuantity(item.quantity)}
@@ -483,6 +586,117 @@ export default function WarehouseTerminalRackReport() {
                         </div>
                     </section>
                 </div>
+
+                {serialHistory ? (
+                    <div className="fixed inset-0 z-50 bg-slate-950/40 px-0 py-0 md:px-6 md:py-6">
+                        <div className="ml-auto flex h-full w-full flex-col overflow-hidden bg-white shadow-2xl md:max-w-[720px] md:rounded-lg">
+                            <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4">
+                                <div className="min-w-0">
+                                    <p className="text-xs font-bold uppercase text-blue-700">Seri Hareket Geçmişi</p>
+                                    <h2 className="mt-1 break-words text-xl font-bold text-slate-950">{formatValue(serialHistory.serial_no)}</h2>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={closeSerialHistory}
+                                    className="grid size-10 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50"
+                                    aria-label="Kapat"
+                                >
+                                    <X className="size-5" />
+                                </button>
+                            </header>
+
+                            <div className="grid flex-1 gap-4 overflow-y-auto px-4 py-4">
+                                {serialHistoryError ? (
+                                    <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-800">
+                                        {serialHistoryError}
+                                    </div>
+                                ) : null}
+
+                                {serialHistory.message ? (
+                                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+                                        {serialHistory.message}
+                                    </div>
+                                ) : null}
+
+                                <section className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm sm:grid-cols-2">
+                                    <div>
+                                        <p className="text-xs font-bold uppercase text-slate-500">Stok Adı</p>
+                                        <p className="mt-1 break-words font-semibold text-slate-950">{formatValue(serialHistory.stock_name)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-bold uppercase text-slate-500">Kategori Adı</p>
+                                        <p className="mt-1 break-words font-semibold text-slate-950">{categoryLabel(serialHistory.category_name)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-bold uppercase text-slate-500">Güncel Depo</p>
+                                        <p className="mt-1 font-semibold text-slate-950">{formatValue(serialHistory.current_location?.warehouse_name)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-bold uppercase text-slate-500">Güncel Raf</p>
+                                        <p className="mt-1 font-semibold text-slate-950">{formatValue(serialHistory.current_location?.rack_name ?? serialHistory.current_location?.rack_code)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-bold uppercase text-slate-500">Durum</p>
+                                        <p className="mt-1 font-semibold text-slate-950">{formatValue(serialHistory.current_location?.status)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-bold uppercase text-slate-500">Son Raf Hareketi</p>
+                                        <p className="mt-1 font-semibold text-slate-950">{formatValue(serialHistory.current_location?.last_seen_at)}</p>
+                                    </div>
+                                </section>
+
+                                <section className="grid gap-2">
+                                    {serialHistory.items.length === 0 ? (
+                                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-4 text-sm font-semibold text-slate-600">
+                                            Bu seri için hareket geçmişi bulunamadı.
+                                        </div>
+                                    ) : (
+                                        serialHistory.items.map((historyItem, index) => (
+                                            <article key={`${historyItem.source}-${historyItem.date ?? index}-${historyItem.operation_no ?? historyItem.document_no ?? index}`} className="rounded-lg border border-slate-200 bg-white p-3">
+                                                <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                                                    <div>
+                                                        <p className="text-sm font-bold text-slate-950">{formatValue(historyItem.movement_type)}</p>
+                                                        <p className="text-xs font-semibold uppercase text-slate-500">{historyItem.source === 'panel' ? 'Panel' : 'Mikro'} / {formatValue(historyItem.date)}</p>
+                                                    </div>
+                                                    <span className="w-fit rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
+                                                        {historyItem.source === 'panel' ? 'Raf' : 'Mikro'}
+                                                    </span>
+                                                </div>
+
+                                                <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                                                    <div>
+                                                        <dt className="font-semibold text-slate-500">Kaynak Depo / Raf</dt>
+                                                        <dd className="break-words font-semibold text-slate-800">
+                                                            {formatValue(historyItem.source_warehouse_name)} / {formatValue(historyItem.source_rack_name ?? historyItem.source_rack_code)}
+                                                        </dd>
+                                                    </div>
+                                                    <div>
+                                                        <dt className="font-semibold text-slate-500">Hedef Depo / Raf</dt>
+                                                        <dd className="break-words font-semibold text-slate-800">
+                                                            {formatValue(historyItem.target_warehouse_name)} / {formatValue(historyItem.target_rack_name ?? historyItem.target_rack_code)}
+                                                        </dd>
+                                                    </div>
+                                                    <div>
+                                                        <dt className="font-semibold text-slate-500">Evrak / İşlem No</dt>
+                                                        <dd className="break-words font-semibold text-slate-800">{formatValue(historyItem.document_no ?? historyItem.operation_no)}</dd>
+                                                    </div>
+                                                    <div>
+                                                        <dt className="font-semibold text-slate-500">Kullanıcı</dt>
+                                                        <dd className="break-words font-semibold text-slate-800">{formatValue(historyItem.user)}</dd>
+                                                    </div>
+                                                    <div className="sm:col-span-2">
+                                                        <dt className="font-semibold text-slate-500">Açıklama</dt>
+                                                        <dd className="break-words font-semibold text-slate-800">{formatValue(historyItem.description)}</dd>
+                                                    </div>
+                                                </dl>
+                                            </article>
+                                        ))
+                                    )}
+                                </section>
+                            </div>
+                        </div>
+                    </div>
+                ) : null}
             </main>
         </>
     );

@@ -12,6 +12,7 @@ class WarehouseSerialLocation extends Model
         'serial_no',
         'stock_code',
         'stock_name',
+        'category_name',
         'warehouse_no',
         'rack_code',
         'status',

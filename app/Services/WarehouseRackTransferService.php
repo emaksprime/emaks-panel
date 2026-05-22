@@ -282,6 +282,7 @@ class WarehouseRackTransferService
                 'serial_no' => $serialNo,
                 'stock_code' => $resolvedStockCode,
                 'stock_name' => $serial->stock_name,
+                'category_name' => $serial->category_name,
                 'barcode' => $this->blankToNull($payload['barcode'] ?? null),
                 'quantity' => 1,
                 'status' => 'completed',
@@ -355,6 +356,7 @@ class WarehouseRackTransferService
         if ($target) {
             $target->forceFill([
                 'quantity' => (float) $target->quantity + $quantity,
+                'category_name' => $target->category_name ?: $source->category_name,
                 'last_operation_no' => $operation->operation_no,
                 'last_seen_at' => now(),
             ])->save();
@@ -364,6 +366,7 @@ class WarehouseRackTransferService
                 'rack_code' => $targetRackCode,
                 'stock_code' => $stockCode,
                 'stock_name' => $source->stock_name,
+                'category_name' => $source->category_name,
                 'quantity' => $quantity,
                 'source' => 'rack_transfer',
                 'last_operation_no' => $operation->operation_no,
@@ -381,6 +384,7 @@ class WarehouseRackTransferService
             'serial_no' => null,
             'stock_code' => $stockCode,
             'stock_name' => $source->stock_name,
+            'category_name' => $source->category_name,
             'barcode' => $this->blankToNull($payload['barcode'] ?? null),
             'quantity' => $quantity,
             'status' => 'completed',
@@ -561,6 +565,7 @@ class WarehouseRackTransferService
         if ($target) {
             $target->forceFill([
                 'quantity' => (float) $target->quantity + $quantity,
+                'category_name' => $target->category_name ?: $source->category_name,
                 'last_operation_no' => $operation->operation_no,
                 'last_seen_at' => now(),
             ])->save();
@@ -570,6 +575,7 @@ class WarehouseRackTransferService
                 'rack_code' => $operation->target_rack_code,
                 'stock_code' => $operation->stock_code,
                 'stock_name' => $source->stock_name,
+                'category_name' => $source->category_name,
                 'quantity' => $quantity,
                 'source' => 'rack_transfer',
                 'last_operation_no' => $operation->operation_no,

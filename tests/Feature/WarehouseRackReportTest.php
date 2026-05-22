@@ -4,12 +4,16 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Models\WarehouseRack;
+use App\Models\WarehouseRackOperation;
+use App\Models\WarehouseRackOperationItem;
 use App\Models\WarehouseSerialLocation;
 use App\Models\WarehouseStockLocation;
+use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\WarehouseRackReportService;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
+use RuntimeException;
 use Tests\TestCase;
 
 class WarehouseRackReportTest extends TestCase
@@ -37,6 +41,7 @@ class WarehouseRackReportTest extends TestCase
             'serial_no' => 'SN-RPT-001',
             'stock_code' => 'STK-SERIAL',
             'stock_name' => 'Serili Rapor Ürün',
+            'category_name' => 'Elektronik Kilit',
             'warehouse_no' => 1,
             'rack_code' => 'A-01',
             'status' => 'in_stock',
@@ -49,6 +54,7 @@ class WarehouseRackReportTest extends TestCase
             ->assertJsonPath('items.0.item_type', 'serial')
             ->assertJsonPath('items.0.quantity', 1)
             ->assertJsonPath('items.0.rack_name', 'A Rafı')
+            ->assertJsonPath('items.0.category_name', 'Elektronik Kilit')
             ->assertJsonPath('summary.total_serial_count', 1);
     }
 
@@ -222,6 +228,7 @@ class WarehouseRackReportTest extends TestCase
             'serial_no' => 'SN-EXPORT-001',
             'stock_code' => 'STK-EXPORT',
             'stock_name' => 'Türkçe Export Ürün',
+            'category_name' => 'Kilit Seti',
             'warehouse_no' => 1,
             'rack_code' => 'A-04',
             'status' => 'in_stock',
@@ -245,6 +252,7 @@ class WarehouseRackReportTest extends TestCase
             'Depo',
             'Raf',
             'Tip',
+            'Kategori Adı',
             'Stok Kodu',
             'Stok Adı',
             'Seri No',
@@ -253,8 +261,9 @@ class WarehouseRackReportTest extends TestCase
             'Son İşlem No',
             'Son Raf Hareketi',
         ], $rows[0]);
-        $this->assertSame('STK-EXPORT', $rows[1][3]);
-        $this->assertSame('Türkçe Export Ürün', $rows[1][4]);
+        $this->assertSame('Kilit Seti', $rows[1][3]);
+        $this->assertSame('STK-EXPORT', $rows[1][4]);
+        $this->assertSame('Türkçe Export Ürün', $rows[1][5]);
     }
 
     public function test_rack_report_export_applies_filters_and_returns_flat_rows(): void
@@ -294,10 +303,10 @@ class WarehouseRackReportTest extends TestCase
         $content = $response->streamedContent();
         $rows = $this->csvRows($content);
         $this->assertCount(3, $rows);
-        $this->assertSame('STK-FLAT-SERIAL', $rows[1][3]);
-        $this->assertSame('STK-FLAT-STOCK', $rows[2][3]);
-        $this->assertCount(10, $rows[1]);
-        $this->assertCount(10, $rows[2]);
+        $this->assertSame('STK-FLAT-SERIAL', $rows[1][4]);
+        $this->assertSame('STK-FLAT-STOCK', $rows[2][4]);
+        $this->assertCount(11, $rows[1]);
+        $this->assertCount(11, $rows[2]);
         $this->assertStringNotContainsString('STK-FLAT-DROP', $content);
     }
 
@@ -343,6 +352,147 @@ class WarehouseRackReportTest extends TestCase
             ->getJson('/api/operations/warehouse-terminal/rack-report/export')
             ->assertUnprocessable()
             ->assertJsonPath('message', 'Rapor satır sayısı çok yüksek. Lütfen filtre kullanın.');
+    }
+
+    public function test_serial_history_endpoint_returns_panel_rack_transfer_history(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock', 'full_name' => 'Local Admin']);
+
+        WarehouseRack::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'rack_name' => 'Kaynak Raf',
+            'is_active' => true,
+        ]);
+        WarehouseRack::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'B-02',
+            'rack_name' => 'Hedef Raf',
+            'is_active' => true,
+        ]);
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'SN-HISTORY-001',
+            'stock_code' => 'STK-HISTORY',
+            'stock_name' => 'Geçmiş Ürün',
+            'category_name' => 'Geçmiş Kategori',
+            'warehouse_no' => 1,
+            'rack_code' => 'B-02',
+            'status' => 'in_stock',
+            'source' => 'manual',
+            'last_seen_at' => now(),
+        ]);
+        $operation = WarehouseRackOperation::query()->create([
+            'operation_no' => 'RF-HISTORY-001',
+            'operation_type' => 'rack_transfer',
+            'source_warehouse_no' => 1,
+            'source_rack_code' => 'A-01',
+            'target_warehouse_no' => 1,
+            'target_rack_code' => 'B-02',
+            'serial_no' => 'SN-HISTORY-001',
+            'stock_code' => 'STK-HISTORY',
+            'quantity' => 1,
+            'status' => 'completed',
+            'created_by' => $user->id,
+            'completed_by' => $user->id,
+            'completed_at' => now(),
+        ]);
+        WarehouseRackOperationItem::query()->create([
+            'operation_id' => $operation->id,
+            'line_no' => 1,
+            'item_type' => 'serial',
+            'warehouse_no' => 1,
+            'source_rack_code' => 'A-01',
+            'target_rack_code' => 'B-02',
+            'serial_no' => 'SN-HISTORY-001',
+            'stock_code' => 'STK-HISTORY',
+            'stock_name' => 'Geçmiş Ürün',
+            'category_name' => 'Geçmiş Kategori',
+            'quantity' => 1,
+            'status' => 'completed',
+        ]);
+
+        $this->mock(MikroSerialNumberService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('history')
+                ->once()
+                ->with('SN-HISTORY-001')
+                ->andReturn(['items' => []]);
+        });
+
+        $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/rack-report/serial-history?serial_no=SN-HISTORY-001')
+            ->assertOk()
+            ->assertJsonPath('serial_no', 'SN-HISTORY-001')
+            ->assertJsonPath('stock_name', 'Geçmiş Ürün')
+            ->assertJsonPath('category_name', 'Geçmiş Kategori')
+            ->assertJsonPath('current_location.rack_code', 'B-02')
+            ->assertJsonPath('items.0.source', 'panel')
+            ->assertJsonPath('items.0.movement_type', 'Raf Transferi')
+            ->assertJsonPath('items.0.operation_no', 'RF-HISTORY-001')
+            ->assertJsonPath('items.0.source_rack_name', 'Kaynak Raf')
+            ->assertJsonPath('items.0.target_rack_name', 'Hedef Raf')
+            ->assertJsonPath('items.0.user', 'Local Admin');
+    }
+
+    public function test_serial_history_endpoint_returns_empty_items_for_unknown_serial(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        $this->mock(MikroSerialNumberService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('history')
+                ->once()
+                ->with('SN-UNKNOWN')
+                ->andReturn(['items' => []]);
+        });
+
+        $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/rack-report/serial-history?serial_no=SN-UNKNOWN')
+            ->assertOk()
+            ->assertJsonPath('serial_no', 'SN-UNKNOWN')
+            ->assertJsonPath('current_location', null)
+            ->assertJsonPath('items', []);
+    }
+
+    public function test_serial_history_endpoint_keeps_panel_history_when_mikro_fails(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+        $operation = WarehouseRackOperation::query()->create([
+            'operation_no' => 'RF-MIKRO-FAIL',
+            'operation_type' => 'rack_transfer',
+            'source_warehouse_no' => 1,
+            'source_rack_code' => 'A-01',
+            'target_warehouse_no' => 1,
+            'target_rack_code' => 'B-02',
+            'serial_no' => 'SN-MIKRO-FAIL',
+            'stock_code' => 'STK-MIKRO-FAIL',
+            'quantity' => 1,
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+        WarehouseRackOperationItem::query()->create([
+            'operation_id' => $operation->id,
+            'line_no' => 1,
+            'item_type' => 'serial',
+            'warehouse_no' => 1,
+            'source_rack_code' => 'A-01',
+            'target_rack_code' => 'B-02',
+            'serial_no' => 'SN-MIKRO-FAIL',
+            'stock_code' => 'STK-MIKRO-FAIL',
+            'quantity' => 1,
+            'status' => 'completed',
+        ]);
+
+        $this->mock(MikroSerialNumberService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('history')
+                ->once()
+                ->with('SN-MIKRO-FAIL')
+                ->andThrow(new RuntimeException('Gateway kapalı'));
+        });
+
+        $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/rack-report/serial-history?serial_no=SN-MIKRO-FAIL')
+            ->assertOk()
+            ->assertJsonPath('items.0.source', 'panel')
+            ->assertJsonPath('message', 'Mikro seri geçmişi alınamadı; panel raf hareketleri gösteriliyor.');
     }
 
     public function test_user_without_warehouse_terminal_permission_cannot_access_report(): void

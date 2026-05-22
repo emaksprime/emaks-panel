@@ -19,6 +19,7 @@ class WarehouseRackOperationItem extends Model
         'serial_no',
         'stock_code',
         'stock_name',
+        'category_name',
         'barcode',
         'quantity',
         'status',
