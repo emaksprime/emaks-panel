@@ -822,13 +822,17 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                   onClick={() => openJob(job)}
                   className={`w-full rounded-xl border p-3 text-left shadow-sm transition hover:border-slate-300 ${cardToneClass(job.card_tone)} ${selectedJob?.id === job.id ? 'ring-2 ring-slate-900' : ''}`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="font-semibold text-slate-950">{job.mrn}</span>
+                  <div className="rounded-xl border border-blue-100 bg-white/85 px-3 py-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-500">Randevu</p>
+                    <p className="mt-1 text-base font-semibold text-slate-950">{job.appointment_label ?? job.appointment_at ?? 'Randevu bekleniyor'}</p>
+                  </div>
+                  <div className="mt-3 flex items-start justify-between gap-2">
+                    <span className="font-semibold text-slate-950">{job.customer_name ?? 'Müşteri'}</span>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{job.service_stage_label ?? job.status_label ?? '-'}</span>
                   </div>
-                  <p className="mt-2 text-sm font-medium text-slate-800">{job.customer_name ?? 'Müşteri'}</p>
+                  {job.customer_phone ? <p className="mt-1 text-xs font-semibold text-blue-700">{job.customer_phone}</p> : null}
                   <p className="mt-1 text-xs text-slate-500">{[job.city, job.district].filter(Boolean).join(' / ') || '-'}</p>
-                  <p className="mt-1 text-xs font-semibold text-slate-600">Randevu: {job.appointment_label ?? job.appointment_at ?? '-'}</p>
+                  <p className="mt-1 font-mono text-[11px] text-slate-500">{job.mrn}</p>
                   <div className="mt-2 rounded-lg border border-emerald-100 bg-white/80 px-2.5 py-2 text-xs text-emerald-900">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold">Hakediş</span>
@@ -909,6 +913,7 @@ function ServiceJobDetail({
   const [completionResult, setCompletionResult] = useState('completed')
   const [note, setNote] = useState('')
   const [photoFiles, setPhotoFiles] = useState<Record<string, File | null>>({})
+  const [photoPickerField, setPhotoPickerField] = useState<string | null>(null)
   const [otpNote, setOtpNote] = useState('')
   const [supportType, setSupportType] = useState('spare_part')
   const [supportDescription, setSupportDescription] = useState('')
@@ -953,6 +958,8 @@ function ServiceJobDetail({
       || (field === 'after_photo' && job.photo_counts.after > 0)
       || (field === 'warranty_document_photo' && job.photo_counts.general > 0),
   }))
+  const hasSelectedPhoto = Object.values(photoFiles).some((file) => file instanceof File)
+  const photoByField = (field: string) => job.photos.find((photo) => photo.field_code === field)
   const appointmentSlotError = slotValidationMessage(appointmentSlots)
   const canAcceptAppointment = Boolean(job.can_accept)
   const canProposeAppointment = Boolean(job.can_propose_appointment ?? true)
@@ -1079,6 +1086,7 @@ function ServiceJobDetail({
       }
 
       setPhotoFiles({})
+      setPhotoPickerField(null)
       onMessage('Fotoğraflar yüklendi.')
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'Fotoğraf yüklenemedi.')
@@ -1094,7 +1102,6 @@ function ServiceJobDetail({
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">İş detayı</p>
             <h2 className="mt-1 text-2xl font-semibold text-slate-950">{job.mrn}</h2>
-            <p className="mt-1 text-sm text-slate-500">{job.service_stage_label ?? job.status_label ?? '-'}</p>
             {job.badges.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
                 {job.badges.map((badge) => (
@@ -1109,26 +1116,29 @@ function ServiceJobDetail({
             </span>
           )}
         </div>
-        <div className="mt-5 rounded-2xl bg-slate-50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Aksiyon planı</p>
+        <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Randevu</p>
+          <p className="mt-1 text-2xl font-semibold text-slate-950">{job.appointment_label ?? job.appointment_at ?? 'Randevu bekleniyor'}</p>
+          <p className="mt-1 text-sm text-blue-800">{job.kanban_column === 'appointment_confirmed' ? 'Randevu onaylandı' : statusPlan}</p>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <InfoTile label="Müşteri" value={<span className="text-base font-semibold text-slate-950">{job.customer_name ?? '-'}</span>} />
+          <InfoTile label="Telefon" value={job.customer_tel_link ? <a className="text-base font-semibold text-blue-700 hover:underline" href={job.customer_tel_link}>{job.customer_phone ?? 'Ara'}</a> : job.customer_phone ?? '-'} />
+          <InfoTile label="Adres" value={job.address_summary ?? '-'} />
+          <InfoTile label="Harita" value={job.maps_link ? <a className="font-semibold text-blue-700 hover:underline" href={job.maps_link} target="_blank" rel="noreferrer">Google Maps aç</a> : '-'} />
+          <InfoTile label="Ürün" value={[job.product_name, job.model].filter(Boolean).join(' / ') || '-'} />
+          <InfoTile label="Aktivasyon / seri" value={job.serial_no ?? '-'} />
+          <InfoTile label="Km / yol bilgisi" value={job.route_distance_summary ?? '-'} />
+          <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
+        </div>
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:hidden">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bu aşamadaki aksiyon</p>
           <p className="mt-2 text-sm leading-6 text-slate-700">{statusPlan}</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            {job.badges.length === 0 ? (
-              <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">Normal akış</span>
-            ) : job.badges.map((badge) => (
+            {(job.badges.length === 0 ? ['Normal akış'] : job.badges).map((badge) => (
               <span key={badge} className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{badge}</span>
             ))}
           </div>
-        </div>
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <InfoTile label="Müşteri" value={job.customer_name ?? '-'} />
-          <InfoTile label="Telefon" value={job.customer_tel_link ? <a className="font-semibold text-blue-700 hover:underline" href={job.customer_tel_link}>{job.customer_phone ?? 'Ara'}</a> : job.customer_phone ?? '-'} />
-          <InfoTile label="Adres" value={job.address_summary ?? '-'} />
-          <InfoTile label="Harita" value={job.maps_link ? <a className="font-semibold text-blue-700 hover:underline" href={job.maps_link} target="_blank" rel="noreferrer">Google Maps aç</a> : '-'} />
-          <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
-          <InfoTile label="Ürün" value={[job.product_name, job.model].filter(Boolean).join(' / ') || '-'} />
-          <InfoTile label="Aktivasyon / seri" value={job.serial_no ?? '-'} />
-          <InfoTile label="Yol" value={job.route_distance_summary ?? '-'} />
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-950">
@@ -1171,8 +1181,8 @@ function ServiceJobDetail({
             )}
             {job.assignment_offer?.message_payload ? (
               <div className="mt-3 rounded-xl bg-white/80 p-3 text-xs text-blue-900">
-                <p className="font-semibold">Son hakediş mesaj payload'ı hazır.</p>
-                <p className="mt-1">Canlı mesaj gönderimi yapılmadı; operasyon onayıyla kullanılır.</p>
+                <p className="font-semibold">Hakediş bilgisi operasyondan geldi.</p>
+                <p className="mt-1">Detayları hakediş kartında görebilirsiniz.</p>
               </div>
             ) : null}
           </div>
@@ -1193,51 +1203,74 @@ function ServiceJobDetail({
                 ))}
               </div>
             </div>
-            {job.photos.length === 0 ? (
-              <p className="mt-3 text-sm text-slate-500">Mevcut fotoğraf kaydı yok.</p>
-            ) : (
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                {job.photos.map((photo) => (
-                  <div key={photo.id} className="overflow-hidden rounded-xl bg-white text-sm text-slate-600">
-                    {photo.preview_url ? (
-                      <img src={photo.preview_url} alt={photo.label ?? `Fotoğraf #${photo.id}`} className="h-44 w-full object-cover sm:h-52" />
-                    ) : null}
-                    <div className="px-3 py-2">
-                      <p className="font-semibold text-slate-900">{photo.label ?? `Fotoğraf #${photo.id}`}</p>
-                      {photo.review_status ? <p className="text-xs text-slate-500">Uygunluk: {statusLabel(photo.review_status)}</p> : null}
-                      {photo.review_note ? <p className="text-xs text-slate-500">{photo.review_note}</p> : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
-              {portalPhotoFields.map(([field, label]) => (
-                <label key={field} className="grid gap-1 text-xs font-semibold text-slate-600">
-                  {label}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    disabled={readOnly || !job.can_upload_photos}
-                    onChange={(event) => setPhotoFiles({ ...photoFiles, [field]: event.target.files?.[0] ?? null })}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                  />
-                </label>
-              ))}
-              <button
-                type="button"
-                disabled={readOnly || !job.can_upload_photos || actionLoading === 'photos' || Object.values(photoFiles).every((file) => !file)}
-                onClick={() => void submitPhotoUpload()}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Fotoğrafları yükle
-              </button>
+              {portalPhotoFields.map(([field, label]) => {
+                const uploadedPhoto = photoByField(field)
+                const selectedFile = photoFiles[field]
+                const showPicker = !uploadedPhoto || photoPickerField === field
+
+                return (
+                  <div key={field} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-950">{label}</p>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${uploadedPhoto ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                        {uploadedPhoto ? 'Yüklendi' : 'Eksik'}
+                      </span>
+                    </div>
+                    {uploadedPhoto?.preview_url ? (
+                      <img src={uploadedPhoto.preview_url} alt={uploadedPhoto.label ?? label} className="h-40 w-full rounded-xl object-cover" />
+                    ) : uploadedPhoto ? (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">Belge yüklendi.</div>
+                    ) : null}
+                    {uploadedPhoto ? (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {uploadedPhoto.preview_url ? (
+                          <a href={uploadedPhoto.preview_url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-center text-xs font-semibold text-blue-700">
+                            Belgeyi aç
+                          </a>
+                        ) : null}
+                        {job.can_upload_photos ? (
+                          <button type="button" onClick={() => setPhotoPickerField(field)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+                            Değiştir
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {showPicker && job.can_upload_photos ? (
+                      <label className="grid gap-2 text-xs font-semibold text-slate-600">
+                        <span>{uploadedPhoto ? 'Yeni fotoğraf seç' : 'Fotoğraf çek / dosya seç'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          disabled={readOnly || !job.can_upload_photos}
+                          onChange={(event) => setPhotoFiles({ ...photoFiles, [field]: event.target.files?.[0] ?? null })}
+                          className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                        />
+                        {selectedFile ? <span className="text-xs text-emerald-700">{selectedFile.name}</span> : null}
+                      </label>
+                    ) : null}
+                    {uploadedPhoto?.review_status ? <p className="text-xs text-slate-500">Uygunluk: {statusLabel(uploadedPhoto.review_status)}</p> : null}
+                    {uploadedPhoto?.review_note ? <p className="text-xs text-slate-500">{uploadedPhoto.review_note}</p> : null}
+                  </div>
+                )
+              })}
+              {job.can_upload_photos && hasSelectedPhoto ? (
+                <button
+                  type="button"
+                  disabled={readOnly || actionLoading === 'photos'}
+                  onClick={() => void submitPhotoUpload()}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-3"
+                >
+                  Fotoğrafları yükle
+                </button>
+              ) : null}
             </div>
           </div>
         )}
         {job.portal_actions.length > 0 && (
-          <div className="mt-5 rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Portal aksiyonları</p>
+          <details className="mt-5 rounded-2xl bg-slate-50 p-4">
+            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-500">İşlem geçmişi</summary>
             <div className="mt-3 grid gap-2">
               {job.portal_actions.map((action, index) => (
                 <div key={`${action.action}-${action.created_at ?? index}`} className="rounded-xl bg-white px-3 py-2 text-sm">
@@ -1246,10 +1279,10 @@ function ServiceJobDetail({
                 </div>
               ))}
             </div>
-          </div>
+          </details>
         )}
       </div>
-      <aside className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-4 lg:self-start">
+      <aside className="hidden min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-4 lg:block lg:self-start">
         <p className="text-sm font-semibold text-slate-950">Bu aşamadaki aksiyonlar</p>
         <p className="mt-1 text-xs leading-5 text-slate-500">{statusPlan}</p>
         {readOnly && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">Önizleme modu: işlem yapılamaz.</p>}
@@ -1404,38 +1437,38 @@ function ServiceJobDetail({
         </div>
       </aside>
       {!readOnly && !activeActionDialog && (
-        <div className="fixed inset-x-0 bottom-0 z-[80] grid grid-cols-2 gap-2 border-t border-slate-200 bg-white/95 p-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-[80] grid max-h-[42vh] grid-cols-2 gap-2 overflow-y-auto border-t border-slate-200 bg-white/95 p-2.5 pb-[calc(env(safe-area-inset-bottom)+0.625rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
           {job.can_reject && (
-            <button type="button" onClick={() => setActiveActionDialog('reject')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800">
+            <button type="button" onClick={() => setActiveActionDialog('reject')} className="min-h-10 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-2 text-xs font-semibold leading-tight text-rose-800">
               İşi reddet
             </button>
           )}
           {job.can_request_revisit && (
-            <button type="button" onClick={() => setActiveActionDialog('revisit')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+            <button type="button" onClick={() => setActiveActionDialog('revisit')} className="min-h-10 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold leading-tight text-amber-800">
               Tekrar ziyaret
             </button>
           )}
           {job.can_request_support && (
-            <button type="button" onClick={() => setActiveActionDialog('support')} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+            <button type="button" onClick={() => setActiveActionDialog('support')} className="min-h-10 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold leading-tight text-amber-800">
               Ek talep
             </button>
           )}
           {job.can_request_customer_otp && (
-            <button type="button" onClick={() => setActiveActionDialog('otp')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800">
+            <button type="button" onClick={() => setActiveActionDialog('otp')} className="min-h-10 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-2 text-xs font-semibold leading-tight text-violet-800">
               Müşteri onayı
             </button>
           )}
           {job.can_request_price_revision && (
-            <button type="button" onClick={() => setActiveActionDialog('price')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800">
+            <button type="button" onClick={() => setActiveActionDialog('price')} className="min-h-10 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-2 text-xs font-semibold leading-tight text-rose-800">
               Hakediş revize
             </button>
           )}
           {job.can_submit_completion && (
-            <button type="button" onClick={() => setActiveActionDialog('completion')} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+            <button type="button" onClick={() => setActiveActionDialog('completion')} className="min-h-10 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-xs font-semibold leading-tight text-emerald-800">
               Tamamlamaya gönder
             </button>
           )}
-          <button type="button" onClick={() => setActiveActionDialog('note')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+          <button type="button" onClick={() => setActiveActionDialog('note')} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold leading-tight text-slate-700">
             Not ekle
           </button>
         </div>
