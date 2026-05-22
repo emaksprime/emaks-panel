@@ -69,7 +69,7 @@ class WarehouseRackReportService
             $query->where('serial_no', (string) $filters['serial_no']);
         }
 
-        if (($filters['only_in_stock'] ?? false) === true) {
+        if (($filters['only_in_stock'] ?? true) === true) {
             $query->where('status', 'in_stock');
         }
 
@@ -112,7 +112,7 @@ class WarehouseRackReportService
 
         $this->applyCommonFilters($query, $filters);
 
-        if (($filters['only_in_stock'] ?? false) === true) {
+        if (($filters['only_in_stock'] ?? true) === true) {
             $query->where('quantity', '>', 0);
         }
 

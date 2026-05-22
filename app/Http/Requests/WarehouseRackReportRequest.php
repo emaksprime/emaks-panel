@@ -20,7 +20,7 @@ class WarehouseRackReportRequest extends FormRequest
             'serial_no' => trim((string) $this->input('serial_no', '')),
             'search' => trim((string) $this->input('search', '')),
             'item_type' => $this->input('item_type') ?: 'all',
-            'only_in_stock' => $this->boolean('only_in_stock'),
+            'only_in_stock' => $this->has('only_in_stock') ? $this->boolean('only_in_stock') : true,
             'page' => $this->input('page', 1),
             'per_page' => $this->input('per_page', 100),
         ]);

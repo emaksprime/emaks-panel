@@ -1,5 +1,5 @@
 import { Head, Link } from '@inertiajs/react';
-import { ArrowLeft, Boxes, Filter, Layers3, PackageCheck, RotateCcw, Search } from 'lucide-react';
+import { ArrowLeft, RotateCcw, Search } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { apiRequest } from '@/lib/api';
@@ -23,25 +23,21 @@ type RackReportItem = {
     updated_at: string | null;
 };
 
-type RackReportSummary = {
-    total_serial_count: number;
-    total_stock_rows: number;
-    total_stock_quantity: number;
-    rack_count: number;
-};
-
 type RackReportResponse = {
     items?: RackReportItem[];
-    summary?: RackReportSummary;
+};
+
+type WarehouseLookup = {
+    warehouse_no: number | string;
+    warehouse_name: string;
+};
+
+type WarehouseLookupResponse = {
+    items?: WarehouseLookup[];
 };
 
 const rackReportUrl = '/api/operations/warehouse-terminal/rack-report';
-const emptySummary: RackReportSummary = {
-    total_serial_count: 0,
-    total_stock_rows: 0,
-    total_stock_quantity: 0,
-    rack_count: 0,
-};
+const lookupWarehousesUrl = '/api/operations/warehouse-terminal/lookups/warehouses';
 
 function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
     const query = new URLSearchParams();
@@ -104,41 +100,24 @@ function statusLabel(value: string | null): string {
     return formatValue(value);
 }
 
-function summaryCards(summary: RackReportSummary) {
-    return [
-        {
-            label: 'Toplam Seri Adedi',
-            value: formatQuantity(summary.total_serial_count),
-            Icon: PackageCheck,
-        },
-        {
-            label: 'Toplam Serisiz Stok Satırı',
-            value: formatQuantity(summary.total_stock_rows),
-            Icon: Boxes,
-        },
-        {
-            label: 'Toplam Serisiz Miktar',
-            value: formatQuantity(summary.total_stock_quantity),
-            Icon: Layers3,
-        },
-        {
-            label: 'Raf Sayısı',
-            value: formatQuantity(summary.rack_count),
-            Icon: Filter,
-        },
-    ];
-}
-
 export default function WarehouseTerminalRackReport() {
+    const [warehouses, setWarehouses] = useState<WarehouseLookup[]>([]);
     const [warehouseNo, setWarehouseNo] = useState('');
     const [rackCode, setRackCode] = useState('');
     const [itemType, setItemType] = useState<ItemType>('all');
     const [search, setSearch] = useState('');
-    const [onlyInStock, setOnlyInStock] = useState(false);
     const [items, setItems] = useState<RackReportItem[]>([]);
-    const [summary, setSummary] = useState<RackReportSummary>(emptySummary);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
+
+    const loadWarehouses = useCallback(async () => {
+        try {
+            const response = await apiRequest(lookupWarehousesUrl) as WarehouseLookupResponse;
+            setWarehouses(response.items ?? []);
+        } catch {
+            setWarehouses([]);
+        }
+    }, []);
 
     const loadReport = useCallback(async () => {
         setLoading(true);
@@ -150,19 +129,26 @@ export default function WarehouseTerminalRackReport() {
                 rack_code: rackCode.trim(),
                 item_type: itemType,
                 search: search.trim(),
-                only_in_stock: onlyInStock ? 1 : 0,
+                only_in_stock: 1,
                 per_page: 100,
             })}`) as RackReportResponse;
 
             setItems(response.items ?? []);
-            setSummary(response.summary ?? emptySummary);
             setMessage((response.items ?? []).length === 0 ? 'Filtrelere uygun raf lokasyon kaydı bulunamadı.' : null);
         } catch (caught) {
             setMessage(caught instanceof Error ? caught.message : 'Raf raporu alınamadı.');
         } finally {
             setLoading(false);
         }
-    }, [itemType, onlyInStock, rackCode, search, warehouseNo]);
+    }, [itemType, rackCode, search, warehouseNo]);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            void loadWarehouses();
+        }, 0);
+
+        return () => window.clearTimeout(timer);
+    }, [loadWarehouses]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -182,7 +168,6 @@ export default function WarehouseTerminalRackReport() {
         setRackCode('');
         setItemType('all');
         setSearch('');
-        setOnlyInStock(false);
     };
 
     return (
@@ -216,13 +201,18 @@ export default function WarehouseTerminalRackReport() {
                         <div className="grid gap-3 md:grid-cols-[0.8fr_1fr_1fr_1.4fr]">
                             <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
                                 Depo
-                                <input
+                                <select
                                     value={warehouseNo}
                                     onChange={(event) => setWarehouseNo(event.target.value)}
-                                    placeholder="Depo no"
-                                    inputMode="numeric"
                                     className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
-                                />
+                                >
+                                    <option value="">Tüm depolar</option>
+                                    {warehouses.map((warehouse) => (
+                                        <option key={warehouse.warehouse_no} value={warehouse.warehouse_no}>
+                                            {warehouse.warehouse_name}
+                                        </option>
+                                    ))}
+                                </select>
                             </label>
 
                             <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
@@ -231,6 +221,16 @@ export default function WarehouseTerminalRackReport() {
                                     value={rackCode}
                                     onChange={(event) => setRackCode(event.target.value)}
                                     placeholder="Raf kodu"
+                                    className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
+                                />
+                            </label>
+
+                            <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
+                                Arama
+                                <input
+                                    value={search}
+                                    onChange={(event) => setSearch(event.target.value)}
+                                    placeholder="Stok kodu, stok adı, seri no veya raf kodu"
                                     className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
                                 />
                             </label>
@@ -247,64 +247,28 @@ export default function WarehouseTerminalRackReport() {
                                     <option value="stock">Serisiz / Adetli</option>
                                 </select>
                             </label>
-
-                            <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
-                                Arama
-                                <input
-                                    value={search}
-                                    onChange={(event) => setSearch(event.target.value)}
-                                    placeholder="Stok kodu, stok adı, seri no veya raf kodu"
-                                    className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
-                                />
-                            </label>
                         </div>
 
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <label className="inline-flex min-h-10 items-center gap-3 text-sm font-bold text-slate-800 md:min-h-12">
-                                <input
-                                    type="checkbox"
-                                    checked={onlyInStock}
-                                    onChange={(event) => setOnlyInStock(event.target.checked)}
-                                    className="size-5 rounded border-slate-300 text-blue-700 focus:ring-blue-500"
-                                />
-                                Sadece stokta olanlar
-                            </label>
-
-                            <div className="grid gap-2 sm:grid-cols-2">
-                                <button
-                                    type="submit"
-                                    disabled={loading}
-                                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
-                                >
-                                    <Search className="size-5" />
-                                    {loading ? 'Listeleniyor' : 'Listele'}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={clearFilters}
-                                    disabled={loading}
-                                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
-                                >
-                                    <RotateCcw className="size-5" />
-                                    Temizle
-                                </button>
-                            </div>
+                        <div className="grid gap-2 sm:grid-cols-2 md:ml-auto">
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
+                            >
+                                <Search className="size-5" />
+                                {loading ? 'Listeleniyor' : 'Listele'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={clearFilters}
+                                disabled={loading}
+                                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
+                            >
+                                <RotateCcw className="size-5" />
+                                Temizle
+                            </button>
                         </div>
                     </form>
-
-                    <section className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
-                        {summaryCards(summary).map(({ label, value, Icon }) => (
-                            <article key={label} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
-                                <div className="flex items-start justify-between gap-2 sm:gap-3">
-                                    <span className="grid size-8 place-items-center rounded-lg bg-blue-50 text-blue-700 sm:size-10">
-                                        <Icon className="size-4 sm:size-5" />
-                                    </span>
-                                    <span className="text-lg font-bold text-slate-950 sm:text-2xl">{value}</span>
-                                </div>
-                                <p className="mt-2 text-xs font-semibold leading-4 text-slate-500 sm:mt-3 sm:text-sm">{label}</p>
-                            </article>
-                        ))}
-                    </section>
 
                     {message ? (
                         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">

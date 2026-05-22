@@ -100,6 +100,34 @@ class WarehouseRackReportTest extends TestCase
         $this->assertSame('A-01', $response->json('items.0.rack_code'));
     }
 
+    public function test_warehouse_filter_returns_only_matching_warehouse(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'stock_code' => 'STK-WAREHOUSE-ONE',
+            'quantity' => 4,
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 2,
+            'rack_code' => 'A-01',
+            'stock_code' => 'STK-WAREHOUSE-TWO',
+            'quantity' => 6,
+            'source' => 'manual',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/rack-report?warehouse_no=2')
+            ->assertOk();
+
+        $this->assertSame(1, $response->json('meta.total'));
+        $this->assertSame(2, $response->json('items.0.warehouse_no'));
+        $this->assertSame('STK-WAREHOUSE-TWO', $response->json('items.0.stock_code'));
+    }
+
     public function test_search_matches_stock_code_stock_name_and_serial_no(): void
     {
         $user = User::factory()->create(['role_code' => 'stock']);
@@ -138,31 +166,50 @@ class WarehouseRackReportTest extends TestCase
             ->assertJsonFragment(['serial_no' => 'SN-SEARCH-001']);
     }
 
-    public function test_only_in_stock_excludes_zero_quantity_stock_rows(): void
+    public function test_default_report_excludes_unavailable_locations_when_only_in_stock_is_missing(): void
     {
         $user = User::factory()->create(['role_code' => 'stock']);
 
-        WarehouseStockLocation::query()->create([
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'SN-IN-STOCK',
+            'stock_code' => 'STK-SERIAL-IN',
             'warehouse_no' => 1,
             'rack_code' => 'A-01',
+            'status' => 'in_stock',
+            'source' => 'manual',
+        ]);
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'SN-OUT-OF-STOCK',
+            'stock_code' => 'STK-SERIAL-OUT',
+            'warehouse_no' => 1,
+            'rack_code' => 'A-02',
+            'status' => 'out_of_stock',
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'A-03',
             'stock_code' => 'STK-ZERO',
             'quantity' => 0,
             'source' => 'manual',
         ]);
         WarehouseStockLocation::query()->create([
             'warehouse_no' => 1,
-            'rack_code' => 'A-02',
+            'rack_code' => 'A-04',
             'stock_code' => 'STK-POSITIVE',
             'quantity' => 2,
             'source' => 'manual',
         ]);
 
         $response = $this->actingAs($user)
-            ->getJson('/api/operations/warehouse-terminal/rack-report?item_type=stock&only_in_stock=1')
+            ->getJson('/api/operations/warehouse-terminal/rack-report')
             ->assertOk();
 
-        $this->assertSame(1, $response->json('meta.total'));
-        $this->assertSame('STK-POSITIVE', $response->json('items.0.stock_code'));
+        $this->assertSame(2, $response->json('meta.total'));
+        $response->assertJsonFragment(['serial_no' => 'SN-IN-STOCK']);
+        $response->assertJsonFragment(['stock_code' => 'STK-POSITIVE']);
+        $response->assertJsonMissing(['serial_no' => 'SN-OUT-OF-STOCK']);
+        $response->assertJsonMissing(['stock_code' => 'STK-ZERO']);
     }
 
     public function test_user_without_warehouse_terminal_permission_cannot_access_report(): void
