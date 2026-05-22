@@ -872,7 +872,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                 ×
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 pb-24 sm:pb-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 pb-36 sm:pb-4">
               <ServiceJobDetail
                 job={selectedJob}
                 readOnly={readOnly}
@@ -917,7 +917,7 @@ function ServiceJobDetail({
   const [priceLaborAmount, setPriceLaborAmount] = useState(job.assignment_offer?.labor_amount ? String(job.assignment_offer.labor_amount) : '')
   const [priceRouteAmount, setPriceRouteAmount] = useState(job.assignment_offer?.route_fee_amount ? String(job.assignment_offer.route_fee_amount) : '')
   const [priceRevisionNote, setPriceRevisionNote] = useState('')
-  const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | 'price' | null>(null)
+  const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | 'price' | 'completion' | 'note' | null>(null)
   const photosReady = job.completion_requirements.photos_ready
   const confirmationReady = job.completion_requirements.customer_confirmation_ready
   const otpPayload = job.customer_otp_request?.payload
@@ -929,6 +929,15 @@ function ServiceJobDetail({
     ?? nestedStringValue(messagePayload, 'approval_url')
   const whatsappUrl = nestedStringValue(messagePayload, 'whatsapp_url')
   const confirmationMessageText = nestedStringValue(messagePayload, 'message_text')
+  const dispatchStatus = nestedStringValue(messagePayload, 'dispatch_status')
+  const dispatchTargetPhone = nestedStringValue(messagePayload, 'target_phone')
+  const dispatchErrorMessage = nestedStringValue(messagePayload, 'error_message')
+  const dispatchTestMode = messagePayload?.test_mode === true
+  const otpDispatchTitle = dispatchStatus === 'sent'
+    ? 'WhatsApp onay mesajı gönderildi.'
+    : dispatchStatus === 'failed'
+      ? 'WhatsApp mesajı gönderilemedi.'
+      : 'Müşteriden montaj onayı alınmalı.'
   const missingPhotoLabels = job.completion_requirements.missing_photo_labels ?? []
   const completionMissingReasons = [
     ...missingPhotoLabels.map((label) => `${label} eksik`),
@@ -994,13 +1003,13 @@ function ServiceJobDetail({
       const response = await apiRequest(`/api/partner/service-jobs/${job.id}/${action}`, {
         method: 'POST',
         body: JSON.stringify(payload),
-      }) as { job?: ServiceJob }
+      }) as { job?: ServiceJob, message?: string }
 
       if (response.job) {
         onJobUpdated(response.job)
       }
 
-      onMessage(successMessage)
+      onMessage(response.message ?? successMessage)
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'İşlem tamamlanamadı.')
     } finally {
@@ -1195,7 +1204,7 @@ function ServiceJobDetail({
                     ) : null}
                     <div className="px-3 py-2">
                       <p className="font-semibold text-slate-900">{photo.label ?? `Fotoğraf #${photo.id}`}</p>
-                      {photo.review_status ? <p className="text-xs text-slate-500">Ops uygunluk: {photo.review_status}</p> : null}
+                      {photo.review_status ? <p className="text-xs text-slate-500">Uygunluk: {statusLabel(photo.review_status)}</p> : null}
                       {photo.review_note ? <p className="text-xs text-slate-500">{photo.review_note}</p> : null}
                     </div>
                   </div>
@@ -1317,7 +1326,13 @@ function ServiceJobDetail({
           <ActionBox title="Müşteri OTP / onay" className="hidden lg:grid">
             {approvalUrl || whatsappUrl ? (
               <div className="rounded-xl border border-violet-100 bg-white p-3 text-xs text-slate-600">
-                <p className="font-semibold text-violet-900">Müşteri onay mesajı hazırlandı.</p>
+                <p className={dispatchStatus === 'failed' ? 'font-semibold text-rose-800' : 'font-semibold text-violet-900'}>{otpDispatchTitle}</p>
+                {dispatchTestMode && dispatchTargetPhone ? (
+                  <p className="mt-1 font-semibold text-slate-500">Test mod: {dispatchTargetPhone}</p>
+                ) : null}
+                {dispatchStatus === 'failed' && dispatchErrorMessage ? (
+                  <p className="mt-1 text-rose-700">{dispatchErrorMessage}</p>
+                ) : null}
                 {approvalUrl ? (
                   <a href={approvalUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex font-semibold text-violet-700 hover:text-violet-900">
                     Onay linkini aç
@@ -1350,7 +1365,7 @@ function ServiceJobDetail({
           </ActionBox>
           )}
           {job.can_submit_completion && (
-          <ActionBox title="Tamamlamaya gönder">
+          <ActionBox title="Tamamlamaya gönder" className="hidden lg:grid">
             <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionResult} onChange={(event) => setCompletionResult(event.target.value)} disabled={readOnly || !job.can_submit_completion}>
               <option value="completed">Tamamlandı</option>
               <option value="revisit_required">Tekrar ziyaret gerekli</option>
@@ -1380,7 +1395,7 @@ function ServiceJobDetail({
               Bu aşamada işlem kapalı. Operasyona not bırakabilirsiniz.
             </div>
           )}
-          <ActionBox title="Operasyona not">
+          <ActionBox title="Operasyona not" className="hidden lg:grid">
             <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Not yaz" disabled={readOnly} />
             <button type="button" disabled={readOnly || note.trim().length < 3 || actionLoading === 'note'} onClick={() => void submitAction('note', { note, visibility: 'ops' }, 'Not eklendi.')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
               Not ekle
@@ -1388,8 +1403,8 @@ function ServiceJobDetail({
           </ActionBox>
         </div>
       </aside>
-      {!readOnly && (
-        <div className="sticky bottom-0 z-20 col-span-full -mx-4 mt-2 grid grid-cols-2 gap-2 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] lg:hidden">
+      {!readOnly && !activeActionDialog && (
+        <div className="fixed inset-x-0 bottom-0 z-[80] grid grid-cols-2 gap-2 border-t border-slate-200 bg-white/95 p-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
           {job.can_reject && (
             <button type="button" onClick={() => setActiveActionDialog('reject')} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800">
               İşi reddet
@@ -1415,6 +1430,14 @@ function ServiceJobDetail({
               Hakediş revize
             </button>
           )}
+          {job.can_submit_completion && (
+            <button type="button" onClick={() => setActiveActionDialog('completion')} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+              Tamamlamaya gönder
+            </button>
+          )}
+          <button type="button" onClick={() => setActiveActionDialog('note')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+            Not ekle
+          </button>
         </div>
       )}
       <ActionDialog title="İşi reddet" open={activeActionDialog === 'reject'} onClose={() => setActiveActionDialog(null)}>
@@ -1439,17 +1462,34 @@ function ServiceJobDetail({
       </ActionDialog>
       <ActionDialog title="Müşteri OTP / onay" open={activeActionDialog === 'otp'} onClose={() => setActiveActionDialog(null)}>
         <div className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
-          <p className="font-semibold">Müşteriye onay mesajı hazırlanır.</p>
-          <p className="mt-1">Mesajda montajı onaylama bağlantısı olur; canlı SMS/WhatsApp gönderimi yapılmaz.</p>
+          <p className="font-semibold">Müşteriden montaj onayı alınmalı.</p>
+          <p className="mt-1">Butona basınca onay linki oluşturulur ve Evolution/n8n WhatsApp mesajı gönderilir.</p>
+          {dispatchTestMode && dispatchTargetPhone ? <p className="mt-2 text-xs font-semibold">Test mod: {dispatchTargetPhone}</p> : null}
         </div>
+        {approvalUrl || whatsappUrl || dispatchStatus ? (
+          <div className="rounded-xl border border-violet-100 bg-white p-3 text-sm text-slate-700">
+            <p className={dispatchStatus === 'failed' ? 'font-semibold text-rose-800' : 'font-semibold text-violet-900'}>{otpDispatchTitle}</p>
+            {dispatchStatus === 'failed' && dispatchErrorMessage ? <p className="mt-1 text-rose-700">{dispatchErrorMessage}</p> : null}
+            {approvalUrl ? (
+              <a href={approvalUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex font-semibold text-violet-700 hover:text-violet-900">
+                Onay linkini aç
+              </a>
+            ) : null}
+            {whatsappUrl ? (
+              <a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-2 block font-semibold text-emerald-700 hover:text-emerald-900">
+                WhatsApp mesajını aç
+              </a>
+            ) : null}
+          </div>
+        ) : null}
         {confirmationMessageText ? (
           <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700">
             {confirmationMessageText}
           </div>
         ) : null}
         <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Operasyona not" disabled={readOnly} />
-        <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'Müşteri onay mesajı ve bağlantısı oluşturuldu.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
-          Onay mesajı oluştur
+        <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'WhatsApp onay mesajı gönderildi.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
+          {actionLoading === 'customer-otp-request' ? 'Gönderiliyor...' : 'Onay mesajı gönder'}
         </button>
       </ActionDialog>
       <ActionDialog title="Yedek parça / ek talep" open={activeActionDialog === 'support'} onClose={() => setActiveActionDialog(null)}>
@@ -1510,6 +1550,36 @@ function ServiceJobDetail({
           className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Revize talebi gönder
+        </button>
+      </ActionDialog>
+      <ActionDialog title="Tamamlamaya gönder" open={activeActionDialog === 'completion'} onClose={() => setActiveActionDialog(null)}>
+        <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionResult} onChange={(event) => setCompletionResult(event.target.value)} disabled={readOnly || !job.can_submit_completion}>
+          <option value="completed">Tamamlandı</option>
+          <option value="revisit_required">Tekrar ziyaret gerekli</option>
+          <option value="customer_not_available">Müşteri yok</option>
+          <option value="missing_info_or_photo">Eksik bilgi/fotoğraf</option>
+          <option value="parts_pending">Parça/ürün bekleniyor</option>
+        </select>
+        <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+          <p>{photosReady ? '3 fotoğraf hazır.' : '3 ayrı fotoğraf türü yüklenmeden tamamlamaya gönderilemez.'}</p>
+          <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
+          {completionMissingReasons.length > 0 && (
+            <ul className="mt-2 grid gap-1">
+              {completionMissingReasons.map((reason) => (
+                <li key={reason}>- {reason}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İşlem notu" disabled={readOnly || !job.can_submit_completion} />
+        <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote }, 'Tamamlama gönderimi son kontrol için operasyona düştü.').then(() => setActiveActionDialog(null))} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+          Tamamlamaya gönder
+        </button>
+      </ActionDialog>
+      <ActionDialog title="Operasyona not" open={activeActionDialog === 'note'} onClose={() => setActiveActionDialog(null)}>
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Not yaz" disabled={readOnly} />
+        <button type="button" disabled={readOnly || note.trim().length < 3 || actionLoading === 'note'} onClick={() => void submitAction('note', { note, visibility: 'ops' }, 'Not eklendi.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
+          Not ekle
         </button>
       </ActionDialog>
     </section>

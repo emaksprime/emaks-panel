@@ -3070,12 +3070,24 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('customer_confirmation');
 
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['ok' => true], 200),
+        ]);
+
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/customer-otp-request", [
                 'note' => 'Müşteri bağlantıdan onaylayacak.',
             ])
             ->assertOk()
-            ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
+            ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
+            ->assertJsonPath('dispatch.dispatch_status', 'sent')
+            ->assertJsonPath('dispatch.target_phone', '905467647428')
+            ->assertJsonPath('message', 'WhatsApp onay mesajı gönderildi.');
 
         $confirmation = TechnicalServiceCustomerConfirmation::query()
             ->where('technical_service_request_id', $job->id)
@@ -3083,6 +3095,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_PENDING, $confirmation->status);
         $this->assertStringContainsString('Montajı onaylıyorum', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
+        $this->assertSame('sent', $confirmation->payload['message_payload']['dispatch_status'] ?? null);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
             'event' => 'customer_approval_request',
@@ -3090,6 +3103,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             'target_phone' => '905467647428',
             'test_mode' => true,
         ]);
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
+            && $request['event'] === 'customer_approval_request'
+            && $request['target_phone'] === '905467647428'
+            && filled($request['confirmation_url']));
 
         $this->get("/service-job-confirmation/{$confirmation->token}")
             ->assertOk()

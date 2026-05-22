@@ -115,4 +115,28 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         $this->assertFalse($payload['test_mode']);
         $this->assertSame('https://panel.test/service-job-confirmation/token', $payload['confirmation_url']);
     }
+
+    public function test_missing_webhook_url_records_not_configured_without_http_call(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => '',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+        ]);
+        Http::fake();
+
+        $dispatch = app(EvolutionWhatsAppMessageService::class)->send(
+            'customer_approval_request',
+            'customer',
+            '05321112233',
+            'Onay linki hazir.',
+            ['confirmation_url' => 'https://panel.test/service-job-confirmation/token'],
+        );
+
+        $payload = $dispatch->refresh()->request_payload;
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED, $dispatch->status);
+        $this->assertSame('905467647428', $payload['target_phone']);
+        $this->assertTrue($payload['test_mode']);
+        Http::assertNothingSent();
+    }
 }

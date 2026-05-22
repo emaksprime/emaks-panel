@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\B2B\B2BPartner;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -423,7 +424,7 @@ class PartnerServiceJobController extends Controller
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
+        [$action, $dispatchSummary] = DB::transaction(function () use ($job, $partner, $user, $data): array {
             $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
                 'technical_service_request_id' => $job->id,
                 'token' => Str::random(64),
@@ -471,25 +472,37 @@ class PartnerServiceJobController extends Controller
                 $user,
                 $action,
             );
+            $dispatchSummary = $this->dispatchSummary($dispatch);
+            $messagePayload = [
+                ...($action->payload['message_payload'] ?? []),
+                ...$dispatchSummary,
+                'dispatch_id' => $dispatch->id,
+            ];
+
+            $actionPayload = [
+                ...(is_array($action->payload) ? $action->payload : []),
+                ...$dispatchSummary,
+                'message_payload' => $messagePayload,
+            ];
+
+            $action->forceFill(['payload' => $actionPayload])->save();
 
             $confirmation->forceFill([
                 'payload' => [
                     ...(is_array($confirmation->payload) ? $confirmation->payload : []),
                     'partner_action_id' => $action->id,
-                    'message_payload' => [
-                        ...($action->payload['message_payload'] ?? []),
-                        'dispatch_id' => $dispatch->id,
-                        'dispatch_status' => $dispatch->status,
-                    ],
+                    'message_payload' => $messagePayload,
                 ],
             ])->save();
 
-            return $action;
+            return [$action, $dispatchSummary];
         });
 
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
+            'dispatch' => $dispatchSummary,
+            'message' => $this->dispatchUserMessage($dispatchSummary),
             'job' => $this->portalData->safeServiceJobSummary($job->refresh()),
         ]);
     }
@@ -1026,6 +1039,64 @@ class PartnerServiceJobController extends Controller
 
         return $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
             && array_key_exists((string) $upload->field_code, self::REQUIRED_PORTAL_PHOTO_FIELDS);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function dispatchSummary(TechnicalServiceMessageDispatch $dispatch): array
+    {
+        $responsePayload = is_array($dispatch->response_payload) ? $dispatch->response_payload : [];
+        $responseStatusCode = $responsePayload['status'] ?? null;
+        $responseBody = $responsePayload['body'] ?? null;
+        $status = $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENT
+            ? TechnicalServiceMessageDispatch::STATUS_SENT
+            : TechnicalServiceMessageDispatch::STATUS_FAILED;
+        $errorMessage = $dispatch->error_message;
+
+        if ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED && ! filled($errorMessage)) {
+            $errorMessage = 'WhatsApp webhook ayarı eksik.';
+        }
+
+        return [
+            'dispatch_status' => $status,
+            'dispatch_provider' => 'evolution_n8n',
+            'target_phone' => $dispatch->target_phone,
+            'test_mode' => (bool) $dispatch->test_mode,
+            'response_status_code' => is_numeric($responseStatusCode) ? (int) $responseStatusCode : null,
+            'response_body_summary' => $this->summarizeDispatchBody($responseBody),
+            'error_message' => filled($errorMessage) ? $errorMessage : null,
+        ];
+    }
+
+    /**
+     * @param  mixed  $body
+     */
+    private function summarizeDispatchBody($body): ?string
+    {
+        if ($body === null || $body === '') {
+            return null;
+        }
+
+        $summary = is_string($body)
+            ? $body
+            : json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return mb_substr((string) $summary, 0, 500);
+    }
+
+    /**
+     * @param  array<string, mixed>  $summary
+     */
+    private function dispatchUserMessage(array $summary): string
+    {
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SENT) {
+            return 'WhatsApp onay mesajı gönderildi.';
+        }
+
+        $reason = trim((string) ($summary['error_message'] ?? ''));
+
+        return 'WhatsApp mesajı gönderilemedi'.($reason !== '' ? ': '.$reason : '.');
     }
 
     private function normalizedPhoneForWa(?string $phone): string
