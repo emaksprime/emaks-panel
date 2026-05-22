@@ -13,6 +13,7 @@ use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Collection;
 
 class B2BPartnerPortalDataService
@@ -289,20 +290,21 @@ class B2BPartnerPortalDataService
             'latestAssignmentOffer.technician',
             'technicianRecord',
         ]);
-        $latestAction = $request->partnerJobActions->first();
-        $latestAppointmentProposal = $request->partnerJobActions
+        $partnerActions = $request->partnerJobActions->sortByDesc('id')->values();
+        $latestAction = $partnerActions->first();
+        $latestAppointmentProposal = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED);
-        $latestRejection = $request->partnerJobActions
+        $latestRejection = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED);
-        $latestCompletionSubmission = $request->partnerJobActions
+        $latestCompletionSubmission = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED);
-        $latestSupportRequest = $request->partnerJobActions
+        $latestSupportRequest = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED);
-        $latestOtpRequest = $request->partnerJobActions
+        $latestOtpRequest = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
-        $latestPriceRevisionRequest = $request->partnerJobActions
+        $latestPriceRevisionRequest = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED);
-        $latestCustomerApprovalRejection = $request->partnerJobActions
+        $latestCustomerApprovalRejection = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request);
         $assignmentOffer = $request->latestAssignmentOffer;
@@ -406,7 +408,7 @@ class B2BPartnerPortalDataService
                 'payload' => is_array($latestAction->payload) ? $latestAction->payload : [],
                 'created_at' => $latestAction->created_at?->toIso8601String(),
             ] : null,
-            'portal_actions' => $request->partnerJobActions
+            'portal_actions' => $partnerActions
                 ->take(8)
                 ->map(fn (TechnicalServicePartnerJobAction $action): array => [
                     'id' => $action->id,
@@ -460,7 +462,7 @@ class B2BPartnerPortalDataService
                 'rejected_at' => $latestCustomerConfirmation->rejected_at?->toIso8601String(),
                 'customer_note' => $latestCustomerConfirmation->customer_note,
                 'approval_url' => $latestCustomerConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_PENDING
-                    ? route('service-job-confirmation.show', ['token' => $latestCustomerConfirmation->token])
+                    ? PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $latestCustomerConfirmation->token])
                     : null,
             ] : null,
             'completion_submission' => $latestCompletionSubmission ? [

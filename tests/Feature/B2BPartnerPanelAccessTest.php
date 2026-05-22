@@ -3071,12 +3071,28 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonValidationErrors('customer_confirmation');
 
         config([
+            'services.partner_portal.public_url' => 'https://portal.test',
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
+        ]);
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_SUBMITTED,
+            'payload' => [
+                'message_payload' => [
+                    'dispatch_status' => 'failed',
+                    'error_message' => 'WhatsApp webhook ayarı eksik.',
+                ],
+            ],
+            'note' => 'Eski başarısız mesaj kaydı.',
         ]);
 
         $this->actingAs($portalUser)
@@ -3087,14 +3103,18 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
             ->assertJsonPath('dispatch.dispatch_status', 'sent')
             ->assertJsonPath('dispatch.target_phone', '905467647428')
+            ->assertJsonPath('job.customer_otp_request.payload.message_payload.dispatch_status', 'sent')
             ->assertJsonPath('message', 'WhatsApp onay mesajı gönderildi.');
 
         $confirmation = TechnicalServiceCustomerConfirmation::query()
             ->where('technical_service_request_id', $job->id)
             ->firstOrFail();
         $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_PENDING, $confirmation->status);
-        $this->assertStringContainsString('Montajı onaylıyorum', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Emaks Prime Teknik Servis', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString("\nhttps://portal.test/service-job-confirmation/{$confirmation->token}\n", (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
+        $this->assertStringNotContainsString('127.0.0.1', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
+        $this->assertSame("https://portal.test/service-job-confirmation/{$confirmation->token}", $confirmation->payload['message_payload']['confirmation_url'] ?? null);
         $this->assertSame('sent', $confirmation->payload['message_payload']['dispatch_status'] ?? null);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
@@ -3106,12 +3126,18 @@ class B2BPartnerPanelAccessTest extends TestCase
         Http::assertSent(fn ($request): bool => $request->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
             && $request['event'] === 'customer_approval_request'
             && $request['target_phone'] === '905467647428'
-            && filled($request['confirmation_url']));
+            && $request['confirmation_url'] === "https://portal.test/service-job-confirmation/{$confirmation->token}");
 
         $this->get("/service-job-confirmation/{$confirmation->token}")
             ->assertOk()
             ->assertSee("/service-job-confirmation/{$confirmation->token}/approve", false)
-            ->assertSee('Onaylıyorum', false);
+            ->assertSee('Onaylıyorum', false)
+            ->assertSee('Onaylamıyorum', false)
+            ->assertSee('reject-dialog', false);
+
+        $this->from("/service-job-confirmation/{$confirmation->token}")
+            ->post("/service-job-confirmation/{$confirmation->token}/reject", [])
+            ->assertSessionHasErrors('customer_note');
 
         $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
             'customer_note' => 'Montajı onaylıyorum.',

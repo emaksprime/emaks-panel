@@ -33,13 +33,17 @@ return [
         'invoice_serials_mode' => env('TECHNICAL_SERVICE_INVOICE_SERIALS_MODE', 'disabled'),
     ],
 
+    'partner_portal' => [
+        'public_url' => env('PARTNER_PORTAL_PUBLIC_URL', env('APP_URL')),
+    ],
+
     'evolution' => [
         'n8n_webhook_url' => env('EVOLUTION_N8N_WEBHOOK_URL'),
         'test_mode' => env('EVOLUTION_TEST_MODE', true),
         'test_phone' => env('EVOLUTION_TEST_PHONE', '905467647428'),
         'customer_approval_text' => env(
             'TECHNICAL_SERVICE_CUSTOMER_APPROVAL_TEXT',
-            'Emaks Prime montaj hizmetiniz için onayınız gerekmektedir. Aşağıdaki bağlantıdan montaj işleminin tamamlandığını, ürünün/ürünlerin teslim edildiğini ve montaj sonrası görünür hasar veya kusur bulunmadığını kontrol ederek onay verebilirsiniz.'
+            'Montaj işleminin tamamlandığını ve montaj sonrası görünür hasar veya kusur bulunmadığını kontrol ederek onay verebilirsiniz.'
         ),
         'customer_approval_legal_note' => 'Müşteri onay metni canlıya geçmeden önce hukuk onayı gerektirir.',
     ],

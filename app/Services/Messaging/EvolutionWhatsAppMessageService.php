@@ -9,6 +9,7 @@ use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
+use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Http;
 use Throwable;
@@ -206,7 +207,7 @@ class EvolutionWhatsAppMessageService
                 $flat['public_url'] ?? null,
             ),
             'approval_url' => $this->firstFilled($flat['approval_url'] ?? null, $flat['confirmation_url'] ?? null),
-            'job_link' => $this->firstFilled($flat['job_link'] ?? null, $request ? url('/partner/service-jobs?job_id='.$request->id) : null),
+            'job_link' => $this->firstFilled($flat['job_link'] ?? null, $request ? PartnerPortalPublicUrl::url('/partner/service-jobs?job_id='.$request->id) : null),
             'labor_amount' => $this->moneyForWorkflow($flat['labor_amount'] ?? null, $currency),
             'route_fee_amount' => $this->moneyForWorkflow($flat['route_fee_amount'] ?? null, $currency),
             'total_amount' => $this->moneyForWorkflow($flat['total_amount'] ?? null, $currency),

@@ -15,6 +15,7 @@ use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\PanelAccessService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -435,10 +436,11 @@ class PartnerServiceJobController extends Controller
                     'technical_service_technician_id' => $job->technical_service_technician_id,
                 ],
             ]);
-            $approvalUrl = route('service-job-confirmation.show', ['token' => $confirmation->token]);
-            $messageText = trim((string) config('services.evolution.customer_approval_text'))
-                .' Bağlantıda "Montajı onaylıyorum" veya "Onaylamıyorum" seçeneğini işaretleyebilirsiniz. '
-                .$approvalUrl;
+            $approvalUrl = PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]);
+            $publicUrlWarning = $this->messages->testMode() && PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
+                ? 'Onay linki lokal URL içeriyor; telefondan açılamaz. PARTNER_PORTAL_PUBLIC_URL ayarlanmalı.'
+                : null;
+            $messageText = $this->customerApprovalMessageText($job, $approvalUrl);
             $whatsappUrl = 'https://wa.me/'.$this->normalizedPhoneForWa($job->customer_phone).'?text='.rawurlencode($messageText);
 
             $action = $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED, TechnicalServicePartnerJobAction::STATUS_SUBMITTED, [
@@ -454,7 +456,9 @@ class PartnerServiceJobController extends Controller
                     'customer_phone' => $job->customer_phone,
                     'message_text' => $messageText,
                     'approval_url' => $approvalUrl,
+                    'confirmation_url' => $approvalUrl,
                     'whatsapp_url' => $whatsappUrl,
+                    'public_url_warning' => $publicUrlWarning,
                 ],
             ], $data['note'] ?? 'Müşteri montaj onay bağlantısı hazırlandı.', $job->workflow_status);
 
@@ -464,9 +468,11 @@ class PartnerServiceJobController extends Controller
                 $job->customer_phone,
                 $messageText,
                 [
+                    'confirmation_url' => $approvalUrl,
                     'approval_url' => $approvalUrl,
                     'confirmation_id' => $confirmation->id,
                     'whatsapp_url' => $whatsappUrl,
+                    'public_url_warning' => $publicUrlWarning,
                 ],
                 $job,
                 $user,
@@ -1041,12 +1047,36 @@ class PartnerServiceJobController extends Controller
             && array_key_exists((string) $upload->field_code, self::REQUIRED_PORTAL_PHOTO_FIELDS);
     }
 
+    private function customerApprovalMessageText(TechnicalServiceRequest $job, string $approvalUrl): string
+    {
+        $product = trim(implode(' / ', array_filter([
+            (string) $job->product_name,
+            (string) $job->product_model,
+        ])));
+
+        return implode("\n", [
+            'Emaks Prime Teknik Servis',
+            '',
+            'Sayın '.($job->customer_name ?: 'müşterimiz').',',
+            ($product !== '' ? $product.' montaj işleminiz için onayınız gerekmektedir.' : 'Montaj işleminiz için onayınız gerekmektedir.'),
+            '',
+            'Talep No: '.$job->mrn,
+            '',
+            'Montajın tamamlandığını ve üründe görünür hasar/kusur olmadığını kontrol ettiyseniz aşağıdaki bağlantıdan onay verebilirsiniz:',
+            '',
+            $approvalUrl,
+            '',
+            'Bu işlemi siz yapmadıysanız operasyon ekibimizle iletişime geçiniz.',
+        ]);
+    }
+
     /**
      * @return array<string, mixed>
      */
     private function dispatchSummary(TechnicalServiceMessageDispatch $dispatch): array
     {
         $responsePayload = is_array($dispatch->response_payload) ? $dispatch->response_payload : [];
+        $requestPayload = is_array($dispatch->request_payload) ? $dispatch->request_payload : [];
         $responseStatusCode = $responsePayload['status'] ?? null;
         $responseBody = $responsePayload['body'] ?? null;
         $status = $dispatch->status === TechnicalServiceMessageDispatch::STATUS_SENT
@@ -1066,6 +1096,8 @@ class PartnerServiceJobController extends Controller
             'response_status_code' => is_numeric($responseStatusCode) ? (int) $responseStatusCode : null,
             'response_body_summary' => $this->summarizeDispatchBody($responseBody),
             'error_message' => filled($errorMessage) ? $errorMessage : null,
+            'public_url_warning' => $requestPayload['public_url_warning']
+                ?? ($requestPayload['context']['public_url_warning'] ?? null),
         ];
     }
 
@@ -1091,7 +1123,9 @@ class PartnerServiceJobController extends Controller
     private function dispatchUserMessage(array $summary): string
     {
         if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SENT) {
-            return 'WhatsApp onay mesajı gönderildi.';
+            $warning = trim((string) ($summary['public_url_warning'] ?? ''));
+
+            return 'WhatsApp onay mesajı gönderildi.'.($warning !== '' ? ' '.$warning : '');
         }
 
         $reason = trim((string) ($summary['error_message'] ?? ''));
