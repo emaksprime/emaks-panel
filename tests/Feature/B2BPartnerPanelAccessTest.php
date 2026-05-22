@@ -3589,6 +3589,17 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
 
         $newTechnician = $this->technician(['name' => 'Reject Replacement Usta']);
+        $newPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Reject Replacement Locksmith',
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $newPartner->id,
+            'technical_service_technician_id' => $newTechnician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
         $job->forceFill([
             'operation_control_payload' => [
                 'payment_checked' => 'yes',
@@ -3625,6 +3636,27 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
             ->assertForbidden();
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$newPartner->id}/provision-admin-user")
+            ->assertCreated();
+        $newPortalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $newPartner->id))
+            ->firstOrFail();
+
+        $newPortalJobResponse = $this->actingAs($newPortalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'new_jobs')
+            ->assertJsonPath('job.action_state', 'new')
+            ->assertJsonPath('job.rejection', null)
+            ->assertJsonPath('job.latest_partner_action', null);
+
+        $this->assertNotContains('Reddedildi', $newPortalJobResponse->json('job.badges'));
+        $this->assertTrue(collect($newPortalJobResponse->json('job.portal_actions'))
+            ->contains(fn (array $action): bool => $action['action'] === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
+                && $action['status'] === TechnicalServicePartnerJobAction::STATUS_APPLIED));
     }
 
     public function test_technical_service_assignment_creates_assignment_offer_for_portal(): void

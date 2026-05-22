@@ -29,6 +29,7 @@ use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Support\PartnerPortalPublicUrl;
 use App\Services\Payments\PaymentProviderManager;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
@@ -1610,7 +1611,7 @@ class TechnicalServiceController extends Controller
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'address' => $address,
             'maps_link' => $this->mapsLink($request, $address),
-            'job_link' => url('/partner/service-jobs?job_id='.$request->id),
+            'job_link' => PartnerPortalPublicUrl::url('/partner/service-jobs?job_id='.$request->id),
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),

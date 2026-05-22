@@ -291,11 +291,12 @@ class B2BPartnerPortalDataService
             'technicianRecord',
         ]);
         $partnerActions = $request->partnerJobActions->sortByDesc('id')->values();
-        $latestAction = $partnerActions->first();
+        $latestAction = $this->latestVisiblePartnerAction($request, $partnerActions);
         $latestAppointmentProposal = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED);
         $latestRejection = $partnerActions
-            ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED);
+            ->first(fn (TechnicalServicePartnerJobAction $action): bool => $action->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
+                && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
         $latestCompletionSubmission = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED);
         $latestSupportRequest = $partnerActions
@@ -768,7 +769,27 @@ class B2BPartnerPortalDataService
             }
         }
 
-        return $request->partnerJobActions->first();
+        return null;
+    }
+
+    private function latestVisiblePartnerAction(TechnicalServiceRequest $request, \Illuminate\Support\Collection $partnerActions): ?TechnicalServicePartnerJobAction
+    {
+        return $partnerActions->first(function (TechnicalServicePartnerJobAction $action) use ($request): bool {
+            if ($action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+                return true;
+            }
+
+            if ($action->status !== TechnicalServicePartnerJobAction::STATUS_APPLIED) {
+                return false;
+            }
+
+            if ($action->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
+                || $action->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN) {
+                return $this->isAppointmentConfirmedStatus($request);
+            }
+
+            return false;
+        });
     }
 
     /**
@@ -788,23 +809,28 @@ class B2BPartnerPortalDataService
             $badges[] = 'Randevu önerildi';
         }
 
-        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED) {
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $badges[] = 'Reddedildi';
         }
 
-        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED) {
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $badges[] = 'Müşteri onayı reddedildi';
         }
 
-        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED) {
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $badges[] = 'Hakediş revize talebi';
         }
 
-        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED) {
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $badges[] = 'Son kontrol bekliyor';
         }
 
-        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED) {
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $badges[] = 'Yedek parça talebi';
         }
 
@@ -1005,18 +1031,22 @@ class B2BPartnerPortalDataService
         }
 
         if (
-            $latestAction?->action === TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED
+            (
+                $latestAction?->action === TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED
+                && $latestAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+            )
             || (bool) $request->requires_second_visit
             || in_array($request->workflow_status, ['Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil', 'Parça Bekleniyor', 'Usta Tarih Revize Talebi'], true)
         ) {
             return 'revisit';
         }
 
-        if (in_array($latestAction?->action, [
+        if ($latestAction?->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+            && in_array($latestAction->action, [
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
             TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
-        ], true)) {
+            ], true)) {
             return 'new_jobs';
         }
 

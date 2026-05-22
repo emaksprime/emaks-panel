@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceQrLink;
@@ -22,6 +23,7 @@ use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
@@ -683,11 +685,13 @@ class TechnicalServiceWorkflowTest extends TestCase
             'active' => true,
         ]);
         $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REASSIGN-CLOSURE',
             'status' => 'Devam Ediyor',
             'workflow_status' => 'Müşteri Kapanış Onayı Bekleyen',
             'technical_service_technician_id' => $oldTechnician->id,
             'technician_name' => $oldTechnician->name,
             'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now()->subHours(2),
             'field_completed_at' => now()->subHour(),
             'checklist_status' => 'tamamlandı',
             'document_status' => 'tamamlandı',
@@ -741,12 +745,14 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
             ->assertJsonPath('request.status', 'Atandı')
             ->assertJsonPath('request.technical_service_technician_id', $newTechnician->id)
+            ->assertJsonPath('request.technician_approved_at', null)
             ->assertJsonPath('request.customer_closure_approval_status', null)
             ->assertJsonPath('request.checklist_status', null);
 
         $request->refresh();
         $this->assertSame('Usta Onayı Bekleyen', $request->workflow_status);
         $this->assertSame('Atandı', $request->status);
+        $this->assertNull($request->technician_approved_at);
         $this->assertNull($request->customer_closure_approval_status);
         $this->assertNull($request->field_completed_at);
 
@@ -781,6 +787,97 @@ class TechnicalServiceWorkflowTest extends TestCase
             'technical_service_request_id' => $request->id,
             'event_type' => 'reassign_after_review_resolved',
         ]);
+    }
+
+    public function test_manual_review_reassign_dispatches_assignment_whatsapp_when_real_send_enabled(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.partner_portal.public_url' => 'https://dashboard.test',
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['message' => 'Workflow was started'], 200),
+        ]);
+
+        $user = $this->adminUser();
+        $oldTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Eski Onaylı Usta',
+            'phone' => '+905551110000',
+            'city' => 'İstanbul',
+            'active' => true,
+        ]);
+        $newTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Yeni Mesaj Ustası',
+            'phone' => '+905552220000',
+            'city' => 'İstanbul',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REASSIGN-MESSAGE',
+            'display_name' => 'Reassign Message Locksmith',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-MANUAL-WP',
+            'status' => 'Devam Ediyor',
+            'workflow_status' => 'Müşteri Kapanış Onayı Bekleyen',
+            'technical_service_technician_id' => $oldTechnician->id,
+            'technician_name' => $oldTechnician->name,
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now()->subHours(3),
+            'customer_closure_approval_status' => 'reddedildi',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'technical_service_technician_id' => $oldTechnician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => ['customer_note' => 'Müşteri tekrar istedi.'],
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $newTechnician->id,
+                'travel_round_trip_km' => 12,
+                'assignment_offer' => [
+                    'labor_amount' => 1500,
+                    'route_fee_amount' => 100,
+                    'total_amount' => 1600,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.status', 'Atandı')
+            ->assertJsonPath('request.technician_approved_at', null)
+            ->assertJsonPath('request.assignment_offer.metadata.message_dispatch.status', TechnicalServiceMessageDispatch::STATUS_SENT);
+
+        $request->refresh();
+        $this->assertNull($request->technician_approved_at);
+
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('event', 'assignment_offer_technician')
+            ->latest('id')
+            ->firstOrFail();
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame('905467647428', $dispatch->target_phone);
+        $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?job_id=', (string) data_get($dispatch->request_payload, 'job_link'));
+
+        Http::assertSent(fn ($httpRequest): bool => $httpRequest->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
+            && $httpRequest['target_phone'] === '905467647428'
+            && $httpRequest['event'] === 'assignment_offer_technician'
+            && str_starts_with((string) $httpRequest['job_link'], 'https://dashboard.test/partner/service-jobs?job_id='));
     }
 
     public function test_rejected_job_can_be_sent_to_same_technician_again_and_clears_active_rejection(): void

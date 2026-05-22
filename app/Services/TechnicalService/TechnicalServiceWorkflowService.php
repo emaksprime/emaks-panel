@@ -1084,6 +1084,7 @@ class TechnicalServiceWorkflowService
                 break;
             case 'Usta Onayı Bekleyen':
                 $request->technician_approval_status = 'bekliyor';
+                $request->technician_approved_at = null;
                 break;
             case 'Usta Tarih Revize Talebi':
                 $request->technician_approval_status = 'revize_talebi';
@@ -1170,6 +1171,10 @@ class TechnicalServiceWorkflowService
 
         if ($request->workflow_status === 'Usta Onayı Bekleyen' && blank($request->technician_approval_status)) {
             $request->technician_approval_status = 'bekliyor';
+        }
+
+        if ($request->workflow_status === 'Usta Onayı Bekleyen' && $request->technician_approval_status === 'bekliyor') {
+            $request->technician_approved_at = null;
         }
 
         if ($request->workflow_status === 'Planlı' && blank($request->field_status)) {
