@@ -104,6 +104,44 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_appointment_time_attention_labels_are_computed_without_movement_statuses(): void
+    {
+        $service = app(TechnicalServiceWorkflowService::class);
+        $activeRequest = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'scheduled_at' => CarbonImmutable::now()->subHour(),
+            'scheduled_date' => CarbonImmutable::now()->toDateString(),
+            'scheduled_time' => CarbonImmutable::now()->subHour()->format('H:i'),
+        ]);
+        $overdueRequest = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'scheduled_at' => CarbonImmutable::now()->subHours(13),
+            'scheduled_date' => CarbonImmutable::now()->subHours(13)->toDateString(),
+            'scheduled_time' => CarbonImmutable::now()->subHours(13)->format('H:i'),
+        ]);
+        $completedRequest = $this->technicalServiceRequest([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->subHours(13),
+        ]);
+
+        $activePayload = $service->serialize($activeRequest->fresh(), true);
+        $overduePayload = $service->serialize($overdueRequest->fresh(), true);
+        $completedPayload = $service->serialize($completedRequest->fresh(), true);
+
+        $this->assertSame('Usta müşteride', data_get($activePayload, 'attention.attention_reason'));
+        $this->assertSame(7, data_get($activePayload, 'attention.sort_priority'));
+        $this->assertSame('İş kapanışı için usta ile iletişime geçin', data_get($overduePayload, 'attention.attention_reason'));
+        $this->assertSame(1, data_get($overduePayload, 'attention.sort_priority'));
+        $this->assertNotSame('Usta müşteride', data_get($completedPayload, 'attention.attention_reason'));
+        $this->assertNotSame('İş kapanışı için usta ile iletişime geçin', data_get($completedPayload, 'attention.attention_reason'));
+    }
+
     public function test_workflow_endpoint_rejects_invalid_action_for_current_status(): void
     {
         $user = $this->adminUser();

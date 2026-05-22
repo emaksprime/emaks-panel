@@ -878,6 +878,8 @@ export function TechnicalServiceOperationCenter() {
   const [technicianEarningMessageError, setTechnicianEarningMessageError] = useState<string | null>(null)
   const [fieldDocumentReviewLoading, setFieldDocumentReviewLoading] = useState<string | null>(null)
   const [fieldDocumentReviewError, setFieldDocumentReviewError] = useState<string | null>(null)
+  const [customerApprovalResendLoading, setCustomerApprovalResendLoading] = useState(false)
+  const [customerApprovalResendError, setCustomerApprovalResendError] = useState<string | null>(null)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
@@ -2852,6 +2854,47 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleCustomerApprovalResend = async (payload?: { note?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    setCustomerApprovalResendLoading(true)
+    setCustomerApprovalResendError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/customer-approval-requests`, {
+        method: 'POST',
+        body: JSON.stringify(payload ?? {}),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+          setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
+        })
+        await loadRequests({ silent: true, preserveSelection: true })
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+
+      if (response.dispatch?.dispatch_status && response.dispatch.dispatch_status !== 'sent') {
+        setCustomerApprovalResendError(response.message ?? 'Müşteri onay mesajı gönderilemedi.')
+      }
+    } catch (caught) {
+      setCustomerApprovalResendError(caught instanceof Error ? caught.message : 'Müşteri onayı tekrar gönderilemedi.')
+    } finally {
+      setCustomerApprovalResendLoading(false)
+    }
+  }
+
   const handleFieldDocumentReview = async (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => {
     if (!selectedId) {
       return
@@ -4108,9 +4151,9 @@ export function TechnicalServiceOperationCenter() {
                   parts_pending: 'Parça Bekleniyor',
                   second_visit_required: 'İkinci Randevu Gerekli',
                   field_completed: 'İşi Tamamla',
-                } as Record<string, string>)[fieldAction ?? ''] ?? 'Saha Süreci'}</DialogTitle>
+                } as Record<string, string>)[fieldAction ?? ''] ?? 'İşlem'}</DialogTitle>
                 <DialogDescription>
-                  {modalDisplayMrn ? `${modalDisplayMrn} için saha süreci bilgisini güncelleyin.` : 'Seçili talep yok.'}
+                  {modalDisplayMrn ? `${modalDisplayMrn} için işlem bilgisini güncelleyin.` : 'Seçili talep yok.'}
                 </DialogDescription>
               </DialogHeader>
 
@@ -4584,8 +4627,11 @@ export function TechnicalServiceOperationCenter() {
                     onPartnerCompletionApprove={handlePartnerCompletionApprove}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
                     onFieldDocumentReview={handleFieldDocumentReview}
+                    onCustomerApprovalResend={handleCustomerApprovalResend}
                     fieldDocumentReviewInFlight={fieldDocumentReviewLoading}
                     fieldDocumentReviewError={fieldDocumentReviewError}
+                    customerApprovalResendLoading={customerApprovalResendLoading}
+                    customerApprovalResendError={customerApprovalResendError}
                     extraPaymentCreateLoading={extraPaymentCreateLoading}
                     extraPaymentCreateError={extraPaymentCreateError}
                     onAssignSelectedTechnician={handleAssignSubmit}

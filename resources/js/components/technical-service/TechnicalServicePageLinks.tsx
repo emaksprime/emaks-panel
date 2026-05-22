@@ -18,7 +18,7 @@ const links: TechnicalServiceLink[] = [
     label: 'Operasyon Merkezi',
     visibleWhen: ['/technical-service/dashboard'],
   },
-  { href: '/technical-service/field', label: 'Saha İşleri', visibleWhen: ['/technical-service/dashboard'] },
+  { href: '/technical-service/field', label: 'Usta İşleri', visibleWhen: ['/technical-service/dashboard'] },
   { href: '/technical-service/serial-query', label: 'Seri No Sorgu' },
   { href: '/technical-service/technicians', label: 'Teknisyen Yönetimi' },
   { href: '/technical-service/earnings', label: 'Hakedişler' },

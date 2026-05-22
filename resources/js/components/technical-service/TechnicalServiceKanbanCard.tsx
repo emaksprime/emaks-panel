@@ -149,6 +149,18 @@ const assignmentOfferStatusLabel = (status: string | null | undefined): string =
   pending: 'Bekliyor',
 }[String(status ?? '').trim()] ?? truncateText(String(status ?? ''), 'Kontrol edilecek'))
 
+const attentionBadgeTone = (level: string | null | undefined): RequestBadge['tone'] => {
+  if (level === 'critical') {
+    return 'rose'
+  }
+
+  if (level === 'info') {
+    return 'blue'
+  }
+
+  return 'amber'
+}
+
 const buildBadges = (request: ServiceRequest): RequestBadge[] => {
   const badges: RequestBadge[] = []
   const column = getTechnicalServiceKanbanColumn(request)
@@ -163,7 +175,7 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
   let primaryActionBadgeAdded = false
 
   if (request.attention?.attention_reason && request.attention.attention_level !== 'normal') {
-    addBadge({ label: `Aksiyon: ${request.attention.attention_reason}`, tone: request.attention.attention_level === 'critical' ? 'rose' : 'amber', icon: 'warning', important: true })
+    addBadge({ label: `Aksiyon: ${request.attention.attention_reason}`, tone: attentionBadgeTone(request.attention.attention_level), icon: 'warning', important: true })
     primaryActionBadgeAdded = true
   }
 

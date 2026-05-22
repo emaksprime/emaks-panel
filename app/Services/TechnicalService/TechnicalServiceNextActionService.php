@@ -89,8 +89,8 @@ class TechnicalServiceNextActionService
         if (! $this->hasCalculatedRouteQuote($request)) {
             return $this->payload(
                 'route_fee_missing',
-                'Yol ücretini kontrol et',
-                'Seçili usta için yol ücreti henüz hesaplanmadı.',
+                'Usta yol hakedişi hesaplanmalı',
+                'Seçili usta için yol hakedişi henüz hesaplanmadı.',
                 'warning',
                 'calculate_route_fee',
                 false
@@ -110,8 +110,8 @@ class TechnicalServiceNextActionService
 
         return $this->payload(
             'field_process',
-            'Saha süreci takip ediliyor',
-            'Randevu ve atama tamamlandı. Saha akışı izlenmeli.',
+            'Randevu onaylandı',
+            'Randevu zamanı geldiğinde kart otomatik öne çıkar. İş tamamlanınca son kontrole düşer.',
             'success',
             null,
             false

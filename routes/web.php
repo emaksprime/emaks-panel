@@ -244,6 +244,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/partner-completions/{partnerJobAction}/approve', [TechnicalServicePartnerPortalOpsController::class, 'approveCompletionSubmission'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.partner-completions.approve');
+            Route::post('requests/{technicalServiceRequest}/customer-approval-requests', [TechnicalServicePartnerPortalOpsController::class, 'resendCustomerApprovalRequest'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.customer-approval-requests.resend');
             Route::patch('requests/{technicalServiceRequest}/field-documents/{upload}/review', [TechnicalServiceController::class, 'reviewFieldDocument'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.field-documents.review');

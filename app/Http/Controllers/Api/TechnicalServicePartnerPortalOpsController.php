@@ -3,7 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -11,9 +14,11 @@ use App\Models\TechnicalServiceTechnician;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\WarrantyService;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -365,6 +370,137 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         ]);
     }
 
+    public function resendCustomerApprovalRequest(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        $validated = $request->validate([
+            'note' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $result = DB::transaction(function () use ($technicalServiceRequest, $request, $validated): array {
+            $job = $technicalServiceRequest->refresh();
+            $partnerId = $this->partnerIdForRequest($job);
+
+            if ($partnerId === null) {
+                throw ValidationException::withMessages([
+                    'partner' => 'Bu iş için aktif çilingir partner bağlantısı bulunamadı.',
+                ]);
+            }
+
+            TechnicalServiceCustomerConfirmation::query()
+                ->where('technical_service_request_id', $job->id)
+                ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+                ->update(['status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED]);
+
+            $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+                'technical_service_request_id' => $job->id,
+                'token' => Str::random(64),
+                'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+                'payload' => [
+                    'partner_id' => $partnerId,
+                    'requested_by_user_id' => $request->user()?->id,
+                    'technical_service_technician_id' => $job->technical_service_technician_id,
+                    'source' => 'ops_resend',
+                ],
+            ]);
+
+            $approvalUrl = PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]);
+            $publicUrlWarning = $this->messages->testMode() && PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
+                ? 'Onay linki lokal URL içeriyor; telefondan açılamaz. PARTNER_PORTAL_PUBLIC_URL ayarlanmalı.'
+                : null;
+            $messageText = $this->customerApprovalMessageText($job, $approvalUrl);
+            $action = TechnicalServicePartnerJobAction::query()->create([
+                'technical_service_request_id' => $job->id,
+                'partner_id' => $partnerId,
+                'user_id' => $request->user()?->id,
+                'technical_service_technician_id' => $job->technical_service_technician_id,
+                'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
+                'status' => TechnicalServicePartnerJobAction::STATUS_SUBMITTED,
+                'note' => $validated['note'] ?? 'Müşteri onay linki operasyon tarafından tekrar gönderildi.',
+                'payload' => [
+                    'confirmation_method' => 'customer_link',
+                    'provider' => 'evolution_n8n',
+                    'confirmation_id' => $confirmation->id,
+                    'approval_url' => $approvalUrl,
+                    'confirmation_url' => $approvalUrl,
+                    'requested_at' => now()->toISOString(),
+                    'message_payload' => [
+                        'recipient' => 'customer',
+                        'channel' => 'evolution_n8n',
+                        'mrn' => $job->mrn,
+                        'customer_phone' => $job->customer_phone,
+                        'message_text' => $messageText,
+                        'approval_url' => $approvalUrl,
+                        'confirmation_url' => $approvalUrl,
+                        'public_url_warning' => $publicUrlWarning,
+                    ],
+                ],
+            ]);
+
+            $dispatch = $this->messages->send(
+                'customer_approval_request',
+                'customer',
+                $job->customer_phone,
+                $messageText,
+                [
+                    'confirmation_url' => $approvalUrl,
+                    'approval_url' => $approvalUrl,
+                    'confirmation_id' => $confirmation->id,
+                    'public_url_warning' => $publicUrlWarning,
+                    'force_resend' => true,
+                    'message_type' => 'customer_approval_request',
+                ],
+                $job,
+                $request->user(),
+                $action,
+            );
+            $dispatchSummary = $this->dispatchSummary($dispatch);
+            $actionPayload = is_array($action->payload) ? $action->payload : [];
+            $messagePayload = [
+                ...($actionPayload['message_payload'] ?? []),
+                ...$dispatchSummary,
+                'dispatch_id' => $dispatch->id,
+            ];
+            $action->forceFill([
+                'payload' => [
+                    ...$actionPayload,
+                    ...$dispatchSummary,
+                    'message_payload' => $messagePayload,
+                ],
+            ])->save();
+            $confirmation->forceFill([
+                'payload' => [
+                    ...(is_array($confirmation->payload) ? $confirmation->payload : []),
+                    'partner_action_id' => $action->id,
+                    'message_payload' => $messagePayload,
+                ],
+            ])->save();
+
+            $job->events()->create([
+                'event_type' => 'customer_approval_request_resent',
+                'title' => 'Müşteri onay linki tekrar gönderildi',
+                'note' => $validated['note'] ?? null,
+                'from_status' => $job->workflow_status,
+                'to_status' => $job->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'partner_job_action_id' => $action->id,
+                    'customer_confirmation_id' => $confirmation->id,
+                    'message_dispatch' => $dispatchSummary,
+                ],
+            ]);
+
+            return [
+                'status' => $action->status,
+                'action' => $action->action,
+                'dispatch' => $dispatchSummary,
+                'message' => $this->dispatchUserMessage($dispatchSummary),
+                'request' => $this->workflow->serialize($job->refresh(), true),
+            ];
+        });
+
+        return response()->json($result);
+    }
+
     /**
      * @return array<int, string>
      */
@@ -632,6 +768,127 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'Usta yol hakedişi: '.($payload['route_fee_amount'] ?? 0).' TRY',
             'Toplam: '.($payload['total_amount'] ?? 0).' TRY',
         ], fn ($line) => is_string($line) && trim($line) !== '')));
+    }
+
+    private function partnerIdForRequest(TechnicalServiceRequest $request): ?int
+    {
+        if ($request->technical_service_technician_id !== null) {
+            $link = B2BPartnerTechnician::query()
+                ->active()
+                ->where('technical_service_technician_id', $request->technical_service_technician_id)
+                ->whereIn('relationship_type', ['owner', 'field_technician'])
+                ->orderByDesc('is_primary')
+                ->latest('id')
+                ->first();
+
+            if ($link instanceof B2BPartnerTechnician) {
+                return (int) $link->partner_id;
+            }
+        }
+
+        $action = $request->partnerJobActions()
+            ->whereNotNull('partner_id')
+            ->latest('id')
+            ->first();
+
+        return $action instanceof TechnicalServicePartnerJobAction
+            ? (int) $action->partner_id
+            : null;
+    }
+
+    private function customerApprovalMessageText(TechnicalServiceRequest $job, string $approvalUrl): string
+    {
+        $product = trim(implode(' / ', array_filter([
+            (string) $job->product_name,
+            (string) $job->product_model,
+        ])));
+
+        return implode("\n", [
+            'Emaks Prime Teknik Servis',
+            '',
+            'Sayın '.($job->customer_name ?: 'müşterimiz').',',
+            ($product !== '' ? $product.' montaj işleminiz için onayınız gerekmektedir.' : 'Montaj işleminiz için onayınız gerekmektedir.'),
+            '',
+            'Talep No: '.$job->mrn,
+            '',
+            'Montajın tamamlandığını ve üründe görünür hasar/kusur olmadığını kontrol ettiyseniz aşağıdaki bağlantıdan onay verebilirsiniz:',
+            '',
+            $approvalUrl,
+            '',
+            'Bu işlemi siz yapmadıysanız operasyon ekibimizle iletişime geçiniz.',
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function dispatchSummary(TechnicalServiceMessageDispatch $dispatch): array
+    {
+        $responsePayload = is_array($dispatch->response_payload) ? $dispatch->response_payload : [];
+        $requestPayload = is_array($dispatch->request_payload) ? $dispatch->request_payload : [];
+        $responseStatusCode = $responsePayload['status'] ?? null;
+        $responseBody = $responsePayload['body'] ?? null;
+        $errorMessage = $dispatch->error_message;
+
+        if ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_NOT_CONFIGURED && ! filled($errorMessage)) {
+            $errorMessage = 'WhatsApp webhook ayarı eksik.';
+        }
+
+        return [
+            'dispatch_status' => $dispatch->status,
+            'dispatch_provider' => 'evolution_n8n',
+            'target_phone' => $dispatch->target_phone,
+            'test_mode' => (bool) $dispatch->test_mode,
+            'response_status_code' => is_numeric($responseStatusCode) ? (int) $responseStatusCode : null,
+            'response_body_summary' => $this->summarizeDispatchBody($responseBody),
+            'error_message' => filled($errorMessage) ? $errorMessage : null,
+            'public_url_warning' => $requestPayload['public_url_warning']
+                ?? ($requestPayload['context']['public_url_warning'] ?? null),
+        ];
+    }
+
+    /**
+     * @param  mixed  $body
+     */
+    private function summarizeDispatchBody($body): ?string
+    {
+        if ($body === null || $body === '') {
+            return null;
+        }
+
+        $summary = is_string($body)
+            ? $body
+            : json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return mb_substr((string) $summary, 0, 500);
+    }
+
+    /**
+     * @param  array<string, mixed>  $summary
+     */
+    private function dispatchUserMessage(array $summary): string
+    {
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SENT) {
+            $warning = trim((string) ($summary['public_url_warning'] ?? ''));
+
+            return 'WhatsApp onay mesajı gönderildi.'.($warning !== '' ? ' '.$warning : '');
+        }
+
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE) {
+            return 'Bu mesaj daha önce gönderildi; tekrar WhatsApp gönderilmedi.';
+        }
+
+        if (in_array(($summary['dispatch_status'] ?? null), [
+            TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE,
+            TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,
+            TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+        ], true)) {
+            return 'Test mesajı gerçek WhatsApp’a gönderilmedi.';
+        }
+
+        $reason = trim((string) ($summary['error_message'] ?? ''));
+
+        return 'WhatsApp mesajı gönderilemedi'.($reason !== '' ? ': '.$reason : '.');
     }
 
     private function telLink(?string $phone): ?string

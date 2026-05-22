@@ -3307,6 +3307,72 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
     }
 
+    public function test_ops_can_resend_customer_approval_with_new_token_and_force_whatsapp_dispatch(): void
+    {
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+            'services.partner_portal.public_url' => 'https://panel.test',
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['message' => 'Workflow was started'], 200),
+        ]);
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Approval Resend Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Approval Resend Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-APPROVAL-RESEND', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'customer_name' => 'Onay Test Müşteri',
+            'customer_phone' => '05551112233',
+        ]);
+        $oldConfirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $job->id,
+            'token' => 'old-approval-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+            'payload' => ['partner_id' => $partner->id],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/customer-approval-requests", [
+                'note' => 'Müşteriye tekrar gönder.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('dispatch.dispatch_status', 'sent')
+            ->assertJsonPath('dispatch.target_phone', '905467647428');
+
+        $this->assertDatabaseHas('technical_service_customer_confirmations', [
+            'id' => $oldConfirmation->id,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
+        ]);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_SUBMITTED,
+        ]);
+        $this->assertSame(1, TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+            ->count());
+        Http::assertSent(fn ($request): bool => $request['event'] === 'customer_approval_request'
+            && $request['target_phone'] === '905467647428'
+            && str_starts_with((string) $request['confirmation_url'], 'https://panel.test/service-job-confirmation/'));
+    }
+
     public function test_public_customer_door_photos_do_not_count_as_partner_field_documents(): void
     {
         (new B2BPartnerPermissionSeeder)->run();

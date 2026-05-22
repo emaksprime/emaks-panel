@@ -98,9 +98,9 @@ class TechnicalServiceWorkflowService
             'closure_pending' => 'Kapanış Onayı Bekliyor',
             'complete' => 'Tamamla',
             'cancel' => 'İptal Et',
-            'field_travel_started' => 'Yola Çıktı',
-            'field_arrived' => 'Sahaya Vardı',
-            'field_work_started' => 'İşe Başladı',
+            'field_travel_started' => 'Randevu zamanı geldi',
+            'field_arrived' => 'Randevu zamanı geldi',
+            'field_work_started' => 'Tamamlama işlemi başladı',
             'checklist_updated' => 'Checklist Güncelle',
             'photos_updated' => 'Fotoğraf Sayılarını Güncelle',
             'customer_closure_approved' => 'Müşteri Kapanış Onayı Al',
@@ -824,11 +824,11 @@ class TechnicalServiceWorkflowService
             'Usta Ataması Bekleyen' => 'Usta seçilmeli',
             'Usta Onayı Bekleyen' => 'Usta onayı beklenmeli',
             'Usta Tarih Revize Talebi' => 'Yeni tarih için müşteri ile tekrar görüşülmeli',
-            'Planlı' => 'Saha süreci bekleniyor',
-            'Yolda' => 'Usta sahaya gidiyor',
+            'Planlı' => 'Randevu onaylandı',
+            'Yolda' => 'Randevu onaylandı',
             'Sahada' => $request->checklist_status !== 'tamamlandı'
-                ? 'Checklist tamamlanmalı'
-                : ($this->photoStatusForCounts($request) ? 'Müşteri kapanış onayı alınmalı' : 'Checklist ve fotoğraf süreci tamamlanmalı'),
+                ? 'Tamamlama kontrolü bekleniyor'
+                : ($this->photoStatusForCounts($request) ? 'Müşteri kapanış onayı alınmalı' : 'Fotoğraf ve belge süreci tamamlanmalı'),
             'Beklemede' => $this->pendingNextAction($request),
             'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil' => 'Revize randevu planlanmalı',
             'Parça Bekleniyor' => 'Parça temini ve ikinci randevu planlanmalı',
@@ -1971,6 +1971,71 @@ class TechnicalServiceWorkflowService
             ->all();
     }
 
+    private function appointmentStartAt(TechnicalServiceRequest $request): ?CarbonImmutable
+    {
+        if ($request->scheduled_at instanceof CarbonInterface) {
+            return CarbonImmutable::instance($request->scheduled_at);
+        }
+
+        if ($request->scheduled_at !== null && $request->scheduled_at !== '') {
+            return CarbonImmutable::parse($request->scheduled_at);
+        }
+
+        if ($request->scheduled_date instanceof CarbonInterface && filled($request->scheduled_time)) {
+            return CarbonImmutable::parse($request->scheduled_date->toDateString().' '.$request->scheduled_time);
+        }
+
+        return null;
+    }
+
+    private function appointmentTrackingEligible(TechnicalServiceRequest $request): bool
+    {
+        if ($request->completed_at !== null || in_array($request->workflow_status, ['Tamamlandı', 'TamamlandÄ±', 'İptal', 'Ä°ptal'], true)) {
+            return false;
+        }
+
+        $request->loadMissing(['partnerJobActions' => fn ($query) => $query->latest()->limit(12)]);
+        $blockingAction = $request->partnerJobActions
+            ->first(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+                && in_array($action->action, [
+                    TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+                    TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+                    TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+                ], true));
+
+        return ! $blockingAction instanceof TechnicalServicePartnerJobAction;
+    }
+
+    private function appointmentAttentionState(TechnicalServiceRequest $request): ?array
+    {
+        if (! $this->appointmentTrackingEligible($request)) {
+            return null;
+        }
+
+        $startAt = $this->appointmentStartAt($request);
+        if (! $startAt instanceof CarbonImmutable || $startAt->isFuture()) {
+            return null;
+        }
+
+        if (CarbonImmutable::now()->greaterThanOrEqualTo($startAt->addHours(12))) {
+            return [
+                'sort_priority' => 1,
+                'attention_level' => 'critical',
+                'attention_reason' => 'İş kapanışı için usta ile iletişime geçin',
+                'last_action_at' => $this->dateTimeString($startAt),
+                'action' => 'appointment_overdue_for_closure',
+            ];
+        }
+
+        return [
+            'sort_priority' => 7,
+            'attention_level' => 'info',
+            'attention_reason' => 'Usta müşteride',
+            'last_action_at' => $this->dateTimeString($startAt),
+            'action' => 'appointment_in_progress',
+        ];
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -1980,14 +2045,19 @@ class TechnicalServiceWorkflowService
         $opsReview = $request->partnerJobActions
             ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
 
+        $appointmentAttention = $this->appointmentAttentionState($request);
+        if (($appointmentAttention['sort_priority'] ?? null) === 1) {
+            return $appointmentAttention;
+        }
+
         $orderedActions = [
-            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => ['priority' => 1, 'level' => 'critical', 'reason' => 'Hakediş revize talebi'],
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => ['priority' => 4, 'level' => 'critical', 'reason' => 'Hakediş revize talebi'],
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => ['priority' => 2, 'level' => 'critical', 'reason' => 'Usta işi reddetti'],
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => ['priority' => 3, 'level' => 'critical', 'reason' => 'Müşteri onayı reddedildi'],
-            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => ['priority' => 4, 'level' => 'warning', 'reason' => 'Son kontrol bekliyor'],
-            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => ['priority' => 5, 'level' => 'warning', 'reason' => 'Randevu önerisi bekliyor'],
-            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => ['priority' => 6, 'level' => 'warning', 'reason' => 'Ek talep var'],
-            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => ['priority' => 7, 'level' => 'warning', 'reason' => 'Tekrar ziyaret talebi'],
+            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => ['priority' => 5, 'level' => 'warning', 'reason' => 'Son kontrol bekliyor'],
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => ['priority' => 6, 'level' => 'warning', 'reason' => 'Randevu önerisi bekliyor'],
+            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => ['priority' => 8, 'level' => 'warning', 'reason' => 'Ek talep var'],
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => ['priority' => 8, 'level' => 'warning', 'reason' => 'Tekrar ziyaret talebi'],
         ];
 
         foreach ($orderedActions as $actionType => $payload) {
@@ -2001,6 +2071,10 @@ class TechnicalServiceWorkflowService
                     'action' => $action->action,
                 ];
             }
+        }
+
+        if ($appointmentAttention !== null) {
+            return $appointmentAttention;
         }
 
         return [

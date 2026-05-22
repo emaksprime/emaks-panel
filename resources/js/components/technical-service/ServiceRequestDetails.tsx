@@ -121,8 +121,11 @@ type ServiceRequestDetailsProps = {
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
+  onCustomerApprovalResend?: (payload?: { note?: string | null }) => void | Promise<void>
   fieldDocumentReviewInFlight?: string | null
   fieldDocumentReviewError?: string | null
+  customerApprovalResendLoading?: boolean
+  customerApprovalResendError?: string | null
 }
 
 const eventTime = (timestamp: string): string => {
@@ -850,8 +853,11 @@ export function ServiceRequestDetails({
   onPartnerCompletionApprove,
   onAssignmentOfferUpdate,
   onFieldDocumentReview,
+  onCustomerApprovalResend,
   fieldDocumentReviewInFlight = null,
   fieldDocumentReviewError = null,
+  customerApprovalResendLoading = false,
+  customerApprovalResendError = null,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
     request.serviceType,
@@ -876,6 +882,21 @@ export function ServiceRequestDetails({
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
   const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
+  const latestCustomerApprovalRequest = [...partnerPortalActions]
+    .filter((action) => action.action === 'customer_otp_requested')
+    .sort((a, b) => Date.parse(b.created_at ?? '') - Date.parse(a.created_at ?? ''))[0] ?? null
+  const latestCustomerApprovalPayload = latestCustomerApprovalRequest?.payload ?? {}
+  const latestCustomerApprovalMessagePayload = (
+    typeof latestCustomerApprovalPayload.message_payload === 'object'
+    && latestCustomerApprovalPayload.message_payload !== null
+  )
+    ? (latestCustomerApprovalPayload.message_payload as Record<string, unknown>)
+    : null
+  const latestCustomerApprovalDispatchStatus = String(
+    latestCustomerApprovalMessagePayload?.dispatch_status
+    ?? latestCustomerApprovalPayload.dispatch_status
+    ?? '',
+  )
   const isFinalCheckStage = completionSubmissions.length > 0 || request.workflowStatus === 'Son Kontrol'
   const portalActionLabels: Record<string, string> = {
     appointment_proposed: 'Randevu önerildi',
@@ -1413,8 +1434,8 @@ export function ServiceRequestDetails({
         ? { title: 'Usta onayı bekleme', status: 'Tamamlandı', message: approvalState.title }
         : { title: 'Usta onayı bekleme', status: 'Bekliyor', message: 'Servis atanınca takip edilecek.' },
     request.status === 'Tamamlandı'
-      ? { title: 'Tamamlama / saha süreci', status: 'Tamamlandı', message: 'Saha süreci tamamlandı.' }
-      : { title: 'Tamamlama / saha süreci', status: 'Bekliyor', message: 'Saha tamamlaması bekliyor.' },
+      ? { title: 'Tamamlama kontrolü', status: 'Tamamlandı', message: 'Tamamlama kontrolü tamamlandı.' }
+      : { title: 'Tamamlama kontrolü', status: 'Bekliyor', message: 'Ustanın tamamlama gönderimi bekleniyor.' },
   ]
   const sortedEvents = [...events].sort((a, b) => parseEventTimestamp(b) - parseEventTimestamp(a))
   const hiddenOpsWorkflowActions = new Set([
@@ -1459,7 +1480,18 @@ export function ServiceRequestDetails({
 
     return priority(leftKey, leftAction.label) - priority(rightKey, rightAction.label)
   })
-  const checklistEntries = Object.entries(request.checklistPayload ?? {}).map(([key, completed]) => ({
+  const finalCheckCompletionAction = completionSubmissions[0] ?? null
+  const finalCheckActionChecklist = finalCheckCompletionAction?.payload?.checklist
+  const finalCheckChecklistSource = (
+    finalCheckCompletionAction?.payload?.checklist_gate === 'server_checked'
+    && finalCheckActionChecklist
+    && typeof finalCheckActionChecklist === 'object'
+    && !Array.isArray(finalCheckActionChecklist)
+    && Object.keys(finalCheckActionChecklist).length > 0
+  )
+    ? (finalCheckActionChecklist as Record<string, unknown>)
+    : (request.checklistPayload ?? {})
+  const checklistEntries = Object.entries(finalCheckChecklistSource).map(([key, completed]) => ({
     key,
     label: key
       .replace(/_/g, ' ')
@@ -1511,8 +1543,6 @@ export function ServiceRequestDetails({
   const isFieldDocumentOverallReviewBusy = fieldDocumentOverallReviewLoading || fieldDocumentReviewInFlight !== null
   const showFieldDocumentOverallReviewControls = reviewableFieldDocuments.length > 0
     && (fieldDocumentOverallReviewStatus === 'pending' || fieldDocumentOverallReviewEditing)
-  const finalCheckCompletionAction = completionSubmissions[0] ?? null
-  const finalCheckActionChecklist = finalCheckCompletionAction?.payload?.checklist
   const finalCheckActionChecklistComplete = Boolean(
     finalCheckCompletionAction?.payload?.checklist_gate === 'server_checked'
     && finalCheckActionChecklist
@@ -2868,6 +2898,38 @@ export function ServiceRequestDetails({
                 hint={backendControlComplete ? 'Backend kontrol tamam' : checklistTotalCount > 0 ? `${checklistMissingCount} eksik adım` : 'Checklist bu işte henüz tamamlanmadı'}
               />
             </div>
+            {onCustomerApprovalResend ? (
+              <div className="flex flex-col gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-semibold">Müşteri onayı</p>
+                  <p className="mt-1 text-xs text-violet-800">
+                    {latestCustomerApprovalDispatchStatus === 'sent'
+                      ? 'Son onay mesajı gönderildi.'
+                      : latestCustomerApprovalDispatchStatus !== ''
+                        ? 'Son onay mesajı gönderilemedi veya bastırıldı.'
+                        : 'Gerekirse yeni onay linki oluşturup müşteriye tekrar gönderin.'}
+                  </p>
+                  {latestCustomerApprovalRequest?.created_at ? (
+                    <p className="mt-1 text-[11px] font-semibold text-violet-700">
+                      Son istek: {formatTechnicalServiceDateTime(latestCustomerApprovalRequest.created_at, 'Bilinmiyor')}
+                    </p>
+                  ) : null}
+                  {customerApprovalResendError ? (
+                    <p className="mt-2 text-xs font-semibold text-rose-700">{customerApprovalResendError}</p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={customerApprovalResendLoading}
+                  onClick={() => void onCustomerApprovalResend({ note: 'Operasyon müşteri onay linkini tekrar gönderdi.' })}
+                  className="border-violet-200 bg-white text-violet-800 hover:bg-violet-100"
+                >
+                  {customerApprovalResendLoading ? 'Gönderiliyor...' : 'Müşteri onayını tekrar gönder'}
+                </Button>
+              </div>
+            ) : null}
             {finalCheckCompletionAction ? (
               <div className="grid gap-3 rounded-2xl border border-violet-200 bg-violet-50 p-3 text-violet-950">
                 <div className="flex flex-wrap items-start justify-between gap-2">
