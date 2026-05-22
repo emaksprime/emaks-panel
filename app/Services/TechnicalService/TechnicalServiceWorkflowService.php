@@ -488,6 +488,8 @@ class TechnicalServiceWorkflowService
         $this->assertOperationControlsAllowAssignment($request);
 
         $old = $this->snapshot($request);
+        $reassignAfterReview = (bool) ($payload['reassign_after_review'] ?? false);
+        $reopenedForAssignment = false;
 
         $request->technical_service_technician_id = $payload['technical_service_technician_id'] ?? null;
         $request->technician_name = $payload['technician_name'] ?? $request->technician_name;
@@ -500,7 +502,11 @@ class TechnicalServiceWorkflowService
             : 'Usta Onayı Bekleyen';
 
         $current = $this->currentWorkflowStatus($request);
-        if ($current !== $target && ! in_array($current, self::TERMINAL_STATUSES, true)) {
+        if ($reassignAfterReview && $target === 'Usta Onayı Bekleyen' && $this->canReopenForAssignment($request)) {
+            $this->prepareReviewReassignmentState($request);
+            $request->workflow_status = $target;
+            $reopenedForAssignment = true;
+        } elseif ($current !== $target && ! in_array($current, self::TERMINAL_STATUSES, true)) {
             $this->assertTransitionAllowed($current, $target);
             $request->workflow_status = $target;
         }
@@ -508,10 +514,76 @@ class TechnicalServiceWorkflowService
         $this->applyDerivedState($request, $payload);
         $request->save();
 
-        $this->writeAuditLog($request, 'technician_updated', $old, $this->snapshot($request), $user, $payload['note'] ?? null);
-        $this->writeEvent($request, 'technician_updated', $current, $this->currentWorkflowStatus($request), $user, $payload, 'Usta bilgisi güncellendi');
+        $actionType = $reopenedForAssignment ? 'reassign_after_review' : 'technician_updated';
+        $title = $reopenedForAssignment ? 'İş yeniden atama akışına alındı' : 'Usta bilgisi güncellendi';
+
+        $this->writeAuditLog($request, $actionType, $old, $this->snapshot($request), $user, $payload['note'] ?? null);
+        $this->writeEvent($request, $actionType, $current, $this->currentWorkflowStatus($request), $user, $payload, $title);
 
         return $request->refresh();
+    }
+
+    public function canReopenForAssignment(TechnicalServiceRequest $request): bool
+    {
+        $status = $this->currentWorkflowStatus($request);
+
+        if (in_array($status, [
+            'Beklemede',
+            'Parça Bekleniyor',
+            'Belge / Fotoğraf Bekleyen',
+            'Müşteri Kapanış Onayı Bekleyen',
+            'Müşteri Yerinde Yok',
+            'Montaj Yeri Hazır Değil',
+            'Usta Tarih Revize Talebi',
+        ], true)) {
+            return true;
+        }
+
+        return TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->whereIn('action', $this->reviewReassignmentActionTypes())
+            ->exists();
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function reviewReassignmentActionTypes(): array
+    {
+        return [
+            TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+            TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
+        ];
+    }
+
+    private function prepareReviewReassignmentState(TechnicalServiceRequest $request): void
+    {
+        $request->completed_at = null;
+        $request->installation_completed_at = null;
+        $request->field_status = null;
+        $request->field_completed_at = null;
+        $request->technician_completed_at = null;
+        $request->checklist_status = null;
+        $request->checklist_completed_at = null;
+        $request->document_status = null;
+        $request->photo_status = null;
+        $request->customer_closure_approval_status = null;
+        $request->customer_closure_approval_method = null;
+        $request->customer_closure_approval_code = null;
+        $request->customer_closure_approved_at = null;
+        $request->completion_block_reason = null;
+        $request->incomplete_reason = null;
+        $request->requires_second_visit = false;
+        $request->second_visit_reason = null;
+        $request->pending_reason = null;
+        $request->requires_reschedule = false;
+        $request->reschedule_reason = null;
     }
 
     /**

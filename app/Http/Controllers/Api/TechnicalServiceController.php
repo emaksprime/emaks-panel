@@ -14,6 +14,7 @@ use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
 use App\Http\Requests\UpdateTechnicalServiceWorkflowRequest;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceAssignmentArchive;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceMountPayment;
@@ -299,12 +300,62 @@ class TechnicalServiceController extends Controller
     public function updateTechnician(UpdateTechnicalServiceTechnicianWorkflowRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         $payload = $request->validated();
+        $sourceWorkflowStatus = $this->workflowService->currentWorkflowStatus($technicalServiceRequest);
+        $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
+        $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
+        $oldPartnerId = $oldTechnicianId
+            ? \App\Models\B2B\B2BPartnerTechnician::query()
+                ->where('technical_service_technician_id', $oldTechnicianId)
+                ->where('active', true)
+                ->whereIn('relationship_type', ['owner', 'field_technician'])
+                ->value('partner_id')
+            : null;
+
         if (! empty($payload['technical_service_technician_id'])) {
             $technician = TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id']);
             $payload['technician_name'] = $technician?->name ?? $payload['technician_name'] ?? null;
+        } else {
+            $technician = null;
         }
 
+        $payload['reassign_after_review'] = $isReviewReassignment;
         $technicalServiceRequest = $this->workflowService->updateTechnician($technicalServiceRequest, $payload, $request->user());
+
+        $newPartnerId = $technician
+            ? \App\Models\B2B\B2BPartnerTechnician::query()
+                ->where('technical_service_technician_id', $technician->id)
+                ->where('active', true)
+                ->whereIn('relationship_type', ['owner', 'field_technician'])
+                ->value('partner_id')
+            : null;
+
+        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0) || $isReviewReassignment) {
+            TechnicalServiceAssignmentArchive::query()->create([
+                'technical_service_request_id' => $technicalServiceRequest->id,
+                'old_technician_id' => $oldTechnicianId,
+                'new_technician_id' => $technician?->id,
+                'old_partner_id' => $oldPartnerId,
+                'new_partner_id' => $newPartnerId,
+                'reason' => $payload['note'] ?? ($isReviewReassignment ? 'reassign_after_review' : 'reassignment'),
+                'archived_by' => $request->user()?->id,
+                'archived_at' => now(),
+                'metadata' => [
+                    'source' => 'technical_service_update_technician',
+                    'reassign_after_review' => $isReviewReassignment,
+                    'source_workflow_status' => $sourceWorkflowStatus,
+                    'target_workflow_status' => $technicalServiceRequest->workflow_status,
+                ],
+            ]);
+
+            $this->resolveReviewReassignmentState(
+                $technicalServiceRequest,
+                $payload,
+                $request->user(),
+                $technician,
+                $sourceWorkflowStatus,
+                $isReviewReassignment,
+            );
+        }
 
         return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
     }
@@ -924,6 +975,8 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $sourceWorkflowStatus = $this->workflowService->currentWorkflowStatus($technicalServiceRequest);
+        $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
         $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
         $oldPartnerId = $oldTechnicianId
             ? \App\Models\B2B\B2BPartnerTechnician::query()
@@ -939,6 +992,7 @@ class TechnicalServiceController extends Controller
             'technician_approval_status' => 'bekliyor',
             'route_quote_id' => $payload['route_quote_id'] ?? null,
             'note' => $payload['note'] ?? null,
+            'reassign_after_review' => $isReviewReassignment,
         ];
 
         $technicalServiceRequest = $this->workflowService->updateTechnician(
@@ -947,51 +1001,40 @@ class TechnicalServiceController extends Controller
             $request->user()
         );
 
-        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0)) {
-            $newPartnerId = $technician
-                ? \App\Models\B2B\B2BPartnerTechnician::query()
-                    ->where('technical_service_technician_id', $technician->id)
-                    ->where('active', true)
-                    ->whereIn('relationship_type', ['owner', 'field_technician'])
-                    ->value('partner_id')
-                : null;
+        $newPartnerId = $technician
+            ? \App\Models\B2B\B2BPartnerTechnician::query()
+                ->where('technical_service_technician_id', $technician->id)
+                ->where('active', true)
+                ->whereIn('relationship_type', ['owner', 'field_technician'])
+                ->value('partner_id')
+            : null;
 
+        if ((int) ($oldTechnicianId ?? 0) !== (int) ($technician?->id ?? 0) || $isReviewReassignment) {
             TechnicalServiceAssignmentArchive::query()->create([
                 'technical_service_request_id' => $technicalServiceRequest->id,
                 'old_technician_id' => $oldTechnicianId,
                 'new_technician_id' => $technician?->id,
                 'old_partner_id' => $oldPartnerId,
                 'new_partner_id' => $newPartnerId,
-                'reason' => $payload['note'] ?? 'reassignment',
+                'reason' => $payload['note'] ?? ($isReviewReassignment ? 'reassign_after_review' : 'reassignment'),
                 'archived_by' => $request->user()?->id,
                 'archived_at' => now(),
                 'metadata' => [
                     'source' => 'technical_service_assign',
-                    'old_workflow_status' => $technicalServiceRequest->workflow_status,
+                    'reassign_after_review' => $isReviewReassignment,
+                    'source_workflow_status' => $sourceWorkflowStatus,
+                    'target_workflow_status' => $technicalServiceRequest->workflow_status,
                 ],
             ]);
 
-            TechnicalServicePartnerJobAction::query()
-                ->where('technical_service_request_id', $technicalServiceRequest->id)
-                ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
-                ->whereIn('action', [
-                    TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
-                    TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
-                ])
-                ->get()
-                ->each(function (TechnicalServicePartnerJobAction $action) use ($request, $technician): void {
-                    $payload = is_array($action->payload) ? $action->payload : [];
-                    $action->forceFill([
-                        'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
-                        'payload' => [
-                            ...$payload,
-                            'resolved_by_reassignment' => true,
-                            'new_technician_id' => $technician?->id,
-                            'resolved_by_user_id' => $request->user()?->id,
-                            'resolved_at' => now()->toISOString(),
-                        ],
-                    ])->save();
-                });
+            $this->resolveReviewReassignmentState(
+                $technicalServiceRequest,
+                $payload,
+                $request->user(),
+                $technician,
+                $sourceWorkflowStatus,
+                $isReviewReassignment,
+            );
 
             $technicalServiceRequest->events()->create([
                 'event_type' => 'assignment_archived',
@@ -1459,6 +1502,90 @@ class TechnicalServiceController extends Controller
         $offer->forceFill(['metadata' => $metadata])->save();
 
         return $offer;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function resolveReviewReassignmentState(
+        TechnicalServiceRequest $request,
+        array $payload,
+        mixed $user,
+        ?TechnicalServiceTechnician $technician,
+        string $sourceWorkflowStatus,
+        bool $isReviewReassignment,
+    ): void {
+        $resolvedAt = now();
+        $resolvedActions = [];
+
+        TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->whereIn('action', $this->workflowService->reviewReassignmentActionTypes())
+            ->get()
+            ->each(function (TechnicalServicePartnerJobAction $action) use ($user, $technician, $resolvedAt, &$resolvedActions): void {
+                $actionPayload = is_array($action->payload) ? $action->payload : [];
+                $resolvedActions[] = $action->action;
+
+                $action->forceFill([
+                    'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                    'payload' => [
+                        ...$actionPayload,
+                        'resolved_by_reassignment' => true,
+                        'new_technician_id' => $technician?->id,
+                        'resolved_by_user_id' => $user?->id,
+                        'resolved_at' => $resolvedAt->toISOString(),
+                    ],
+                ])->save();
+            });
+
+        $cancelledConfirmations = 0;
+        TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+            ->get()
+            ->each(function (TechnicalServiceCustomerConfirmation $confirmation) use ($user, $technician, $resolvedAt, &$cancelledConfirmations): void {
+                $confirmationPayload = is_array($confirmation->payload) ? $confirmation->payload : [];
+                $cancelledConfirmations++;
+
+                $confirmation->forceFill([
+                    'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
+                    'payload' => [
+                        ...$confirmationPayload,
+                        'cancelled_by_reassignment' => true,
+                        'new_technician_id' => $technician?->id,
+                        'cancelled_by_user_id' => $user?->id,
+                        'cancelled_at' => $resolvedAt->toISOString(),
+                    ],
+                ])->save();
+            });
+
+        $cancelledAssignmentOffers = TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('status', [
+                TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            ])
+            ->update([
+                'status' => TechnicalServiceAssignmentOffer::STATUS_CANCELLED,
+                'updated_at' => $resolvedAt,
+            ]);
+
+        $request->events()->create([
+            'event_type' => $isReviewReassignment ? 'reassign_after_review_resolved' : 'assignment_reassigned',
+            'title' => $isReviewReassignment ? 'İş incelemeden yeniden atama akışına alındı' : 'Usta ataması güncellendi',
+            'note' => $payload['note'] ?? null,
+            'from_status' => $sourceWorkflowStatus,
+            'to_status' => $request->workflow_status,
+            'author_user_id' => $user?->id,
+            'metadata' => [
+                'new_technician_id' => $technician?->id,
+                'resolved_actions' => array_values(array_unique($resolvedActions)),
+                'cancelled_pending_customer_confirmations' => $cancelledConfirmations,
+                'cancelled_assignment_offers' => $cancelledAssignmentOffers,
+                'reassign_after_review' => $isReviewReassignment,
+            ],
+        ]);
     }
 
     /**

@@ -2,8 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\B2B\B2BPartner;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceAssignmentArchive;
+use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
@@ -653,6 +658,187 @@ class TechnicalServiceWorkflowTest extends TestCase
             'technical_service_request_id' => $request->id,
             'event_type' => 'technician_updated',
             'title' => 'Usta bilgisi güncellendi',
+        ]);
+    }
+
+    public function test_review_job_can_be_reassigned_from_closure_pending_without_invalid_transition(): void
+    {
+        $user = $this->adminUser();
+        $oldTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Eski Son Kontrol Ustası',
+            'phone' => '+905551111221',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $newTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Yeni Son Kontrol Ustası',
+            'phone' => '+905551111222',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REASSIGN-CLOSURE',
+            'display_name' => 'Reassign Closure Locksmith',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Devam Ediyor',
+            'workflow_status' => 'Müşteri Kapanış Onayı Bekleyen',
+            'technical_service_technician_id' => $oldTechnician->id,
+            'technician_name' => $oldTechnician->name,
+            'technician_approval_status' => 'onayladı',
+            'field_completed_at' => now()->subHour(),
+            'checklist_status' => 'tamamlandı',
+            'document_status' => 'tamamlandı',
+            'photo_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => now()->subMinutes(30),
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $completionAction = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'technical_service_technician_id' => $oldTechnician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => ['note' => 'Son kontrol bekliyor.'],
+        ]);
+        $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $request->id,
+            'token' => 'closure-reassign-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+            'payload' => ['source' => 'test'],
+        ]);
+        $oldOffer = TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $oldTechnician->id,
+            'labor_amount' => 1000,
+            'route_fee_amount' => 100,
+            'total_amount' => 1100,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_by' => $user->id,
+            'sent_at' => now()->subHour(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $newTechnician->id,
+                'travel_round_trip_km' => 20,
+                'note' => 'Son kontrolden yeniden atama.',
+                'assignment_offer' => [
+                    'labor_amount' => 1200,
+                    'route_fee_amount' => 80,
+                    'total_amount' => 1280,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.status', 'Atandı')
+            ->assertJsonPath('request.technical_service_technician_id', $newTechnician->id)
+            ->assertJsonPath('request.customer_closure_approval_status', null)
+            ->assertJsonPath('request.checklist_status', null);
+
+        $request->refresh();
+        $this->assertSame('Usta Onayı Bekleyen', $request->workflow_status);
+        $this->assertSame('Atandı', $request->status);
+        $this->assertNull($request->customer_closure_approval_status);
+        $this->assertNull($request->field_completed_at);
+
+        $this->assertDatabaseHas('technical_service_assignment_archives', [
+            'technical_service_request_id' => $request->id,
+            'old_technician_id' => $oldTechnician->id,
+            'new_technician_id' => $newTechnician->id,
+        ]);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'id' => $completionAction->id,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+        $this->assertDatabaseHas('technical_service_customer_confirmations', [
+            'id' => $confirmation->id,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
+        ]);
+        $this->assertDatabaseHas('technical_service_assignment_offers', [
+            'id' => $oldOffer->id,
+            'status' => TechnicalServiceAssignmentOffer::STATUS_CANCELLED,
+        ]);
+        $this->assertDatabaseHas('technical_service_assignment_offers', [
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $newTechnician->id,
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'total_amount' => 1280,
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'reassign_after_review',
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'reassign_after_review_resolved',
+        ]);
+    }
+
+    public function test_rejected_job_can_be_sent_to_same_technician_again_and_clears_active_rejection(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Tekrar Gönderilen Usta',
+            'phone' => '+905551111223',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REASSIGN-SAME',
+            'display_name' => 'Reassign Same Locksmith',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Atandı',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $rejection = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => ['reason' => 'time_not_suitable'],
+            'note' => 'Uygun değil.',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 10,
+                'note' => 'Aynı ustaya tekrar gönderildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id);
+
+        $this->assertNotSame('Usta reddetti', data_get($response->json('request.attention'), 'reason'));
+
+        $this->assertDatabaseHas('technical_service_assignment_archives', [
+            'technical_service_request_id' => $request->id,
+            'old_technician_id' => $technician->id,
+            'new_technician_id' => $technician->id,
+        ]);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'id' => $rejection->id,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
         ]);
     }
 

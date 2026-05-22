@@ -879,7 +879,8 @@ export function ServiceRequestDetails({
   const invoiceSerials = request.invoiceSerials ?? null
   const partnerPortalActions = request.partnerPortalActions ?? []
   const openAppointmentProposals = partnerPortalActions.filter((action) => action.action === 'appointment_proposed' && action.status === 'ops_review')
-  const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected')
+  const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected' && action.status === 'ops_review')
+  const customerApprovalRejections = partnerPortalActions.filter((action) => action.action === 'customer_approval_rejected' && action.status === 'ops_review')
   const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
   const latestCustomerApprovalRequest = [...partnerPortalActions]
@@ -909,7 +910,7 @@ export function ServiceRequestDetails({
     job_rejected: 'Usta reddetti',
     note_added: 'Not eklendi',
   }
-  const hasPortalActionNeedingOps = openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0
+  const hasPortalActionNeedingOps = openAppointmentProposals.length > 0 || jobRejections.length > 0 || customerApprovalRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0
   const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
   const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? (!isFinalCheckStage && Boolean(invoiceSerials?.has_multi_product))
   const setInvoiceSerialsOpen = (open: boolean) => {
@@ -926,7 +927,7 @@ export function ServiceRequestDetails({
     setCustomerInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [assignmentInfoOpenByRequest, setAssignmentInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? (!isFinalCheckStage && (!hasPortalActionNeedingOps || openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0))
+  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? (!isFinalCheckStage && (!hasPortalActionNeedingOps || openAppointmentProposals.length > 0 || jobRejections.length > 0 || customerApprovalRejections.length > 0 || supportRequests.length > 0))
   const setAssignmentInfoOpen = (open: boolean) => {
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -1481,6 +1482,12 @@ export function ServiceRequestDetails({
     return priority(leftKey, leftAction.label) - priority(rightKey, rightAction.label)
   })
   const finalCheckCompletionAction = completionSubmissions[0] ?? null
+  const canReassignAfterReview = jobRejections.length > 0 || customerApprovalRejections.length > 0 || completionSubmissions.length > 0
+  const sameTechnicianReviewActionLabel = completionSubmissions.length > 0
+    ? 'Revize için ustaya geri gönder'
+    : customerApprovalRejections.length > 0
+      ? 'Usta ile devam et'
+      : 'Aynı ustaya tekrar gönder'
   const finalCheckActionChecklist = finalCheckCompletionAction?.payload?.checklist
   const finalCheckChecklistSource = (
     finalCheckCompletionAction?.payload?.checklist_gate === 'server_checked'
@@ -2203,6 +2210,32 @@ export function ServiceRequestDetails({
                 {hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
+            {canReassignAfterReview ? (
+              <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <div>
+                  <p className="font-semibold">Aynı MRN ile yeniden işleme al</p>
+                  <p className="mt-1 text-xs text-amber-900">
+                    Red, müşteri onayı reddi veya son kontrol sonrası bu iş yeni MRN açmadan yeniden atanabilir. Geçmiş kayıtlar korunur; aktif kart yeni atama aşamasına döner.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => onAssign?.()}>
+                    Başka usta ata
+                  </Button>
+                  {hasAssignedTechnician ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void onAssignSelectedTechnician?.()}
+                      disabled={assignmentSubmitDisabled}
+                      title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+                    >
+                      {sameTechnicianReviewActionLabel}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {mountPaymentReceived ? (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
                 <p className="font-semibold">Montaj ödemesi alındı. Servis ataması yapılabilir.</p>
@@ -2318,6 +2351,12 @@ export function ServiceRequestDetails({
                   <div key={String(action.id)} className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-rose-900">
                     <p className="font-semibold">Usta işi reddetti</p>
                     <p className="mt-1 text-xs">{String(action.payload?.reason_label ?? action.note ?? 'Neden belirtilmedi')}</p>
+                  </div>
+                ))}
+                {customerApprovalRejections.slice(0, 2).map((action) => (
+                  <div key={String(action.id)} className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-rose-900">
+                    <p className="font-semibold">Müşteri onayı reddedildi</p>
+                    <p className="mt-1 text-xs">{String(action.payload?.customer_note ?? action.note ?? 'Açıklama yok')}</p>
                   </div>
                 ))}
                 {supportRequests.slice(0, 3).map((action) => (
@@ -3147,6 +3186,30 @@ export function ServiceRequestDetails({
             >
               Son kontrolü tamamla
             </Button>
+          ) : null}
+          {canReassignAfterReview ? (
+            <>
+              <Button
+                className="h-9 w-full text-xs sm:text-sm lg:w-auto"
+                type="button"
+                variant="outline"
+                onClick={() => onAssign?.()}
+              >
+                Başka usta ata
+              </Button>
+              {hasAssignedTechnician ? (
+                <Button
+                  className="h-9 w-full text-xs sm:text-sm lg:w-auto"
+                  type="button"
+                  variant="outline"
+                  onClick={() => void onAssignSelectedTechnician?.()}
+                  disabled={assignmentSubmitDisabled}
+                  title={isAssignmentBlocked ? combinedAssignmentBlockerMessages.join(' ') : undefined}
+                >
+                  {sameTechnicianReviewActionLabel}
+                </Button>
+              ) : null}
+            </>
           ) : null}
           <Button
             asChild
