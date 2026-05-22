@@ -71,6 +71,8 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                     ->name('api.operations.warehouse-terminal.rack-transfer.transfer');
                 Route::get('rack-transfer/history', [WarehouseRackTransferController::class, 'history'])
                     ->name('api.operations.warehouse-terminal.rack-transfer.history');
+                Route::get('rack-report/export', [WarehouseRackReportController::class, 'export'])
+                    ->name('api.operations.warehouse-terminal.rack-report.export');
                 Route::get('rack-report', [WarehouseRackReportController::class, 'index'])
                     ->name('api.operations.warehouse-terminal.rack-report.index');
             });

@@ -10,33 +10,15 @@ use Illuminate\Support\Collection;
 
 class WarehouseRackReportService
 {
+    public const EXPORT_LIMIT = 10000;
+
     /**
      * @param array<string, mixed> $filters
      * @return array<string, mixed>
      */
     public function report(array $filters): array
     {
-        $itemType = (string) ($filters['item_type'] ?? 'all');
-        $rackNames = $this->rackNames($filters);
-        $rows = collect();
-
-        if (in_array($itemType, ['all', 'serial'], true)) {
-            $rows = $rows->merge($this->serialRows($filters, $rackNames));
-        }
-
-        if (in_array($itemType, ['all', 'stock'], true)) {
-            $rows = $rows->merge($this->stockRows($filters, $rackNames));
-        }
-
-        $rows = $rows
-            ->sortBy(fn (array $row): string => implode('|', [
-                str_pad((string) $row['warehouse_no'], 8, '0', STR_PAD_LEFT),
-                (string) $row['rack_code'],
-                (string) $row['stock_code'],
-                (string) ($row['serial_no'] ?? ''),
-                (string) $row['item_type'],
-            ]))
-            ->values();
+        $rows = $this->rows($filters);
 
         $page = max(1, (int) ($filters['page'] ?? 1));
         $perPage = max(1, min(250, (int) ($filters['per_page'] ?? 100)));
@@ -52,6 +34,68 @@ class WarehouseRackReportService
                 'last_page' => (int) max(1, ceil($total / $perPage)),
             ],
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return Collection<int, array<string, mixed>>
+     */
+    public function exportRows(array $filters): Collection
+    {
+        return $this->rows($filters);
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<int, string>
+     */
+    public function csvRow(array $row): array
+    {
+        return [
+            (string) ($row['warehouse_name'] ?? 'Depo '.($row['warehouse_no'] ?? '')),
+            $this->csvValue($row['rack_code'] ?? $row['rack_name'] ?? null),
+            $this->itemTypeLabel((string) ($row['item_type'] ?? '')),
+            $this->csvValue($row['stock_code'] ?? null),
+            $this->csvValue($row['stock_name'] ?? null),
+            (string) ($row['item_type'] ?? '') === 'stock' ? 'Serisiz ürün' : $this->csvValue($row['serial_no'] ?? null),
+            $this->csvQuantity($row['quantity'] ?? null),
+            $this->statusLabel($row['status'] ?? null),
+            $this->csvValue($row['last_operation_no'] ?? null),
+            $this->csvValue(($row['last_seen_at'] ?? null) ?: ($row['updated_at'] ?? null)),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function rows(array $filters): Collection
+    {
+        $itemType = (string) ($filters['item_type'] ?? 'all');
+        $rackNames = $this->rackNames($filters);
+        $rows = collect();
+
+        if (in_array($itemType, ['all', 'serial'], true)) {
+            $rows = $rows->merge($this->serialRows($filters, $rackNames));
+        }
+
+        if (in_array($itemType, ['all', 'stock'], true)) {
+            $rows = $rows->merge($this->stockRows($filters, $rackNames));
+        }
+
+        return $rows
+            ->sort(function (array $left, array $right): int {
+                foreach (['rack_code', 'stock_name', 'serial_no', 'item_type'] as $column) {
+                    $comparison = strnatcasecmp((string) ($left[$column] ?? ''), (string) ($right[$column] ?? ''));
+
+                    if ($comparison !== 0) {
+                        return $comparison;
+                    }
+                }
+
+                return (int) ($left['warehouse_no'] ?? 0) <=> (int) ($right['warehouse_no'] ?? 0);
+            })
+            ->values();
     }
 
     /**
@@ -208,6 +252,48 @@ class WarehouseRackReportService
     private function rackKey(int $warehouseNo, string $rackCode): string
     {
         return $warehouseNo.'|'.$rackCode;
+    }
+
+    private function csvValue(mixed $value): string
+    {
+        if ($value === null || $value === '') {
+            return '-';
+        }
+
+        return (string) $value;
+    }
+
+    private function csvQuantity(mixed $value): string
+    {
+        if ($value === null || $value === '') {
+            return '0';
+        }
+
+        $number = (float) $value;
+
+        if (floor($number) === $number) {
+            return (string) (int) $number;
+        }
+
+        return rtrim(rtrim(str_replace('.', ',', sprintf('%.4F', $number)), '0'), ',');
+    }
+
+    private function itemTypeLabel(string $value): string
+    {
+        return $value === 'serial' ? 'Serili' : 'Serisiz';
+    }
+
+    private function statusLabel(mixed $value): string
+    {
+        if ($value === 'in_stock') {
+            return 'Stokta';
+        }
+
+        if ($value === 'empty') {
+            return 'Boş';
+        }
+
+        return $this->csvValue($value);
     }
 
     /**

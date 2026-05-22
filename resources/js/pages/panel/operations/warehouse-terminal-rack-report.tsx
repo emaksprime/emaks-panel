@@ -1,7 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
-import { ArrowLeft, RotateCcw, Search } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Download, RotateCcw, Search } from 'lucide-react';
 import type { FormEvent } from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '@/lib/api';
 
 type ItemType = 'all' | 'serial' | 'stock';
@@ -36,7 +36,19 @@ type WarehouseLookupResponse = {
     items?: WarehouseLookup[];
 };
 
+type RackReportGroup = {
+    key: string;
+    rack_code: string;
+    items: RackReportItem[];
+    total_line_count: number;
+    serial_count: number;
+    stock_line_count: number;
+    stock_quantity_sum: number;
+    total_quantity: number;
+};
+
 const rackReportUrl = '/api/operations/warehouse-terminal/rack-report';
+const rackReportExportUrl = '/api/operations/warehouse-terminal/rack-report/export';
 const lookupWarehousesUrl = '/api/operations/warehouse-terminal/lookups/warehouses';
 
 function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
@@ -72,10 +84,6 @@ function itemTypeLabel(value: string): string {
     return value === 'serial' ? 'Serili' : 'Serisiz';
 }
 
-function rackCodeLabel(item: RackReportItem): string {
-    return formatValue(item.rack_code ?? item.rack_name);
-}
-
 function serialLabel(item: RackReportItem): string {
     if (item.item_type === 'stock') {
         return 'Serisiz ürün';
@@ -88,16 +96,55 @@ function rackMovementDateLabel(item: RackReportItem): string {
     return formatValue(item.last_seen_at || item.updated_at);
 }
 
-function statusLabel(value: string | null): string {
-    if (value === 'in_stock') {
-        return 'Stokta';
-    }
+function compareText(left: string | number | null | undefined, right: string | number | null | undefined): number {
+    return formatValue(left).localeCompare(formatValue(right), 'tr', {
+        numeric: true,
+        sensitivity: 'base',
+    });
+}
 
-    if (value === 'empty') {
-        return 'Boş';
-    }
+function buildRackGroups(items: RackReportItem[]): RackReportGroup[] {
+    const groups = new Map<string, RackReportItem[]>();
 
-    return formatValue(value);
+    items.forEach((item) => {
+        const key = formatValue(item.rack_code);
+        groups.set(key, [...(groups.get(key) ?? []), item]);
+    });
+
+    return Array.from(groups.entries())
+        .map(([key, groupItems]) => {
+            const sortedItems = [...groupItems].sort((left, right) => {
+                const stockNameComparison = compareText(left.stock_name, right.stock_name);
+
+                if (stockNameComparison !== 0) {
+                    return stockNameComparison;
+                }
+
+                return compareText(left.serial_no, right.serial_no);
+            });
+            const serialCount = sortedItems.filter((item) => item.item_type === 'serial').length;
+            const stockItems = sortedItems.filter((item) => item.item_type === 'stock');
+            const stockQuantitySum = stockItems.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
+            const totalQuantity = sortedItems.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
+
+            return {
+                key,
+                rack_code: key,
+                items: sortedItems,
+                total_line_count: sortedItems.length,
+                serial_count: serialCount,
+                stock_line_count: stockItems.length,
+                stock_quantity_sum: stockQuantitySum,
+                total_quantity: totalQuantity,
+            };
+        })
+        .sort((left, right) => compareText(left.rack_code, right.rack_code));
+}
+
+function exportFilename(contentDisposition: string | null): string {
+    const match = contentDisposition?.match(/filename="?([^"]+)"?/i);
+
+    return match?.[1] ?? 'raf-raporu.csv';
 }
 
 export default function WarehouseTerminalRackReport() {
@@ -107,8 +154,11 @@ export default function WarehouseTerminalRackReport() {
     const [itemType, setItemType] = useState<ItemType>('all');
     const [search, setSearch] = useState('');
     const [items, setItems] = useState<RackReportItem[]>([]);
+    const [expandedRacks, setExpandedRacks] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
+    const [exporting, setExporting] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
+    const rackGroups = useMemo(() => buildRackGroups(items), [items]);
 
     const loadWarehouses = useCallback(async () => {
         try {
@@ -134,6 +184,7 @@ export default function WarehouseTerminalRackReport() {
             })}`) as RackReportResponse;
 
             setItems(response.items ?? []);
+            setExpandedRacks(new Set());
             setMessage((response.items ?? []).length === 0 ? 'Filtrelere uygun raf lokasyon kaydı bulunamadı.' : null);
         } catch (caught) {
             setMessage(caught instanceof Error ? caught.message : 'Raf raporu alınamadı.');
@@ -169,6 +220,66 @@ export default function WarehouseTerminalRackReport() {
         setItemType('all');
         setSearch('');
     };
+
+    const toggleRack = (rackKey: string) => {
+        setExpandedRacks((current) => {
+            const next = new Set(current);
+
+            if (next.has(rackKey)) {
+                next.delete(rackKey);
+            } else {
+                next.add(rackKey);
+            }
+
+            return next;
+        });
+    };
+
+    const expandAll = () => {
+        setExpandedRacks(new Set(rackGroups.map((group) => group.key)));
+    };
+
+    const collapseAll = () => {
+        setExpandedRacks(new Set());
+    };
+
+    const exportReport = useCallback(async () => {
+        setExporting(true);
+        setMessage(null);
+
+        try {
+            const response = await fetch(`${rackReportExportUrl}?${buildQuery({
+                warehouse_no: warehouseNo,
+                rack_code: rackCode.trim(),
+                item_type: itemType,
+                search: search.trim(),
+                only_in_stock: 1,
+            })}`, {
+                credentials: 'same-origin',
+                headers: {
+                    Accept: 'text/csv',
+                },
+            });
+
+            if (!response.ok) {
+                throw new Error('Excel raporu indirilemedi.');
+            }
+
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = exportFilename(response.headers.get('Content-Disposition'));
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            window.URL.revokeObjectURL(url);
+        } catch {
+            setMessage('Excel raporu indirilemedi.');
+        } finally {
+            setExporting(false);
+        }
+    }, [itemType, rackCode, search, warehouseNo]);
 
     return (
         <>
@@ -249,10 +360,10 @@ export default function WarehouseTerminalRackReport() {
                             </label>
                         </div>
 
-                        <div className="grid gap-2 sm:grid-cols-2 md:ml-auto">
+                        <div className="grid gap-2 sm:grid-cols-3 md:ml-auto">
                             <button
                                 type="submit"
-                                disabled={loading}
+                                disabled={loading || exporting}
                                 className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
                             >
                                 <Search className="size-5" />
@@ -261,11 +372,20 @@ export default function WarehouseTerminalRackReport() {
                             <button
                                 type="button"
                                 onClick={clearFilters}
-                                disabled={loading}
+                                disabled={loading || exporting}
                                 className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
                             >
                                 <RotateCcw className="size-5" />
                                 Temizle
+                            </button>
+                            <button
+                                type="button"
+                                onClick={exportReport}
+                                disabled={loading || exporting}
+                                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 text-sm font-bold text-blue-800 transition hover:border-blue-300 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
+                            >
+                                <Download className="size-5" />
+                                {exporting ? 'Hazırlanıyor' : 'Excel’e Aktar'}
                             </button>
                         </div>
                     </form>
@@ -276,67 +396,90 @@ export default function WarehouseTerminalRackReport() {
                         </div>
                     ) : null}
 
-                    <section className="grid gap-2 md:hidden">
-                        {items.map((item) => (
-                            <article key={`${item.item_type}-${item.warehouse_no}-${item.rack_code}-${item.stock_code}-${item.serial_no ?? 'stock'}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-                                <div className="flex items-start justify-between gap-3">
-                                    <h2 className="min-w-0 break-words text-lg font-bold leading-6 text-slate-950">
-                                        <span className="mr-1 text-xs font-bold uppercase text-slate-500">RAF:</span>
-                                        {rackCodeLabel(item)}
-                                    </h2>
-                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
-                                        {itemTypeLabel(item.item_type)}
-                                    </span>
-                                </div>
-                                <p className="mt-2 break-words text-sm font-semibold leading-5 text-slate-950">{formatValue(item.stock_name)}</p>
-                                <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-1 text-sm leading-5">
-                                    <dt className="font-semibold text-slate-500">Seri:</dt>
-                                    <dd className="break-words font-semibold text-slate-800">{serialLabel(item)}</dd>
-                                    <dt className="font-semibold text-slate-500">Miktar:</dt>
-                                    <dd className="font-bold text-slate-950">{formatQuantity(item.quantity)}</dd>
-                                    <dt className="font-semibold text-slate-500">Son Raf Hareketi:</dt>
-                                    <dd className="break-words font-semibold text-slate-800">{rackMovementDateLabel(item)}</dd>
-                                </dl>
-                            </article>
-                        ))}
-                    </section>
+                    <section className="grid gap-2">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="text-sm font-semibold text-slate-600">
+                                {formatQuantity(rackGroups.length)} raf / {formatQuantity(items.length)} ürün
+                            </p>
+                            <div className="grid grid-cols-2 gap-2 sm:w-auto">
+                                <button
+                                    type="button"
+                                    onClick={expandAll}
+                                    disabled={rackGroups.length === 0}
+                                    className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    Tümünü Aç
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={collapseAll}
+                                    disabled={rackGroups.length === 0}
+                                    className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    Tümünü Kapat
+                                </button>
+                            </div>
+                        </div>
 
-                    <section className="hidden rounded-lg border border-slate-200 bg-white shadow-sm md:block">
-                        <div className="overflow-x-auto">
-                            <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                                <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-500">
-                                    <tr>
-                                        <th className="px-4 py-3">Raf</th>
-                                        <th className="px-4 py-3">Stok Adı</th>
-                                        <th className="px-4 py-3">Seri No</th>
-                                        <th className="px-4 py-3">Miktar</th>
-                                        <th className="px-4 py-3">Tip</th>
-                                        <th className="px-4 py-3">Son İşlem</th>
-                                        <th className="px-4 py-3">Son Raf Hareketi</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {items.map((item) => (
-                                        <tr key={`${item.item_type}-${item.warehouse_no}-${item.rack_code}-${item.stock_code}-${item.serial_no ?? 'stock'}`} className="align-top">
-                                            <td className="px-4 py-3 font-bold text-slate-950">
-                                                <span className="block">{rackCodeLabel(item)}</span>
-                                                <span className="text-xs font-semibold text-slate-500">{item.warehouse_name}</span>
-                                            </td>
-                                            <td className="max-w-[320px] px-4 py-3 text-slate-700">{formatValue(item.stock_name)}</td>
-                                            <td className="px-4 py-3 font-semibold text-slate-800">{serialLabel(item)}</td>
-                                            <td className="px-4 py-3 font-bold text-slate-950">{formatQuantity(item.quantity)}</td>
-                                            <td className="px-4 py-3">
-                                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
-                                                    {itemTypeLabel(item.item_type)}
-                                                </span>
-                                                <span className="mt-1 block text-xs font-semibold text-slate-500">{statusLabel(item.status)}</span>
-                                            </td>
-                                            <td className="px-4 py-3 text-slate-700">{formatValue(item.last_operation_no)}</td>
-                                            <td className="px-4 py-3 text-slate-700">{rackMovementDateLabel(item)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                        <div className="grid gap-2">
+                            {rackGroups.map((group) => {
+                                const isExpanded = expandedRacks.has(group.key);
+                                const ChevronIcon = isExpanded ? ChevronDown : ChevronRight;
+
+                                return (
+                                    <article key={group.key} className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleRack(group.key)}
+                                            className="flex w-full items-start justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 md:px-4"
+                                        >
+                                            <div className="flex min-w-0 items-start gap-2">
+                                                <ChevronIcon className="mt-1 size-4 shrink-0 text-slate-500" />
+                                                <h2 className="min-w-0 break-words text-lg font-bold leading-6 text-slate-950">
+                                                    <span className="mr-1 text-xs font-bold uppercase text-slate-500">RAF:</span>
+                                                    {group.rack_code}
+                                                </h2>
+                                            </div>
+                                            <div
+                                                className="grid shrink-0 gap-0.5 text-right text-xs font-bold leading-4 text-slate-600 sm:flex sm:items-center sm:gap-2"
+                                                title={`${formatQuantity(group.stock_line_count)} serisiz satır / ${formatQuantity(group.total_quantity)} toplam miktar`}
+                                            >
+                                                <span>{formatQuantity(group.total_line_count)} ürün</span>
+                                                <span>{formatQuantity(group.serial_count)} seri</span>
+                                                <span>{formatQuantity(group.stock_quantity_sum)} serisiz</span>
+                                            </div>
+                                        </button>
+
+                                        {isExpanded ? (
+                                            <div className="divide-y divide-slate-100 border-t border-slate-100">
+                                                {group.items.map((item) => (
+                                                    <div
+                                                        key={`${item.item_type}-${item.warehouse_no}-${item.rack_code}-${item.stock_code}-${item.serial_no ?? 'stock'}`}
+                                                        className="grid gap-2 px-3 py-2.5 text-sm md:grid-cols-[minmax(220px,1.4fr)_minmax(170px,1fr)_90px_170px_auto] md:items-center md:gap-3 md:px-4"
+                                                    >
+                                                        <p className="break-words font-semibold leading-5 text-slate-950">{formatValue(item.stock_name)}</p>
+                                                        <p className="break-words leading-5 text-slate-700">
+                                                            <span className="font-semibold text-slate-500">Seri: </span>
+                                                            <span className="font-semibold text-slate-800">{serialLabel(item)}</span>
+                                                        </p>
+                                                        <p className="font-bold text-slate-950">
+                                                            <span className="font-semibold text-slate-500 md:hidden">Miktar: </span>
+                                                            {formatQuantity(item.quantity)}
+                                                        </p>
+                                                        <p className="break-words leading-5 text-slate-700">
+                                                            <span className="font-semibold text-slate-500 md:hidden">Son Raf Hareketi: </span>
+                                                            {rackMovementDateLabel(item)}
+                                                        </p>
+                                                        <span className="w-fit rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
+                                                            {itemTypeLabel(item.item_type)}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : null}
+                                    </article>
+                                );
+                            })}
                         </div>
                     </section>
                 </div>

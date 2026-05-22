@@ -6,8 +6,10 @@ use App\Models\User;
 use App\Models\WarehouseRack;
 use App\Models\WarehouseSerialLocation;
 use App\Models\WarehouseStockLocation;
+use App\Services\WarehouseRackReportService;
 use Database\Seeders\PanelMetadataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 class WarehouseRackReportTest extends TestCase
@@ -212,6 +214,137 @@ class WarehouseRackReportTest extends TestCase
         $response->assertJsonMissing(['stock_code' => 'STK-ZERO']);
     }
 
+    public function test_rack_report_export_returns_excel_compatible_csv_with_stock_code_column(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'SN-EXPORT-001',
+            'stock_code' => 'STK-EXPORT',
+            'stock_name' => 'Türkçe Export Ürün',
+            'warehouse_no' => 1,
+            'rack_code' => 'A-04',
+            'status' => 'in_stock',
+            'source' => 'manual',
+            'last_operation_no' => 'OP-EXPORT',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->get('/api/operations/warehouse-terminal/rack-report/export?item_type=serial')
+            ->assertOk();
+
+        $this->assertStringContainsString('text/csv', (string) $response->headers->get('content-type'));
+        $this->assertStringContainsString('attachment;', (string) $response->headers->get('content-disposition'));
+        $this->assertStringContainsString('raf-raporu-', (string) $response->headers->get('content-disposition'));
+
+        $content = $response->streamedContent();
+        $this->assertStringStartsWith("\xEF\xBB\xBF", $content);
+
+        $rows = $this->csvRows($content);
+        $this->assertSame([
+            'Depo',
+            'Raf',
+            'Tip',
+            'Stok Kodu',
+            'Stok Adı',
+            'Seri No',
+            'Miktar',
+            'Durum',
+            'Son İşlem No',
+            'Son Raf Hareketi',
+        ], $rows[0]);
+        $this->assertSame('STK-EXPORT', $rows[1][3]);
+        $this->assertSame('Türkçe Export Ürün', $rows[1][4]);
+    }
+
+    public function test_rack_report_export_applies_filters_and_returns_flat_rows(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseSerialLocation::query()->create([
+            'serial_no' => 'SN-FLAT-001',
+            'stock_code' => 'STK-FLAT-SERIAL',
+            'stock_name' => 'Flat Serili Ürün',
+            'warehouse_no' => 2,
+            'rack_code' => 'A-01',
+            'status' => 'in_stock',
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 2,
+            'rack_code' => 'A-01',
+            'stock_code' => 'STK-FLAT-STOCK',
+            'stock_name' => 'Flat Serisiz Ürün',
+            'quantity' => 3,
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'stock_code' => 'STK-FLAT-DROP',
+            'stock_name' => 'Flat Farklı Depo',
+            'quantity' => 5,
+            'source' => 'manual',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->get('/api/operations/warehouse-terminal/rack-report/export?warehouse_no=2&search=FLAT')
+            ->assertOk();
+
+        $content = $response->streamedContent();
+        $rows = $this->csvRows($content);
+        $this->assertCount(3, $rows);
+        $this->assertSame('STK-FLAT-SERIAL', $rows[1][3]);
+        $this->assertSame('STK-FLAT-STOCK', $rows[2][3]);
+        $this->assertCount(10, $rows[1]);
+        $this->assertCount(10, $rows[2]);
+        $this->assertStringNotContainsString('STK-FLAT-DROP', $content);
+    }
+
+    public function test_rack_report_export_uses_only_in_stock_default_and_excludes_zero_stock(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'A-01',
+            'stock_code' => 'STK-EXPORT-ZERO',
+            'quantity' => 0,
+            'source' => 'manual',
+        ]);
+        WarehouseStockLocation::query()->create([
+            'warehouse_no' => 1,
+            'rack_code' => 'A-02',
+            'stock_code' => 'STK-EXPORT-POSITIVE',
+            'quantity' => 9,
+            'source' => 'manual',
+        ]);
+
+        $content = $this->actingAs($user)
+            ->get('/api/operations/warehouse-terminal/rack-report/export?item_type=stock')
+            ->assertOk()
+            ->streamedContent();
+
+        $this->assertStringContainsString('STK-EXPORT-POSITIVE', $content);
+        $this->assertStringNotContainsString('STK-EXPORT-ZERO', $content);
+    }
+
+    public function test_rack_report_export_rejects_too_many_rows(): void
+    {
+        $user = User::factory()->create(['role_code' => 'stock']);
+
+        $this->mock(WarehouseRackReportService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('exportRows')
+                ->once()
+                ->andReturn(collect(array_fill(0, WarehouseRackReportService::EXPORT_LIMIT + 1, [])));
+        });
+
+        $this->actingAs($user)
+            ->getJson('/api/operations/warehouse-terminal/rack-report/export')
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'Rapor satır sayısı çok yüksek. Lütfen filtre kullanın.');
+    }
+
     public function test_user_without_warehouse_terminal_permission_cannot_access_report(): void
     {
         $user = User::factory()->create(['role_code' => 'viewer']);
@@ -219,5 +352,19 @@ class WarehouseRackReportTest extends TestCase
         $this->actingAs($user)
             ->getJson('/api/operations/warehouse-terminal/rack-report')
             ->assertForbidden();
+    }
+
+    /**
+     * @return array<int, array<int, string|null>>
+     */
+    private function csvRows(string $content): array
+    {
+        $content = preg_replace('/^\xEF\xBB\xBF/', '', $content) ?? $content;
+        $lines = array_values(array_filter(
+            preg_split('/\r\n|\n|\r/', $content) ?: [],
+            fn (string $line): bool => $line !== '',
+        ));
+
+        return array_map(fn (string $line): array => str_getcsv($line, ';'), $lines);
     }
 }
