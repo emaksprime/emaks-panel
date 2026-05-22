@@ -303,17 +303,12 @@ class PartnerServiceJobController extends Controller
                 'ops_final_check_required' => true,
             ];
 
-            if (in_array($job->workflow_status, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Belge / FotoÄŸraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'MÃ¼ÅŸteri KapanÄ±ÅŸ OnayÄ± Bekleyen'], true)) {
-                try {
-                    $job = $this->workflow->updateFieldWorkflow($job, 'checklist', [
-                        'checklist_payload' => $this->technicalChecklistPayload(),
-                        'note' => $data['note'],
-                    ], $user);
-                    $payload['checklist_applied'] = true;
-                } catch (Throwable $exception) {
-                    $payload['checklist_apply_error'] = $exception->getMessage();
-                }
-            }
+            $job->forceFill([
+                'checklist_payload' => $this->technicalChecklistPayload(),
+                'checklist_status' => 'tamamlandı',
+                'checklist_completed_at' => now(),
+            ])->save();
+            $payload['checklist_applied'] = true;
 
             $this->recordAction($job->refresh(), $partner, $user, TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED, $status, $payload, $data['note'], $from);
 

@@ -1469,7 +1469,6 @@ export function ServiceRequestDetails({
   const checklistCompletedCount = checklistEntries.filter((item) => item.completed).length
   const checklistTotalCount = checklistEntries.length
   const checklistMissingCount = Math.max(checklistTotalCount - checklistCompletedCount, 0)
-  const backendControlComplete = request.checklistStatus === 'tamamlandı' || (checklistTotalCount > 0 && checklistMissingCount === 0)
   const fieldCompletionDocumentTypes = [
     { field: 'before_photo', label: 'Öncesi' },
     { field: 'after_photo', label: 'Sonrası' },
@@ -1513,6 +1512,16 @@ export function ServiceRequestDetails({
   const showFieldDocumentOverallReviewControls = reviewableFieldDocuments.length > 0
     && (fieldDocumentOverallReviewStatus === 'pending' || fieldDocumentOverallReviewEditing)
   const finalCheckCompletionAction = completionSubmissions[0] ?? null
+  const finalCheckActionChecklist = finalCheckCompletionAction?.payload?.checklist
+  const finalCheckActionChecklistComplete = Boolean(
+    finalCheckCompletionAction?.payload?.checklist_gate === 'server_checked'
+    && finalCheckActionChecklist
+    && typeof finalCheckActionChecklist === 'object'
+    && !Array.isArray(finalCheckActionChecklist)
+    && Object.keys(finalCheckActionChecklist).length > 0
+    && Object.values(finalCheckActionChecklist).every(Boolean),
+  )
+  const backendControlComplete = request.checklistStatus === 'tamamlandı' || (checklistTotalCount > 0 && checklistMissingCount === 0) || finalCheckActionChecklistComplete
   const finalCompletionMissingReasons = [
     ...missingFieldDocumentLabels.map((label) => `${label} eksik`),
     ...(fieldDocumentOverallReviewStatus === 'accepted' ? [] : [

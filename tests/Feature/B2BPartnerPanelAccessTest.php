@@ -3171,7 +3171,76 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
-            ->assertJsonPath('job.kanban_column', 'final_check');
+            ->assertJsonPath('job.kanban_column', 'final_check')
+            ->assertJsonPath('job.checklist_status', 'tamamlandı');
+
+        $job->refresh();
+        $this->assertSame('tamamlandı', $job->checklist_status);
+    }
+
+    public function test_ops_completion_accepts_server_checked_portal_checklist_without_visible_backend_steps(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Server Checked Completion Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Server Checked Usta']);
+        $portalUser = $this->userWithRole('b2b_locksmith');
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-SERVER-CHECKED-COMPLETE', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Son Kontrol',
+            'checklist_status' => null,
+            'checklist_payload' => [
+                'Ürün seri numarası kontrol edildi' => false,
+                'Kapı / montaj yeri kontrol edildi' => false,
+                'Montaj uygunluğu kontrol edildi' => false,
+                'Ürün çalışır durumda test edildi' => false,
+                'Müşteriye kullanım bilgisi verildi' => false,
+                'Garanti / servis formu bilgisi kontrol edildi' => false,
+            ],
+            'customer_closure_approval_status' => 'onaylandı',
+        ]);
+        $beforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
+        $afterDocument = $this->createPortalFieldDocument($job, 'after_photo');
+        $warrantyDocument = $this->createPortalFieldDocument($job, 'warranty_document_photo');
+        $beforeDocument->forceFill(['review_status' => 'accepted'])->save();
+        $afterDocument->forceFill(['review_status' => 'accepted'])->save();
+        $warrantyDocument->forceFill(['review_status' => 'accepted'])->save();
+
+        $action = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'checklist_gate' => 'server_checked',
+                'checklist' => [
+                    'customer_contacted' => true,
+                    'address_confirmed' => true,
+                    'appointment_confirmed' => true,
+                    'door_product_checked' => true,
+                    'job_completed' => true,
+                    'customer_informed' => true,
+                ],
+            ],
+            'note' => 'Usta tamamlamaya gönderdi.',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-completions/{$action->id}/approve", [
+                'note' => 'Server checklist kontrolüyle son kontrol tamamlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı')
+            ->assertJsonPath('request.checklist_status', 'tamamlandı');
+
+        $job->refresh();
+        $this->assertSame('tamamlandı', $job->checklist_status);
     }
 
     public function test_customer_approval_after_pending_completion_stays_in_final_check(): void

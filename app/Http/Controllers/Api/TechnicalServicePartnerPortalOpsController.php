@@ -196,7 +196,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'note' => ['nullable', 'string', 'max:2000'],
         ]);
 
-        $blockers = $this->completionApprovalBlockers($technicalServiceRequest->refresh());
+        $blockers = $this->completionApprovalBlockers($technicalServiceRequest->refresh(), $partnerJobAction);
         if ($blockers !== []) {
             throw ValidationException::withMessages([
                 'completion' => $blockers,
@@ -208,8 +208,19 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $technicalServiceRequest->forceFill([
                 'photo_status' => 'tamamlandı',
                 'document_status' => 'tamamlandı',
+                'checklist_status' => 'tamamlandı',
+                'checklist_completed_at' => now(),
             ])->save();
-            $job = $this->workflow->updateFieldWorkflow($technicalServiceRequest, 'complete', [
+
+            $readyRequest = $technicalServiceRequest->refresh();
+            if ($readyRequest->workflow_status === 'Planlı') {
+                $readyRequest = $this->workflow->updateFieldWorkflow($readyRequest, 'arrive', [
+                    'technician_arrived_at' => $readyRequest->technician_arrived_at ?? now(),
+                    'note' => 'Partner portal son kontrol onayı için saha aşaması doğrulandı.',
+                ], $request->user());
+            }
+
+            $job = $this->workflow->updateFieldWorkflow($readyRequest->refresh(), 'complete', [
                 'note' => $validated['note'] ?? 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.',
             ], $request->user());
             $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
@@ -357,7 +368,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     /**
      * @return array<int, string>
      */
-    private function completionApprovalBlockers(TechnicalServiceRequest $request): array
+    private function completionApprovalBlockers(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $completionAction = null): array
     {
         $documents = $request->uploads()
             ->whereIn('category', [
@@ -397,11 +408,33 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $blockers[] = 'Müşteri onayı bekliyor.';
         }
 
-        if ($request->checklist_status !== 'tamamlandı') {
+        if (! $this->hasBackendCompletionChecklist($request, $completionAction)) {
             $blockers[] = 'Backend kontrol eksik.';
         }
 
         return $blockers;
+    }
+
+    private function hasBackendCompletionChecklist(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $completionAction): bool
+    {
+        if ($request->checklist_status === 'tamamlandı') {
+            return true;
+        }
+
+        $payload = is_array($completionAction?->payload) ? $completionAction->payload : [];
+        $checklist = $payload['checklist'] ?? null;
+
+        if (($payload['checklist_gate'] ?? null) !== 'server_checked' || ! is_array($checklist) || $checklist === []) {
+            return false;
+        }
+
+        foreach ($checklist as $value) {
+            if (filter_var($value, FILTER_VALIDATE_BOOL) !== true) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function assertProposalBelongsToRequest(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): void
