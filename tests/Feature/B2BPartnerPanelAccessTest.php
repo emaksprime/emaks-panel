@@ -2846,7 +2846,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'workflow_status' => 'Usta Onayı Bekleyen',
             'status' => 'Atandı',
         ]);
-        $this->serviceRequestForTechnician($field, 'MRN-KANBAN-PLANLI', [
+        $plannedJob = $this->serviceRequestForTechnician($field, 'MRN-KANBAN-PLANLI', [
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
         ]);
@@ -2896,6 +2896,17 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.can_accept', false)
             ->assertJsonPath('job.can_propose_appointment', true)
             ->assertJsonPath('job.checklist_payload', []);
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$plannedJob->id}")
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'appointment_confirmed')
+            ->assertJsonPath('job.next_action', 'Fotoğraf bekliyor');
+
+        $plannedJobResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$plannedJob->id}")
+            ->assertOk();
+        $this->assertNotContains('Fotoğraf bekliyor', $plannedJobResponse->json('job.badges'));
     }
 
     public function test_locksmith_partner_service_job_actions_are_scoped_and_audited(): void
@@ -3049,6 +3060,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $job = $this->serviceRequestForTechnician($technician, 'MRN-CUSTOMER-APPROVAL', [
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
+            'next_action' => 'Saha süreci bekleniyor',
         ]);
         $beforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
         $afterDocument = $this->createPortalFieldDocument($job, 'after_photo');

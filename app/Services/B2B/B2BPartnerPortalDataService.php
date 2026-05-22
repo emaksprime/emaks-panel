@@ -351,6 +351,11 @@ class B2BPartnerPortalDataService
             && ! $isFinalCheck
             && ! $isRejectedInReview;
         $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview;
+        $nextActionLabel = $this->serviceJobNextActionLabel($request, $stateAction, $completionRequirements);
+        $badges = collect($this->serviceJobBadges($request, $stateAction, $completionRequirements))
+            ->reject(fn (string $badge): bool => $badge === $nextActionLabel)
+            ->values()
+            ->all();
 
         return [
             'id' => $request->id,
@@ -374,7 +379,7 @@ class B2BPartnerPortalDataService
             'priority' => $request->priority,
             'status' => $request->status,
             'workflow_status' => $request->workflow_status,
-            'next_action' => $request->next_action,
+            'next_action' => $nextActionLabel,
             'route_distance_summary' => $request->travel_round_trip_km !== null ? ((float) $request->travel_round_trip_km).' km' : null,
             'payment_status_summary' => $request->mount_payment_label ?? $request->mount_payment_status,
             'maps_link' => $this->mapsLink($request),
@@ -491,7 +496,7 @@ class B2BPartnerPortalDataService
                 'status' => $earningSummary['status'],
             ],
             'completion_requirements' => $completionRequirements,
-            'badges' => $this->serviceJobBadges($request, $stateAction, $completionRequirements),
+            'badges' => $badges,
             'card_priority' => $this->serviceJobPriority($stateAction),
             'card_tone' => $this->serviceJobTone($request, $stateAction),
             'kanban_column' => $this->serviceJobColumn($request, $stateAction),
@@ -906,6 +911,53 @@ class B2BPartnerPortalDataService
         }
 
         return 'new';
+    }
+
+    /**
+     * @param  array<string, mixed>  $completionRequirements
+     */
+    private function serviceJobNextActionLabel(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $action, array $completionRequirements): string
+    {
+        if ($action?->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return match ($action->action) {
+                TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => 'Hakediş revize talebi operasyon incelemesinde',
+                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => 'İş reddi operasyon incelemesinde',
+                TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => 'Müşteri onayı reddedildi',
+                TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 'Son kontrol bekliyor',
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 'Randevu önerisi operasyon onayı bekliyor',
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => 'Ek talep operasyon incelemesinde',
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 'Tekrar ziyaret talebi operasyon incelemesinde',
+                default => 'Operasyon incelemesinde',
+            };
+        }
+
+        if ($this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
+            if (($completionRequirements['photos_ready'] ?? false) !== true) {
+                return 'Fotoğraf bekliyor';
+            }
+
+            if (($completionRequirements['customer_confirmation_ready'] ?? false) !== true) {
+                return 'Müşteri onayı bekleniyor';
+            }
+
+            return 'Randevu onaylandı';
+        }
+
+        if ($this->serviceJobColumn($request, $action) === 'final_check') {
+            return 'Son kontrol bekliyor';
+        }
+
+        if ($this->isTerminalStatus($request)) {
+            return 'İş tamamlandı';
+        }
+
+        if ($this->isTechnicianApprovalStatus($request)) {
+            return $this->hasOpsAppointment($request)
+                ? 'Usta randevu onayı bekleniyor'
+                : 'Usta onayı bekleniyor';
+        }
+
+        return 'Randevu bekleniyor';
     }
 
     private function serviceJobPriority(?TechnicalServicePartnerJobAction $action): int
