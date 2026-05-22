@@ -73,7 +73,23 @@ function formatQuantity(value: string | number | null | undefined): string {
 }
 
 function itemTypeLabel(value: string): string {
-    return value === 'serial' ? 'Serili' : 'Serisiz / Adetli';
+    return value === 'serial' ? 'Serili' : 'Serisiz';
+}
+
+function rackCodeLabel(item: RackReportItem): string {
+    return formatValue(item.rack_code ?? item.rack_name);
+}
+
+function serialLabel(item: RackReportItem): string {
+    if (item.item_type === 'stock') {
+        return 'Serisiz ürün';
+    }
+
+    return formatValue(item.serial_no);
+}
+
+function rackMovementDateLabel(item: RackReportItem): string {
+    return formatValue(item.last_seen_at || item.updated_at);
 }
 
 function statusLabel(value: string | null): string {
@@ -196,35 +212,35 @@ export default function WarehouseTerminalRackReport() {
                         </div>
                     </section>
 
-                    <form onSubmit={handleSubmit} className="grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+                    <form onSubmit={handleSubmit} className="grid gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm md:gap-4 md:p-5">
                         <div className="grid gap-3 md:grid-cols-[0.8fr_1fr_1fr_1.4fr]">
-                            <label className="grid gap-2 text-sm font-bold text-slate-800">
+                            <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
                                 Depo
                                 <input
                                     value={warehouseNo}
                                     onChange={(event) => setWarehouseNo(event.target.value)}
                                     placeholder="Depo no"
                                     inputMode="numeric"
-                                    className="h-12 rounded-lg border border-slate-300 bg-white px-3 text-base font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                    className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
                                 />
                             </label>
 
-                            <label className="grid gap-2 text-sm font-bold text-slate-800">
+                            <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
                                 Raf
                                 <input
                                     value={rackCode}
                                     onChange={(event) => setRackCode(event.target.value)}
                                     placeholder="Raf kodu"
-                                    className="h-12 rounded-lg border border-slate-300 bg-white px-3 text-base font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                    className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
                                 />
                             </label>
 
-                            <label className="grid gap-2 text-sm font-bold text-slate-800">
+                            <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
                                 Tip
                                 <select
                                     value={itemType}
                                     onChange={(event) => setItemType(event.target.value as ItemType)}
-                                    className="h-12 rounded-lg border border-slate-300 bg-white px-3 text-base font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                    className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
                                 >
                                     <option value="all">Tümü</option>
                                     <option value="serial">Serili</option>
@@ -232,19 +248,19 @@ export default function WarehouseTerminalRackReport() {
                                 </select>
                             </label>
 
-                            <label className="grid gap-2 text-sm font-bold text-slate-800">
+                            <label className="grid gap-1.5 text-sm font-bold text-slate-800 md:gap-2">
                                 Arama
                                 <input
                                     value={search}
                                     onChange={(event) => setSearch(event.target.value)}
                                     placeholder="Stok kodu, stok adı, seri no veya raf kodu"
-                                    className="h-12 rounded-lg border border-slate-300 bg-white px-3 text-base font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                    className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 md:h-12 md:text-base"
                                 />
                             </label>
                         </div>
 
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <label className="inline-flex min-h-12 items-center gap-3 text-sm font-bold text-slate-800">
+                            <label className="inline-flex min-h-10 items-center gap-3 text-sm font-bold text-slate-800 md:min-h-12">
                                 <input
                                     type="checkbox"
                                     checked={onlyInStock}
@@ -258,7 +274,7 @@ export default function WarehouseTerminalRackReport() {
                                 <button
                                     type="submit"
                                     disabled={loading}
-                                    className="inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-slate-950 px-5 text-base font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
                                 >
                                     <Search className="size-5" />
                                     {loading ? 'Listeleniyor' : 'Listele'}
@@ -267,7 +283,7 @@ export default function WarehouseTerminalRackReport() {
                                     type="button"
                                     onClick={clearFilters}
                                     disabled={loading}
-                                    className="inline-flex h-12 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-5 text-base font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 md:h-12 md:px-5 md:text-base"
                                 >
                                     <RotateCcw className="size-5" />
                                     Temizle
@@ -276,16 +292,16 @@ export default function WarehouseTerminalRackReport() {
                         </div>
                     </form>
 
-                    <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <section className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
                         {summaryCards(summary).map(({ label, value, Icon }) => (
-                            <article key={label} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                                <div className="flex items-start justify-between gap-3">
-                                    <span className="grid size-10 place-items-center rounded-lg bg-blue-50 text-blue-700">
-                                        <Icon className="size-5" />
+                            <article key={label} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
+                                <div className="flex items-start justify-between gap-2 sm:gap-3">
+                                    <span className="grid size-8 place-items-center rounded-lg bg-blue-50 text-blue-700 sm:size-10">
+                                        <Icon className="size-4 sm:size-5" />
                                     </span>
-                                    <span className="text-2xl font-bold text-slate-950">{value}</span>
+                                    <span className="text-lg font-bold text-slate-950 sm:text-2xl">{value}</span>
                                 </div>
-                                <p className="mt-3 text-sm font-semibold text-slate-500">{label}</p>
+                                <p className="mt-2 text-xs font-semibold leading-4 text-slate-500 sm:mt-3 sm:text-sm">{label}</p>
                             </article>
                         ))}
                     </section>
@@ -296,47 +312,26 @@ export default function WarehouseTerminalRackReport() {
                         </div>
                     ) : null}
 
-                    <section className="grid gap-3 md:hidden">
+                    <section className="grid gap-2 md:hidden">
                         {items.map((item) => (
-                            <article key={`${item.item_type}-${item.warehouse_no}-${item.rack_code}-${item.stock_code}-${item.serial_no ?? 'stock'}`} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                            <article key={`${item.item_type}-${item.warehouse_no}-${item.rack_code}-${item.stock_code}-${item.serial_no ?? 'stock'}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
                                 <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                        <p className="text-xs font-bold uppercase text-slate-500">Raf</p>
-                                        <h2 className="mt-1 break-words text-xl font-bold text-slate-950">{formatValue(item.rack_name ?? item.rack_code)}</h2>
-                                    </div>
+                                    <h2 className="min-w-0 break-words text-lg font-bold leading-6 text-slate-950">
+                                        <span className="mr-1 text-xs font-bold uppercase text-slate-500">RAF:</span>
+                                        {rackCodeLabel(item)}
+                                    </h2>
                                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
                                         {itemTypeLabel(item.item_type)}
                                     </span>
                                 </div>
-                                <dl className="mt-4 grid gap-2 text-sm">
-                                    <div>
-                                        <dt className="font-semibold text-slate-500">Stok Kodu</dt>
-                                        <dd className="break-words font-bold text-slate-950">{formatValue(item.stock_code)}</dd>
-                                    </div>
-                                    <div>
-                                        <dt className="font-semibold text-slate-500">Stok Adı</dt>
-                                        <dd className="break-words font-bold text-slate-950">{formatValue(item.stock_name)}</dd>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div>
-                                            <dt className="font-semibold text-slate-500">Seri No</dt>
-                                            <dd className="break-words font-bold text-slate-950">{formatValue(item.serial_no)}</dd>
-                                        </div>
-                                        <div>
-                                            <dt className="font-semibold text-slate-500">Miktar</dt>
-                                            <dd className="font-bold text-slate-950">{formatQuantity(item.quantity)}</dd>
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div>
-                                            <dt className="font-semibold text-slate-500">Son İşlem</dt>
-                                            <dd className="break-words font-bold text-slate-950">{formatValue(item.last_operation_no)}</dd>
-                                        </div>
-                                        <div>
-                                            <dt className="font-semibold text-slate-500">Son Güncelleme</dt>
-                                            <dd className="break-words font-bold text-slate-950">{formatValue(item.updated_at)}</dd>
-                                        </div>
-                                    </div>
+                                <p className="mt-2 break-words text-sm font-semibold leading-5 text-slate-950">{formatValue(item.stock_name)}</p>
+                                <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-1 text-sm leading-5">
+                                    <dt className="font-semibold text-slate-500">Seri:</dt>
+                                    <dd className="break-words font-semibold text-slate-800">{serialLabel(item)}</dd>
+                                    <dt className="font-semibold text-slate-500">Miktar:</dt>
+                                    <dd className="font-bold text-slate-950">{formatQuantity(item.quantity)}</dd>
+                                    <dt className="font-semibold text-slate-500">Son Raf Hareketi:</dt>
+                                    <dd className="break-words font-semibold text-slate-800">{rackMovementDateLabel(item)}</dd>
                                 </dl>
                             </article>
                         ))}
@@ -348,25 +343,23 @@ export default function WarehouseTerminalRackReport() {
                                 <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-500">
                                     <tr>
                                         <th className="px-4 py-3">Raf</th>
-                                        <th className="px-4 py-3">Stok Kodu</th>
                                         <th className="px-4 py-3">Stok Adı</th>
                                         <th className="px-4 py-3">Seri No</th>
                                         <th className="px-4 py-3">Miktar</th>
                                         <th className="px-4 py-3">Tip</th>
                                         <th className="px-4 py-3">Son İşlem</th>
-                                        <th className="px-4 py-3">Son Güncelleme</th>
+                                        <th className="px-4 py-3">Son Raf Hareketi</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                     {items.map((item) => (
                                         <tr key={`${item.item_type}-${item.warehouse_no}-${item.rack_code}-${item.stock_code}-${item.serial_no ?? 'stock'}`} className="align-top">
                                             <td className="px-4 py-3 font-bold text-slate-950">
-                                                <span className="block">{formatValue(item.rack_name ?? item.rack_code)}</span>
+                                                <span className="block">{rackCodeLabel(item)}</span>
                                                 <span className="text-xs font-semibold text-slate-500">{item.warehouse_name}</span>
                                             </td>
-                                            <td className="px-4 py-3 font-semibold text-slate-800">{formatValue(item.stock_code)}</td>
-                                            <td className="max-w-[260px] px-4 py-3 text-slate-700">{formatValue(item.stock_name)}</td>
-                                            <td className="px-4 py-3 font-semibold text-slate-800">{formatValue(item.serial_no)}</td>
+                                            <td className="max-w-[320px] px-4 py-3 text-slate-700">{formatValue(item.stock_name)}</td>
+                                            <td className="px-4 py-3 font-semibold text-slate-800">{serialLabel(item)}</td>
                                             <td className="px-4 py-3 font-bold text-slate-950">{formatQuantity(item.quantity)}</td>
                                             <td className="px-4 py-3">
                                                 <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
@@ -375,7 +368,7 @@ export default function WarehouseTerminalRackReport() {
                                                 <span className="mt-1 block text-xs font-semibold text-slate-500">{statusLabel(item.status)}</span>
                                             </td>
                                             <td className="px-4 py-3 text-slate-700">{formatValue(item.last_operation_no)}</td>
-                                            <td className="px-4 py-3 text-slate-700">{formatValue(item.updated_at)}</td>
+                                            <td className="px-4 py-3 text-slate-700">{rackMovementDateLabel(item)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
