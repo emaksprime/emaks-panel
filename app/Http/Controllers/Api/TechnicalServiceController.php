@@ -747,7 +747,7 @@ class TechnicalServiceController extends Controller
         }
 
         abort_unless((int) $upload->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
-        abort_unless($upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT, 404);
+        abort_unless($this->isReviewableFieldCompletionDocument($upload), 404);
 
         $validated = $request->validate([
             'status' => ['required', 'string', 'in:accepted,rejected'],
@@ -786,6 +786,22 @@ class TechnicalServiceController extends Controller
             'status' => 'ok',
             'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
         ]);
+    }
+
+    private function isReviewableFieldCompletionDocument(TechnicalServiceRequestUpload $upload): bool
+    {
+        if (! in_array($upload->category, [
+            TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+            TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
+        ], true)) {
+            return false;
+        }
+
+        return in_array((string) $upload->field_code, [
+            'before_photo',
+            'after_photo',
+            'warranty_document_photo',
+        ], true);
     }
 
     public function storeContactLog(StoreTechnicalServiceContactLogRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse

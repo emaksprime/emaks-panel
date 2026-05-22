@@ -120,6 +120,9 @@ type ServiceRequestDetailsProps = {
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
+  onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
+  fieldDocumentReviewInFlight?: string | null
+  fieldDocumentReviewError?: string | null
 }
 
 const eventTime = (timestamp: string): string => {
@@ -846,6 +849,9 @@ export function ServiceRequestDetails({
   onPartnerAppointmentProposalReject,
   onPartnerCompletionApprove,
   onAssignmentOfferUpdate,
+  onFieldDocumentReview,
+  fieldDocumentReviewInFlight = null,
+  fieldDocumentReviewError = null,
 }: ServiceRequestDetailsProps) {
   const paymentInfo = getServicePaymentInfo(
     request.serviceType,
@@ -936,6 +942,7 @@ export function ServiceRequestDetails({
   const [offerLaborInput, setOfferLaborInput] = useState('')
   const [offerRouteInput, setOfferRouteInput] = useState('')
   const [offerNoteInput, setOfferNoteInput] = useState('')
+  const [fieldDocumentRejectNotes, setFieldDocumentRejectNotes] = useState<Record<string, string>>({})
   const [differentAddressInfoOpen, setDifferentAddressInfoOpen] = useState(false)
   const locationInfo = request.location ?? null
   const doorPhotos = request.doorPhotos ?? []
@@ -2819,9 +2826,64 @@ export function ServiceRequestDetails({
                   ) : (
                     <p className="mt-3 text-xs text-slate-500">Bu belge henüz yüklenmedi.</p>
                   )}
+                  {item.document?.id && onFieldDocumentReview ? (
+                    <div className="mt-3 grid gap-2 rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ops uygunluk</span>
+                        <Badge variant={item.document.review_status === 'accepted' ? 'secondary' : item.document.review_status === 'rejected' ? 'destructive' : 'outline'}>
+                          {item.document.review_status === 'accepted' ? 'Uygun' : item.document.review_status === 'rejected' ? 'Uygun değil' : 'İncelenmedi'}
+                        </Badge>
+                      </div>
+                      {item.document.review_note ? (
+                        <p className="rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-600">{item.document.review_note}</p>
+                      ) : null}
+                      <Input
+                        value={fieldDocumentRejectNotes[String(item.document.id)] ?? ''}
+                        onChange={(event) => {
+                          const uploadId = String(item.document?.id ?? '')
+                          setFieldDocumentRejectNotes((current) => ({
+                            ...current,
+                            [uploadId]: event.target.value,
+                          }))
+                        }}
+                        placeholder="Uygun değil açıklaması"
+                        className="h-9 text-xs"
+                      />
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={fieldDocumentReviewInFlight === String(item.document.id)}
+                          onClick={() => void onFieldDocumentReview(item.document!.id!, { status: 'accepted', note: null })}
+                          className="border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                        >
+                          {fieldDocumentReviewInFlight === String(item.document.id) ? 'Kaydediliyor...' : 'Uygun'}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={fieldDocumentReviewInFlight === String(item.document.id) || !String(fieldDocumentRejectNotes[String(item.document.id)] ?? '').trim()}
+                          onClick={() => void onFieldDocumentReview(item.document!.id!, {
+                            status: 'rejected',
+                            note: fieldDocumentRejectNotes[String(item.document!.id!)] ?? '',
+                          })}
+                          className="border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100"
+                        >
+                          {fieldDocumentReviewInFlight === String(item.document.id) ? 'Kaydediliyor...' : 'Uygun değil'}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
+            {fieldDocumentReviewError ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
+                {fieldDocumentReviewError}
+              </div>
+            ) : null}
             {partnerPortalActions.length > 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Portal aksiyonları</p>

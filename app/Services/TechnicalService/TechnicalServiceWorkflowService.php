@@ -1744,6 +1744,9 @@ class TechnicalServiceWorkflowService
                     'url' => $authenticatedUrl,
                     'preview_url' => $authenticatedUrl,
                     'download_url' => $authenticatedUrl,
+                    'review_status' => $upload->review_status,
+                    'review_note' => $upload->review_note,
+                    'reviewed_at' => $this->dateTimeString($upload->reviewed_at),
                 ];
             })
             ->values()

@@ -876,6 +876,8 @@ export function TechnicalServiceOperationCenter() {
   const [extraPaymentCreateError, setExtraPaymentCreateError] = useState<string | null>(null)
   const [technicianEarningMessageLoading, setTechnicianEarningMessageLoading] = useState(false)
   const [technicianEarningMessageError, setTechnicianEarningMessageError] = useState<string | null>(null)
+  const [fieldDocumentReviewLoading, setFieldDocumentReviewLoading] = useState<string | null>(null)
+  const [fieldDocumentReviewError, setFieldDocumentReviewError] = useState<string | null>(null)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
@@ -2850,6 +2852,44 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleFieldDocumentReview = async (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    const uploadKey = String(uploadId)
+    setFieldDocumentReviewLoading(uploadKey)
+    setFieldDocumentReviewError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/field-documents/${uploadId}/review`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (
+            request.id === updatedRequest.id ? updatedRequest : request
+          )))
+          setSelectedListRequest((current) => (
+            current?.id === updatedRequest.id ? updatedRequest : current
+          ))
+          setSelectedDetailRequest(updatedRequest)
+          setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
+        })
+        await loadRequests({ silent: true, preserveSelection: true })
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+    } catch (caught) {
+      setFieldDocumentReviewError(caught instanceof Error ? caught.message : 'Saha belgesi uygunluğu kaydedilemedi.')
+    } finally {
+      setFieldDocumentReviewLoading(null)
+    }
+  }
+
   const handleAssignmentOfferUpdate = async (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => {
     if (!selectedId) {
       return
@@ -4543,6 +4583,9 @@ export function TechnicalServiceOperationCenter() {
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}
                     onPartnerCompletionApprove={handlePartnerCompletionApprove}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
+                    onFieldDocumentReview={handleFieldDocumentReview}
+                    fieldDocumentReviewInFlight={fieldDocumentReviewLoading}
+                    fieldDocumentReviewError={fieldDocumentReviewError}
                     extraPaymentCreateLoading={extraPaymentCreateLoading}
                     extraPaymentCreateError={extraPaymentCreateError}
                     onAssignSelectedTechnician={handleAssignSubmit}
