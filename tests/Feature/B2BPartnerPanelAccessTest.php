@@ -3455,6 +3455,66 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.earning_summary.total_amount', 1080);
     }
 
+    public function test_partner_portal_earning_summary_corrects_stale_earning_message_total(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Stale Total Usta']);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Stale Total Locksmith',
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-STALE-EARNING',
+            'customer_name' => 'Stale Musteri',
+            'customer_phone' => '+905550000333',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Stale test adresi',
+            'product_name' => 'Stale Kilit',
+            'serial_number' => 'STALE-SN-1',
+            'service_type' => 'Montaj',
+            'status' => 'Atandi',
+            'workflow_status' => 'Usta Onayi Bekleyen',
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'travel_fee_amount' => 5.4,
+            'operation_control_payload' => [
+                'technician_earning_message' => [
+                    'status' => 'sent',
+                    'labor_amount' => 3000,
+                    'route_fee_amount' => 5.4,
+                    'total_amount' => 30500,
+                    'message_text' => 'Toplam hakediş: 30.500,00 TL',
+                ],
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.earning_summary.labor_amount', 3000)
+            ->assertJsonPath('job.earning_summary.route_fee_amount', 5.4)
+            ->assertJsonPath('job.earning_summary.total_amount', 3005.4)
+            ->assertJsonPath('job.earning_summary.status', 'sent');
+    }
+
     public function test_locksmith_partner_completion_can_use_existing_safe_workflow_when_requirements_are_met(): void
     {
         (new B2BPartnerPermissionSeeder)->run();

@@ -927,7 +927,6 @@ export function ServiceRequestDetails({
   const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
-  const [earningTotalInput, setEarningTotalInput] = useState('')
   const [earningNoteInput, setEarningNoteInput] = useState('')
   const [earningMessageText, setEarningMessageText] = useState('')
   const [earningMessageUrl, setEarningMessageUrl] = useState('')
@@ -1143,7 +1142,7 @@ export function ServiceRequestDetails({
   const totalTechnicianCostAmount = technicianLaborCostAmount !== null
     ? roundTwo(technicianLaborCostAmount + (hasActiveRouteQuote && routeFeeAmount !== null ? routeFeeAmount : 0))
     : null
-  const earningTotalAmount = parseNumericInput(earningTotalInput) ?? totalTechnicianCostAmount
+  const earningTotalAmount = totalTechnicianCostAmount
   const totalTechnicianCostLabel = totalTechnicianCostAmount !== null
     ? formatMoneyValue(totalTechnicianCostAmount)
     : 'Hakediş ayarı eksik'
@@ -1157,6 +1156,21 @@ export function ServiceRequestDetails({
     && earningTotalAmount !== null
     && earningTotalAmount >= 0,
   )
+  const technicianEarningPreviewText = selectedTechnician && earningTotalAmount !== null
+    ? [
+      `Merhaba ${selectedTechnician.name},`,
+      'Hakediş bilgisi:',
+      `MRN: ${displayMrn || request.mrn}`,
+      `Bölge: ${[request.city, request.district].filter(Boolean).join(' / ') || '-'}`,
+      `Ürün / Seri: ${[request.product || '-', request.serialNumber || '-'].join(' / ')}`,
+      `Montaj işçilik: ${formatMoneyValue(technicianLaborCostAmount ?? 0)}`,
+      `Usta yol hakedişi: ${formatMoneyValue(hasActiveRouteQuote ? routeFeeAmount ?? 0 : 0)}`,
+      `Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`,
+      `Randevu: ${request.scheduledAt ? dateTimeOrEmpty(request.scheduledAt, '-') : request.scheduledDate ? [request.scheduledDate, request.scheduledTime].filter(Boolean).join(' ') : '-'}`,
+      earningNoteInput.trim() ? `Not: ${earningNoteInput.trim()}` : null,
+    ].filter((line): line is string => typeof line === 'string' && line.trim() !== '').join('\n')
+    : ''
+  const displayedEarningMessageText = earningMessageText || technicianEarningPreviewText || technicianEarningMessage?.message_text || ''
   const routeFeeEditorSnapshot = (
     oneWay: string,
     roundTrip: string,
@@ -1341,7 +1355,7 @@ export function ServiceRequestDetails({
       total_amount: earningTotalAmount,
       note: earningNoteInput.trim() || null,
       message_text: earningMessageText.trim() || null,
-      manual_override: parseNumericInput(earningTotalInput) !== null,
+      manual_override: false,
     })
 
     if (response && typeof response === 'object') {
@@ -2561,8 +2575,8 @@ export function ServiceRequestDetails({
                       type="number"
                       min="0"
                       step="0.01"
-                      value={earningTotalInput}
-                      onChange={(event) => setEarningTotalInput(event.target.value)}
+                      value={earningTotalAmount !== null ? numericInputValue(earningTotalAmount) : ''}
+                      readOnly
                       placeholder={totalTechnicianCostAmount !== null ? String(totalTechnicianCostAmount) : '0'}
                     />
                   </label>
@@ -2575,12 +2589,12 @@ export function ServiceRequestDetails({
                     />
                   </label>
                 </div>
-                {earningMessageText || technicianEarningMessage?.message_text ? (
+                {displayedEarningMessageText ? (
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
                     <p className="font-semibold">Hakediş mesajı</p>
-                    <pre className="mt-2 whitespace-pre-wrap break-words font-sans">{earningMessageText || technicianEarningMessage?.message_text}</pre>
+                    <pre className="mt-2 whitespace-pre-wrap break-words font-sans">{displayedEarningMessageText}</pre>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(earningMessageText || technicianEarningMessage?.message_text || '')}>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(displayedEarningMessageText)}>
                         Mesajı kopyala
                       </Button>
                       {(earningMessageUrl || selectedTechnician?.phone) ? (

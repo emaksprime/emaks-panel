@@ -306,6 +306,7 @@ class B2BPartnerPortalDataService
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request);
         $assignmentOffer = $request->latestAssignmentOffer;
+        $earningSummary = $this->earningSummary($request, $assignmentOffer);
         $photoReadiness = $this->portalPhotoReadiness($request);
         $latestCustomerConfirmation = $request->customerConfirmations->first();
         $approvedCustomerConfirmation = $request->customerConfirmations
@@ -481,12 +482,10 @@ class B2BPartnerPortalDataService
                 'message_payload' => is_array($assignmentOffer->metadata) ? ($assignmentOffer->metadata['message_payload'] ?? null) : null,
             ] : null,
             'earning_summary' => [
-                'labor_amount' => $assignmentOffer ? (float) $assignmentOffer->labor_amount : (float) ($request->technician_payment_amount ?? 0),
-                'route_fee_amount' => $assignmentOffer ? (float) $assignmentOffer->route_fee_amount : (float) ($request->travel_fee_amount ?? 0),
-                'total_amount' => $assignmentOffer
-                    ? (float) $assignmentOffer->total_amount
-                    : (float) (($request->technician_payment_amount ?? 0) + ($request->travel_fee_amount ?? 0)),
-                'status' => $assignmentOffer?->status,
+                'labor_amount' => $earningSummary['labor_amount'],
+                'route_fee_amount' => $earningSummary['route_fee_amount'],
+                'total_amount' => $earningSummary['total_amount'],
+                'status' => $earningSummary['status'],
             ],
             'completion_requirements' => $completionRequirements,
             'badges' => $this->serviceJobBadges($request, $stateAction, $completionRequirements),
@@ -556,19 +555,20 @@ class B2BPartnerPortalDataService
             ->latest('updated_at')
             ->limit(50)
             ->get()
-            ->filter(fn (TechnicalServiceRequest $request): bool => $request->latestAssignmentOffer !== null)
+            ->filter(fn (TechnicalServiceRequest $request): bool => $request->latestAssignmentOffer !== null || $this->earningMessagePayload($request) !== null)
             ->map(function (TechnicalServiceRequest $request): array {
                 $offer = $request->latestAssignmentOffer;
+                $earningSummary = $this->earningSummary($request, $offer);
 
                 return [
                     'id' => $request->id,
                     'mrn' => $request->mrn,
                     'scheduled_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
-                    'labor_amount' => (float) ($offer?->labor_amount ?? 0),
-                    'travel_fee_amount' => (float) ($offer?->route_fee_amount ?? 0),
-                    'line_total' => (float) ($offer?->total_amount ?? 0),
+                    'labor_amount' => $earningSummary['labor_amount'],
+                    'travel_fee_amount' => $earningSummary['route_fee_amount'],
+                    'line_total' => $earningSummary['total_amount'],
                     'status' => $this->pendingEarningStatus($request),
-                    'offer_status' => $offer?->status,
+                    'offer_status' => $earningSummary['status'],
                     'city' => $request->customer_city,
                     'district' => $request->customer_district,
                 ];
@@ -624,6 +624,71 @@ class B2BPartnerPortalDataService
         }
 
         return 'beklemede';
+    }
+
+    /**
+     * @return array{labor_amount:float,route_fee_amount:float,total_amount:float,status:string|null}
+     */
+    private function earningSummary(TechnicalServiceRequest $request, mixed $assignmentOffer): array
+    {
+        if ($assignmentOffer !== null) {
+            $laborAmount = (float) ($assignmentOffer->labor_amount ?? 0);
+            $routeFeeAmount = (float) ($assignmentOffer->route_fee_amount ?? 0);
+
+            return [
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => round($laborAmount + $routeFeeAmount, 2),
+                'status' => $assignmentOffer->status ?? null,
+            ];
+        }
+
+        $earningPayload = $this->earningMessagePayload($request);
+        if ($earningPayload !== null) {
+            $laborAmount = $this->money($earningPayload['labor_amount'] ?? null)
+                ?? $this->money($request->technician_payment_amount)
+                ?? 0.0;
+            $routeFeeAmount = $this->money($earningPayload['route_fee_amount'] ?? null)
+                ?? $this->money($request->travel_fee_amount)
+                ?? 0.0;
+
+            return [
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => round($laborAmount + $routeFeeAmount, 2),
+                'status' => (string) ($earningPayload['status'] ?? 'sent'),
+            ];
+        }
+
+        $laborAmount = $this->money($request->technician_payment_amount) ?? 0.0;
+        $routeFeeAmount = $this->money($request->travel_fee_amount) ?? 0.0;
+
+        return [
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => round($laborAmount + $routeFeeAmount, 2),
+            'status' => null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function earningMessagePayload(TechnicalServiceRequest $request): ?array
+    {
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $payload = $operationControl['technician_earning_message'] ?? null;
+
+        return is_array($payload) ? $payload : null;
+    }
+
+    private function money(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return is_numeric($value) ? round((float) $value, 2) : null;
     }
 
     private function appointmentLabel(TechnicalServiceRequest $request): ?string

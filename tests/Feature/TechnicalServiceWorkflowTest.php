@@ -652,7 +652,9 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertOk()
             ->assertJsonPath('ok', true)
             ->assertJsonPath('request.sale_and_payment.technician_earning_message.status', 'sent')
-            ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount', 3200)
+            ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount', 3150)
+            ->assertJsonPath('request.sale_and_payment.technician_earning_message.submitted_total_amount', 3200)
+            ->assertJsonPath('request.sale_and_payment.technician_earning_message.total_amount_corrected', true)
             ->assertJsonPath('request.sale_and_payment.mount_payment_status', 'paid')
             ->assertJsonPath('request.mount_payment_status', 'paid')
             ->assertJson(fn ($json) => $json
@@ -665,7 +667,17 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertSame('paid', $request->mount_payment_status);
         $this->assertSame('sent', $request->operation_control_payload['technician_earning_message']['status'] ?? null);
-        $this->assertEquals(3200.0, $request->operation_control_payload['technician_earning_message']['total_amount'] ?? null);
+        $this->assertEquals(3150.0, $request->operation_control_payload['technician_earning_message']['total_amount'] ?? null);
+        $this->assertStringContainsString('Toplam hakediş: 3.150,00 TL', $request->operation_control_payload['technician_earning_message']['message_text'] ?? '');
+        $this->assertStringNotContainsString('3.200,00 TL', $request->operation_control_payload['technician_earning_message']['message_text'] ?? '');
+        $this->assertDatabaseHas('technical_service_assignment_offers', [
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => '3000.00',
+            'route_fee_amount' => '150.00',
+            'total_amount' => '3150.00',
+            'status' => 'sent',
+        ]);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $request->id,
             'event_type' => 'technician_earning_message_sent',

@@ -386,6 +386,10 @@ class TechnicalServiceController extends Controller
             $validated,
             $request->user(),
         );
+        $operationControl = is_array($result['request']->operation_control_payload) ? $result['request']->operation_control_payload : [];
+        $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
+            ? $operationControl['technician_earning_message']
+            : [];
         $this->messages->send(
             'earnings_message_technician',
             'technician',
@@ -394,9 +398,11 @@ class TechnicalServiceController extends Controller
             [
                 'copy_text' => $result['copy_text'],
                 'whatsapp_url' => $result['whatsapp_url'],
-                'labor_amount' => $validated['labor_amount'] ?? null,
-                'route_fee_amount' => $validated['route_fee_amount'] ?? null,
-                'total_amount' => $validated['total_amount'],
+                'labor_amount' => $earningPayload['labor_amount'] ?? null,
+                'route_fee_amount' => $earningPayload['route_fee_amount'] ?? null,
+                'total_amount' => $earningPayload['total_amount'] ?? null,
+                'submitted_total_amount' => $earningPayload['submitted_total_amount'] ?? null,
+                'total_amount_corrected' => $earningPayload['total_amount_corrected'] ?? false,
             ],
             $technicalServiceRequest,
             $request->user(),
