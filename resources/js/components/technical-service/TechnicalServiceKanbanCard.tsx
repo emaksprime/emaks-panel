@@ -162,6 +162,33 @@ const attentionBadgeTone = (level: string | null | undefined): RequestBadge['ton
 }
 
 const buildBadges = (request: ServiceRequest): RequestBadge[] => {
+  if (request.displayTags?.length) {
+    return request.displayTags
+      .filter((tag) => tag.label.trim() !== '')
+      .reduce<RequestBadge[]>((items, tag) => {
+        if (items.some((item) => item.label === tag.label)) {
+          return items
+        }
+
+        const tone = ['neutral', 'blue', 'green', 'amber', 'rose', 'purple'].includes(String(tag.tone ?? ''))
+          ? tag.tone as BadgeTone
+          : 'blue'
+        const icon = ['multi', 'warning'].includes(String(tag.icon ?? ''))
+          ? tag.icon as BadgeIcon
+          : undefined
+
+        items.push({
+          label: tag.label,
+          tone,
+          icon,
+          important: Boolean(tag.important),
+        })
+
+        return items
+      }, [])
+      .slice(0, 5)
+  }
+
   const badges: RequestBadge[] = []
   const column = getTechnicalServiceKanbanColumn(request)
 

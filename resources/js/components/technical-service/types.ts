@@ -2,6 +2,7 @@ export type ServiceType = 'Montaj' | 'Arıza' | 'Kontrol'
 
 export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 'Tamamlandı' | 'İptal'
 export type ServiceStatusFilter = '' | 'unassigned' | 'today_installations' | 'scheduled' | 'Tamamlandı' | 'İptal'
+export type ServiceRequestOpsColumn = 'new' | 'assignment_pending' | 'assigned' | 'final_check' | 'completed' | 'review' | 'cancelled' | string | null
 
 export type ServicePriority = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
 
@@ -50,6 +51,10 @@ export type ServiceRequest = {
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
   partnerPortalActions?: ServiceRequestPartnerPortalAction[]
+  kanbanColumn?: ServiceRequestOpsColumn
+  displayActionLabel?: string | null
+  displayTags?: ServiceRequestDisplayTag[]
+  operationalState?: ServiceRequestOperationalState | null
   attention?: {
     sort_priority?: number | null
     attention_level?: 'normal' | 'info' | 'warning' | 'critical' | string | null
@@ -57,6 +62,29 @@ export type ServiceRequest = {
     last_action_at?: string | null
     action?: string | null
   } | null
+}
+
+export type ServiceRequestDisplayTag = {
+  label: string
+  tone?: 'neutral' | 'blue' | 'green' | 'amber' | 'rose' | 'purple' | string | null
+  icon?: 'multi' | 'warning' | string | null
+  important?: boolean | null
+}
+
+export type ServiceRequestOperationalState = {
+  canonical_stage?: string | null
+  ops_column?: ServiceRequestOpsColumn
+  partner_column?: string | null
+  display_status_label?: string | null
+  display_action_label?: string | null
+  display_tags?: ServiceRequestDisplayTag[]
+  attention_level?: string | null
+  attention_reason?: string | null
+  sort_priority?: number | null
+  active_action_required?: boolean | null
+  is_completed?: boolean | null
+  is_pending_final_check?: boolean | null
+  is_appointment_confirmed?: boolean | null
 }
 
 export type ServiceRequestAssignmentOffer = {

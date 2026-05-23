@@ -961,7 +961,12 @@ class TechnicalServiceWorkflowService
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
         $payload['partner_portal_actions'] = $this->partnerPortalActionPayload($request);
-        $payload['attention'] = $this->attentionPayload($request);
+        $operationalState = app(TechnicalServiceOperationalStatePresenter::class)->present($request);
+        $payload['operational_state'] = $operationalState;
+        $payload['kanban_column'] = $operationalState['ops_column'];
+        $payload['display_action_label'] = $operationalState['display_action_label'];
+        $payload['display_tags'] = $operationalState['display_tags'];
+        $payload['attention'] = $operationalState['attention'];
         $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request);
 
         if ($includeHistory) {

@@ -127,6 +127,12 @@ const hasPlanningSignal = (request: ServiceRequest, workflowText: string) => {
 }
 
 export function getTechnicalServiceKanbanColumn(request: ServiceRequest): TechnicalServiceKanbanColumnId {
+  const canonicalColumn = request.kanbanColumn ?? request.operationalState?.ops_column ?? null
+
+  if (canonicalColumn && TECHNICAL_SERVICE_KANBAN_COLUMNS.some((column) => column.id === canonicalColumn)) {
+    return canonicalColumn as TechnicalServiceKanbanColumnId
+  }
+
   const statusText = normalizeTechnicalServiceText(request.status)
   const workflowText = requestSignalText(request)
   const combinedText = [statusText, workflowText].filter(Boolean).join(' ')

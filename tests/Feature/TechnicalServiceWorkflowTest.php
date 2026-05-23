@@ -20,6 +20,7 @@ use App\Models\User;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
+use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -147,6 +148,137 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(1, data_get($overduePayload, 'attention.sort_priority'));
         $this->assertNotSame('Usta müşteride', data_get($completedPayload, 'attention.attention_reason'));
         $this->assertNotSame('İş kapanışı için usta ile iletişime geçin', data_get($completedPayload, 'attention.attention_reason'));
+    }
+
+    public function test_appointment_approved_is_not_completed_in_canonical_state(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+            'scheduled_date' => CarbonImmutable::now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+            'photo_status' => 'tamamlandı',
+            'document_status' => 'tamamlandı',
+            'checklist_status' => 'tamamlandı',
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => ['slot' => '14:00-15:00'],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertFalse(data_get($payload, 'operational_state.is_completed'));
+        $this->assertSame('assigned', data_get($payload, 'operational_state.ops_column'));
+        $this->assertSame('appointment_confirmed', data_get($payload, 'operational_state.partner_column'));
+        $this->assertNotSame('Tamamlandı', data_get($payload, 'operational_state.display_action_label'));
+        $this->assertNotContains('Tamamlandı', collect(data_get($payload, 'display_tags', []))->pluck('label'));
+    }
+
+    public function test_customer_approval_is_not_completed_without_completion_submission(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => CarbonImmutable::now(),
+        ]);
+        $request->customerConfirmations()->create([
+            'token' => 'customer-approval-token-'.uniqid(),
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+            'approved_at' => CarbonImmutable::now(),
+            'payload' => [],
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => [],
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertFalse($state['is_completed']);
+        $this->assertSame('assigned', $state['ops_column']);
+        $this->assertSame('appointment_confirmed', $state['partner_column']);
+    }
+
+    public function test_completion_submitted_goes_to_final_check_not_completed(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => CarbonImmutable::now(),
+            'checklist_status' => 'tamamlandı',
+        ]);
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            TechnicalServiceRequestUpload::query()->create([
+                'technical_service_request_id' => $request->id,
+                'category' => TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+                'field_code' => $fieldCode,
+                'original_name' => $fieldCode.'.jpg',
+                'path' => 'technical-service/test/'.$fieldCode.'.jpg',
+                'mime' => 'image/jpeg',
+                'size' => 100,
+            ]);
+        }
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => ['ops_final_check_required' => true],
+            'note' => 'İşlem tamamlandı, son kontrol bekler.',
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertFalse($state['is_completed']);
+        $this->assertTrue($state['is_pending_final_check']);
+        $this->assertSame('final_check', $state['ops_column']);
+        $this->assertSame('final_check', $state['partner_column']);
+        $this->assertSame('Son kontrol bekliyor', $state['display_action_label']);
+    }
+
+    public function test_ops_final_complete_moves_ops_and_partner_to_completed_without_old_appointment_tag(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->subDay(),
+            'scheduled_date' => CarbonImmutable::now()->subDay()->toDateString(),
+            'scheduled_time' => '10:00',
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => ['slot' => '10:00-11:00'],
+        ]);
+        $request->events()->create([
+            'event_type' => 'field_completed',
+            'title' => 'Saha işi tamamlandı',
+            'from_status' => 'Planlı',
+            'to_status' => 'Tamamlandı',
+            'metadata' => [],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+        $tagLabels = collect(data_get($payload, 'display_tags', []))->pluck('label')->all();
+
+        $this->assertTrue(data_get($payload, 'operational_state.is_completed'));
+        $this->assertSame('completed', data_get($payload, 'operational_state.ops_column'));
+        $this->assertSame('completed', data_get($payload, 'operational_state.partner_column'));
+        $this->assertContains('Tamamlandı', $tagLabels);
+        $this->assertNotContains('Aksiyon: Randevu onaylandı', $tagLabels);
     }
 
     public function test_workflow_endpoint_rejects_invalid_action_for_current_status(): void
@@ -1747,6 +1879,26 @@ class TechnicalServiceWorkflowTest extends TestCase
         }
 
         return $request;
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    private function partnerJobAction(TechnicalServiceRequest $request, array $attributes): TechnicalServicePartnerJobAction
+    {
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'STATE-PARTNER-'.uniqid(),
+            'display_name' => 'State Partner '.uniqid(),
+            'active' => true,
+        ]);
+
+        return TechnicalServicePartnerJobAction::query()->create(array_merge([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => User::factory()->create(['role_code' => 'b2b_locksmith'])->id,
+            'payload' => [],
+        ], $attributes));
     }
 
     private function addSelectedSerial(TechnicalServiceRequest $request, string $serialNumber, bool $primary = true): TechnicalServiceRequestSerial

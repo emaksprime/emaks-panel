@@ -191,6 +191,10 @@ type ApiTechnicalServiceRequest = {
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
   partner_portal_actions?: ServiceRequest['partnerPortalActions']
+  kanban_column?: ServiceRequest['kanbanColumn']
+  display_action_label?: string | null
+  display_tags?: ServiceRequest['displayTags']
+  operational_state?: ServiceRequest['operationalState']
   document?: unknown
   documents?: unknown
   photo?: unknown
@@ -824,6 +828,10 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
     partnerPortalActions: request.partner_portal_actions ?? [],
+    kanbanColumn: request.kanban_column ?? request.operational_state?.ops_column ?? null,
+    displayActionLabel: request.display_action_label ?? request.operational_state?.display_action_label ?? null,
+    displayTags: request.display_tags ?? request.operational_state?.display_tags ?? [],
+    operationalState: request.operational_state ?? null,
     attention: request.attention ?? null,
   }
 }

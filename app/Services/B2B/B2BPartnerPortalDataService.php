@@ -13,6 +13,7 @@ use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
+use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Collection;
 
@@ -27,6 +28,7 @@ class B2BPartnerPortalDataService
     public function __construct(
         private readonly B2BPartnerAccessService $partnerAccess,
         private readonly B2BPartnerServiceJobScopeService $serviceJobScope,
+        private readonly TechnicalServiceOperationalStatePresenter $operationalState,
     ) {}
 
     /**
@@ -308,6 +310,7 @@ class B2BPartnerPortalDataService
         $latestCustomerApprovalRejection = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request);
+        $canonicalState = $this->operationalState->present($request);
         $assignmentOffer = $request->latestAssignmentOffer;
         $earningSummary = $this->earningSummary($request, $assignmentOffer);
         $photoReadiness = $this->portalPhotoReadiness($request);
@@ -335,14 +338,14 @@ class B2BPartnerPortalDataService
                 ->all(),
         ];
         $hasOpsAppointment = $this->hasOpsAppointment($request);
-        $isTerminal = $this->isTerminalStatus($request);
-        $isAppointmentConfirmed = $this->isAppointmentConfirmedStatus($request);
+        $isTerminal = (bool) ($canonicalState['is_completed'] ?? false)
+            || ($canonicalState['ops_column'] ?? null) === 'cancelled';
+        $isAppointmentConfirmed = (bool) ($canonicalState['is_appointment_confirmed'] ?? false);
         $hasOpsReviewAction = $stateAction instanceof TechnicalServicePartnerJobAction
             && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
         $isRejectedInReview = $hasOpsReviewAction
             && $stateAction->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED;
-        $isFinalCheck = $hasOpsReviewAction
-            && $stateAction->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED;
+        $isFinalCheck = (bool) ($canonicalState['is_pending_final_check'] ?? false);
         $canAcceptAppointment = $this->isTechnicianApprovalStatus($request)
             && $hasOpsAppointment
             && ! $hasOpsReviewAction;
@@ -352,10 +355,24 @@ class B2BPartnerPortalDataService
             && ! $isRejectedInReview;
         $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview;
         $nextActionLabel = $this->serviceJobNextActionLabel($request, $stateAction, $completionRequirements);
+        $partnerNextActionLabel = $canonicalState['display_action_label'] ?? $nextActionLabel;
+        if ($partnerNextActionLabel === 'Fotoğraf eksik') {
+            $partnerNextActionLabel = 'Fotoğraf bekliyor';
+        }
         $badges = collect($this->serviceJobBadges($request, $stateAction, $completionRequirements))
             ->reject(fn (string $badge): bool => $badge === $nextActionLabel)
             ->values()
             ->all();
+        $displayBadges = collect($canonicalState['display_tags'] ?? [])
+            ->pluck('label')
+            ->reject(function (?string $badge) use ($partnerNextActionLabel): bool {
+                return blank($badge) || $badge === $partnerNextActionLabel || $badge === 'Aksiyon: '.$partnerNextActionLabel;
+            })
+            ->values()
+            ->all();
+        if ($displayBadges === []) {
+            $displayBadges = $badges;
+        }
 
         return [
             'id' => $request->id,
@@ -379,7 +396,7 @@ class B2BPartnerPortalDataService
             'priority' => $request->priority,
             'status' => $request->status,
             'workflow_status' => $request->workflow_status,
-            'next_action' => $nextActionLabel,
+            'next_action' => $partnerNextActionLabel,
             'route_distance_summary' => $request->travel_round_trip_km !== null ? ((float) $request->travel_round_trip_km).' km' : null,
             'payment_status_summary' => $request->mount_payment_label ?? $request->mount_payment_status,
             'maps_link' => $this->mapsLink($request),
@@ -496,10 +513,11 @@ class B2BPartnerPortalDataService
                 'status' => $earningSummary['status'],
             ],
             'completion_requirements' => $completionRequirements,
-            'badges' => $badges,
-            'card_priority' => $this->serviceJobPriority($stateAction),
+            'badges' => $displayBadges,
+            'card_priority' => $canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction),
             'card_tone' => $this->serviceJobTone($request, $stateAction),
-            'kanban_column' => $this->serviceJobColumn($request, $stateAction),
+            'kanban_column' => $canonicalState['partner_column'] ?? $this->serviceJobColumn($request, $stateAction),
+            'operational_state' => $canonicalState,
             'action_state' => $this->serviceJobActionState($request, $stateAction, $completionRequirements),
             'can_accept' => $canAcceptAppointment,
             'can_propose_appointment' => $canProposeAppointment,
