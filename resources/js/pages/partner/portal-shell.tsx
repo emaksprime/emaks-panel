@@ -284,6 +284,26 @@ const viewTitle = (view: ViewKey) => ({
 
 const money = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', maximumFractionDigits: 0 })
 
+const dateTimeOrEmpty = (value: string | null | undefined, fallback: string): string => {
+  if (!value) {
+    return fallback
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleString('tr-TR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 const numericAmount = (amount: number | string | null | undefined): number => {
   const parsed = Number(amount ?? 0)
 
@@ -716,6 +736,34 @@ const nestedStringValue = (source: Record<string, unknown> | undefined, key: str
   return typeof value === 'string' && value.trim() !== '' ? value : null
 }
 
+const customerApprovalDefaultMessage = (job: ServiceJob, approvalUrl?: string | null, lastMessage?: string | null) => {
+  if (lastMessage && lastMessage.trim() !== '') {
+    return lastMessage
+  }
+
+  const product = [job.product_name, job.model].filter(Boolean).join(' / ')
+  const linkLine = approvalUrl && approvalUrl.trim() !== ''
+    ? approvalUrl
+    : 'Onay linki gönderim sırasında otomatik eklenecek.'
+
+  return [
+    'Emaks Prime Teknik Servis',
+    '',
+    `Sayın ${job.customer_name || 'müşterimiz'},`,
+    product
+      ? `${product} montaj işleminiz için onayınız gerekmektedir.`
+      : 'Montaj işleminiz için onayınız gerekmektedir.',
+    '',
+    `Talep No: ${job.mrn}`,
+    '',
+    'Montajın tamamlandığını ve üründe görünür hasar/kusur olmadığını kontrol ettiyseniz aşağıdaki bağlantıdan onay verebilirsiniz:',
+    '',
+    linkLine,
+    '',
+    'Bu işlemi siz yapmadıysanız operasyon ekibimizle iletişime geçiniz.',
+  ].join('\n')
+}
+
 const portalPhotoFields = [
   ['before_photo', 'Öncesi'],
   ['after_photo', 'Sonrası'],
@@ -935,6 +983,8 @@ function ServiceJobDetail({
     ?? nestedStringValue(messagePayload, 'approval_url')
   const whatsappUrl = nestedStringValue(messagePayload, 'whatsapp_url')
   const confirmationMessageText = nestedStringValue(messagePayload, 'message_text')
+  const defaultOtpMessageText = customerApprovalDefaultMessage(job, approvalUrl, confirmationMessageText)
+  const [otpMessageText, setOtpMessageText] = useState(defaultOtpMessageText)
   const dispatchStatus = nestedStringValue(messagePayload, 'dispatch_status')
   const dispatchTargetPhone = nestedStringValue(messagePayload, 'target_phone')
   const dispatchErrorMessage = nestedStringValue(messagePayload, 'error_message')
@@ -1035,6 +1085,41 @@ function ServiceJobDetail({
     } finally {
       setActionLoading(null)
     }
+  }
+
+  const openCustomerApprovalDialog = () => {
+    setOtpMessageText(customerApprovalDefaultMessage(job, approvalUrl, confirmationMessageText))
+    setActiveActionDialog('otp')
+  }
+
+  const copyApprovalLink = async () => {
+    if (!approvalUrl) {
+      onMessage('Henüz onay linki oluşmadı.')
+
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(approvalUrl)
+      onMessage('Onay linki kopyalandı.')
+    } catch {
+      onMessage('Onay linki kopyalanamadı.')
+    }
+  }
+
+  const submitCustomerOtpRequest = async () => {
+    const messageText = otpMessageText.trim()
+
+    if (messageText.length < 3) {
+      onMessage('WhatsApp mesaj metni boş gönderilemez.')
+
+      return
+    }
+
+    await submitAction('customer-otp-request', {
+      note: otpNote || null,
+      message_text: messageText,
+    }, 'WhatsApp onay mesajı gönderildi.')
   }
 
   const updateAppointmentSlot = (index: number, patch: Partial<AppointmentSlotDraft>) => {
@@ -1424,7 +1509,7 @@ function ServiceJobDetail({
                 ) : null}
               </div>
             ) : null}
-            <button type="button" disabled={readOnly} onClick={() => setActiveActionDialog('otp')} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" disabled={readOnly} onClick={openCustomerApprovalDialog} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
               Müşteri onayı iste
             </button>
           </ActionBox>
@@ -1500,7 +1585,7 @@ function ServiceJobDetail({
             </button>
           )}
           {job.can_request_customer_otp && (
-            <button type="button" onClick={() => setActiveActionDialog('otp')} className="min-h-10 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-semibold leading-tight text-violet-800">
+            <button type="button" onClick={openCustomerApprovalDialog} className="min-h-10 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-semibold leading-tight text-violet-800">
               Müşteri onayı
             </button>
           )}
@@ -1540,36 +1625,49 @@ function ServiceJobDetail({
         </button>
       </ActionDialog>
       <ActionDialog title="Müşteri OTP / onay" open={activeActionDialog === 'otp'} onClose={() => setActiveActionDialog(null)}>
-        <div className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
-          <p className="font-semibold">Müşteriden montaj onayı alınmalı.</p>
-          <p className="mt-1">Butona basınca onay linki oluşturulur ve Evolution/n8n WhatsApp mesajı gönderilir.</p>
-          {dispatchTestMode && dispatchTargetPhone ? <p className="mt-2 text-xs font-semibold">Test mod: {dispatchTargetPhone}</p> : null}
+        <div className="min-w-0 rounded-xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
+          <p className="font-semibold">{otpDispatchTitle}</p>
+          <div className="mt-2 grid gap-1 text-xs font-semibold text-violet-800">
+            {dispatchTestMode && dispatchTargetPhone ? <p>Test mod: {dispatchTargetPhone}</p> : null}
+            {job.customer_otp_request?.created_at ? <p>Son gönderim: {dateTimeOrEmpty(job.customer_otp_request.created_at, '-')}</p> : null}
+          </div>
+          {dispatchStatus === 'failed' && dispatchErrorMessage ? <p className="mt-2 rounded-lg bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-800">{dispatchErrorMessage}</p> : null}
           {publicUrlWarning ? <p className="mt-2 rounded-lg bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">{publicUrlWarning}</p> : null}
         </div>
-        {approvalUrl || whatsappUrl || dispatchStatus ? (
-          <div className="rounded-xl border border-violet-100 bg-white p-3 text-sm text-slate-700">
-            <p className={dispatchStatus === 'failed' ? 'font-semibold text-rose-800' : 'font-semibold text-violet-900'}>{otpDispatchTitle}</p>
-            {dispatchStatus === 'failed' && dispatchErrorMessage ? <p className="mt-1 text-rose-700">{dispatchErrorMessage}</p> : null}
-            {approvalUrl ? (
-              <a href={approvalUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex font-semibold text-violet-700 hover:text-violet-900">
+        <div className="min-w-0 rounded-xl border border-violet-100 bg-white p-3 text-sm text-slate-700">
+          <p className="font-semibold text-slate-950">Onay linki</p>
+          {approvalUrl ? (
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button type="button" onClick={copyApprovalLink} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+                Linki kopyala
+              </button>
+              <a href={approvalUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-center text-sm font-semibold text-violet-800">
                 Onay linkini aç
               </a>
-            ) : null}
-            {whatsappUrl ? (
-              <a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-2 block font-semibold text-emerald-700 hover:text-emerald-900">
-                WhatsApp mesajını aç
-              </a>
-            ) : null}
-          </div>
-        ) : null}
-        {confirmationMessageText ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700">
-            {confirmationMessageText}
-          </div>
-        ) : null}
-        <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Operasyona not" disabled={readOnly} />
-        <button type="button" disabled={readOnly || actionLoading === 'customer-otp-request'} onClick={() => void submitAction('customer-otp-request', { note: otpNote || null }, 'WhatsApp onay mesajı gönderildi.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
-          {actionLoading === 'customer-otp-request' ? 'Gönderiliyor...' : 'Onay mesajı gönder'}
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-slate-500">Gönderim sırasında yeni onay linki oluşturulacak.</p>
+          )}
+          {whatsappUrl ? (
+            <a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-2 block rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-center text-sm font-semibold text-emerald-800">
+              Son WhatsApp bağlantısını aç
+            </a>
+          ) : null}
+        </div>
+        <label className="grid min-w-0 gap-2 text-sm font-semibold text-slate-700">
+          WhatsApp mesaj metni
+          <textarea
+            className="min-h-56 w-full min-w-0 resize-y rounded-xl border border-slate-200 p-3 text-sm leading-6 text-slate-800 [overflow-wrap:anywhere] disabled:bg-slate-50"
+            value={otpMessageText}
+            onChange={(event) => setOtpMessageText(event.target.value)}
+            placeholder="Müşteriye gidecek WhatsApp mesajı"
+            disabled={readOnly || actionLoading === 'customer-otp-request'}
+          />
+          <span className="text-xs font-normal text-slate-500">Onay linki metinde yoksa gönderim sırasında ayrı satır olarak eklenecek.</span>
+        </label>
+        <textarea className="min-h-20 w-full min-w-0 rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Operasyona not" disabled={readOnly} />
+        <button type="button" disabled={readOnly || otpMessageText.trim().length < 3 || actionLoading === 'customer-otp-request'} onClick={() => void submitCustomerOtpRequest()} className="sticky bottom-0 rounded-xl bg-violet-700 px-3 py-2.5 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300">
+          {actionLoading === 'customer-otp-request' ? 'Gönderiliyor...' : 'WhatsApp onay mesajı gönder'}
         </button>
       </ActionDialog>
       <ActionDialog title="Yedek parça / ek talep" open={activeActionDialog === 'support'} onClose={() => setActiveActionDialog(null)}>
@@ -1681,16 +1779,16 @@ function ActionDialog({ title, open, onClose, children }: { title: string, open:
   }
 
   return (
-    <div className="fixed inset-0 z-[70] grid place-items-end bg-slate-950/45 p-0 sm:place-items-center sm:p-4">
+    <div className="fixed inset-0 z-[70] grid max-w-[100dvw] place-items-end overflow-x-hidden bg-slate-950/45 p-0 sm:place-items-center sm:p-4">
       <button type="button" className="absolute inset-0 cursor-default" aria-label="Popup kapat" onClick={onClose} />
-      <div className="relative z-10 grid max-h-[92vh] w-full gap-4 overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-5">
+      <div className="relative z-10 grid max-h-[92dvh] w-[min(100%,calc(100dvw-1rem))] max-w-[calc(100dvw-1rem)] min-w-0 gap-4 overflow-y-auto overflow-x-hidden rounded-t-3xl bg-white p-4 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-5">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-950">{title}</h3>
           <button type="button" onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100" aria-label="Popup kapat">
             ×
           </button>
         </div>
-        <div className="grid gap-3">
+        <div className="grid min-w-0 gap-3">
           {children}
         </div>
       </div>

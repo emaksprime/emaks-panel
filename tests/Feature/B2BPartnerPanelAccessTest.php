@@ -3111,6 +3111,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/customer-otp-request", [
                 'note' => 'Müşteri bağlantıdan onaylayacak.',
+                'message_text' => "Özel onay mesajı\nTalep: {$job->mrn}",
             ])
             ->assertOk()
             ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
@@ -3123,9 +3124,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('technical_service_request_id', $job->id)
             ->firstOrFail();
         $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_PENDING, $confirmation->status);
-        $this->assertStringContainsString('Emaks Prime Teknik Servis', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
-        $this->assertStringContainsString("\nhttps://portal.test/service-job-confirmation/{$confirmation->token}\n", (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
-        $this->assertStringNotContainsString('127.0.0.1', (string) ($confirmation->payload['message_payload']['message_text'] ?? ''));
+        $messageText = (string) ($confirmation->payload['message_payload']['message_text'] ?? '');
+        $this->assertStringContainsString('Özel onay mesajı', $messageText);
+        $this->assertStringContainsString("Talep: {$job->mrn}", $messageText);
+        $this->assertStringContainsString("\nhttps://portal.test/service-job-confirmation/{$confirmation->token}", $messageText);
+        $this->assertStringNotContainsString('127.0.0.1', $messageText);
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
         $this->assertSame("https://portal.test/service-job-confirmation/{$confirmation->token}", $confirmation->payload['message_payload']['confirmation_url'] ?? null);
         $this->assertSame('sent', $confirmation->payload['message_payload']['dispatch_status'] ?? null);
@@ -3139,6 +3142,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         Http::assertSent(fn ($request): bool => $request->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
             && $request['event'] === 'customer_approval_request'
             && $request['target_phone'] === '905467647428'
+            && str_contains((string) $request['message_text'], 'Özel onay mesajı')
+            && str_contains((string) $request['message_text'], "https://portal.test/service-job-confirmation/{$confirmation->token}")
             && $request['confirmation_url'] === "https://portal.test/service-job-confirmation/{$confirmation->token}");
 
         $this->get("/service-job-confirmation/{$confirmation->token}")
@@ -3253,6 +3258,18 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $job->refresh();
         $this->assertSame('tamamlandı', $job->checklist_status);
+    }
+
+    public function test_partner_customer_approval_sheet_has_mobile_editable_message_contract(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('WhatsApp mesaj metni', $source);
+        $this->assertStringContainsString('message_text: messageText', $source);
+        $this->assertStringContainsString('w-[min(100%,calc(100dvw-1rem))]', $source);
+        $this->assertStringContainsString('overflow-x-hidden', $source);
+        $this->assertStringContainsString('Linki kopyala', $source);
     }
 
     public function test_customer_approval_after_pending_completion_stays_in_final_check(): void
@@ -3470,12 +3487,13 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $proposalDate = now()->addDay()->toDateString();
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
                 'slots' => [
-                    ['date' => '2026-05-25', 'slot' => '10:00-11:00'],
-                    ['date' => '2026-05-25', 'slot' => '10:00-11:00'],
+                    ['date' => $proposalDate, 'slot' => '10:00-11:00'],
+                    ['date' => $proposalDate, 'slot' => '10:00-11:00'],
                 ],
             ])
             ->assertUnprocessable()
@@ -3484,8 +3502,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
                 'slots' => [
-                    ['date' => '2026-05-25', 'slot' => '10:00-11:00'],
-                    ['date' => '2026-05-25', 'slot' => '15:00-16:00'],
+                    ['date' => $proposalDate, 'slot' => '10:00-11:00'],
+                    ['date' => $proposalDate, 'slot' => '15:00-16:00'],
                 ],
                 'note' => 'Sabah uygunum.',
             ])

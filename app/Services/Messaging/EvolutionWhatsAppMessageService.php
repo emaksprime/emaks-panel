@@ -53,6 +53,7 @@ class EvolutionWhatsAppMessageService
             $workflowPayload['job_link'] ?? null,
         );
         $workflowPayload['text'] = $messageText;
+        $workflowPayload['message_text'] = $messageText;
 
         $payload = [
             ...$workflowPayload,
@@ -64,6 +65,7 @@ class EvolutionWhatsAppMessageService
             'mrn' => $request?->mrn,
             'technical_service_request_id' => $request?->id,
             'text' => $messageText,
+            'message_text' => $messageText,
             'message_type' => (string) ($context['message_type'] ?? $event),
             'force_resend' => (bool) ($context['force_resend'] ?? false),
             'context' => $context,
@@ -249,6 +251,7 @@ class EvolutionWhatsAppMessageService
             'reason' => $this->firstFilled($flat['reason'] ?? null),
             'note' => $this->firstFilled($flat['note'] ?? null),
             'text' => $messageText,
+            'message_text' => $messageText,
         ];
     }
 

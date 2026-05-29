@@ -418,6 +418,7 @@ class PartnerServiceJobController extends Controller
         $this->ensureFieldActionStage($job, 'Müşteri onayı sadece randevu onaylandıktan sonra istenebilir.');
         $data = $request->validate([
             'note' => ['nullable', 'string', 'max:1000'],
+            'message_text' => ['nullable', 'string', 'max:5000'],
         ]);
 
         [$action, $dispatchSummary] = DB::transaction(function () use ($job, $partner, $user, $data): array {
@@ -435,7 +436,7 @@ class PartnerServiceJobController extends Controller
             $publicUrlWarning = $this->messages->testMode() && PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
                 ? 'Onay linki lokal URL içeriyor; telefondan açılamaz. PARTNER_PORTAL_PUBLIC_URL ayarlanmalı.'
                 : null;
-            $messageText = $this->customerApprovalMessageText($job, $approvalUrl);
+            $messageText = $this->customerApprovalMessageText($job, $approvalUrl, $data['message_text'] ?? null);
             $whatsappUrl = 'https://wa.me/'.$this->normalizedPhoneForWa($job->customer_phone).'?text='.rawurlencode($messageText);
 
             $action = $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED, TechnicalServicePartnerJobAction::STATUS_SUBMITTED, [
@@ -1042,14 +1043,20 @@ class PartnerServiceJobController extends Controller
             && array_key_exists((string) $upload->field_code, self::REQUIRED_PORTAL_PHOTO_FIELDS);
     }
 
-    private function customerApprovalMessageText(TechnicalServiceRequest $job, string $approvalUrl): string
+    private function customerApprovalMessageText(TechnicalServiceRequest $job, string $approvalUrl, ?string $customMessage = null): string
     {
+        $customMessage = trim((string) $customMessage);
+
+        if ($customMessage !== '') {
+            return $this->messageTextWithApprovalUrl($customMessage, $approvalUrl);
+        }
+
         $product = trim(implode(' / ', array_filter([
             (string) $job->product_name,
             (string) $job->product_model,
         ])));
 
-        return implode("\n", [
+        return $this->messageTextWithApprovalUrl(implode("\n", [
             'Emaks Prime Teknik Servis',
             '',
             'Sayın '.($job->customer_name ?: 'müşterimiz').',',
@@ -1062,7 +1069,18 @@ class PartnerServiceJobController extends Controller
             $approvalUrl,
             '',
             'Bu işlemi siz yapmadıysanız operasyon ekibimizle iletişime geçiniz.',
-        ]);
+        ]), $approvalUrl);
+    }
+
+    private function messageTextWithApprovalUrl(string $messageText, string $approvalUrl): string
+    {
+        $messageText = trim($messageText);
+
+        if (str_contains($messageText, $approvalUrl)) {
+            return $messageText;
+        }
+
+        return rtrim($messageText)."\n\n".$approvalUrl;
     }
 
     /**
