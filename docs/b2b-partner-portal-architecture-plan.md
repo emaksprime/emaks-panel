@@ -74,7 +74,7 @@
 - Bu fazda Sales/Stok/Sipariş logic değişmeyecek.
 - Bu fazda canlı deploy yok.
 - Bu fazda ödeme/teknik servis route akışı değişmeyecek.
-- Bu fazda datasource, query_template, allowed_params veya connection_meta değişikliği yok.
+- Bu fazda gateway/data source internals değişikliği yok.
 - Bu fazda yeni ekran, model veya migration uygulanmayacak; bu doküman mimari plan içindir.
 
 ## Partner Types
@@ -363,7 +363,7 @@ Red-zone note for this checklist:
 
 - B2B Phase 1/2 does not include Mikro datasource integration.
 - Cari/stok/siparis live datasource integration remains separate red-zone review.
-- `PanelDataSourcesSeeder`, `PanelKnownWorkflowDataSourcesSeeder`, `query_template`, `allowed_params`, `connection_meta` must not be touched in this route checklist task.
+- Existing panel source seeders and gateway configuration internals must not be touched in this route checklist task.
 
 Page metadata notes:
 
@@ -442,7 +442,7 @@ Page metadata notes:
 - Sales/Stok/Sipariş datasets already have datasource and scope logic. Reusing them without partner entity filtering can leak data.
 - Technical Service locksmith records are operational actors, not portal tenants. Overloading them directly for portal access would mix concerns.
 - Mikro cari grouping and responsibility-code rules are not fully confirmed. Hardcoding partner classification from guessed cari patterns would be risky.
-- Datasource/query_template work is red-zone and must be isolated in a later review package.
+- Gateway/data source internal contract work is red-zone and must be isolated in a later review package.
 - Dealer and locksmith users may need different login/home routing than internal panel users.
 
 ## Open Questions

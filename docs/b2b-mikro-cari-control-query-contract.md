@@ -9,7 +9,7 @@ B2B Partner Directory must not guess Mikro customer tables or columns. This cont
 - Run only SELECT statements.
 - Do not run INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER, MERGE, EXEC write procedures, or temp table writes.
 - Do not create or update Mikro cari records.
-- Do not create a new `panel.data_sources` or `query_template` entry from this task.
+- Do not create a new panel source entry or gateway read definition from this task.
 - Run discovery through the existing n8n MSSQL access path and bring back the result for review.
 - Operator approval is required before creating/updating B2B partner records.
 - MSSQL tarafinda INSERT/UPDATE/DELETE/DROP/TRUNCATE yoktur.

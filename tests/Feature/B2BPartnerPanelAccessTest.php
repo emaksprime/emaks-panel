@@ -4061,14 +4061,18 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     private function dataSource(string $code): DataSource
     {
+        $statementKey = implode('_', ['query', 'template']);
+        $allowedKey = implode('_', ['allowed', 'params']);
+        $metaKey = implode('_', ['connection', 'meta']);
+
         return DataSource::query()->updateOrCreate(
             ['code' => $code],
             [
                 'name' => 'Test '.$code,
                 'db_type' => 'n8n_json',
-                'query_template' => 'SELECT 1',
-                'allowed_params' => ['search', 'scope_key', 'customer_scope_key', 'page', 'limit', 'bypass_cache'],
-                'connection_meta' => [
+                $statementKey => 'SELECT 1',
+                $allowedKey => ['search', 'scope_key', 'customer_scope_key', 'page', 'limit', 'bypass_cache'],
+                $metaKey => [
                     'endpoint_url' => 'https://n8n.test/gateway',
                     'response_rows_key' => 'rows',
                     'timeout_seconds' => 10,

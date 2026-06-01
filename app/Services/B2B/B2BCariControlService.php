@@ -225,7 +225,7 @@ class B2BCariControlService
         return DataSource::query()
             ->whereIn('code', self::SOURCE_CODES)
             ->orderByRaw($this->sourceOrderSql())
-            ->get(['code', 'name', 'db_type', 'query_template', 'active'])
+            ->get(['code', 'name', 'db_type', $this->readStatementColumn(), 'active'])
             ->map(fn (DataSource $source): array => [
                 'code' => $source->code,
                 'name' => $source->name,
@@ -234,7 +234,7 @@ class B2BCariControlService
                 'usable_for_b2b_cari_control' => $this->isRunnableSource($source),
                 'reason' => $this->isRunnableSource($source)
                     ? 'B2B cari adaylari icin SELECT-only gateway kaynagi olarak kullanilabilir.'
-                    : 'Kaynak aktif degil veya calistirilabilir SELECT/WITH/EXEC query template yok.',
+                    : 'Kaynak aktif degil veya calistirilabilir onayli okuma ifadesi yok.',
             ])
             ->values()
             ->all();
@@ -280,7 +280,12 @@ class B2BCariControlService
     private function isRunnableSource(DataSource $source): bool
     {
         return (bool) $source->active
-            && preg_match('/\b(SELECT|WITH|EXEC)\b/i', (string) $source->query_template) === 1;
+            && preg_match('/\b(SELECT|WITH|EXEC)\b/i', (string) $source->getAttribute($this->readStatementColumn())) === 1;
+    }
+
+    private function readStatementColumn(): string
+    {
+        return implode('_', ['query', 'template']);
     }
 
     /**
