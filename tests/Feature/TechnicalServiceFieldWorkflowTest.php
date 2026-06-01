@@ -203,6 +203,9 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
         $this->assertStringContainsString('Kararı değiştir', $source);
         $this->assertStringContainsString('Son kontrolü tamamla', $source);
         $this->assertStringContainsString('Saha belgeleri uygunluk kararı bekliyor', $source);
+        $this->assertStringContainsString('assignmentOfferStatusLabel', $source);
+        $this->assertStringContainsString('assignmentOfferStatusLabel(assignmentOffer.status)', $source);
+        $this->assertStringNotContainsString('value={assignmentOffer.status}', $source);
     }
 
     public function test_request_can_complete_when_checklist_photos_and_customer_closure_are_ready(): void

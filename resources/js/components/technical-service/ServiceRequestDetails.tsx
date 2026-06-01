@@ -672,6 +672,27 @@ const statusDisplayLabel = (request: ServiceRequest): string => {
   return request.status === 'Yeni' ? 'Yeni Talep' : request.status
 }
 
+const assignmentOfferStatusLabel = (status: string | null | undefined): string => {
+  switch (String(status ?? '').trim()) {
+    case 'sent':
+      return 'Gönderildi'
+    case 'revised':
+      return 'Revize edildi'
+    case 'accepted':
+      return 'Kabul edildi'
+    case 'cancelled':
+      return 'İptal edildi'
+    case 'superseded':
+      return 'Yenilendi'
+    case 'draft':
+      return 'Taslak'
+    case 'pending':
+      return 'Bekliyor'
+    default:
+      return displayOrEmpty(status, 'Kontrol edilecek')
+  }
+}
+
 const slaStatusLabel = (status: ServiceRequest['slaStatus']): string => {
   switch (status) {
     case 'yaklaşan':
@@ -2377,7 +2398,7 @@ export function ServiceRequestDetails({
                       <MiniMetric label="İşçilik" value={formatMoneyValue(assignmentOffer.labor_amount)} />
                       <MiniMetric label="Yol" value={formatMoneyValue(assignmentOffer.route_fee_amount)} />
                       <MiniMetric label="Toplam" value={formatMoneyValue(assignmentOffer.total_amount)} />
-                      <MiniMetric label="Durum" value={assignmentOffer.status} />
+                      <MiniMetric label="Durum" value={assignmentOfferStatusLabel(assignmentOffer.status)} />
                     </div>
                     <div className="grid gap-2 sm:grid-cols-[140px_140px_minmax(0,1fr)]">
                       <Input type="number" min="0" step="0.01" value={offerLaborInput} onChange={(event) => setOfferLaborInput(event.target.value)} placeholder={String(assignmentOffer.labor_amount)} />
