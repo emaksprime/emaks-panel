@@ -27,7 +27,7 @@ class PublicMountPaymentController extends Controller
                 'note' => $payload['note'] ?? null,
                 'payment_url' => $payment->payment_url,
                 'fake_approve_url' => $this->canShowFakeApprove($payment)
-                    ? route('mount-payment.fake.approve', ['payment' => $payment])
+                    ? route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference])
                     : null,
             ],
             'requestSummary' => [
@@ -61,8 +61,14 @@ class PublicMountPaymentController extends Controller
     {
         return $payment->provider === 'fake'
             && $payment->status === TechnicalServiceMountPayment::STATUS_PENDING
-            && app()->environment(['local', 'testing'])
-            && config('payments.provider', 'fake') === 'fake';
+            && $this->fakeApproveEnabled();
+    }
+
+    private function fakeApproveEnabled(): bool
+    {
+        return ! app()->environment('production')
+            && strtolower((string) config('payments.provider', 'fake')) === 'fake'
+            && filter_var(config('payments.enable_fake_approve', false), FILTER_VALIDATE_BOOLEAN);
     }
 
     private function maskName(?string $name): string

@@ -559,6 +559,11 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
     public function test_fake_approve_extra_mount_fee_marks_request_and_selected_serials_paid(): void
     {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+
         [$request, $session, $serial] = $this->technicalServiceRequestWithSessionAndSerial();
 
         $payment = TechnicalServiceMountPayment::query()->create([

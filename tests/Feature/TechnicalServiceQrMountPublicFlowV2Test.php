@@ -254,6 +254,11 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
     public function test_fake_payment_approve_updates_payment_and_session_then_returns_form_ready_screen(): void
     {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
@@ -277,6 +282,78 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'form_ready')
                 ->where('statusLabel', 'Montaj ödemesi alındı'));
+    }
+
+    public function test_public_payment_page_fake_approve_requires_explicit_non_production_gate(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)->assertOk();
+        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->get('/mount-payment/'.$payment->provider_reference)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-payment')
+                ->where('payment.fake_approve_url', route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference])));
+
+        $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
+            ->assertRedirect('/mount-payment/'.$payment->provider_reference);
+
+        $payment->refresh();
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->status);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $payment->session->refresh()->mount_payment_status);
+    }
+
+    public function test_production_environment_never_exposes_or_allows_fake_approve(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+        $this->app->detectEnvironment(fn (): string => 'production');
+
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)->assertOk();
+        $this->withSession(['_token' => 'test-csrf'])
+            ->post('/mount-request/'.$token.'/payment', ['_token' => 'test-csrf'])
+            ->assertNotFound();
+
+        $session = TechnicalServiceMountSession::query()->firstOrFail();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-production-disabled',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'payment_url' => '/mount-payment/fake-production-disabled',
+        ]);
+
+        $this->get('/mount-payment/'.$payment->provider_reference)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-payment')
+                ->where('payment.fake_approve_url', null));
+
+        $this->get("/mount-payment/fake/{$payment->id}/approve?token={$token}")
+            ->assertNotFound();
+        $this->withSession(['_token' => 'test-csrf'])
+            ->post('/mount-payment/'.$payment->provider_reference.'/fake-approve', ['_token' => 'test-csrf'])
+            ->assertNotFound();
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->refresh()->status);
     }
 
     public function test_public_page_never_exposes_invoice_customer_or_internal_enum_labels(): void

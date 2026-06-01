@@ -159,6 +159,11 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
 
     public function test_montaj_haric_paid_submit_creates_request(): void
     {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 

@@ -273,6 +273,7 @@ class PublicMountRequestController extends Controller
     {
         abort_unless($this->fakePaymentEnabled(), 404);
         abort_unless($payment->provider === 'fake', 404);
+        abort_unless($payment->status === TechnicalServiceMountPayment::STATUS_PENDING, 404);
 
         $settlementService->markPaid($payment, [
             'source' => 'fake_approve_route',
@@ -626,7 +627,9 @@ class PublicMountRequestController extends Controller
 
     private function fakePaymentEnabled(): bool
     {
-        return app()->environment(['local', 'testing']);
+        return ! app()->environment('production')
+            && strtolower((string) config('payments.provider', 'fake')) === 'fake'
+            && filter_var(config('payments.enable_fake_approve', false), FILTER_VALIDATE_BOOLEAN);
     }
 
     private function viewState(string $decision): string

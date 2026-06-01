@@ -3,6 +3,7 @@
 return [
     'provider' => env('PAYMENT_PROVIDER', 'fake'),
     'environment' => env('PAYMENT_ENV', env('APP_ENV') === 'production' ? 'live' : 'local'),
+    'enable_fake_approve' => env('PAYMENTS_ENABLE_FAKE_APPROVE', false),
 
     'iyzico' => [
         'base_url' => env('IYZICO_BASE_URL', 'https://sandbox-api.iyzipay.com'),
