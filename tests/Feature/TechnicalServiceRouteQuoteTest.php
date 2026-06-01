@@ -392,6 +392,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
     public function test_manual_route_quote_endpoint_recalculates_or_overrides_fee_without_closing_request_payload(): void
     {
+        config(['services.google.routes_fee_per_km' => 10]);
+
         $user = $this->adminUser();
         $request = $this->technicalServiceRequestWithLocation();
         $technician = $this->technicianWithLocation();
