@@ -932,7 +932,8 @@ export function ServiceRequestDetails({
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [finalCheckOpenByRequest, setFinalCheckOpenByRequest] = useState<Record<string, boolean>>({})
-  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? false
+  const shouldOpenFinalCheck = isFinalCheckStage || customerApprovalRejections.length > 0
+  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? shouldOpenFinalCheck
   const setFinalCheckOpen = (open: boolean) => {
     setFinalCheckOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
