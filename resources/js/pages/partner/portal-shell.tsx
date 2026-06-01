@@ -1,5 +1,5 @@
 import { Head, Link } from '@inertiajs/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api'
 
@@ -770,6 +770,17 @@ const portalPhotoFields = [
   ['warranty_document_photo', 'Garanti Belgesi'],
 ] as const
 
+const portalPhotoAccept = 'image/*,.heic,.heif'
+
+const portalPhotoExtension = (file: File) => file.name.split('.').pop()?.toLowerCase() ?? ''
+
+const canPreviewPortalPhoto = (file: File) => {
+  const extension = portalPhotoExtension(file)
+
+  return ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)
+    && /^image\/(jpeg|png|webp|gif)$/i.test(file.type)
+}
+
 const appointmentSlotOptions = [
   '10:00-11:00',
   '11:00-12:00',
@@ -826,11 +837,48 @@ const slotValidationMessage = (slots: AppointmentSlotDraft[]) => {
 
 function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
   const initialJobs = useMemo(() => board.columns.flatMap((column) => column.jobs), [board.columns])
+  const requestedJobId = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null
+    }
+
+    const jobId = Number(new URLSearchParams(window.location.search).get('job_id'))
+
+    return Number.isFinite(jobId) && jobId > 0 ? jobId : null
+  }, [])
+  const initialSelectedJobId = requestedJobId !== null && initialJobs.some((job) => job.id === requestedJobId) ? requestedJobId : null
   const [jobs, setJobs] = useState<ServiceJob[]>(initialJobs)
-  const [selectedJobId, setSelectedJobId] = useState<number | null>(null)
-  const [detailOpen, setDetailOpen] = useState(false)
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(initialSelectedJobId)
+  const [detailOpen, setDetailOpen] = useState(initialSelectedJobId !== null)
   const [message, setMessage] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const selectedJob = selectedJobId === null ? null : jobs.find((job) => job.id === selectedJobId) ?? null
+  const refreshJobs = useCallback(async (silent = true) => {
+    if (readOnly) {
+      return
+    }
+
+    if (!silent) {
+      setRefreshing(true)
+      setMessage(null)
+    }
+
+    try {
+      const response = await apiRequest('/api/partner/service-jobs') as { jobs?: ServiceJob[] }
+
+      if (Array.isArray(response.jobs)) {
+        setJobs(response.jobs)
+      }
+    } catch (error) {
+      if (!silent) {
+        setMessage(error instanceof Error ? error.message : 'İşler yenilenemedi.')
+      }
+    } finally {
+      if (!silent) {
+        setRefreshing(false)
+      }
+    }
+  }, [readOnly])
   const columns = serviceJobColumns.map((column) => {
     const columnJobs = jobs
       .filter((job) => job.kanban_column === column.key)
@@ -849,8 +897,33 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
     setDetailOpen(true)
   }
 
+  useEffect(() => {
+    if (readOnly) {
+      return undefined
+    }
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshJobs(true)
+      }
+    }, 15000)
+
+    return () => window.clearInterval(interval)
+  }, [readOnly, refreshJobs])
+
   return (
     <div className="grid gap-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-600">Son durum</p>
+        <button
+          type="button"
+          disabled={readOnly || refreshing}
+          onClick={() => void refreshJobs(false)}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {refreshing ? 'Yenileniyor...' : 'Yenile'}
+        </button>
+      </div>
       {message && <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">{message}</div>}
       {jobs.length === 0 && <EmptyState title="Atanmış iş yok" message="Bu partner kapsamındaki aktif usta işlerinde kayıt bulunamadı." />}
       <section className="grid gap-4 lg:grid-cols-4">
@@ -895,7 +968,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
                   <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
                   {job.badges.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {job.badges.map((badge) => (
+                      {job.badges.slice(0, 3).map((badge) => (
                         <span key={badge} className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-semibold text-slate-700">{badge}</span>
                       ))}
                     </div>
@@ -962,6 +1035,7 @@ function ServiceJobDetail({
   const [note, setNote] = useState('')
   const [photoFiles, setPhotoFiles] = useState<Record<string, File | null>>({})
   const [photoPreviewUrls, setPhotoPreviewUrls] = useState<Record<string, string>>({})
+  const [photoPreviewErrors, setPhotoPreviewErrors] = useState<Record<string, boolean>>({})
   const [photoPickerField, setPhotoPickerField] = useState<string | null>(null)
   const [otpNote, setOtpNote] = useState('')
   const [supportType, setSupportType] = useState('spare_part')
@@ -971,7 +1045,7 @@ function ServiceJobDetail({
   const [priceLaborAmount, setPriceLaborAmount] = useState(job.assignment_offer?.labor_amount ? String(job.assignment_offer.labor_amount) : '')
   const [priceRouteAmount, setPriceRouteAmount] = useState(job.assignment_offer?.route_fee_amount ? String(job.assignment_offer.route_fee_amount) : '')
   const [priceRevisionNote, setPriceRevisionNote] = useState('')
-  const [activeActionDialog, setActiveActionDialog] = useState<'reject' | 'revisit' | 'otp' | 'support' | 'price' | 'completion' | 'note' | null>(null)
+  const [activeActionDialog, setActiveActionDialog] = useState<'appointment' | 'reject' | 'revisit' | 'otp' | 'support' | 'price' | 'completion' | 'note' | null>(null)
   const photosReady = job.completion_requirements.photos_ready
   const confirmationReady = job.completion_requirements.customer_confirmation_ready
   const otpPayload = job.customer_otp_request?.payload
@@ -1010,7 +1084,6 @@ function ServiceJobDetail({
   const completionMissingReasons = [
     ...missingPhotoLabels.map((label) => `${label} eksik`),
     ...(confirmationReady ? [] : ['Müşteri onayı bekleniyor']),
-    ...(completionNote.trim().length >= 3 ? [] : ['İşlem notu gerekli']),
   ]
   const completionBlocked = completionMissingReasons.length > 0
   const showPhotoSection = Boolean(job.can_upload_photos || ['final_check', 'completed'].includes(job.kanban_column))
@@ -1140,8 +1213,9 @@ function ServiceJobDetail({
     setPhotoFiles((current) => ({ ...current, [field]: file }))
     setPhotoPreviewUrls((current) => ({
       ...current,
-      [field]: file ? URL.createObjectURL(file) : '',
+      [field]: file && canPreviewPortalPhoto(file) ? URL.createObjectURL(file) : '',
     }))
+    setPhotoPreviewErrors((current) => ({ ...current, [field]: false }))
     setPhotoPickerField(field)
   }
 
@@ -1331,13 +1405,16 @@ function ServiceJobDetail({
                     ) : uploadedPhoto ? (
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">Belge yüklendi.</div>
                     ) : null}
-                    {selectedPreviewUrl ? (
+                    {selectedPreviewUrl && !photoPreviewErrors[field] ? (
                       <div className="rounded-xl border border-blue-100 bg-blue-50 p-2">
-                        <img src={selectedPreviewUrl} alt={`${label} yeni seçim`} className="h-36 w-full rounded-lg object-cover" />
+                        <img src={selectedPreviewUrl} alt={`${label} yeni seçim`} onError={() => setPhotoPreviewErrors((current) => ({ ...current, [field]: true }))} className="h-36 w-full rounded-lg object-cover" />
                         <p className="mt-2 truncate text-xs font-semibold text-blue-800">{selectedFile?.name}</p>
                       </div>
                     ) : selectedFile ? (
-                      <p className="truncate rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">{selectedFile.name}</p>
+                      <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+                        <p className="truncate">{selectedFile.name}</p>
+                        <p className="mt-1 font-normal text-blue-700">Bu dosya yüklenebilir; tarayıcı önizlemesi desteklemeyebilir.</p>
+                      </div>
                     ) : null}
                     {uploadedPhoto ? (
                       <div className="grid gap-2 sm:grid-cols-2">
@@ -1361,7 +1438,7 @@ function ServiceJobDetail({
                             Fotoğraf çek
                             <input
                               type="file"
-                              accept="image/*"
+                              accept={portalPhotoAccept}
                               capture="environment"
                               disabled={readOnly || !job.can_upload_photos}
                               onChange={(event) => updatePhotoFile(field, event.target.files?.[0] ?? null)}
@@ -1372,7 +1449,7 @@ function ServiceJobDetail({
                             Dosya seç
                             <input
                               type="file"
-                              accept="image/*"
+                              accept={portalPhotoAccept}
                               disabled={readOnly || !job.can_upload_photos}
                               onChange={(event) => updatePhotoFile(field, event.target.files?.[0] ?? null)}
                               className="sr-only"
@@ -1548,8 +1625,8 @@ function ServiceJobDetail({
                 </ul>
               )}
             </div>
-            <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İşlem notu" disabled={readOnly || !job.can_submit_completion} />
-            <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+            <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İsterseniz yapılan işlemle ilgili kısa not ekleyin." disabled={readOnly || !job.can_submit_completion} />
+            <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote.trim() || null }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
               Tamamlamaya gönder
             </button>
           </ActionBox>
@@ -1569,6 +1646,16 @@ function ServiceJobDetail({
       </aside>
       {!readOnly && !activeActionDialog && (
         <div className="fixed inset-x-0 bottom-0 z-[80] grid max-h-[36vh] grid-cols-2 gap-1.5 overflow-y-auto border-t border-slate-200 bg-white/95 p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+          {canAcceptAppointment && (
+            <button type="button" disabled={actionLoading === 'accept-appointment'} onClick={() => void submitAction('accept-appointment', { note: acceptNote || null }, 'Randevu onayı gönderildi.')} className="min-h-10 rounded-md border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs font-semibold leading-tight text-white disabled:cursor-not-allowed disabled:opacity-60">
+              Randevu onayla
+            </button>
+          )}
+          {canProposeAppointment && (
+            <button type="button" onClick={() => setActiveActionDialog('appointment')} className="min-h-10 rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold leading-tight text-blue-800">
+              Randevu öner
+            </button>
+          )}
           {job.can_reject && (
             <button type="button" onClick={() => setActiveActionDialog('reject')} className="min-h-10 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
               İşi reddet
@@ -1604,6 +1691,49 @@ function ServiceJobDetail({
           </button>
         </div>
       )}
+      <ActionDialog title="Randevu saatleri öner" open={activeActionDialog === 'appointment'} onClose={() => setActiveActionDialog(null)}>
+        <div className="grid gap-2">
+          {appointmentSlots.map((slot, index) => (
+            <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-500">Öneri {index + 1}</span>
+                {appointmentSlots.length > 1 && (
+                  <button type="button" onClick={() => removeAppointmentSlot(index)} className="text-xs font-semibold text-rose-700" disabled={readOnly}>Kaldır</button>
+                )}
+              </div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px]">
+                <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.date} onChange={(event) => updateAppointmentSlot(index, { date: event.target.value })} disabled={readOnly} />
+                <select
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm"
+                  value={slot.slot}
+                  onChange={(event) => updateAppointmentSlot(index, { slot: event.target.value as AppointmentSlotValue })}
+                  disabled={readOnly}
+                >
+                  {appointmentSlotOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ))}
+        </div>
+        {appointmentSlotError && <p className="rounded-xl bg-rose-50 p-2 text-xs font-semibold text-rose-700">{appointmentSlotError}</p>}
+        <button type="button" disabled={readOnly || appointmentSlots.length >= 3} onClick={addAppointmentSlot} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
+          Randevu saati ekle
+        </button>
+        <textarea className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm" value={proposalNote} onChange={(event) => setProposalNote(event.target.value)} placeholder="Operasyona randevu notu" disabled={readOnly} />
+        <button
+          type="button"
+          disabled={readOnly || appointmentSlotError !== null || actionLoading === 'appointment-proposal'}
+          onClick={() => void submitAction('appointment-proposal', {
+            slots: appointmentSlots.map((slot) => ({ ...slot, ...slotTimeRange(slot.slot) })),
+            note: proposalNote || null,
+          }, 'Randevu önerisi operasyona gönderildi.').then(() => setActiveActionDialog(null))}
+          className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Randevu öner
+        </button>
+      </ActionDialog>
       <ActionDialog title="İşi reddet" open={activeActionDialog === 'reject'} onClose={() => setActiveActionDialog(null)}>
         <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} disabled={readOnly || !job.can_reject}>
           <option value="not_available">Uygun değilim</option>
@@ -1749,8 +1879,8 @@ function ServiceJobDetail({
             </ul>
           )}
         </div>
-        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İşlem notu" disabled={readOnly || !job.can_submit_completion} />
-        <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote }, 'Tamamlama gönderimi son kontrol için operasyona düştü.').then(() => setActiveActionDialog(null))} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İsterseniz yapılan işlemle ilgili kısa not ekleyin." disabled={readOnly || !job.can_submit_completion} />
+        <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote.trim() || null }, 'Tamamlama gönderimi son kontrol için operasyona düştü.').then(() => setActiveActionDialog(null))} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
           Tamamlamaya gönder
         </button>
       </ActionDialog>

@@ -17,6 +17,7 @@ use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -66,6 +67,18 @@ class PartnerServiceJobController extends Controller
         '14:00-15:00' => ['start' => '14:00', 'end' => '15:00'],
         '15:00-16:00' => ['start' => '15:00', 'end' => '16:00'],
         '16:00-17:00' => ['start' => '16:00', 'end' => '17:00'],
+    ];
+
+    private const PORTAL_PHOTO_ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'];
+
+    private const PORTAL_PHOTO_STANDARD_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+    private const PORTAL_PHOTO_HEIC_MIMES = [
+        'image/heic',
+        'image/heif',
+        'image/heic-sequence',
+        'image/heif-sequence',
+        'application/octet-stream',
     ];
 
     public function __construct(
@@ -280,7 +293,7 @@ class PartnerServiceJobController extends Controller
         $data = $request->validate([
             'result' => ['required', 'string', Rule::in(['completed', 'revisit_required', 'customer_not_available', 'missing_info_or_photo', 'parts_pending'])],
             'checklist' => ['nullable', 'array'],
-            'note' => ['required', 'string', 'max:2000'],
+            'note' => ['nullable', 'string', 'max:2000'],
             'customer_confirmation_method' => ['nullable', 'string', 'max:128'],
             'customer_confirmation_note' => ['nullable', 'string', 'max:1000'],
             'photo_upload_ids' => ['nullable', 'array'],
@@ -289,8 +302,9 @@ class PartnerServiceJobController extends Controller
         $checklist = $data['checklist'] ?? $this->portalCompletionChecklist();
         $this->validateSimpleChecklist($checklist);
         $this->validateCompletionEvidence($job, $data);
+        $completionNote = trim((string) ($data['note'] ?? ''));
 
-        $result = DB::transaction(function () use ($job, $partner, $user, $data, $checklist): array {
+        $result = DB::transaction(function () use ($job, $partner, $user, $data, $checklist, $completionNote): array {
             $from = $job->workflow_status;
             $status = TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
             $payload = [
@@ -310,16 +324,21 @@ class PartnerServiceJobController extends Controller
             ])->save();
             $payload['checklist_applied'] = true;
 
-            $this->recordAction($job->refresh(), $partner, $user, TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED, $status, $payload, $data['note'], $from);
+            $this->recordAction($job->refresh(), $partner, $user, TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED, $status, $payload, $completionNote !== '' ? $completionNote : null, $from);
 
             return $this->jobResponse($job->refresh(), $status);
         });
+
+        $message = "Usta işi son kontrole gönderdi. MRN: {$job->mrn}.";
+        if ($completionNote !== '') {
+            $message .= " Not: {$completionNote}";
+        }
 
         $this->messages->send(
             'completion_submitted_ops',
             'ops',
             null,
-            "Usta işi son kontrole gönderdi. MRN: {$job->mrn}. Not: {$data['note']}",
+            $message,
             ['partner_id' => $partner->id, 'result' => $data['result']],
             $job,
             $user,
@@ -333,13 +352,14 @@ class PartnerServiceJobController extends Controller
     {
         [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
         $this->ensureFieldActionStage($job, 'Fotoğraf yükleme sadece randevu onaylandıktan sonra yapılabilir.');
+        $portalPhotoRule = $this->portalPhotoRule();
         $data = $request->validate([
-            'before_photo' => ['nullable', 'file', 'image', 'max:10240'],
-            'after_photo' => ['nullable', 'file', 'image', 'max:10240'],
-            'warranty_document_photo' => ['nullable', 'file', 'image', 'max:10240'],
-            'door_front_photo' => ['nullable', 'file', 'image', 'max:10240'],
-            'door_side_photo' => ['nullable', 'file', 'image', 'max:10240'],
-            'door_back_photo' => ['nullable', 'file', 'image', 'max:10240'],
+            'before_photo' => $portalPhotoRule,
+            'after_photo' => $portalPhotoRule,
+            'warranty_document_photo' => $portalPhotoRule,
+            'door_front_photo' => $portalPhotoRule,
+            'door_side_photo' => $portalPhotoRule,
+            'door_back_photo' => $portalPhotoRule,
         ]);
 
         $fieldFiles = [];
@@ -366,7 +386,7 @@ class PartnerServiceJobController extends Controller
                     continue;
                 }
 
-                $extension = $file->extension() ?: $file->guessExtension() ?: 'jpg';
+                $extension = $this->portalPhotoExtension($file);
                 $filename = $fieldCode.'-'.Str::uuid().'.'.$extension;
                 $path = $file->storeAs("technical-service/requests/{$job->id}/partner-portal", $filename, 'public');
                 $created[] = TechnicalServiceRequestUpload::query()->create([
@@ -724,6 +744,8 @@ class PartnerServiceJobController extends Controller
             ],
         ]);
 
+        $job->touch();
+
         return $record;
     }
 
@@ -750,6 +772,56 @@ class PartnerServiceJobController extends Controller
             TechnicalServicePartnerJobAction::ACTION_PHOTOS_UPLOADED => 'Çilingir portalı: fotoğraf yüklendi',
             default => 'Ã‡ilingir portalÄ± aksiyonu',
         };
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function portalPhotoRule(): array
+    {
+        return [
+            'nullable',
+            'file',
+            'max:10240',
+            function (string $attribute, mixed $value, Closure $fail): void {
+                if (! $value instanceof UploadedFile) {
+                    return;
+                }
+
+                $extension = $this->portalPhotoExtension($value);
+                if (! in_array($extension, self::PORTAL_PHOTO_ALLOWED_EXTENSIONS, true)) {
+                    $fail('Fotoğraf JPG, PNG, WEBP, GIF, HEIC veya HEIF formatında olmalıdır.');
+
+                    return;
+                }
+
+                $mimes = array_values(array_filter(array_map(
+                    fn (?string $mime): string => strtolower((string) $mime),
+                    [$value->getMimeType(), $value->getClientMimeType()],
+                )));
+
+                if (array_intersect($mimes, self::PORTAL_PHOTO_STANDARD_MIMES) !== []) {
+                    return;
+                }
+
+                if (in_array($extension, ['heic', 'heif'], true)
+                    && array_intersect($mimes, self::PORTAL_PHOTO_HEIC_MIMES) !== []) {
+                    return;
+                }
+
+                $fail('Fotoğraf dosyası desteklenen bir görsel formatında olmalıdır.');
+            },
+        ];
+    }
+
+    private function portalPhotoExtension(UploadedFile $file): string
+    {
+        $extension = strtolower(trim($file->getClientOriginalExtension()
+            ?: $file->extension()
+            ?: $file->guessExtension()
+            ?: 'jpg'));
+
+        return preg_replace('/[^a-z0-9]/', '', $extension) ?: 'jpg';
     }
 
     /**

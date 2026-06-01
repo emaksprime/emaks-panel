@@ -344,7 +344,7 @@ class TechnicalServiceOperationalStatePresenter
                 TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => [3, 'critical', 'Müşteri onayı reddedildi'],
                 TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => [4, 'critical', 'Hakediş revize talebi'],
                 TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => [5, 'warning', 'Son kontrol bekliyor'],
-                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => [6, 'warning', 'Randevu önerisi bekliyor'],
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => [6, 'warning', 'Usta randevu önerdi'],
                 TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => [8, 'warning', 'Ek talep var'],
                 TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => [8, 'warning', 'Tekrar ziyaret talebi'],
                 default => [20, 'warning', 'Operasyon incelemesi'],
@@ -475,6 +475,12 @@ class TechnicalServiceOperationalStatePresenter
 
         if (($attention['attention_level'] ?? 'normal') !== 'normal') {
             $level = (string) $attention['attention_level'];
+            if (($attention['action'] ?? null) === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED) {
+                $add('Usta randevu önerdi', 'amber', true);
+                $add('Randevuyu onaylayın', 'blue');
+
+                return $tags;
+            }
             $add('Aksiyon: '.$displayActionLabel, $level === 'critical' ? 'rose' : ($level === 'info' ? 'blue' : 'amber'), true);
 
             return $tags;

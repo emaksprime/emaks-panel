@@ -36,6 +36,8 @@ use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Http\UploadedFile;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
@@ -2810,6 +2812,65 @@ class B2BPartnerPanelAccessTest extends TestCase
             );
     }
 
+    public function test_locksmith_partner_completed_job_appears_in_completed_earnings_before_period_calculation(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Portal Earnings Flow Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Portal Earnings Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $completedJob = $this->serviceRequestForTechnician($technician, 'MRN-EARNING-COMPLETE', [
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+        $pendingJob = $this->serviceRequestForTechnician($technician, 'MRN-EARNING-PENDING', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        foreach ([[$completedJob, 900, 120], [$pendingJob, 700, 80]] as [$request, $labor, $route]) {
+            TechnicalServiceAssignmentOffer::query()->create([
+                'technical_service_request_id' => $request->id,
+                'technical_service_technician_id' => $technician->id,
+                'labor_amount' => $labor,
+                'route_fee_amount' => $route,
+                'total_amount' => $labor + $route,
+                'currency' => 'TRY',
+                'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+                'sent_at' => now(),
+            ]);
+        }
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/earnings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/earnings')
+                ->where('partnerPortal.earnings.pending.summary.job_count', 1)
+                ->where('partnerPortal.earnings.pending.rows.0.mrn', 'MRN-EARNING-PENDING')
+                ->where('partnerPortal.earnings.completed.summary.job_count', 1)
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.mrn', 'MRN-EARNING-COMPLETE')
+                ->where('partnerPortal.earnings.completed.rows.0.grand_total', 1020)
+            );
+    }
+
     public function test_locksmith_partner_service_jobs_api_returns_scoped_kanban_columns(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -3039,6 +3100,70 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->getJson('/api/technical-service/requests')
             ->assertForbidden();
+    }
+
+    public function test_locksmith_partner_can_upload_heic_and_submit_completion_without_note(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        Storage::fake('public');
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Heic Completion Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Heic Portal Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-HEIC-COMPLETE', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'customer_closure_approval_status' => 'onaylandi',
+        ]);
+        $this->createPortalFieldDocument($job, 'after_photo');
+        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before.HEIC', 256, 'image/heic'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.photos_ready', true);
+
+        $upload = TechnicalServiceRequestUpload::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('field_code', 'before_photo')
+            ->latest('id')
+            ->firstOrFail();
+        $this->assertSame('image/heic', $upload->mime);
+        $this->assertStringEndsWith('.heic', $upload->path);
+        Storage::disk('public')->assertExists($upload->path);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'final_check');
+
+        $completionAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
+            ->firstOrFail();
+        $this->assertNull($completionAction->note);
     }
 
     public function test_customer_approval_link_is_required_for_partner_completion(): void
@@ -3499,7 +3624,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('slots');
 
-        $this->actingAs($portalUser)
+        $proposalResponse = $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
                 'slots' => [
                     ['date' => $proposalDate, 'slot' => '10:00-11:00'],
@@ -3508,7 +3633,14 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'Sabah uygunum.',
             ])
             ->assertOk()
-            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.next_action', 'Randevu önerildi')
+            ->assertJsonPath('job.appointment_label', 'Randevu önerildi')
+            ->assertJsonPath('job.can_propose_appointment', false);
+        $this->assertContains('Operasyon onayı bekleniyor', $proposalResponse->json('job.badges'));
+        $opsState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->refresh());
+        $this->assertSame('Usta randevu önerdi', $opsState['display_action_label']);
+        $this->assertContains('Randevuyu onaylayın', collect($opsState['display_tags'])->pluck('label')->all());
 
         $action = TechnicalServicePartnerJobAction::query()
             ->where('technical_service_request_id', $job->id)

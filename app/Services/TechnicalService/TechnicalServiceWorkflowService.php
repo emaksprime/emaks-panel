@@ -2137,7 +2137,7 @@ class TechnicalServiceWorkflowService
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => ['priority' => 2, 'level' => 'critical', 'reason' => 'Usta işi reddetti'],
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => ['priority' => 3, 'level' => 'critical', 'reason' => 'Müşteri onayı reddedildi'],
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => ['priority' => 5, 'level' => 'warning', 'reason' => 'Son kontrol bekliyor'],
-            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => ['priority' => 6, 'level' => 'warning', 'reason' => 'Randevu önerisi bekliyor'],
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => ['priority' => 6, 'level' => 'warning', 'reason' => 'Usta randevu önerdi'],
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => ['priority' => 8, 'level' => 'warning', 'reason' => 'Ek talep var'],
             TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => ['priority' => 8, 'level' => 'warning', 'reason' => 'Tekrar ziyaret talebi'],
         ];

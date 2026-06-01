@@ -343,6 +343,8 @@ class B2BPartnerPortalDataService
         $isAppointmentConfirmed = (bool) ($canonicalState['is_appointment_confirmed'] ?? false);
         $hasOpsReviewAction = $stateAction instanceof TechnicalServicePartnerJobAction
             && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
+        $hasAppointmentProposalInReview = $latestAppointmentProposal instanceof TechnicalServicePartnerJobAction
+            && $latestAppointmentProposal->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
         $isRejectedInReview = $hasOpsReviewAction
             && $stateAction->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED;
         $isFinalCheck = (bool) ($canonicalState['is_pending_final_check'] ?? false);
@@ -352,10 +354,15 @@ class B2BPartnerPortalDataService
         $canProposeAppointment = ! $isTerminal
             && ! $isAppointmentConfirmed
             && ! $isFinalCheck
-            && ! $isRejectedInReview;
+            && ! $isRejectedInReview
+            && ! $hasAppointmentProposalInReview;
         $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview;
         $nextActionLabel = $this->serviceJobNextActionLabel($request, $stateAction, $completionRequirements);
         $partnerNextActionLabel = $canonicalState['display_action_label'] ?? $nextActionLabel;
+        if ($stateAction?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
+            && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            $partnerNextActionLabel = 'Randevu önerildi';
+        }
         if ($partnerNextActionLabel === 'Fotoğraf eksik') {
             $partnerNextActionLabel = 'Fotoğraf bekliyor';
         }
@@ -372,6 +379,14 @@ class B2BPartnerPortalDataService
             ->all();
         if ($displayBadges === []) {
             $displayBadges = $badges;
+        }
+        if ($stateAction?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
+            && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            $displayBadges = ['Operasyon onayı bekleniyor'];
+        }
+        $appointmentLabel = $this->appointmentLabel($request);
+        if ($appointmentLabel === null && $hasAppointmentProposalInReview) {
+            $appointmentLabel = 'Randevu önerildi';
         }
 
         return [
@@ -392,7 +407,7 @@ class B2BPartnerPortalDataService
             'scheduled_at' => $request->scheduled_at?->toIso8601String(),
             'scheduled_date' => $request->scheduled_date?->toDateString(),
             'appointment_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
-            'appointment_label' => $this->appointmentLabel($request),
+            'appointment_label' => $appointmentLabel,
             'priority' => $request->priority,
             'status' => $request->status,
             'workflow_status' => $request->workflow_status,
@@ -557,6 +572,7 @@ class B2BPartnerPortalDataService
                 'paid_at' => $earning->paid_at?->toIso8601String(),
                 'items' => $earning->items
                     ->map(fn (TechnicalServiceEarningItem $item): array => [
+                        'technical_service_request_id' => $item->technical_service_request_id,
                         'job_date' => $item->job_date?->toDateString(),
                         'mrn' => $item->mrn,
                         'city' => $item->customer_city,
@@ -570,6 +586,56 @@ class B2BPartnerPortalDataService
                     ->all(),
             ])
             ->values();
+        $earningRequestIds = $rows
+            ->flatMap(fn (array $row): array => collect($row['items'] ?? [])->pluck('technical_service_request_id')->filter()->all())
+            ->map(fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+        $completedJobRows = $this->serviceJobScope
+            ->serviceJobsQuery($partner)
+            ->with(['latestAssignmentOffer'])
+            ->when($earningRequestIds !== [], fn ($query) => $query->whereNotIn('id', $earningRequestIds))
+            ->where(function ($query): void {
+                $query
+                    ->whereNotNull('completed_at')
+                    ->orWhereNotNull('installation_completed_at')
+                    ->orWhereIn('workflow_status', ['Tamamlandı', 'Tamamlandi', 'TamamlandÄ±']);
+            })
+            ->latest('completed_at')
+            ->latest('updated_at')
+            ->limit(50)
+            ->get()
+            ->filter(fn (TechnicalServiceRequest $request): bool => $request->latestAssignmentOffer !== null || $this->earningMessagePayload($request) !== null)
+            ->map(function (TechnicalServiceRequest $request): array {
+                $earningSummary = $this->earningSummary($request, $request->latestAssignmentOffer);
+
+                return [
+                    'id' => 'completed-job-'.$request->id,
+                    'period' => 'Dönem bekliyor',
+                    'job_count' => 1,
+                    'labor_total' => $earningSummary['labor_amount'],
+                    'travel_fee_total' => $earningSummary['route_fee_amount'],
+                    'grand_total' => $earningSummary['total_amount'],
+                    'status' => 'Kesinleşti',
+                    'paid_at' => null,
+                    'items' => [[
+                        'technical_service_request_id' => $request->id,
+                        'job_date' => $request->completed_at?->toDateString()
+                            ?? $request->installation_completed_at?->toDateString()
+                            ?? $request->scheduled_date?->toDateString(),
+                        'mrn' => $request->mrn,
+                        'city' => $request->customer_city,
+                        'district' => $request->customer_district,
+                        'labor_amount' => $earningSummary['labor_amount'],
+                        'travel_fee_amount' => $earningSummary['route_fee_amount'],
+                        'line_total' => $earningSummary['total_amount'],
+                        'status' => 'Kesinleşti',
+                    ]],
+                ];
+            })
+            ->values();
+        $completedRows = $rows->concat($completedJobRows)->values();
         $pendingRows = $this->serviceJobScope
             ->serviceJobsQuery($partner)
             ->with(['latestAssignmentOffer'])
@@ -581,7 +647,8 @@ class B2BPartnerPortalDataService
             ->latest('updated_at')
             ->limit(50)
             ->get()
-            ->filter(fn (TechnicalServiceRequest $request): bool => $request->latestAssignmentOffer !== null || $this->earningMessagePayload($request) !== null)
+            ->filter(fn (TechnicalServiceRequest $request): bool => ! $this->isCompletedForPortalEarnings($request)
+                && ($request->latestAssignmentOffer !== null || $this->earningMessagePayload($request) !== null))
             ->map(function (TechnicalServiceRequest $request): array {
                 $offer = $request->latestAssignmentOffer;
                 $earningSummary = $this->earningSummary($request, $offer);
@@ -607,32 +674,41 @@ class B2BPartnerPortalDataService
             'grand_total' => $pendingRows->sum('line_total'),
         ];
         $completedSummary = [
-            'job_count' => $rows->sum('job_count'),
-            'labor_total' => $rows->sum('labor_total'),
-            'travel_fee_total' => $rows->sum('travel_fee_total'),
-            'grand_total' => $rows->sum('grand_total'),
+            'job_count' => $completedRows->sum('job_count'),
+            'labor_total' => $completedRows->sum('labor_total'),
+            'travel_fee_total' => $completedRows->sum('travel_fee_total'),
+            'grand_total' => $completedRows->sum('grand_total'),
         ];
 
         return [
-            'status' => $rows->isEmpty() && $pendingRows->isEmpty() ? 'empty' : 'ok',
-            'rows' => $rows->all(),
+            'status' => $completedRows->isEmpty() && $pendingRows->isEmpty() ? 'empty' : 'ok',
+            'rows' => $completedRows->all(),
             'pending' => [
                 'rows' => $pendingRows->all(),
                 'summary' => $pendingSummary,
                 'note' => 'Bekleyen hakedişler tahmini atama teklifidir; actual hakediş değildir.',
             ],
             'completed' => [
-                'rows' => $rows->all(),
+                'rows' => $completedRows->all(),
                 'summary' => $completedSummary,
-                'note' => 'Tamamlanan hakedişler Teknik Servis hakediş kaynağından okunur.',
+                'note' => 'Tamamlanan hakedişler Teknik Servis hakediş kaynağından okunur; dönem bekleyen işler ayrıca gösterilir.',
             ],
             'summary' => [
-                'job_count' => $rows->sum('job_count'),
-                'labor_total' => $rows->sum('labor_total'),
-                'travel_fee_total' => $rows->sum('travel_fee_total'),
-                'grand_total' => $rows->sum('grand_total'),
+                'job_count' => $completedRows->sum('job_count'),
+                'labor_total' => $completedRows->sum('labor_total'),
+                'travel_fee_total' => $completedRows->sum('travel_fee_total'),
+                'grand_total' => $completedRows->sum('grand_total'),
             ],
         ];
+    }
+
+    private function isCompletedForPortalEarnings(TechnicalServiceRequest $request): bool
+    {
+        if ($request->completed_at !== null || $request->installation_completed_at !== null) {
+            return true;
+        }
+
+        return in_array((string) $request->workflow_status, ['Tamamlandı', 'Tamamlandi', 'TamamlandÄ±'], true);
     }
 
     private function pendingEarningStatus(TechnicalServiceRequest $request): string
@@ -824,7 +900,7 @@ class B2BPartnerPortalDataService
         $badges = [];
 
         if ($action?->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
-            $badges[] = 'Ops onayı bekliyor';
+            $badges[] = 'Operasyon onayı bekleniyor';
         }
 
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
@@ -863,6 +939,20 @@ class B2BPartnerPortalDataService
 
         if (($completionRequirements['customer_confirmation_ready'] ?? false) !== true && $this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
             $badges[] = 'OTP bekliyor';
+        }
+
+        if (($completionRequirements['photos_ready'] ?? false) === true && $this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
+            $badges[] = 'Saha belgeleri yüklendi';
+        }
+
+        if (($completionRequirements['customer_confirmation_ready'] ?? false) === true && $this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
+            $badges[] = 'Müşteri onayı alındı';
+        }
+
+        if (($completionRequirements['photos_ready'] ?? false) === true
+            && ($completionRequirements['customer_confirmation_ready'] ?? false) === true
+            && $this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
+            $badges[] = 'Tamamlamaya gönderilebilir';
         }
 
         return array_values(array_unique($badges));
@@ -942,7 +1032,7 @@ class B2BPartnerPortalDataService
                 TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => 'İş reddi operasyon incelemesinde',
                 TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => 'Müşteri onayı reddedildi',
                 TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 'Son kontrol bekliyor',
-                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 'Randevu önerisi operasyon onayı bekliyor',
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 'Randevu önerildi',
                 TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => 'Ek talep operasyon incelemesinde',
                 TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 'Tekrar ziyaret talebi operasyon incelemesinde',
                 default => 'Operasyon incelemesinde',
@@ -958,7 +1048,7 @@ class B2BPartnerPortalDataService
                 return 'Müşteri onayı bekleniyor';
             }
 
-            return 'Randevu onaylandı';
+            return 'Tamamlamaya gönderilebilir';
         }
 
         if ($this->serviceJobColumn($request, $action) === 'final_check') {
