@@ -1,6 +1,6 @@
 import { ChevronDown } from 'lucide-react'
-import { useState } from 'react'
-import type { ReactNode } from 'react'
+import { useRef, useState } from 'react'
+import type { ReactNode, Ref } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -311,6 +311,7 @@ const MiniMetric = ({
 )
 
 type DetailPanelTone = 'slate' | 'product' | 'customer' | 'door' | 'payment' | 'address' | 'schedule' | 'technician' | 'route' | 'earning' | 'serial' | 'history' | 'warning'
+type NextActionSectionTarget = 'operation' | 'assignment' | 'fieldCompletion' | 'finalCheck'
 
 const detailPanelToneClass = (tone: DetailPanelTone = 'slate'): string => {
   switch (tone) {
@@ -350,6 +351,9 @@ const DetailPanel = ({
   open,
   onOpenChange,
   tone = 'slate',
+  panelRef,
+  sectionTarget,
+  highlighted = false,
 }: {
   title: string
   summary?: ReactNode
@@ -357,9 +361,18 @@ const DetailPanel = ({
   open?: boolean
   onOpenChange?: (open: boolean) => void
   tone?: DetailPanelTone
+  panelRef?: Ref<HTMLDetailsElement>
+  sectionTarget?: NextActionSectionTarget
+  highlighted?: boolean
 }) => (
   <details
-    className={['group rounded-2xl border p-4 shadow-sm transition-colors', detailPanelToneClass(tone)].join(' ')}
+    ref={panelRef}
+    data-next-action-target={sectionTarget}
+    className={[
+      'group scroll-mt-6 rounded-2xl border p-4 shadow-sm transition-colors',
+      detailPanelToneClass(tone),
+      highlighted ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-white' : '',
+    ].join(' ')}
     open={open}
     onToggle={(event) => onOpenChange?.(event.currentTarget.open)}
   >
@@ -1156,6 +1169,12 @@ export function ServiceRequestDetails({
   const setOperationInfoOpen = (open: boolean) => {
     setOperationInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const operationInfoRef = useRef<HTMLDetailsElement | null>(null)
+  const assignmentInfoRef = useRef<HTMLDetailsElement | null>(null)
+  const fieldCompletionRef = useRef<HTMLDetailsElement | null>(null)
+  const finalCheckRef = useRef<HTMLDetailsElement | null>(null)
+  const [highlightedNextActionTarget, setHighlightedNextActionTarget] = useState<NextActionSectionTarget | null>(null)
+  const [nextActionNavigationMessage, setNextActionNavigationMessage] = useState<string | null>(null)
   const canonicalPaymentStatus = saleAndPayment?.payment_status ?? null
   const canonicalPaymentRequiresPayment = Boolean(canonicalPaymentStatus?.requires_payment && !canonicalPaymentStatus?.is_paid)
   const mountPaymentReceived = Boolean(
@@ -1671,6 +1690,129 @@ export function ServiceRequestDetails({
   const nextActionPayload = request.nextActionPayload
   const nextActionTitle = displayOrEmpty(nextActionPayload?.title, nextActionLabel)
   const nextActionDescription = displayOrEmpty(nextActionPayload?.description, 'Operasyon akışı için sıradaki adım bekleniyor.')
+  const scrollToNextActionSection = (target: NextActionSectionTarget) => {
+    const targetRef = {
+      operation: operationInfoRef,
+      assignment: assignmentInfoRef,
+      fieldCompletion: fieldCompletionRef,
+      finalCheck: finalCheckRef,
+    }[target]
+
+    if (target === 'operation') {
+      setOperationInfoOpen(true)
+    }
+
+    if (target === 'assignment') {
+      setAssignmentInfoOpen(true)
+    }
+
+    if (target === 'fieldCompletion') {
+      setFieldCompletionOpen(true)
+    }
+
+    if (target === 'finalCheck') {
+      setFinalCheckOpen(true)
+    }
+
+    setNextActionNavigationMessage(null)
+    setHighlightedNextActionTarget(target)
+
+    window.setTimeout(() => {
+      const targetElement = targetRef.current
+
+      if (!targetElement) {
+        setNextActionNavigationMessage('Bu aksiyon için gidilecek bölüm bulunamadı.')
+        setHighlightedNextActionTarget(null)
+
+        return
+      }
+
+      targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
+      window.setTimeout(() => {
+        setHighlightedNextActionTarget((current) => current === target ? null : current)
+      }, 1800)
+    }, 80)
+  }
+  const handleNextActionClick = () => {
+    const action = nextActionPayload?.primary_action
+
+    if (!action) {
+      setNextActionNavigationMessage('Bu aksiyon için gidilecek bölüm bulunamadı.')
+
+      return
+    }
+
+    if (action === 'assign_technician' || action === 'select_technician') {
+      scrollToNextActionSection('assignment')
+      void onAssignSelectedTechnician?.()
+
+      return
+    }
+
+    if (action === 'copy_payment_link') {
+      const paymentUrl = extraMountPayment?.payment_url ?? ''
+
+      if (paymentUrl && navigator.clipboard) {
+        void navigator.clipboard.writeText(paymentUrl)
+      }
+
+      scrollToNextActionSection('operation')
+
+      if (!paymentUrl || !navigator.clipboard) {
+        setNextActionNavigationMessage('Kopyalanacak ödeme linki bulunamadı.')
+      }
+
+      return
+    }
+
+    if (action === 'create_payment_link') {
+      setRouteFeeEditorOpen(true)
+      scrollToNextActionSection('assignment')
+
+      return
+    }
+
+    if (action === 'calculate_route_fee') {
+      scrollToNextActionSection('assignment')
+      void onRouteQuoteCalculate?.()
+
+      return
+    }
+
+    if (action === 'review_photos') {
+      scrollToNextActionSection('operation')
+
+      return
+    }
+
+    if (action === 'acknowledge_mount_exclusion') {
+      scrollToNextActionSection('assignment')
+
+      return
+    }
+
+    if (action === 'plan_appointment') {
+      scrollToNextActionSection('operation')
+      onSchedule?.()
+
+      return
+    }
+
+    if (action.includes('customer_approval')) {
+      scrollToNextActionSection('fieldCompletion')
+
+      return
+    }
+
+    if (action.includes('final') || action.includes('completion') || action.includes('field_document')) {
+      scrollToNextActionSection('fieldCompletion')
+
+      return
+    }
+
+    setNextActionNavigationMessage('Bu aksiyon için gidilecek bölüm bulunamadı.')
+  }
   const compactControlChips = [
     {
       label: 'Görseller',
@@ -1860,51 +2002,7 @@ export function ServiceRequestDetails({
                 type="button"
                 size="sm"
                 variant={nextActionPayload.blocking ? 'default' : 'outline'}
-                onClick={() => {
-                  const action = nextActionPayload.primary_action
-
-                  if (action === 'assign_technician' || action === 'select_technician') {
-                    setAssignmentInfoOpen(true)
-                    void onAssignSelectedTechnician?.()
-
-                    return
-                  }
-
-                  if (action === 'copy_payment_link') {
-                    void navigator.clipboard?.writeText(extraMountPayment?.payment_url ?? '')
-
-                    return
-                  }
-
-                  if (action === 'create_payment_link') {
-                    setRouteFeeEditorOpen(true)
-                    setAssignmentInfoOpen(true)
-
-                    return
-                  }
-
-                  if (action === 'calculate_route_fee') {
-                    void onRouteQuoteCalculate?.()
-
-                    return
-                  }
-
-                  if (action === 'review_photos') {
-                    setOperationInfoOpen(true)
-
-                    return
-                  }
-
-                  if (action === 'acknowledge_mount_exclusion') {
-                    setAssignmentInfoOpen(true)
-
-                    return
-                  }
-
-                  if (action === 'plan_appointment') {
-                    onSchedule?.()
-                  }
-                }}
+                onClick={handleNextActionClick}
               >
                 {nextActionPayload.primary_action === 'assign_technician'
                   ? hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'
@@ -1922,6 +2020,11 @@ export function ServiceRequestDetails({
               </Button>
             ) : null}
           </div>
+          {nextActionNavigationMessage ? (
+            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+              {nextActionNavigationMessage}
+            </p>
+          ) : null}
           <div className="mt-4 flex flex-wrap gap-2">
             {compactControlChips.map((chip) => (
               <span key={chip.label} className={['inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold', chip.tone].join(' ')}>
@@ -2040,6 +2143,9 @@ export function ServiceRequestDetails({
           tone={doorPhotoControlMissing || paymentControlMissing ? 'warning' : 'slate'}
           open={operationInfoOpen}
           onOpenChange={setOperationInfoOpen}
+          panelRef={operationInfoRef}
+          sectionTarget="operation"
+          highlighted={highlightedNextActionTarget === 'operation'}
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             {routeQuote ? (
@@ -2257,6 +2363,9 @@ export function ServiceRequestDetails({
           tone="technician"
           open={assignmentInfoOpen}
           onOpenChange={setAssignmentInfoOpen}
+          panelRef={assignmentInfoRef}
+          sectionTarget="assignment"
+          highlighted={highlightedNextActionTarget === 'assignment'}
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="max-w-3xl text-sm text-slate-600">
@@ -2887,6 +2996,9 @@ export function ServiceRequestDetails({
             tone="history"
             open={finalCheckOpen}
             onOpenChange={setFinalCheckOpen}
+            panelRef={finalCheckRef}
+            sectionTarget="finalCheck"
+            highlighted={highlightedNextActionTarget === 'finalCheck'}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="text-sm text-slate-600">Son kontrol kararları ve operasyon notları burada özetlenir.</p>
@@ -2982,6 +3094,9 @@ export function ServiceRequestDetails({
           tone="door"
           open={fieldCompletionOpen}
           onOpenChange={setFieldCompletionOpen}
+          panelRef={fieldCompletionRef}
+          sectionTarget="fieldCompletion"
+          highlighted={highlightedNextActionTarget === 'fieldCompletion'}
         >
           <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:p-5">
             <div className="grid gap-3 sm:grid-cols-2">
