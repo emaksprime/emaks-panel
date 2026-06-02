@@ -57,6 +57,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'technical_service_manage', 'name' => 'Teknik Servis Talep Yönetimi', 'type' => 'action'],
             ['code' => 'technical_service_dashboard', 'name' => 'Teknik Servis Operasyon Dashboard', 'type' => 'page'],
             ['code' => 'technical_service_serial_query', 'name' => 'Teknik Servis Seri No Sorgu', 'type' => 'page'],
+            ['code' => 'technical_service_qr_products', 'name' => 'Teknik Servis Ürün QR Yönetimi', 'type' => 'page'],
             ['code' => 'technical_service_technicians', 'name' => 'Teknik Servis Teknisyen Yönetimi', 'type' => 'page'],
             ['code' => 'technical_service_earnings', 'name' => 'Teknik Servis Hakedişleri', 'type' => 'page'],
             ['code' => 'technical_service_earnings_pay', 'name' => 'Teknik Servis Hakediş Ödeme Yetkisi', 'type' => 'action'],

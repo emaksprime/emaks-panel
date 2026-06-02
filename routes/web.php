@@ -400,6 +400,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         ],
     ]))->middleware('panel.access:technical_service_serial_query')->name('technical-service.serial-query');
 
+    Route::get('technical-service/qr-products', fn () => Inertia::render('panel/technical-service-qr-products', [
+        'page' => [
+            'title' => 'Ürün QR Yönetimi',
+            'slug' => 'technical_service_qr_products',
+            'routePath' => '/technical-service/qr-products',
+            'component' => 'panel/technical-service-qr-products',
+            'layoutType' => 'module',
+            'description' => 'Ürün QR üretimi, toplu seri yükleme ve QR yazdırma ekranı',
+            'buttons' => [],
+        ],
+    ]))->middleware('panel.access:technical_service_manage')->name('technical-service.qr-products');
+
     Route::get('technical-service/dashboard', fn () => Inertia::render('panel/technical-service-dashboard', [
         'page' => [
             'title' => 'Teknik Servis İç Operasyon Pilot Dashboard',

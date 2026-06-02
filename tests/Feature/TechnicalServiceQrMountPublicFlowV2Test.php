@@ -120,6 +120,91 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         ]);
     }
 
+    public function test_ops_qr_product_create_reuses_duplicate_serial_without_new_link(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => 'QR-DUP-001',
+                'product_name' => 'Manual Name',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('created', true)
+            ->assertJsonPath('link.serial_number', 'QR-DUP-001');
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => 'qr-dup-001',
+                'product_name' => 'Changed Name',
+            ])
+            ->assertOk()
+            ->assertJsonPath('created', false)
+            ->assertJsonPath('duplicate', true)
+            ->assertJsonPath('link.product_name', 'Emaks Prime Test Kilit');
+
+        $this->assertDatabaseCount('technical_service_qr_links', 1);
+    }
+
+    public function test_ops_qr_product_bulk_csv_creates_and_skips_duplicates(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $csv = implode("\n", [
+            'seri_no,product_name,model,brand',
+            'BULK-001,Test Kilit,F3,Emaks Prime',
+            'BULK-001,Test Kilit,F3,Emaks Prime',
+            'BULK-002,Test Panel,P2,Emaks Prime',
+        ]);
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products/bulk', [
+                'csv_text' => $csv,
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.total', 3)
+            ->assertJsonPath('summary.created', 2)
+            ->assertJsonPath('summary.skipped', 1)
+            ->assertJsonPath('summary.failed', 0);
+
+        $this->assertDatabaseHas('technical_service_qr_links', [
+            'serial_number' => 'BULK-001',
+            'product_name' => 'Test Kilit',
+        ]);
+        $this->assertDatabaseHas('technical_service_qr_links', [
+            'serial_number' => 'BULK-002',
+            'product_name' => 'Test Panel',
+        ]);
+        $this->assertDatabaseCount('technical_service_qr_links', 2);
+    }
+
+    public function test_ops_qr_product_svg_endpoint_returns_qr_svg(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => 'QR-SVG-001',
+            'product_name' => 'Emaks Prime Test Kilit',
+            'product_model' => 'DDL720',
+            'brand' => 'EMAKS PRIME',
+        ]);
+
+        $this->actingAs($user)
+            ->get('/api/technical-service/qr-products/'.$link->id.'/svg')
+            ->assertOk()
+            ->assertHeader('Content-Type', 'image/svg+xml; charset=UTF-8')
+            ->assertSee('<svg', false);
+    }
+
+    public function test_partner_user_cannot_access_ops_qr_product_management_api(): void
+    {
+        $portalUser = User::factory()->create(['role_code' => 'b2b_locksmith']);
+
+        $this->actingAs($portalUser)
+            ->getJson('/api/technical-service/qr-products')
+            ->assertForbidden();
+    }
+
     public function test_invalid_token_shows_safe_invalid_page(): void
     {
         $this->get('/mount-request/not-a-real-token')
@@ -150,6 +235,20 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertDatabaseCount('technical_service_mount_sessions', 1);
     }
 
+    public function test_public_mount_request_updates_qr_scan_metrics(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [$link, $token] = $this->qrLink();
+
+        $this->assertSame(0, $link->scan_count);
+
+        $this->get('/mount-request/'.$token)->assertOk();
+
+        $link->refresh();
+        $this->assertSame(1, $link->scan_count);
+        $this->assertNotNull($link->last_scanned_at);
+    }
+
     public function test_mount_payment_schema_has_v2_session_column(): void
     {
         $this->assertTrue(Schema::hasColumn('technical_service_mount_payments', 'technical_service_mount_session_id'));
@@ -168,7 +267,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ->where('statusLabel', 'Montaj dahil'));
     }
 
-    public function test_in_stock_current_state_allows_form_with_operation_check_message(): void
+    public function test_in_stock_current_state_requires_payment_before_form(): void
     {
         $this->fakeContext(
             TechnicalServiceMountSession::SALE_CHECK_FAILED,
@@ -180,8 +279,56 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->get('/mount-request/'.$token)
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
-                ->where('viewState', 'check_pending')
-                ->where('message', 'Bu ürünün satış bilgisi henüz doğrulanamadı. Talebiniz operasyon ekibi tarafından kontrol edilecektir.'));
+                ->where('viewState', 'payment_required')
+                ->where('message', 'Bu ürün için montaj ödemesi gereklidir.')
+                ->where('statusLabel', 'Montaj ödemesi gerekli'));
+    }
+
+    public function test_unsold_serial_redirects_to_payment_decision(): void
+    {
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_NOT_FOUND,
+            TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'unknown',
+        );
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('viewState', 'payment_required')
+                ->where('message', 'Bu ürün için montaj ödemesi gereklidir.')
+                ->where('statusLabel', 'Montaj ödemesi gerekli'));
+    }
+
+    public function test_paid_unsold_serial_opens_mount_form(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_NOT_FOUND,
+            TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'unknown',
+        );
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('viewState', 'payment_required'));
+
+        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->get("/mount-payment/fake/{$payment->id}/approve?token={$token}")
+            ->assertRedirect('/mount-request/'.$token);
+
+        $this->get('/mount-request/'.$token)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('viewState', 'form_ready')
+                ->where('statusLabel', 'Montaj ödemesi alındı'));
     }
 
     public function test_form_ready_public_page_does_not_show_mount_status_block(): void
@@ -312,6 +459,31 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->status);
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $payment->session->refresh()->mount_payment_status);
+    }
+
+    public function test_fake_provider_can_create_payment_without_exposing_fake_approve(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => false,
+        ]);
+
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)->assertOk();
+        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+        $this->assertNotEmpty($payment->provider_reference);
+
+        $this->get('/mount-payment/'.$payment->provider_reference)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-payment')
+                ->where('payment.fake_approve_url', null));
     }
 
     public function test_production_environment_never_exposes_or_allows_fake_approve(): void

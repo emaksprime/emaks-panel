@@ -20,6 +20,7 @@ const links: TechnicalServiceLink[] = [
   },
   { href: '/technical-service/field', label: 'Usta İşleri', visibleWhen: ['/technical-service/dashboard'] },
   { href: '/technical-service/serial-query', label: 'Seri No Sorgu' },
+  { href: '/technical-service/qr-products', label: 'Ürün QR Yönetimi', visibleWhen: ['/technical-service', '/technical-service/serial-query'] },
   { href: '/technical-service/technicians', label: 'Teknisyen Yönetimi' },
   { href: '/technical-service/earnings', label: 'Hakedişler' },
   { href: '/technical-service/admin', label: 'Teknik Servis Admin' },

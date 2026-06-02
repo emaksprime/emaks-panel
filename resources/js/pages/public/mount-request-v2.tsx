@@ -1,4 +1,4 @@
-import { Head, Link, useForm } from '@inertiajs/react';
+import { Head, useForm } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
@@ -366,6 +366,7 @@ export default function MountRequestV2({
     const paymentRequired = viewState === 'payment_required';
     const submittedSuccessfully = viewState === 'submitted';
     const formReady = viewState === 'form_ready' || viewState === 'check_pending' || viewState === 'multi_product_ready';
+    const csrfValue = csrfToken();
     const [submitStatus, setSubmitStatus] = useState('');
     const [submitError, setSubmitError] = useState('');
     const [draftRestored, setDraftRestored] = useState(false);
@@ -1009,24 +1010,26 @@ export default function MountRequestV2({
                                     )}
                                     <div className="flex flex-wrap gap-2">
                                         {actions?.create_payment_url && (
-                                            <Link
-                                                href={actions.create_payment_url}
-                                                method="post"
-                                                as="button"
-                                                className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
-                                            >
-                                                {actions.payment_label ?? 'Montaj ödemesi yap'}
-                                            </Link>
+                                            <form action={actions.create_payment_url} method="post">
+                                                {csrfValue ? <input type="hidden" name="_token" value={csrfValue} /> : null}
+                                                <button
+                                                    type="submit"
+                                                    className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+                                                >
+                                                    {actions.payment_label ?? 'Montaj ödemesi yap'}
+                                                </button>
+                                            </form>
                                         )}
                                         {actions?.multi_product_url && (
-                                            <Link
-                                                href={actions.multi_product_url}
-                                                method="post"
-                                                as="button"
-                                                className="rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-semibold text-amber-900 shadow-sm hover:bg-amber-100"
-                                            >
-                                                {actions.multi_product_label ?? 'Birden fazla ürün için montaj talebim var'}
-                                            </Link>
+                                            <form action={actions.multi_product_url} method="post">
+                                                {csrfValue ? <input type="hidden" name="_token" value={csrfValue} /> : null}
+                                                <button
+                                                    type="submit"
+                                                    className="rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-semibold text-amber-900 shadow-sm hover:bg-amber-100"
+                                                >
+                                                    {actions.multi_product_label ?? 'Birden fazla ürün için montaj talebim var'}
+                                                </button>
+                                            </form>
                                         )}
                                         {payment?.payment_url && (
                                             <a

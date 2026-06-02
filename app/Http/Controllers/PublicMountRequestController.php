@@ -37,6 +37,7 @@ class PublicMountRequestController extends Controller
             ])->toResponse($request)->setStatusCode(404);
         }
 
+        $link->markScanned();
         $session = $this->prepareSession($link, $contextResolver, $enrichmentService);
 
         $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
@@ -151,7 +152,7 @@ class PublicMountRequestController extends Controller
 
     public function createFakePayment(string $token, PaymentProviderManager $paymentProviderManager): RedirectResponse
     {
-        abort_unless($this->fakePaymentEnabled(), 404);
+        abort_unless($this->fakePaymentProviderEnabled(), 404);
 
         $link = $this->linkOrFail($token);
         $session = $this->sessionForLink($link);
@@ -410,7 +411,7 @@ class PublicMountRequestController extends Controller
             MountFlowDecisionService::DECISION_SHOW_CHECK_FAILED_BUT_ALLOW_SUBMIT,
         ], true);
 
-        $unpaidSingleProduct = $session->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC
+        $unpaidSingleProduct = $this->requiresPaymentBeforeForm($session)
             && $session->mount_payment_status !== TechnicalServiceMountSession::PAYMENT_PAID
             && $session->customer_entry_mode !== TechnicalServiceMountSession::ENTRY_MULTI_PRODUCT_WITHOUT_PAYMENT;
 
@@ -627,9 +628,14 @@ class PublicMountRequestController extends Controller
 
     private function fakePaymentEnabled(): bool
     {
-        return ! app()->environment('production')
-            && strtolower((string) config('payments.provider', 'fake')) === 'fake'
+        return $this->fakePaymentProviderEnabled()
             && filter_var(config('payments.enable_fake_approve', false), FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function fakePaymentProviderEnabled(): bool
+    {
+        return ! app()->environment('production')
+            && strtolower((string) config('payments.provider', 'fake')) === 'fake';
     }
 
     private function viewState(string $decision): string
@@ -648,7 +654,7 @@ class PublicMountRequestController extends Controller
     {
         $currentState = $this->nullableString($session?->context_payload['current_serial_state'] ?? null);
 
-        if ($currentState === 'in_stock_or_center') {
+        if ($decision !== MountFlowDecisionService::DECISION_SHOW_PAYMENT && $currentState === 'in_stock_or_center') {
             return 'Bu ürünün satış bilgisi henüz doğrulanamadı. Talebiniz operasyon ekibi tarafından kontrol edilecektir.';
         }
 
@@ -677,6 +683,12 @@ class PublicMountRequestController extends Controller
                 : 'Montaj ödemesi gerekli';
         }
 
+        if ($this->requiresPaymentBeforeForm($session)) {
+            return $session->mount_payment_status === TechnicalServiceMountSession::PAYMENT_PAID
+                ? 'Montaj ödemesi alındı'
+                : 'Montaj ödemesi gerekli';
+        }
+
         if ($session->sale_mount_status === TechnicalServiceMountSession::SALE_CHECK_FAILED) {
             return 'Kontrol bekliyor';
         }
@@ -691,6 +703,27 @@ class PublicMountRequestController extends Controller
             TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL,
         ], true)
             && $session->customer_entry_mode !== TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT;
+    }
+
+    private function requiresPaymentBeforeForm(TechnicalServiceMountSession $session): bool
+    {
+        $context = is_array($session->context_payload) ? $session->context_payload : [];
+        $currentSerialState = $this->nullableString($context['current_serial_state'] ?? null);
+        $resolverSource = $this->nullableString($context['source'] ?? ($context['resolver_payload']['source'] ?? null));
+
+        if ($session->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC) {
+            return true;
+        }
+
+        if ($session->sale_mount_status === TechnicalServiceMountSession::SALE_NOT_FOUND) {
+            return true;
+        }
+
+        if ($resolverSource === 'mikro_serial_check_failed') {
+            return false;
+        }
+
+        return in_array($currentSerialState, ['in_stock_or_center', 'returned'], true);
     }
 
     private function nullableString(mixed $value): ?string

@@ -19,17 +19,27 @@ class TechnicalServiceQrLink extends Model
 
     protected $fillable = [
         'token_hash',
+        'public_token',
         'serial_number',
         'product_name',
         'product_model',
         'brand',
         'link_type',
         'status',
+        'created_by',
+        'printed_at',
+        'last_scanned_at',
+        'scan_count',
+        'metadata',
         'expires_at',
     ];
 
     protected $casts = [
         'expires_at' => 'datetime',
+        'printed_at' => 'datetime',
+        'last_scanned_at' => 'datetime',
+        'metadata' => 'array',
+        'scan_count' => 'integer',
     ];
 
     public function sessions(): HasMany
@@ -44,8 +54,13 @@ class TechnicalServiceQrLink extends Model
 
     public static function findActiveByToken(string $token): ?self
     {
+        $token = trim($token);
+
         return self::query()
-            ->where('token_hash', self::hashToken($token))
+            ->where(function ($query) use ($token): void {
+                $query->where('token_hash', self::hashToken($token))
+                    ->orWhere('public_token', $token);
+            })
             ->where('status', self::STATUS_ACTIVE)
             ->where(function ($query): void {
                 $query->whereNull('expires_at')
@@ -65,12 +80,14 @@ class TechnicalServiceQrLink extends Model
         return [
             'link' => self::query()->create([
                 'token_hash' => self::hashToken($token),
+                'public_token' => $token,
                 'serial_number' => trim($context['serial_number']),
                 'product_name' => trim($context['product_name']),
                 'product_model' => self::nullableText($context['product_model'] ?? null),
                 'brand' => self::nullableText($context['brand'] ?? null),
                 'link_type' => self::TYPE_PRE_SALE_PRODUCT,
                 'status' => self::STATUS_ACTIVE,
+                'scan_count' => 0,
                 'expires_at' => $expiresAt,
             ]),
             'token' => $token,
@@ -84,6 +101,37 @@ class TechnicalServiceQrLink extends Model
         }
 
         return $this->expires_at === null || $this->expires_at->isFuture();
+    }
+
+    public function publicToken(): string
+    {
+        if ($this->public_token) {
+            return $this->public_token;
+        }
+
+        $token = Str::random(64);
+
+        $this->forceFill(['public_token' => $token])->save();
+
+        return $token;
+    }
+
+    public function publicPath(): string
+    {
+        return '/mount-request/'.$this->publicToken();
+    }
+
+    public function publicUrl(): string
+    {
+        return url($this->publicPath());
+    }
+
+    public function markScanned(): void
+    {
+        $this->forceFill([
+            'last_scanned_at' => now(),
+            'scan_count' => (int) $this->scan_count + 1,
+        ])->save();
     }
 
     private static function nullableText(mixed $value): ?string

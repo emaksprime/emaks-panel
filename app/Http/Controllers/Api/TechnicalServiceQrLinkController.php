@@ -5,13 +5,68 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\TechnicalServiceQrLink;
 use App\Services\TechnicalService\SerialProductContextResolver;
+use App\Support\PartnerPortalPublicUrl;
+use BaconQrCode\Renderer\Image\SvgImageBackEnd;
+use BaconQrCode\Renderer\ImageRenderer;
+use BaconQrCode\Renderer\RendererStyle\RendererStyle;
+use BaconQrCode\Writer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceQrLinkController extends Controller
 {
+    public function index(Request $request): JsonResponse
+    {
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:255'],
+            'product_name' => ['nullable', 'string', 'max:255'],
+            'product_model' => ['nullable', 'string', 'max:255'],
+            'brand' => ['nullable', 'string', 'max:255'],
+            'status' => ['nullable', 'string', 'max:32'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $query = TechnicalServiceQrLink::query()
+            ->withCount('sessions')
+            ->latest('id');
+
+        $search = $this->nullableText($filters['search'] ?? null);
+
+        if ($search !== null) {
+            $like = '%'.$search.'%';
+            $query->where(function ($builder) use ($like): void {
+                $builder->where('serial_number', 'like', $like)
+                    ->orWhere('product_name', 'like', $like)
+                    ->orWhere('product_model', 'like', $like)
+                    ->orWhere('brand', 'like', $like);
+            });
+        }
+
+        $status = $this->nullableText($filters['status'] ?? null);
+
+        if ($status !== null) {
+            $query->where('status', $status);
+        }
+
+        foreach (['product_name', 'product_model', 'brand'] as $field) {
+            $value = $this->nullableText($filters[$field] ?? null);
+
+            if ($value !== null) {
+                $query->where($field, 'like', '%'.$value.'%');
+            }
+        }
+
+        $links = $query->limit((int) ($filters['limit'] ?? 40))->get();
+
+        return response()->json([
+            'links' => $links->map(fn (TechnicalServiceQrLink $link): array => $this->linkPayload($link))->values(),
+        ]);
+    }
+
     public function serialContext(Request $request, SerialProductContextResolver $resolver): JsonResponse
     {
         $data = $request->validate([
@@ -35,8 +90,134 @@ class TechnicalServiceQrLinkController extends Controller
     {
         $data = $request->validate([
             'serial_number' => ['required', 'string', 'max:255'],
+            'product_name' => ['nullable', 'string', 'max:255'],
+            'product_model' => ['nullable', 'string', 'max:255'],
+            'model' => ['nullable', 'string', 'max:255'],
+            'brand' => ['nullable', 'string', 'max:255'],
         ]);
-        $context = $resolver->resolve($data['serial_number']);
+
+        [$link, $context, $created] = $this->createOrReuseLink($data, $resolver, $request);
+
+        return response()->json([
+            'link' => $this->linkPayload($link),
+            'context' => $this->contextPayload($context),
+            'token' => $link->publicToken(),
+            'path' => $link->publicPath(),
+            'public_url' => $this->publicUrl($link),
+            'created' => $created,
+            'duplicate' => ! $created,
+        ], $created ? 201 : 200);
+    }
+
+    public function bulk(Request $request, SerialProductContextResolver $resolver): JsonResponse
+    {
+        $data = $request->validate([
+            'csv_text' => ['nullable', 'string', 'max:200000'],
+            'file' => ['nullable', 'file', 'mimes:csv,txt', 'max:2048'],
+        ]);
+
+        $csvText = $this->nullableText($data['csv_text'] ?? null);
+
+        if ($request->hasFile('file')) {
+            $csvText = file_get_contents($request->file('file')->getRealPath()) ?: $csvText;
+        }
+
+        if ($csvText === null) {
+            throw ValidationException::withMessages([
+                'csv_text' => 'CSV metni veya CSV dosyası zorunludur.',
+            ]);
+        }
+
+        $results = [];
+
+        foreach ($this->parseCsvRows($csvText) as $index => $row) {
+            try {
+                [$link, $context, $created] = $this->createOrReuseLink($row, $resolver, $request, allowResolverFallback: false);
+                $results[] = [
+                    'row' => $index + 2,
+                    'status' => $created ? 'created' : 'skipped_duplicate',
+                    'message' => $created ? 'QR oluşturuldu.' : 'Aynı seri için aktif QR zaten var.',
+                    'link' => $this->linkPayload($link),
+                    'context' => $this->contextPayload($context),
+                ];
+            } catch (ValidationException $exception) {
+                $results[] = [
+                    'row' => $index + 2,
+                    'status' => 'failed',
+                    'message' => Arr::first(Arr::flatten($exception->errors())) ?? 'Satır işlenemedi.',
+                    'serial_number' => $this->nullableText($row['serial_number'] ?? null),
+                ];
+            } catch (\Throwable $exception) {
+                $results[] = [
+                    'row' => $index + 2,
+                    'status' => 'failed',
+                    'message' => $exception->getMessage(),
+                    'serial_number' => $this->nullableText($row['serial_number'] ?? null),
+                ];
+            }
+        }
+
+        return response()->json([
+            'summary' => [
+                'total' => count($results),
+                'created' => count(array_filter($results, fn (array $result): bool => $result['status'] === 'created')),
+                'skipped' => count(array_filter($results, fn (array $result): bool => $result['status'] === 'skipped_duplicate')),
+                'failed' => count(array_filter($results, fn (array $result): bool => $result['status'] === 'failed')),
+            ],
+            'results' => $results,
+        ]);
+    }
+
+    public function markPrinted(TechnicalServiceQrLink $link): JsonResponse
+    {
+        $link->forceFill(['printed_at' => now()])->save();
+
+        return response()->json([
+            'link' => $this->linkPayload($link->fresh()),
+        ]);
+    }
+
+    public function svg(TechnicalServiceQrLink $link): Response
+    {
+        $writer = new Writer(new ImageRenderer(
+            new RendererStyle(360, 2),
+            new SvgImageBackEnd(),
+        ));
+
+        return response($writer->writeString($this->publicUrl($link)), 200, [
+            'Content-Type' => 'image/svg+xml; charset=UTF-8',
+            'Cache-Control' => 'no-store',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array{TechnicalServiceQrLink,array<string,mixed>,bool}
+     */
+    private function createOrReuseLink(
+        array $data,
+        SerialProductContextResolver $resolver,
+        Request $request,
+        bool $allowResolverFallback = true,
+    ): array {
+        $serialNumber = $this->normalizeSerial($data['serial_number'] ?? $data['seri_no'] ?? null);
+
+        if ($serialNumber === null) {
+            throw ValidationException::withMessages([
+                'serial_number' => 'Seri no zorunludur.',
+            ]);
+        }
+
+        $existing = TechnicalServiceQrLink::query()
+            ->where('status', TechnicalServiceQrLink::STATUS_ACTIVE)
+            ->whereRaw('upper(serial_number) = ?', [$serialNumber])
+            ->first();
+
+        if ($existing instanceof TechnicalServiceQrLink) {
+            return [$existing, $this->contextFromLink($existing), false];
+        }
+
+        $context = $this->resolveContext($serialNumber, $data, $resolver, $allowResolverFallback);
         $productName = $this->nullableText($context['product_name'] ?? null);
 
         if ($productName === null) {
@@ -46,32 +227,24 @@ class TechnicalServiceQrLinkController extends Controller
         }
 
         $token = Str::random(64);
-        $path = '/mount-request/'.$token;
         $link = TechnicalServiceQrLink::query()->create([
             'token_hash' => TechnicalServiceQrLink::hashToken($token),
-            'serial_number' => trim($context['serial_number']),
+            'public_token' => $token,
+            'serial_number' => $serialNumber,
             'product_name' => $productName,
             'product_model' => $this->nullableText($context['product_model'] ?? null),
             'brand' => $this->nullableText($context['brand'] ?? null),
             'link_type' => $context['suggested_link_type'] ?? TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
             'status' => TechnicalServiceQrLink::STATUS_ACTIVE,
+            'created_by' => $request->user()?->id,
+            'scan_count' => 0,
+            'metadata' => [
+                'serial_context' => $this->contextPayload($context),
+                'source' => 'technical_service_qr_products',
+            ],
         ]);
 
-        return response()->json([
-            'link' => [
-                'id' => $link->id,
-                'serial_number' => $link->serial_number,
-                'product_name' => $link->product_name,
-                'product_model' => $link->product_model,
-                'brand' => $link->brand,
-                'link_type' => $link->link_type,
-                'status' => $link->status,
-            ],
-            'context' => $this->contextPayload($context),
-            'token' => $token,
-            'path' => $path,
-            'public_url' => url($path),
-        ], 201);
+        return [$link, $context, true];
     }
 
     /**
@@ -81,12 +254,12 @@ class TechnicalServiceQrLinkController extends Controller
     private function contextPayload(array $context): array
     {
         return [
-            'serial_number' => $context['serial_number'],
-            'product_name' => $context['product_name'],
-            'product_model' => $context['product_model'],
-            'brand' => $context['brand'],
-            'activation_code' => $context['activation_code'],
-            'sale_mount_status' => $context['sale_mount_status'],
+            'serial_number' => $context['serial_number'] ?? null,
+            'product_name' => $context['product_name'] ?? null,
+            'product_model' => $context['product_model'] ?? null,
+            'brand' => $context['brand'] ?? null,
+            'activation_code' => $context['activation_code'] ?? null,
+            'sale_mount_status' => $context['sale_mount_status'] ?? 'unknown',
             'suggested_link_type' => $context['suggested_link_type'] ?? TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
             'current_serial_state' => $context['current_serial_state'] ?? 'unknown',
             'has_current_sale' => $context['has_current_sale'] ?? false,
@@ -94,6 +267,175 @@ class TechnicalServiceQrLinkController extends Controller
             'latest_valid_sale_exists' => $context['latest_valid_sale_exists'] ?? false,
             'stock_code' => $context['stock_code'] ?? null,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function resolveContext(
+        string $serialNumber,
+        array $data,
+        SerialProductContextResolver $resolver,
+        bool $allowResolverFallback,
+    ): array {
+        $manualProductName = $this->nullableText($data['product_name'] ?? null);
+        $manualProductModel = $this->nullableText($data['product_model'] ?? $data['model'] ?? null);
+        $manualBrand = $this->nullableText($data['brand'] ?? null);
+        $context = [];
+
+        if ($allowResolverFallback || $manualProductName === null) {
+            try {
+                $context = $resolver->resolve($serialNumber);
+            } catch (\Throwable) {
+                $context = [];
+            }
+        }
+
+        return [
+            ...$context,
+            'serial_number' => $serialNumber,
+            'product_name' => $this->nullableText($context['product_name'] ?? null) ?? $manualProductName,
+            'product_model' => $this->nullableText($context['product_model'] ?? null) ?? $manualProductModel,
+            'brand' => $this->nullableText($context['brand'] ?? null) ?? $manualBrand,
+            'activation_code' => $context['activation_code'] ?? null,
+            'sale_mount_status' => $context['sale_mount_status'] ?? 'unknown',
+            'suggested_link_type' => $context['suggested_link_type'] ?? TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'current_serial_state' => $context['current_serial_state'] ?? 'unknown',
+            'has_current_sale' => $context['has_current_sale'] ?? false,
+            'latest_event_type' => $context['latest_event_type'] ?? null,
+            'latest_valid_sale_exists' => $context['latest_valid_sale_exists'] ?? false,
+            'stock_code' => $context['stock_code'] ?? null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function contextFromLink(TechnicalServiceQrLink $link): array
+    {
+        $metadata = is_array($link->metadata) ? $link->metadata : [];
+        $storedContext = is_array($metadata['serial_context'] ?? null) ? $metadata['serial_context'] : [];
+
+        return [
+            ...$storedContext,
+            'serial_number' => $link->serial_number,
+            'product_name' => $link->product_name,
+            'product_model' => $link->product_model,
+            'brand' => $link->brand,
+            'suggested_link_type' => $link->link_type,
+            'sale_mount_status' => $storedContext['sale_mount_status'] ?? 'unknown',
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function parseCsvRows(string $csvText): array
+    {
+        $lines = preg_split('/\r\n|\n|\r/', trim($csvText)) ?: [];
+        $lines = array_values(array_filter($lines, fn (string $line): bool => trim($line) !== ''));
+
+        if (count($lines) < 2) {
+            throw ValidationException::withMessages([
+                'csv_text' => 'CSV başlık ve en az bir satır içermelidir.',
+            ]);
+        }
+
+        $headers = array_map(
+            fn (string $header): string => $this->normalizeHeader($header),
+            str_getcsv(array_shift($lines) ?: ''),
+        );
+
+        $rows = [];
+
+        foreach ($lines as $line) {
+            $values = str_getcsv($line);
+            $row = [];
+
+            foreach ($headers as $index => $header) {
+                if ($header !== '') {
+                    $row[$header] = $values[$index] ?? null;
+                }
+            }
+
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+
+    private function normalizeHeader(string $header): string
+    {
+        $header = trim(mb_strtolower($header, 'UTF-8'));
+
+        return match ($header) {
+            'seri_no', 'seri no', 'serial', 'serial_no', 'serial_number' => 'serial_number',
+            'ürün', 'urun', 'urun_adi', 'ürün adı', 'product', 'product_name' => 'product_name',
+            'model', 'product_model' => 'product_model',
+            'marka', 'brand' => 'brand',
+            default => $header,
+        };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function linkPayload(TechnicalServiceQrLink $link): array
+    {
+        $metadata = is_array($link->metadata) ? $link->metadata : [];
+
+        return [
+            'id' => $link->id,
+            'serial_number' => $link->serial_number,
+            'product_name' => $link->product_name,
+            'product_model' => $link->product_model,
+            'brand' => $link->brand,
+            'link_type' => $link->link_type,
+            'link_type_label' => $this->linkTypeLabel($link->link_type),
+            'status' => $link->status,
+            'status_label' => $this->statusLabel($link->status),
+            'token' => $link->publicToken(),
+            'path' => $link->publicPath(),
+            'public_url' => $this->publicUrl($link),
+            'qr_svg_url' => route('api.technical-service.qr-products.svg', ['link' => $link], false),
+            'printed_at' => $link->printed_at?->toISOString(),
+            'last_scanned_at' => $link->last_scanned_at?->toISOString(),
+            'scan_count' => (int) $link->scan_count,
+            'sessions_count' => (int) ($link->sessions_count ?? $link->sessions()->count()),
+            'created_at' => $link->created_at?->toISOString(),
+            'serial_context' => is_array($metadata['serial_context'] ?? null) ? $metadata['serial_context'] : null,
+        ];
+    }
+
+    private function publicUrl(TechnicalServiceQrLink $link): string
+    {
+        return PartnerPortalPublicUrl::url($link->publicPath());
+    }
+
+    private function normalizeSerial(mixed $value): ?string
+    {
+        $value = $this->nullableText($value);
+
+        return $value === null ? null : mb_strtoupper($value, 'UTF-8');
+    }
+
+    private function linkTypeLabel(?string $value): string
+    {
+        return match ($value) {
+            TechnicalServiceQrLink::TYPE_SOLD_PRODUCT => 'Satılmış ürün',
+            TechnicalServiceQrLink::TYPE_MANUAL_TEST => 'Test linki',
+            default => 'Ön baskı / ürün QR',
+        };
+    }
+
+    private function statusLabel(?string $value): string
+    {
+        return match ($value) {
+            TechnicalServiceQrLink::STATUS_REVOKED => 'İptal edildi',
+            TechnicalServiceQrLink::STATUS_EXPIRED => 'Süresi doldu',
+            default => 'Aktif',
+        };
     }
 
     private function nullableText(mixed $value): ?string

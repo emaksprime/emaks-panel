@@ -35,13 +35,6 @@ class MountFlowDecisionService
             return $this->decision($session->fresh(), self::DECISION_SHOW_MULTI_PRODUCT_FORM_WITHOUT_PAYMENT);
         }
 
-        if (
-            $session->sale_mount_status === TechnicalServiceMountSession::SALE_CHECK_FAILED
-            || $session->decision_status === TechnicalServiceMountSession::DECISION_CHECK_TIMEOUT
-        ) {
-            return $this->decision($session, self::DECISION_SHOW_CHECK_FAILED_BUT_ALLOW_SUBMIT);
-        }
-
         if (in_array($session->sale_mount_status, [
             TechnicalServiceMountSession::SALE_MONTAJ_DAHIL,
             TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL,
@@ -55,7 +48,7 @@ class MountFlowDecisionService
             return $this->decision($session->fresh(), self::DECISION_SHOW_FORM);
         }
 
-        if ($session->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC) {
+        if ($this->requiresPaymentBeforeForm($session)) {
             $paymentStatus = $this->paymentStatus($session);
 
             if ($paymentStatus === TechnicalServiceMountSession::PAYMENT_PAID) {
@@ -79,7 +72,35 @@ class MountFlowDecisionService
             return $this->decision($session->fresh(), self::DECISION_SHOW_PAYMENT);
         }
 
+        if (
+            $session->sale_mount_status === TechnicalServiceMountSession::SALE_CHECK_FAILED
+            || $session->decision_status === TechnicalServiceMountSession::DECISION_CHECK_TIMEOUT
+        ) {
+            return $this->decision($session, self::DECISION_SHOW_CHECK_FAILED_BUT_ALLOW_SUBMIT);
+        }
+
         return $this->decision($session, self::DECISION_SHOW_UNKNOWN_ERROR);
+    }
+
+    private function requiresPaymentBeforeForm(TechnicalServiceMountSession $session): bool
+    {
+        $context = is_array($session->context_payload) ? $session->context_payload : [];
+        $currentSerialState = $context['current_serial_state'] ?? null;
+        $resolverSource = $context['source'] ?? $context['resolver_payload']['source'] ?? null;
+
+        if ($session->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC) {
+            return true;
+        }
+
+        if ($session->sale_mount_status === TechnicalServiceMountSession::SALE_NOT_FOUND) {
+            return true;
+        }
+
+        if ($resolverSource === 'mikro_serial_check_failed') {
+            return false;
+        }
+
+        return in_array($currentSerialState, ['in_stock_or_center', 'returned'], true);
     }
 
     private function paymentStatus(TechnicalServiceMountSession $session): ?string

@@ -37,6 +37,24 @@ Route::post('mount-payment/{token}/fake-approve', [PublicMountPaymentController:
 Route::middleware(['auth', 'panel.session'])
     ->prefix('api/technical-service')
     ->group(function (): void {
+        Route::get('qr-products', [TechnicalServiceQrLinkController::class, 'index'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.qr-products.index');
+        Route::get('qr-products/serial-context', [TechnicalServiceQrLinkController::class, 'serialContext'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.qr-products.serial-context');
+        Route::post('qr-products', [TechnicalServiceQrLinkController::class, 'store'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.qr-products.store');
+        Route::post('qr-products/bulk', [TechnicalServiceQrLinkController::class, 'bulk'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.qr-products.bulk');
+        Route::post('qr-products/{link}/printed', [TechnicalServiceQrLinkController::class, 'markPrinted'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.qr-products.printed');
+        Route::get('qr-products/{link}/svg', [TechnicalServiceQrLinkController::class, 'svg'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.qr-products.svg');
         Route::post('requests/{technicalServiceRequest}/technicians/{technician}/route-quote', [TechnicalServiceController::class, 'routeQuote'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.technicians.route-quote');
