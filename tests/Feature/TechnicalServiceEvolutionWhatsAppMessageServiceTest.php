@@ -95,6 +95,28 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_ci_environment_allows_explicit_unit_test_http_fake(): void
+    {
+        $this->configureEvolution(['services.evolution.real_send_enabled' => true]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['ok' => true], 200),
+        ]);
+
+        $this->withCiEnvironment(function (): void {
+            $dispatch = $this->service()->send(
+                'customer_approval_request',
+                'customer',
+                '05321112233',
+                'Onay linki hazir.',
+                $this->manualContext(['confirmation_url' => 'https://panel.test/service-job-confirmation/token']),
+                $this->requestWithMrn('MRN-WP-CI-FAKE-SEND'),
+            );
+
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->refresh()->status);
+            Http::assertSentCount(1);
+        });
+    }
+
     public function test_duplicate_message_is_suppressed(): void
     {
         $this->configureEvolution([
@@ -371,5 +393,40 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
     private function service(): EvolutionWhatsAppMessageService
     {
         return app(EvolutionWhatsAppMessageService::class);
+    }
+
+    private function withCiEnvironment(callable $callback): void
+    {
+        $previousPutenv = getenv('CI');
+        $hadEnv = array_key_exists('CI', $_ENV);
+        $previousEnv = $_ENV['CI'] ?? null;
+        $hadServer = array_key_exists('CI', $_SERVER);
+        $previousServer = $_SERVER['CI'] ?? null;
+
+        putenv('CI=true');
+        $_ENV['CI'] = 'true';
+        $_SERVER['CI'] = 'true';
+
+        try {
+            $callback();
+        } finally {
+            if ($previousPutenv === false) {
+                putenv('CI');
+            } else {
+                putenv('CI='.$previousPutenv);
+            }
+
+            if ($hadEnv) {
+                $_ENV['CI'] = $previousEnv;
+            } else {
+                unset($_ENV['CI']);
+            }
+
+            if ($hadServer) {
+                $_SERVER['CI'] = $previousServer;
+            } else {
+                unset($_SERVER['CI']);
+            }
+        }
     }
 }

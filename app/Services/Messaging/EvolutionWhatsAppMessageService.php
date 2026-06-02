@@ -314,7 +314,7 @@ class EvolutionWhatsAppMessageService
             ];
         }
 
-        if ($this->isCiEnvironment()) {
+        if ($this->isCiEnvironment() && ! $this->allowUnitTestHttpFake($context)) {
             return [
                 'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,
                 'message' => 'CI/test ortamında gerçek WhatsApp gönderimi engellendi.',
