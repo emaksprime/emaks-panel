@@ -3912,6 +3912,131 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonValidationErrors('photos');
     }
 
+    public function test_appointment_proposal_changes_partner_card_to_operation_approval_waiting(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $response = $this->actingAs($scope['userA'])
+            ->postJson("/api/partner/service-jobs/{$scope['jobA']->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.next_action', 'Randevu önerildi')
+            ->assertJsonPath('job.appointment_label', 'Randevu önerildi')
+            ->assertJsonPath('job.can_propose_appointment', false);
+
+        $this->assertSame(['Operasyon onayı bekleniyor'], $response->json('job.badges'));
+        $this->assertSame('appointment_proposed_waiting', $response->json('job.action_state'));
+        $this->assertNotContains('Randevu bekleniyor', [
+            $response->json('job.next_action'),
+            $response->json('job.appointment_label'),
+            ...$response->json('job.badges'),
+        ]);
+    }
+
+    public function test_ops_card_label_says_technician_proposed_appointment_and_approve_needed(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $this->actingAs($scope['userA'])
+            ->postJson("/api/partner/service-jobs/{$scope['jobA']->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']],
+            ])
+            ->assertOk();
+
+        $opsState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)
+            ->present($scope['jobA']->refresh());
+        $labels = collect($opsState['display_tags'])->pluck('label')->all();
+
+        $this->assertSame('Usta randevu önerdi', $opsState['display_action_label']);
+        $this->assertSame(6, $opsState['sort_priority']);
+        $this->assertSame(['Usta randevu önerdi', 'Randevuyu onaylayın'], $labels);
+        $this->assertNotContains('Randevu önerisi bekliyor', $labels);
+    }
+
+    public function test_action_after_transition_sorts_card_near_top(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Sorting Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Sorting Portal Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $normalJob = $this->serviceRequestForTechnician($technician, 'MRN-SORT-NORMAL', [
+            'updated_at' => now()->addMinute(),
+        ]);
+        $proposedJob = $this->serviceRequestForTechnician($technician, 'MRN-SORT-PROPOSED', [
+            'updated_at' => now()->subMinute(),
+        ]);
+        $user = $this->userWithRole('b2b_locksmith');
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $proposedJob->id,
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => ['slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']]],
+        ]);
+
+        $board = app(\App\Services\B2B\B2BPartnerPortalDataService::class)->serviceJobBoardFor($partner);
+        $newJobs = collect($board['columns'])->firstWhere('key', 'new_jobs')['jobs'];
+
+        $this->assertSame('MRN-SORT-PROPOSED', $newJobs[0]['mrn']);
+        $this->assertSame(6, $newJobs[0]['card_priority']);
+        $this->assertSame('MRN-SORT-NORMAL', $newJobs[1]['mrn']);
+        $this->assertSame(12, $newJobs[1]['card_priority']);
+        $this->assertNotSame($normalJob->id, $proposedJob->id);
+    }
+
+    public function test_polling_refresh_updates_appointment_approved_state(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $scope['jobA']->forceFill([
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+        ])->save();
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($scope['userA'])
+            ->postJson("/api/partner/service-jobs/{$scope['jobA']->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']],
+            ])
+            ->assertOk();
+        $action = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $scope['jobA']->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED)
+            ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$scope['jobA']->id}/partner-appointment-proposals/{$action->id}/approve", [
+                'note' => 'Operasyon onayladı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'applied')
+            ->assertJsonPath('request.workflow_status', 'Planlı');
+
+        $refreshResponse = $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B']);
+
+        $job = collect($refreshResponse->json('jobs'))->firstWhere('mrn', 'MRN-SCOPE-A');
+        $this->assertSame('appointment_confirmed', $job['kanban_column']);
+        $this->assertTrue($job['operational_state']['is_appointment_confirmed']);
+        $this->assertSame(TechnicalServicePartnerJobAction::STATUS_APPLIED, $job['appointment_proposal']['status']);
+        $this->assertNotContains('Operasyon onayı bekleniyor', $job['badges']);
+        $this->assertNotContains('Randevu önerildi', $job['badges']);
+    }
+
     public function test_locksmith_partner_can_propose_appointment_and_ops_can_approve_with_message_payload(): void
     {
         (new B2BPartnerPermissionSeeder)->run();

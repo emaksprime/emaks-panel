@@ -220,7 +220,7 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
       addBadge({ label: 'Aksiyon: Son kontrol bekliyor', tone: 'purple', icon: 'warning', important: true })
       primaryActionBadgeAdded = true
     } else if (latestPortalOpsAction?.action === 'appointment_proposed') {
-      addBadge({ label: 'Aksiyon: Randevu önerisi bekliyor', tone: 'amber', icon: 'warning', important: true })
+      addBadge({ label: 'Usta randevu önerdi', tone: 'amber', icon: 'warning', important: true })
       primaryActionBadgeAdded = true
     } else if (latestPortalOpsAction?.action === 'support_requested') {
       addBadge({ label: 'Aksiyon: Ek talep', tone: 'purple', icon: 'warning', important: true })

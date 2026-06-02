@@ -2110,7 +2110,7 @@ class TechnicalServiceWorkflowService
         }
 
         return [
-            'sort_priority' => 7,
+            'sort_priority' => 8,
             'attention_level' => 'info',
             'attention_reason' => 'Usta müşteride',
             'last_action_at' => $this->dateTimeString($startAt),
@@ -2138,8 +2138,8 @@ class TechnicalServiceWorkflowService
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => ['priority' => 3, 'level' => 'critical', 'reason' => 'Müşteri onayı reddedildi'],
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => ['priority' => 5, 'level' => 'warning', 'reason' => 'Son kontrol bekliyor'],
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => ['priority' => 6, 'level' => 'warning', 'reason' => 'Usta randevu önerdi'],
-            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => ['priority' => 8, 'level' => 'warning', 'reason' => 'Ek talep var'],
-            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => ['priority' => 8, 'level' => 'warning', 'reason' => 'Tekrar ziyaret talebi'],
+            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => ['priority' => 9, 'level' => 'warning', 'reason' => 'Ek talep var'],
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => ['priority' => 9, 'level' => 'warning', 'reason' => 'Tekrar ziyaret talebi'],
         ];
 
         foreach ($orderedActions as $actionType => $payload) {
@@ -2160,7 +2160,7 @@ class TechnicalServiceWorkflowService
         }
 
         return [
-            'sort_priority' => in_array($request->workflow_status, ['TamamlandÄ±', 'Tamamlandı', 'Ä°ptal', 'İptal'], true) ? 100 : 50,
+            'sort_priority' => in_array($request->workflow_status, ['TamamlandÄ±', 'Tamamlandı', 'Ä°ptal', 'İptal'], true) ? 100 : 12,
             'attention_level' => 'normal',
             'attention_reason' => null,
             'last_action_at' => $this->dateTimeString($request->updated_at),

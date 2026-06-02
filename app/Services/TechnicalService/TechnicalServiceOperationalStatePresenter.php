@@ -310,7 +310,7 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         return [
-            'sort_priority' => 7,
+            'sort_priority' => 8,
             'attention_level' => 'info',
             'attention_reason' => 'Usta müşteride',
             'last_action_at' => $startAt->toDateTimeString(),
@@ -345,8 +345,8 @@ class TechnicalServiceOperationalStatePresenter
                 TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => [4, 'critical', 'Hakediş revize talebi'],
                 TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => [5, 'warning', 'Son kontrol bekliyor'],
                 TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => [6, 'warning', 'Usta randevu önerdi'],
-                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => [8, 'warning', 'Ek talep var'],
-                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => [8, 'warning', 'Tekrar ziyaret talebi'],
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => [9, 'warning', 'Ek talep var'],
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => [9, 'warning', 'Tekrar ziyaret talebi'],
                 default => [20, 'warning', 'Operasyon incelemesi'],
             };
 
@@ -365,7 +365,7 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($this->fieldDocumentsRequired($request, $opsColumn, false)) {
             return [
-                'sort_priority' => 10,
+                'sort_priority' => 11,
                 'attention_level' => 'warning',
                 'attention_reason' => 'Fotoğraf eksik',
                 'last_action_at' => $request->updated_at?->toDateTimeString(),
@@ -375,7 +375,7 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($this->customerApprovalRequired($request, $opsColumn, false)) {
             return [
-                'sort_priority' => 9,
+                'sort_priority' => 10,
                 'attention_level' => 'warning',
                 'attention_reason' => 'Müşteri onayı bekliyor',
                 'last_action_at' => $request->updated_at?->toDateTimeString(),
@@ -389,7 +389,7 @@ class TechnicalServiceOperationalStatePresenter
     /**
      * @return array<string, mixed>
      */
-    private function normalAttention(TechnicalServiceRequest $request, int $priority = 50): array
+    private function normalAttention(TechnicalServiceRequest $request, int $priority = 12): array
     {
         return [
             'sort_priority' => $priority,
@@ -420,7 +420,7 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($activeAction instanceof TechnicalServicePartnerJobAction) {
             return match ($activeAction->action) {
-                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 'Randevu önerisi bekliyor',
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 'Usta randevu önerdi',
                 TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => 'Usta işi reddetti',
                 TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => 'Müşteri onayı reddedildi',
                 TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => 'Hakediş revize talebi',

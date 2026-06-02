@@ -714,6 +714,8 @@ const actionLabel = (action: string, status?: string | null) => {
 }[action] ?? action)
 }
 
+const todayDateValue = () => new Date().toISOString().slice(0, 10)
+
 const tomorrowDateValue = () => {
   const date = new Date()
   date.setDate(date.getDate() + 1)
@@ -852,9 +854,14 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
   const [detailOpen, setDetailOpen] = useState(initialSelectedJobId !== null)
   const [message, setMessage] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [detailActionOpen, setDetailActionOpen] = useState(false)
   const selectedJob = selectedJobId === null ? null : jobs.find((job) => job.id === selectedJobId) ?? null
   const refreshJobs = useCallback(async (silent = true) => {
     if (readOnly) {
+      return
+    }
+
+    if (silent && detailActionOpen) {
       return
     }
 
@@ -878,7 +885,7 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
         setRefreshing(false)
       }
     }
-  }, [partnerId, readOnly])
+  }, [detailActionOpen, partnerId, readOnly])
   const columns = serviceJobColumns.map((column) => {
     const columnJobs = jobs
       .filter((job) => job.kanban_column === column.key)
@@ -895,6 +902,12 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
   const openJob = (job: ServiceJob) => {
     setSelectedJobId(job.id)
     setDetailOpen(true)
+    setDetailActionOpen(false)
+  }
+
+  const closeJobDetail = () => {
+    setDetailOpen(false)
+    setDetailActionOpen(false)
   }
 
   useEffect(() => {
@@ -981,7 +994,7 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
       </section>
       {selectedJob && detailOpen && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 p-0 sm:p-4 lg:p-6">
-          <div className="absolute inset-0" onClick={() => setDetailOpen(false)} />
+          <div className="absolute inset-0" onClick={closeJobDetail} />
           <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-6xl flex-col overflow-hidden bg-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100vh-2rem)] lg:max-h-[calc(100vh-3rem)] sm:rounded-3xl">
             <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-4 py-4">
               <div className="min-w-0">
@@ -990,7 +1003,7 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
               </div>
               <button
                 type="button"
-                onClick={() => setDetailOpen(false)}
+                onClick={closeJobDetail}
                 className="inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100"
                 aria-label="İş detayını kapat"
               >
@@ -1003,6 +1016,7 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                 readOnly={readOnly}
                 onJobUpdated={updateJob}
                 onMessage={setMessage}
+                onActionDialogOpenChange={setDetailActionOpen}
               />
             </div>
           </div>
@@ -1017,11 +1031,13 @@ function ServiceJobDetail({
   readOnly,
   onJobUpdated,
   onMessage,
+  onActionDialogOpenChange,
 }: {
   job: ServiceJob
   readOnly: boolean
   onJobUpdated: (job: ServiceJob) => void
   onMessage: (message: string | null) => void
+  onActionDialogOpenChange: (open: boolean) => void
 }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [acceptNote, setAcceptNote] = useState('')
@@ -1046,6 +1062,11 @@ function ServiceJobDetail({
   const [priceRouteAmount, setPriceRouteAmount] = useState(job.assignment_offer?.route_fee_amount ? String(job.assignment_offer.route_fee_amount) : '')
   const [priceRevisionNote, setPriceRevisionNote] = useState('')
   const [activeActionDialog, setActiveActionDialog] = useState<'appointment' | 'reject' | 'revisit' | 'otp' | 'support' | 'price' | 'completion' | 'note' | null>(null)
+  useEffect(() => {
+    onActionDialogOpenChange(activeActionDialog !== null)
+
+    return () => onActionDialogOpenChange(false)
+  }, [activeActionDialog, onActionDialogOpenChange])
   const photosReady = job.completion_requirements.photos_ready
   const confirmationReady = job.completion_requirements.customer_confirmation_ready
   const otpPayload = job.customer_otp_request?.payload
@@ -1114,7 +1135,7 @@ function ServiceJobDetail({
     }
 
     if (job.action_state === 'appointment_proposed_waiting') {
-      return 'Randevu önerisi operasyon onayı bekliyor. Gerekirse yeni saat önerisi gönderebilirsiniz.'
+      return 'Operasyon önerdiğiniz saatlerden birini onayladığında müşteriye ve size bilgilendirme gönderilecek.'
     }
 
     if (job.kanban_column === 'appointment_confirmed') {
@@ -1516,7 +1537,7 @@ function ServiceJobDetail({
                     )}
                   </div>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px]">
-                    <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.date} onChange={(event) => updateAppointmentSlot(index, { date: event.target.value })} disabled={readOnly} />
+                    <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.date} min={todayDateValue()} onChange={(event) => updateAppointmentSlot(index, { date: event.target.value })} disabled={readOnly} />
                     <select
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm"
                       value={slot.slot}
@@ -1702,7 +1723,7 @@ function ServiceJobDetail({
                 )}
               </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px]">
-                <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.date} onChange={(event) => updateAppointmentSlot(index, { date: event.target.value })} disabled={readOnly} />
+                <input type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={slot.date} min={todayDateValue()} onChange={(event) => updateAppointmentSlot(index, { date: event.target.value })} disabled={readOnly} />
                 <select
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm"
                   value={slot.slot}

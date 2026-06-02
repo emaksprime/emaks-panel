@@ -143,7 +143,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $completedPayload = $service->serialize($completedRequest->fresh(), true);
 
         $this->assertSame('Usta müşteride', data_get($activePayload, 'attention.attention_reason'));
-        $this->assertSame(7, data_get($activePayload, 'attention.sort_priority'));
+        $this->assertSame(8, data_get($activePayload, 'attention.sort_priority'));
         $this->assertSame('İş kapanışı için usta ile iletişime geçin', data_get($overduePayload, 'attention.attention_reason'));
         $this->assertSame(1, data_get($overduePayload, 'attention.sort_priority'));
         $this->assertNotSame('Usta müşteride', data_get($completedPayload, 'attention.attention_reason'));

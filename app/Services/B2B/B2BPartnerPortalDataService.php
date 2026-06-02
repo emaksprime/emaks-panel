@@ -1071,18 +1071,18 @@ class B2BPartnerPortalDataService
     private function serviceJobPriority(?TechnicalServicePartnerJobAction $action): int
     {
         if (! $action instanceof TechnicalServicePartnerJobAction || $action->status !== TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
-            return 50;
+            return 12;
         }
 
         return match ($action->action) {
-            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => 1,
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => 2,
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => 3,
-            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 4,
-            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 5,
+            TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => 4,
+            TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 5,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 6,
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
-            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 6,
-            default => 20,
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 9,
+            default => 12,
         };
     }
 
