@@ -312,6 +312,75 @@ const MiniMetric = ({
 
 type DetailPanelTone = 'slate' | 'product' | 'customer' | 'door' | 'payment' | 'address' | 'schedule' | 'technician' | 'route' | 'earning' | 'serial' | 'history' | 'warning'
 type NextActionSectionTarget = 'operation' | 'assignment' | 'fieldCompletion' | 'finalCheck'
+type OpsDetailSectionKey = 'product' | 'customer' | 'operation' | 'assignment' | 'finalCheck' | 'invoiceSerials' | 'fieldCompletion' | 'history'
+
+type OpsDetailSectionContext = {
+  isCompleted: boolean
+  isFinalCheckStage: boolean
+  hasAppointmentProposal: boolean
+  hasReviewBlocker: boolean
+  hasSupportRequest: boolean
+  hasAssignedTechnician: boolean
+  workflowStatus?: string | null
+  kanbanColumn?: string | null
+}
+
+const getOpsActiveSection = (context: OpsDetailSectionContext): OpsDetailSectionKey | null => {
+  if (context.isCompleted) {
+    return 'finalCheck'
+  }
+
+  if (context.isFinalCheckStage || context.workflowStatus === 'Son Kontrol' || context.kanbanColumn === 'final_check') {
+    return 'fieldCompletion'
+  }
+
+  if (context.hasReviewBlocker || context.hasAppointmentProposal || !context.hasAssignedTechnician) {
+    return 'assignment'
+  }
+
+  if (context.hasSupportRequest) {
+    return 'operation'
+  }
+
+  return 'operation'
+}
+
+const getOpsDefaultOpenSections = (context: OpsDetailSectionContext): Set<OpsDetailSectionKey> => {
+  const activeSection = getOpsActiveSection(context)
+
+  if (!activeSection) {
+    return new Set()
+  }
+
+  if (activeSection === 'fieldCompletion') {
+    return new Set(['fieldCompletion'])
+  }
+
+  if (activeSection === 'finalCheck') {
+    return new Set(['finalCheck'])
+  }
+
+  return new Set([activeSection])
+}
+
+const opsSectionClass = (section: OpsDetailSectionKey, activeSection: OpsDetailSectionKey | null): string => {
+  if (section === activeSection) {
+    return 'order-30'
+  }
+
+  const order: Record<OpsDetailSectionKey, string> = {
+    operation: 'order-40',
+    assignment: 'order-45',
+    fieldCompletion: 'order-50',
+    finalCheck: 'order-55',
+    product: 'order-60',
+    customer: 'order-65',
+    invoiceSerials: 'order-70',
+    history: 'order-[90]',
+  }
+
+  return order[section]
+}
 
 const detailPanelToneClass = (tone: DetailPanelTone = 'slate'): string => {
   switch (tone) {
@@ -354,6 +423,7 @@ const DetailPanel = ({
   panelRef,
   sectionTarget,
   highlighted = false,
+  className = '',
 }: {
   title: string
   summary?: ReactNode
@@ -364,6 +434,7 @@ const DetailPanel = ({
   panelRef?: Ref<HTMLDetailsElement>
   sectionTarget?: NextActionSectionTarget
   highlighted?: boolean
+  className?: string
 }) => (
   <details
     ref={panelRef}
@@ -372,6 +443,7 @@ const DetailPanel = ({
       'group scroll-mt-6 rounded-2xl border p-4 shadow-sm transition-colors',
       detailPanelToneClass(tone),
       highlighted ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-white' : '',
+      className,
     ].join(' ')}
     open={open}
     onToggle={(event) => onOpenChange?.(event.currentTarget.open)}
@@ -984,38 +1056,45 @@ export function ServiceRequestDetails({
     job_rejected: 'Usta reddetti',
     note_added: 'Not eklendi',
   }
-  const hasPortalActionNeedingOps = openAppointmentProposals.length > 0 || jobRejections.length > 0 || customerApprovalRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0
+  const opsSectionContext: OpsDetailSectionContext = {
+    isCompleted: request.status === 'Tamamlandı',
+    isFinalCheckStage,
+    hasAppointmentProposal: openAppointmentProposals.length > 0,
+    hasReviewBlocker: jobRejections.length > 0 || customerApprovalRejections.length > 0,
+    hasSupportRequest: supportRequests.length > 0,
+    hasAssignedTechnician,
+    workflowStatus: request.workflowStatus,
+    kanbanColumn: request.kanbanColumn,
+  }
+  const activeOpsSection = getOpsActiveSection(opsSectionContext)
+  const defaultOpenOpsSections = getOpsDefaultOpenSections(opsSectionContext)
   const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
-  const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? false
+  const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? defaultOpenOpsSections.has('invoiceSerials')
   const setInvoiceSerialsOpen = (open: boolean) => {
     setInvoiceSerialsOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [productInfoOpenByRequest, setProductInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const productInfoOpen = productInfoOpenByRequest[request.id] ?? !isFinalCheckStage
+  const productInfoOpen = productInfoOpenByRequest[request.id] ?? defaultOpenOpsSections.has('product')
   const setProductInfoOpen = (open: boolean) => {
     setProductInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [customerInfoOpenByRequest, setCustomerInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const customerInfoOpen = customerInfoOpenByRequest[request.id] ?? false
+  const customerInfoOpen = customerInfoOpenByRequest[request.id] ?? defaultOpenOpsSections.has('customer')
   const setCustomerInfoOpen = (open: boolean) => {
     setCustomerInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [assignmentInfoOpenByRequest, setAssignmentInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? (!isFinalCheckStage && (!hasPortalActionNeedingOps || openAppointmentProposals.length > 0 || jobRejections.length > 0 || customerApprovalRejections.length > 0 || supportRequests.length > 0))
+  const assignmentInfoOpen = assignmentInfoOpenByRequest[request.id] ?? defaultOpenOpsSections.has('assignment')
   const setAssignmentInfoOpen = (open: boolean) => {
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [finalCheckOpenByRequest, setFinalCheckOpenByRequest] = useState<Record<string, boolean>>({})
-  const shouldOpenFinalCheck = isFinalCheckStage || customerApprovalRejections.length > 0
-  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? shouldOpenFinalCheck
+  const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? defaultOpenOpsSections.has('finalCheck')
   const setFinalCheckOpen = (open: boolean) => {
     setFinalCheckOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
   const [fieldCompletionOpenByRequest, setFieldCompletionOpenByRequest] = useState<Record<string, boolean>>({})
-  const shouldOpenFieldCompletion = completionSubmissions.length > 0
-    || isFinalCheckStage
-    || ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı'].includes(request.workflowStatus ?? '')
-  const fieldCompletionOpen = fieldCompletionOpenByRequest[request.id] ?? shouldOpenFieldCompletion
+  const fieldCompletionOpen = fieldCompletionOpenByRequest[request.id] ?? defaultOpenOpsSections.has('fieldCompletion')
   const setFieldCompletionOpen = (open: boolean) => {
     setFieldCompletionOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -1165,7 +1244,7 @@ export function ServiceRequestDetails({
   const paymentControlMissing = operationControl.payment_checked !== 'yes'
   const doorPhotoControlMissing = !operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed'
   const [operationInfoOpenByRequest, setOperationInfoOpenByRequest] = useState<Record<string, boolean>>({})
-  const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? (!isFinalCheckStage && (doorPhotoControlMissing || paymentControlMissing || supportRequests.length > 0))
+  const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? defaultOpenOpsSections.has('operation')
   const setOperationInfoOpen = (open: boolean) => {
     setOperationInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -1870,7 +1949,7 @@ export function ServiceRequestDetails({
 
   return (
     <Card className="w-full max-w-none min-w-0 border-0 bg-transparent shadow-none break-words">
-      <CardContent className="space-y-4 p-0 pb-24 sm:pb-20">
+      <CardContent className="flex flex-col gap-4 p-0 pb-24 sm:pb-20">
         {error ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <p className="font-semibold">Bazı detay blokları yüklenemedi.</p>
@@ -1878,7 +1957,7 @@ export function ServiceRequestDetails({
           </section>
         ) : null}
 
-        <section className="rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50 p-4 text-slate-950 shadow-sm lg:p-5">
+        <section className="order-10 rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50 p-4 text-slate-950 shadow-sm lg:p-5">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Talep Referansı</p>
@@ -1990,7 +2069,7 @@ export function ServiceRequestDetails({
           ) : null}
         </section>
 
-        <section className={['rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(nextActionPayload?.severity)].join(' ')}>
+        <section className={['order-20 rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(nextActionPayload?.severity)].join(' ')}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] opacity-70">Sıradaki Operasyon Aksiyonu</p>
@@ -2050,7 +2129,7 @@ export function ServiceRequestDetails({
         </section>
 
         {serialQueryOpen ? (
-          <section className="grid gap-3 rounded-3xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950 lg:p-5">
+          <section className="order-25 grid gap-3 rounded-3xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950 lg:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Seri No Sorgu</p>
@@ -2086,6 +2165,7 @@ export function ServiceRequestDetails({
           tone="product"
           open={productInfoOpen}
           onOpenChange={setProductInfoOpen}
+          className={opsSectionClass('product', activeOpsSection)}
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <MiniMetric label="Ürün" value={displayOrEmpty(productInfo?.product_name ?? request.product, 'Bilgi yok')} />
@@ -2111,6 +2191,7 @@ export function ServiceRequestDetails({
           tone="customer"
           open={customerInfoOpen}
           onOpenChange={setCustomerInfoOpen}
+          className={opsSectionClass('customer', activeOpsSection)}
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <MiniMetric label="Müşteri" value={displayOrEmpty(request.customer, 'Bilgi yok')} />
@@ -2146,6 +2227,7 @@ export function ServiceRequestDetails({
           panelRef={operationInfoRef}
           sectionTarget="operation"
           highlighted={highlightedNextActionTarget === 'operation'}
+          className={opsSectionClass('operation', activeOpsSection)}
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             {routeQuote ? (
@@ -2366,6 +2448,7 @@ export function ServiceRequestDetails({
           panelRef={assignmentInfoRef}
           sectionTarget="assignment"
           highlighted={highlightedNextActionTarget === 'assignment'}
+          className={opsSectionClass('assignment', activeOpsSection)}
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="max-w-3xl text-sm text-slate-600">
@@ -2999,6 +3082,7 @@ export function ServiceRequestDetails({
             panelRef={finalCheckRef}
             sectionTarget="finalCheck"
             highlighted={highlightedNextActionTarget === 'finalCheck'}
+            className={opsSectionClass('finalCheck', activeOpsSection)}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="text-sm text-slate-600">Son kontrol kararları ve operasyon notları burada özetlenir.</p>
@@ -3027,6 +3111,7 @@ export function ServiceRequestDetails({
           tone="serial"
           open={invoiceSerialsOpen}
           onOpenChange={setInvoiceSerialsOpen}
+          className={opsSectionClass('invoiceSerials', activeOpsSection)}
         >
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-sm text-slate-600">Fatura seri sorgusu operasyon için yenilenebilir; müşteriye gizli satırlar gösterilmez.</p>
@@ -3097,6 +3182,7 @@ export function ServiceRequestDetails({
           panelRef={fieldCompletionRef}
           sectionTarget="fieldCompletion"
           highlighted={highlightedNextActionTarget === 'fieldCompletion'}
+          className={opsSectionClass('fieldCompletion', activeOpsSection)}
         >
           <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:p-5">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -3277,7 +3363,7 @@ export function ServiceRequestDetails({
           </section>
         </DetailPanel>
 
-        <DetailPanel title="İşlem Geçmişi" summary="Audit kayıtları ve durum akışı" tone="history">
+        <DetailPanel title="İşlem Geçmişi" summary="Audit kayıtları ve durum akışı" tone="history" className={opsSectionClass('history', activeOpsSection)}>
           <section className="rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">İşlem Kayıtları</p>
             <div className="mt-4 space-y-3">

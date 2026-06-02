@@ -1,4 +1,5 @@
 import { Head, Link } from '@inertiajs/react'
+import { ChevronDown } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api'
@@ -791,6 +792,32 @@ const canPreviewPortalPhoto = (file: File) => {
     && /^image\/(jpeg|png|webp|gif)$/i.test(file.type)
 }
 
+type PartnerDetailSectionKey = 'earnings' | 'appointment' | 'photos' | 'history'
+
+const getPartnerDefaultOpenSections = (job: ServiceJob, completionReady: boolean): Set<PartnerDetailSectionKey> => {
+  if (job.kanban_column === 'completed') {
+    return new Set(['earnings'])
+  }
+
+  if (job.kanban_column === 'final_check' || job.action_state === 'final_check_waiting') {
+    return new Set()
+  }
+
+  if (completionReady) {
+    return new Set()
+  }
+
+  if (job.action_state === 'appointment_proposed_waiting') {
+    return new Set(['appointment'])
+  }
+
+  if (job.kanban_column === 'appointment_confirmed' && job.can_upload_photos) {
+    return new Set(['photos'])
+  }
+
+  return new Set()
+}
+
 const appointmentSlotOptions = [
   '10:00-11:00',
   '11:00-12:00',
@@ -1127,6 +1154,7 @@ function ServiceJobDetail({
   ]
   const completionBlocked = completionMissingReasons.length > 0
   const completionReady = jobReadyForCompletionSubmit(job) && !completionBlocked
+  const defaultOpenPartnerSections = getPartnerDefaultOpenSections(job, completionReady)
   const showPhotoSection = Boolean(job.can_upload_photos || ['final_check', 'completed'].includes(job.kanban_column))
   const photoStatuses = job.completion_requirements.photo_statuses ?? portalPhotoFields.map(([field, label]) => ({
     field,
@@ -1358,7 +1386,7 @@ function ServiceJobDetail({
           <InfoTile label="Km / yol bilgisi" value={job.route_distance_summary ?? '-'} />
           <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
         </div>
-        <div className={`mt-5 rounded-2xl border p-4 lg:hidden ${completionReady ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}>
+        <div className={`mt-5 rounded-2xl border p-4 ${completionReady ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}>
           <p className={`text-xs font-semibold uppercase tracking-wide ${completionReady ? 'text-emerald-700' : 'text-slate-400'}`}>{completionReady ? 'Ana aksiyon' : 'Bu aşamadaki aksiyon'}</p>
           {completionReady && <p className="mt-2 text-lg font-semibold text-emerald-950">Tamamlamaya gönder</p>}
           <p className={`mt-2 text-sm leading-6 ${completionReady ? 'text-emerald-900' : 'text-slate-700'}`}>{statusPlan}</p>
@@ -1369,8 +1397,7 @@ function ServiceJobDetail({
           </div>
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-950">
-            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Hakediş</p>
+          <PartnerDetailPanel key={`${job.id}-earnings`} title="Hakediş özeti" summary="İşçilik, usta yol hakedişi ve toplam" tone="emerald" defaultOpen={defaultOpenPartnerSections.has('earnings')} panelKey={`${job.id}-earnings`}>
             {job.assignment_offer || jobEarningTotal(job) > 0 ? (
               <div className="mt-3 grid gap-2">
                 <div className="flex justify-between gap-3"><span>İşçilik / montaj</span><strong>{money.format(jobEarningLabor(job))}</strong></div>
@@ -1385,9 +1412,8 @@ function ServiceJobDetail({
             ) : (
               <p className="mt-2 text-sm text-emerald-800">Bu iş için hakediş bilgisi henüz gönderilmedi.</p>
             )}
-          </div>
-          <div className="rounded-2xl bg-blue-50 p-4 text-sm text-blue-950">
-            <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Randevu / bildirim</p>
+          </PartnerDetailPanel>
+          <PartnerDetailPanel key={`${job.id}-appointment`} title="Randevu / bildirim" summary="Önerilen saatler ve operasyon bildirimi" tone="blue" defaultOpen={defaultOpenPartnerSections.has('appointment')} panelKey={`${job.id}-appointment`}>
             {job.appointment_proposal ? (
               <div className="mt-3 rounded-xl bg-white/80 p-3 text-xs text-blue-900">
                 <p className="font-semibold">{job.appointment_proposal.status === 'applied' ? 'Randevu onaylandı' : `Randevu: ${statusLabel(job.appointment_proposal.status)}`}</p>
@@ -1413,12 +1439,10 @@ function ServiceJobDetail({
                 <p className="mt-1">Detayları hakediş kartında görebilirsiniz.</p>
               </div>
             ) : null}
-          </div>
+          </PartnerDetailPanel>
         </div>
         {showPhotoSection && (
-          <div className="mt-5 min-w-0 max-w-full overflow-hidden rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fotoğraf / belge</p>
-            <p className="mt-2 text-sm text-slate-700">Öncesi / Sonrası / Garanti Belgesi</p>
+          <PartnerDetailPanel key={`${job.id}-photos`} title="Fotoğraf / belge" summary="Öncesi, sonrası ve garanti belgesi" tone="slate" defaultOpen={defaultOpenPartnerSections.has('photos')} panelKey={`${job.id}-photos`} className="mt-5">
             <div className="mt-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
               <p className="font-semibold">Tamamlama şartı</p>
               <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} fotoğraf/belge yüklendi.</p>
@@ -1516,11 +1540,11 @@ function ServiceJobDetail({
                   onClick={() => void submitPhotoUpload()}
                   className="w-full min-w-0 max-w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-3"
                 >
-                  Fotoğrafları yükle
-                </button>
-              ) : null}
+                Fotoğrafları yükle
+              </button>
+            ) : null}
             </div>
-          </div>
+          </PartnerDetailPanel>
         )}
         {job.portal_actions.length > 0 && (
           <details className="mt-5 rounded-2xl bg-slate-50 p-4">
@@ -1958,6 +1982,45 @@ function ActionBox({ title, children, className = 'grid' }: { title: string, chi
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3>
       {children}
     </div>
+  )
+}
+
+function PartnerDetailPanel({
+  title,
+  summary,
+  tone,
+  defaultOpen,
+  panelKey,
+  className = '',
+  children,
+}: {
+  title: string
+  summary: string
+  tone: 'emerald' | 'blue' | 'slate'
+  defaultOpen: boolean
+  panelKey: string
+  className?: string
+  children: ReactNode
+}) {
+  const toneClass = {
+    emerald: 'border-emerald-100 bg-emerald-50 text-emerald-950',
+    blue: 'border-blue-100 bg-blue-50 text-blue-950',
+    slate: 'border-slate-200 bg-slate-50 text-slate-950',
+  }[tone]
+
+  return (
+    <details key={panelKey} defaultOpen={defaultOpen} className={`group min-w-0 max-w-full overflow-hidden rounded-2xl border p-4 text-sm shadow-sm ${toneClass} ${className}`}>
+      <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+        <span className="min-w-0">
+          <span className="block text-xs font-semibold uppercase tracking-wide opacity-80">{title}</span>
+          <span className="mt-1 block text-xs leading-5 opacity-70">{summary}</span>
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-slate-500 transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="mt-3 min-w-0 max-w-full">
+        {children}
+      </div>
+    </details>
   )
 }
 

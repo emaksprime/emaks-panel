@@ -195,9 +195,10 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
 
         $this->assertStringContainsString('backendControlComplete', $source);
         $this->assertStringContainsString('finalCheckActionChecklistComplete', $source);
-        $this->assertStringContainsString('shouldOpenFinalCheck', $source);
+        $this->assertStringContainsString('getOpsDefaultOpenSections', $source);
+        $this->assertStringContainsString("return new Set(['fieldCompletion'])", $source);
         $this->assertStringContainsString('Atanan Usta', $source);
-        $this->assertStringContainsString('!isFinalCheckStage', $source);
+        $this->assertStringContainsString("defaultOpenOpsSections.has('operation')", $source);
         $this->assertStringContainsString('Saha belgeleri uygun', $source);
         $this->assertStringContainsString('Saha belgeleri uygun değil', $source);
         $this->assertStringContainsString('Kararı değiştir', $source);
