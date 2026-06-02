@@ -66,10 +66,38 @@ class B2BPartnerServiceJobScopeService
             ->all();
     }
 
-    public function queryVisibleServiceJobs(User $user): Builder
+    /**
+     * @throws AuthorizationException
+     */
+    public function selectedLocksmithPartnerForPortal(User $user, ?int $requestedPartnerId = null): B2BPartner
     {
-        return TechnicalServiceRequest::query()
-            ->whereIn('technical_service_technician_id', $this->getVisibleTechnicianIdsForPartnerPortal($user));
+        $partners = $this->visibleLocksmithPartnersForPortal($user);
+
+        if ($partners->isEmpty()) {
+            throw new AuthorizationException('Bu kullanici icin gorunur cilingir partneri yok.');
+        }
+
+        if ($requestedPartnerId !== null && $requestedPartnerId > 0) {
+            $partner = $partners->first(fn (B2BPartner $partner): bool => (int) $partner->id === $requestedPartnerId);
+
+            if (! $partner instanceof B2BPartner) {
+                throw new AuthorizationException('Bu partner icin portal erisim yetkiniz yok.');
+            }
+
+            return $partner;
+        }
+
+        return $partners->first();
+    }
+
+    /**
+     * @throws AuthorizationException
+     */
+    public function queryVisibleServiceJobs(User $user, ?int $requestedPartnerId = null): Builder
+    {
+        return $this->serviceJobsQuery(
+            $this->selectedLocksmithPartnerForPortal($user, $requestedPartnerId),
+        );
     }
 
     /**

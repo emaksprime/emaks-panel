@@ -470,7 +470,7 @@ function PortalShell({ partnerPortal, preview }: PartnerPortalProps) {
           <ProductsView products={partnerPortal.products} readOnly={isPreview} />
         )}
         {partnerPortal.allowed && view === 'service-jobs' && (
-          <ServiceJobsView board={partnerPortal.serviceJobBoard} readOnly={isPreview} />
+          <ServiceJobsView partnerId={selectedPartner.id} board={partnerPortal.serviceJobBoard} readOnly={isPreview} />
         )}
         {partnerPortal.allowed && view === 'earnings' && (
           <EarningsView earnings={partnerPortal.earnings} />
@@ -835,7 +835,7 @@ const slotValidationMessage = (slots: AppointmentSlotDraft[]) => {
   return null
 }
 
-function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
+function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
   const initialJobs = useMemo(() => board.columns.flatMap((column) => column.jobs), [board.columns])
   const requestedJobId = useMemo(() => {
     if (typeof window === 'undefined') {
@@ -864,7 +864,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
     }
 
     try {
-      const response = await apiRequest('/api/partner/service-jobs') as { jobs?: ServiceJob[] }
+      const response = await apiRequest(`/api/partner/service-jobs?partner_id=${partnerId}`) as { jobs?: ServiceJob[] }
 
       if (Array.isArray(response.jobs)) {
         setJobs(response.jobs)
@@ -878,7 +878,7 @@ function ServiceJobsView({ board, readOnly }: { board: PartnerPortalProps['partn
         setRefreshing(false)
       }
     }
-  }, [readOnly])
+  }, [partnerId, readOnly])
   const columns = serviceJobColumns.map((column) => {
     const columnJobs = jobs
       .filter((job) => job.kanban_column === column.key)

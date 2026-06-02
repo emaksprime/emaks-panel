@@ -92,9 +92,13 @@ class PartnerServiceJobController extends Controller
     public function index(Request $request): JsonResponse
     {
         $user = $this->authorizedUser($request, 'partner.service_jobs.view');
+        $partner = $this->scope->selectedLocksmithPartnerForPortal(
+            $user,
+            $request->integer('partner_id') ?: null,
+        );
 
         $jobs = $this->scope
-            ->queryVisibleServiceJobs($user)
+            ->serviceJobsQuery($partner)
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
                 'uploads',
@@ -110,6 +114,7 @@ class PartnerServiceJobController extends Controller
 
         return response()->json([
             'status' => 'ok',
+            'partner_id' => $partner->id,
             'columns' => $this->kanbanColumns($jobs),
             'jobs' => $jobs,
             'appointment_slot_options' => $this->appointmentSlotOptions(),
@@ -641,14 +646,15 @@ class PartnerServiceJobController extends Controller
     public function earnings(Request $request): JsonResponse
     {
         $user = $this->authorizedUser($request, 'partner.earnings.view');
-        $partners = $this->scope->visibleLocksmithPartnersForPortal($user);
-        $rows = $partners
-            ->map(fn (B2BPartner $partner): array => [
-                'partner_id' => $partner->id,
-                'partner_name' => $partner->display_name,
-                'earnings' => $this->portalData->earningsFor($partner),
-            ])
-            ->values();
+        $partner = $this->scope->selectedLocksmithPartnerForPortal(
+            $user,
+            $request->integer('partner_id') ?: null,
+        );
+        $rows = collect([[
+            'partner_id' => $partner->id,
+            'partner_name' => $partner->display_name,
+            'earnings' => $this->portalData->earningsFor($partner),
+        ]]);
 
         return response()->json([
             'status' => 'ok',
