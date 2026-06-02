@@ -349,6 +349,14 @@ const jobEarningStatus = (job: ServiceJob): string => {
   return jobEarningTotal(job) > 0 ? 'Tahmini' : 'Gönderilmedi'
 }
 
+const jobReadyForCompletionSubmit = (job: ServiceJob): boolean => (
+  Boolean(job.can_submit_completion)
+  && job.kanban_column === 'appointment_confirmed'
+  && job.completion_requirements.photos_ready
+  && job.completion_requirements.customer_confirmation_ready
+  && job.action_state !== 'final_check_waiting'
+)
+
 const portalHref = (path: string, partnerId: number) => `${path}?partner_id=${partnerId}`
 
 const locationLabel = (partner: PartnerSummary) => [partner.city, partner.district].filter(Boolean).join(' / ') || '-'
@@ -949,12 +957,15 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
             <div className="mt-3 grid gap-3">
               {column.jobs.length === 0 ? (
                 <p className="rounded-xl bg-white/70 p-3 text-xs text-slate-500">Bu kolonda iş yok.</p>
-              ) : column.jobs.map((job) => (
+              ) : column.jobs.map((job) => {
+                const completionReady = jobReadyForCompletionSubmit(job)
+
+                return (
                 <button
                   key={job.id}
                   type="button"
                   onClick={() => openJob(job)}
-                  className={`w-full rounded-xl border p-3 text-left shadow-sm transition hover:border-slate-300 ${cardToneClass(job.card_tone)} ${selectedJob?.id === job.id ? 'ring-2 ring-slate-900' : ''}`}
+                  className={`w-full rounded-xl border p-3 text-left shadow-sm transition hover:border-slate-300 ${cardToneClass(job.card_tone)} ${completionReady ? 'ring-2 ring-emerald-500' : ''} ${selectedJob?.id === job.id ? 'ring-2 ring-slate-900' : ''}`}
                 >
                   <div className="rounded-xl border border-blue-100 bg-white/85 px-3 py-2">
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-500">Randevu</p>
@@ -979,15 +990,23 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                     <p className="mt-1 text-[11px] font-semibold text-emerald-700">Durum: {jobEarningStatus(job)}</p>
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
+                  {completionReady && (
+                    <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-600 px-3 py-2 text-white shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-100">Ana aksiyon</p>
+                      <p className="mt-0.5 text-sm font-semibold">Tamamlamaya gönder</p>
+                      <p className="mt-1 text-xs font-medium text-emerald-50">Saha belgeleri ve müşteri onayı tamam.</p>
+                    </div>
+                  )}
                   {job.badges.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
                       {job.badges.slice(0, 3).map((badge) => (
-                        <span key={badge} className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-semibold text-slate-700">{badge}</span>
+                        <span key={badge} className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${badge === 'Tamamlamaya gönderilebilir' ? 'bg-emerald-100 text-emerald-800' : 'bg-white/80 text-slate-700'}`}>{badge}</span>
                       ))}
                     </div>
                   )}
                 </button>
-              ))}
+                )
+              })}
             </div>
           </div>
         ))}
@@ -1107,6 +1126,7 @@ function ServiceJobDetail({
     ...(confirmationReady ? [] : ['Müşteri onayı bekleniyor']),
   ]
   const completionBlocked = completionMissingReasons.length > 0
+  const completionReady = jobReadyForCompletionSubmit(job) && !completionBlocked
   const showPhotoSection = Boolean(job.can_upload_photos || ['final_check', 'completed'].includes(job.kanban_column))
   const photoStatuses = job.completion_requirements.photo_statuses ?? portalPhotoFields.map(([field, label]) => ({
     field,
@@ -1136,6 +1156,10 @@ function ServiceJobDetail({
 
     if (job.action_state === 'appointment_proposed_waiting') {
       return 'Operasyon önerdiğiniz saatlerden birini onayladığında müşteriye ve size bilgilendirme gönderilecek.'
+    }
+
+    if (completionReady) {
+      return 'Saha belgeleri ve müşteri onayı tamam. İşi operasyon son kontrolüne gönderebilirsiniz.'
     }
 
     if (job.kanban_column === 'appointment_confirmed') {
@@ -1308,7 +1332,7 @@ function ServiceJobDetail({
             {job.badges.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
                 {job.badges.map((badge) => (
-                  <span key={badge} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{badge}</span>
+                  <span key={badge} className={`rounded-full px-2.5 py-1 text-xs font-semibold ${badge === 'Tamamlamaya gönderilebilir' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'}`}>{badge}</span>
                 ))}
               </div>
             )}
@@ -1334,12 +1358,13 @@ function ServiceJobDetail({
           <InfoTile label="Km / yol bilgisi" value={job.route_distance_summary ?? '-'} />
           <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
         </div>
-        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:hidden">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bu aşamadaki aksiyon</p>
-          <p className="mt-2 text-sm leading-6 text-slate-700">{statusPlan}</p>
+        <div className={`mt-5 rounded-2xl border p-4 lg:hidden ${completionReady ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}>
+          <p className={`text-xs font-semibold uppercase tracking-wide ${completionReady ? 'text-emerald-700' : 'text-slate-400'}`}>{completionReady ? 'Ana aksiyon' : 'Bu aşamadaki aksiyon'}</p>
+          {completionReady && <p className="mt-2 text-lg font-semibold text-emerald-950">Tamamlamaya gönder</p>}
+          <p className={`mt-2 text-sm leading-6 ${completionReady ? 'text-emerald-900' : 'text-slate-700'}`}>{statusPlan}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {(job.badges.length === 0 ? ['Normal akış'] : job.badges).map((badge) => (
-              <span key={badge} className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">{badge}</span>
+              <span key={badge} className={`rounded-full bg-white px-2.5 py-1 text-xs font-semibold ${badge === 'Tamamlamaya gönderilebilir' ? 'text-emerald-800' : 'text-slate-700'}`}>{badge}</span>
             ))}
           </div>
         </div>
@@ -1635,9 +1660,15 @@ function ServiceJobDetail({
               <option value="missing_info_or_photo">Eksik bilgi/fotoğraf</option>
               <option value="parts_pending">Parça/ürün bekleniyor</option>
             </select>
-            <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
-              <p>{photosReady ? '3 fotoğraf hazır.' : '3 ayrı fotoğraf türü yüklenmeden tamamlamaya gönderilemez.'}</p>
-              <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
+            <div className={`rounded-xl border p-3 text-xs ${completionReady ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-600'}`}>
+              {completionReady ? (
+                <p className="text-sm font-semibold">Saha belgeleri ve müşteri onayı tamam. İşi operasyon son kontrolüne gönderebilirsiniz.</p>
+              ) : (
+                <>
+                  <p>{photosReady ? '3 fotoğraf hazır.' : '3 ayrı fotoğraf türü yüklenmeden tamamlamaya gönderilemez.'}</p>
+                  <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
+                </>
+              )}
               {completionMissingReasons.length > 0 && (
                 <ul className="mt-2 grid gap-1">
                   {completionMissingReasons.map((reason) => (
@@ -1647,7 +1678,7 @@ function ServiceJobDetail({
               )}
             </div>
             <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İsterseniz yapılan işlemle ilgili kısa not ekleyin." disabled={readOnly || !job.can_submit_completion} />
-            <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote.trim() || null }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+            <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote.trim() || null }, 'Tamamlama gönderimi son kontrol için operasyona düştü.')} className={`rounded-xl bg-emerald-600 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${completionReady ? 'px-4 py-3 text-base shadow-sm shadow-emerald-200' : 'px-3 py-2 text-sm'}`}>
               Tamamlamaya gönder
             </button>
           </ActionBox>
@@ -1667,6 +1698,11 @@ function ServiceJobDetail({
       </aside>
       {!readOnly && !activeActionDialog && (
         <div className="fixed inset-x-0 bottom-0 z-[80] grid max-h-[36vh] max-w-[100dvw] grid-cols-2 gap-1.5 overflow-x-clip overflow-y-auto border-t border-slate-200 bg-white/95 p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+          {job.can_submit_completion && (
+            <button type="button" onClick={() => setActiveActionDialog('completion')} className={`min-w-0 truncate font-semibold leading-tight ${completionReady ? 'col-span-2 min-h-12 rounded-xl border border-emerald-700 bg-emerald-600 px-3 py-2.5 text-sm text-white shadow-lg shadow-emerald-200' : 'min-h-10 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs text-emerald-800'}`}>
+              Tamamlamaya gönder
+            </button>
+          )}
           {canAcceptAppointment && (
             <button type="button" disabled={actionLoading === 'accept-appointment'} onClick={() => void submitAction('accept-appointment', { note: acceptNote || null }, 'Randevu onayı gönderildi.')} className="min-h-10 min-w-0 truncate rounded-md border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs font-semibold leading-tight text-white disabled:cursor-not-allowed disabled:opacity-60">
               Randevu onayla
@@ -1700,11 +1736,6 @@ function ServiceJobDetail({
           {job.can_request_price_revision && (
             <button type="button" onClick={() => setActiveActionDialog('price')} className="min-h-10 min-w-0 truncate rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
               Hakediş revize
-            </button>
-          )}
-          {job.can_submit_completion && (
-            <button type="button" onClick={() => setActiveActionDialog('completion')} className="min-h-10 min-w-0 truncate rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-semibold leading-tight text-emerald-800">
-              Tamamlamaya gönder
             </button>
           )}
           <button type="button" onClick={() => setActiveActionDialog('note')} className="min-h-10 min-w-0 truncate rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold leading-tight text-slate-700">
@@ -1889,9 +1920,15 @@ function ServiceJobDetail({
           <option value="missing_info_or_photo">Eksik bilgi/fotoğraf</option>
           <option value="parts_pending">Parça/ürün bekleniyor</option>
         </select>
-        <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
-          <p>{photosReady ? '3 fotoğraf hazır.' : '3 ayrı fotoğraf türü yüklenmeden tamamlamaya gönderilemez.'}</p>
-          <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
+        <div className={`rounded-xl border p-3 text-xs ${completionReady ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-600'}`}>
+          {completionReady ? (
+            <p className="text-sm font-semibold">Saha belgeleri ve müşteri onayı tamam. İşi operasyon son kontrolüne gönderebilirsiniz.</p>
+          ) : (
+            <>
+              <p>{photosReady ? '3 fotoğraf hazır.' : '3 ayrı fotoğraf türü yüklenmeden tamamlamaya gönderilemez.'}</p>
+              <p>{confirmationReady ? 'Müşteri onayı hazır.' : 'Müşteri onayı olmadan tamamlamaya gönderilemez.'}</p>
+            </>
+          )}
           {completionMissingReasons.length > 0 && (
             <ul className="mt-2 grid gap-1">
               {completionMissingReasons.map((reason) => (
@@ -1901,7 +1938,7 @@ function ServiceJobDetail({
           )}
         </div>
         <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionNote} onChange={(event) => setCompletionNote(event.target.value)} placeholder="İsterseniz yapılan işlemle ilgili kısa not ekleyin." disabled={readOnly || !job.can_submit_completion} />
-        <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote.trim() || null }, 'Tamamlama gönderimi son kontrol için operasyona düştü.').then(() => setActiveActionDialog(null))} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+        <button type="button" disabled={readOnly || !job.can_submit_completion || completionBlocked || actionLoading === 'submit-completion'} onClick={() => void submitAction('submit-completion', { result: completionResult, note: completionNote.trim() || null }, 'Tamamlama gönderimi son kontrol için operasyona düştü.').then(() => setActiveActionDialog(null))} className={`rounded-xl bg-emerald-600 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300 ${completionReady ? 'px-4 py-3 text-base shadow-sm shadow-emerald-200' : 'px-3 py-2 text-sm'}`}>
           Tamamlamaya gönder
         </button>
       </ActionDialog>

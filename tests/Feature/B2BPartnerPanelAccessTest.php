@@ -3746,6 +3746,17 @@ class B2BPartnerPanelAccessTest extends TestCase
             'customer_note' => 'Montaj onaylandı.',
         ])->assertOk();
 
+        $readyResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.next_action', 'Tamamlamaya gönderilebilir')
+            ->assertJsonPath('job.action_state', 'completion_ready')
+            ->assertJsonPath('job.can_submit_completion', true)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true)
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', true);
+        $this->assertContains('Tamamlamaya gönderilebilir', $readyResponse->json('job.badges'));
+        $this->assertNotContains('Aksiyon: Randevu onaylandı', $readyResponse->json('job.badges'));
+
         $job->refresh();
         $this->assertSame('onaylandı', $job->customer_closure_approval_status);
         $this->assertSame('Randevulu', $job->status);
@@ -3771,6 +3782,18 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertTrue($state['is_pending_final_check']);
         $this->assertSame('final_check', $state['ops_column']);
         $this->assertSame('final_check', $state['partner_column']);
+    }
+
+    public function test_partner_completion_ready_cta_is_primary_on_mobile(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('jobReadyForCompletionSubmit', $source);
+        $this->assertStringContainsString('Saha belgeleri ve müşteri onayı tamam. İşi operasyon son kontrolüne gönderebilirsiniz.', $source);
+        $this->assertStringContainsString('Ana aksiyon', $source);
+        $this->assertStringContainsString('col-span-2 min-h-12 rounded-xl border border-emerald-700 bg-emerald-600', $source);
+        $this->assertStringContainsString('Tamamlamaya gönderilebilir', $source);
     }
 
     public function test_customer_approval_reject_blocks_completion_and_raises_ops_action(): void

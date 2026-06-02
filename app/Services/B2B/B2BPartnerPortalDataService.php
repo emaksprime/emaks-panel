@@ -358,6 +358,9 @@ class B2BPartnerPortalDataService
         $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview;
         $nextActionLabel = $this->serviceJobNextActionLabel($request, $stateAction, $completionRequirements);
         $partnerNextActionLabel = $canonicalState['display_action_label'] ?? $nextActionLabel;
+        if ($nextActionLabel === 'Tamamlamaya gönderilebilir') {
+            $partnerNextActionLabel = $nextActionLabel;
+        }
         if ($stateAction?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
             && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $partnerNextActionLabel = 'Randevu önerildi';
@@ -371,13 +374,19 @@ class B2BPartnerPortalDataService
             ->all();
         $displayBadges = collect($canonicalState['display_tags'] ?? [])
             ->pluck('label')
-            ->reject(function (?string $badge) use ($partnerNextActionLabel): bool {
-                return blank($badge) || $badge === $partnerNextActionLabel || $badge === 'Aksiyon: '.$partnerNextActionLabel;
+            ->reject(function (?string $badge) use ($partnerNextActionLabel, $nextActionLabel): bool {
+                return blank($badge)
+                    || $badge === $partnerNextActionLabel
+                    || $badge === 'Aksiyon: '.$partnerNextActionLabel
+                    || ($nextActionLabel === 'Tamamlamaya gönderilebilir' && str_starts_with((string) $badge, 'Aksiyon: '));
             })
             ->values()
             ->all();
         if ($displayBadges === []) {
             $displayBadges = $badges;
+        }
+        if ($nextActionLabel === 'Tamamlamaya gönderilebilir' && ! in_array('Tamamlamaya gönderilebilir', $displayBadges, true)) {
+            array_unshift($displayBadges, 'Tamamlamaya gönderilebilir');
         }
         if ($stateAction?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
             && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
@@ -528,7 +537,9 @@ class B2BPartnerPortalDataService
             ],
             'completion_requirements' => $completionRequirements,
             'badges' => $displayBadges,
-            'card_priority' => $canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction),
+            'card_priority' => $nextActionLabel === 'Tamamlamaya gönderilebilir'
+                ? 4
+                : ($canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction)),
             'card_tone' => $this->serviceJobTone($request, $stateAction),
             'kanban_column' => $canonicalState['partner_column'] ?? $this->serviceJobColumn($request, $stateAction),
             'operational_state' => $canonicalState,
@@ -1006,7 +1017,7 @@ class B2BPartnerPortalDataService
                 return 'otp_waiting';
             }
 
-            return 'appointment_confirmed';
+            return 'completion_ready';
         }
 
         if ($this->isTechnicianApprovalStatus($request) && $this->hasOpsAppointment($request)) {
