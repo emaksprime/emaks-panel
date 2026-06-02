@@ -1,6 +1,6 @@
 import { Head } from '@inertiajs/react'
 import { Copy, ExternalLink, FileText, Printer, QrCode, RefreshCw, Search } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Heading from '@/components/heading'
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks'
 import { Badge } from '@/components/ui/badge'
@@ -65,10 +65,26 @@ type BulkResponse = {
   summary: {
     total: number
     created: number
+    updated?: number
     skipped: number
     failed: number
   }
   results: BulkResult[]
+  errors?: BulkResult[]
+  meta?: {
+    result_limit: number
+    results_truncated: boolean
+    errors_truncated: boolean
+  }
+}
+
+type QrProductListMeta = {
+  total: number
+  page: number
+  per_page: number
+  last_page: number
+  from?: number | null
+  to?: number | null
 }
 
 const emptyCsv = 'seri_no,product_name,model,brand\nSN001,Test Akıllı Kilit,F3-LOCK,Emaks Prime'
@@ -149,6 +165,16 @@ export default function TechnicalServiceQrProducts() {
   const [brandFilter, setBrandFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [printColumns, setPrintColumns] = useState<2 | 3>(2)
+  const [page, setPage] = useState(1)
+  const [perPage, setPerPage] = useState(25)
+  const [listMeta, setListMeta] = useState<QrProductListMeta>({
+    total: 0,
+    page: 1,
+    per_page: 25,
+    last_page: 1,
+    from: null,
+    to: null,
+  })
   const [csvText, setCsvText] = useState(emptyCsv)
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [bulkResults, setBulkResults] = useState<BulkResponse | null>(null)
@@ -170,14 +196,16 @@ export default function TechnicalServiceQrProducts() {
     return []
   }, [links, selectedIds, selectedLink])
 
-  const loadLinks = async (nextSearch = search) => {
+  const loadLinks = useCallback(async (nextPage = page) => {
     setLoading(true)
 
     try {
       const params = new URLSearchParams()
+      params.set('page', String(nextPage))
+      params.set('per_page', String(perPage))
 
-      if (nextSearch.trim()) {
-        params.set('search', nextSearch.trim())
+      if (search.trim()) {
+        params.set('search', search.trim())
       }
 
       if (productFilter.trim()) {
@@ -196,24 +224,40 @@ export default function TechnicalServiceQrProducts() {
         params.set('status', statusFilter.trim())
       }
 
-      const response = (await apiRequest(`/api/technical-service/qr-products?${params.toString()}`)) as { links: QrProductLink[] }
-      setLinks(response.links)
-      setSelectedLink((current) => current ?? response.links[0] ?? null)
+      const response = (await apiRequest(`/api/technical-service/qr-products?${params.toString()}`)) as { data?: QrProductLink[], links?: QrProductLink[], meta?: QrProductListMeta }
+      const nextLinks = response.data ?? response.links ?? []
+
+      setLinks(nextLinks)
+      setListMeta(response.meta ?? {
+        total: nextLinks.length,
+        page: nextPage,
+        per_page: perPage,
+        last_page: 1,
+        from: nextLinks.length > 0 ? 1 : null,
+        to: nextLinks.length,
+      })
+      setSelectedIds((current) => current.filter((id) => nextLinks.some((link) => link.id === id)))
+      setSelectedLink((current) => {
+        if (current && nextLinks.some((link) => link.id === current.id)) {
+          return current
+        }
+
+        return nextLinks[0] ?? null
+      })
     } catch (error) {
       setMessage({ type: 'error', text: error instanceof Error ? error.message : 'QR listesi alınamadı.' })
     } finally {
       setLoading(false)
     }
-  }
+  }, [brandFilter, modelFilter, page, perPage, productFilter, search, statusFilter])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadLinks('')
-    }, 0)
+      void loadLinks(page)
+    }, 350)
 
     return () => window.clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [loadLinks, page])
 
   const resolveSerial = async () => {
     if (!serialNumber.trim()) {
@@ -267,7 +311,8 @@ export default function TechnicalServiceQrProducts() {
         type: 'success',
         text: response.duplicate ? 'Bu seri için aktif QR zaten vardı; mevcut kayıt açıldı.' : 'QR oluşturuldu.',
       })
-      await loadLinks(search)
+      setPage(1)
+      await loadLinks(1)
     } catch (error) {
       setMessage({ type: 'error', text: error instanceof Error ? error.message : 'QR oluşturulamadı.' })
     }
@@ -302,7 +347,8 @@ export default function TechnicalServiceQrProducts() {
 
       setBulkResults(payload as BulkResponse)
       setMessage({ type: 'success', text: 'Toplu yükleme tamamlandı.' })
-      await loadLinks(search)
+      setPage(1)
+      await loadLinks(1)
     } catch (error) {
       setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Toplu yükleme yapılamadı.' })
     }
@@ -316,6 +362,12 @@ export default function TechnicalServiceQrProducts() {
   const markPrintedAndPrint = async () => {
     if (!selectedPrintLinks.length) {
       setMessage({ type: 'error', text: 'Yazdırılacak QR seçin.' })
+
+      return
+    }
+
+    if (selectedPrintLinks.length > 100) {
+      setMessage({ type: 'error', text: 'Çok fazla QR seçildi. Yazdırma için arama/filtreyle grubu daraltın.' })
 
       return
     }
@@ -476,9 +528,15 @@ export default function TechnicalServiceQrProducts() {
                   <div className="grid gap-3 md:grid-cols-4">
                     <InfoTile label="Toplam" value={bulkResults.summary.total} />
                     <InfoTile label="Oluşturulan" value={bulkResults.summary.created} />
+                    <InfoTile label="Güncellenen" value={bulkResults.summary.updated ?? 0} />
                     <InfoTile label="Duplicate" value={bulkResults.summary.skipped} />
                     <InfoTile label="Hatalı" value={bulkResults.summary.failed} />
                   </div>
+                  {bulkResults.meta?.results_truncated ? (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+                      Sonuç listesi performans için ilk {bulkResults.meta.result_limit} satırla sınırlandı.
+                    </div>
+                  ) : null}
                   <div className="max-h-72 overflow-auto rounded-2xl border border-slate-200">
                     {bulkResults.results.map((result) => (
                       <div key={`${result.row}-${result.serial_number ?? result.link?.serial_number ?? result.status}`} className="grid gap-1 border-b border-slate-100 p-3 last:border-b-0">
@@ -492,6 +550,19 @@ export default function TechnicalServiceQrProducts() {
                       </div>
                     ))}
                   </div>
+                  {bulkResults.errors?.length ? (
+                    <div className="grid gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3">
+                      <p className="text-sm font-semibold text-rose-800">
+                        İlk {bulkResults.errors.length} hatalı satır
+                        {bulkResults.meta?.errors_truncated ? ' gösteriliyor' : ''}
+                      </p>
+                      {bulkResults.errors.map((result) => (
+                        <div key={`error-${result.row}-${result.serial_number ?? result.message}`} className="rounded-xl bg-white p-3 text-sm text-rose-800">
+                          <span className="font-semibold">Satır {result.row}:</span> {result.message}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </section>
@@ -503,20 +574,51 @@ export default function TechnicalServiceQrProducts() {
                   <p className="mt-1 text-sm text-slate-500">Aktif QR kayıtları, yazdırma ve okutma bilgisi.</p>
                 </div>
                 <div className="flex gap-2">
-                  <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Seri, ürün, model ara" />
-                  <Button type="button" variant="outline" onClick={() => void loadLinks(search)} disabled={loading}>
+                  <Input
+                    value={search}
+                    onChange={(event) => {
+                      setSearch(event.target.value)
+                      setPage(1)
+                    }}
+                    placeholder="Seri, ürün, model ara"
+                  />
+                  <Button type="button" variant="outline" onClick={() => void loadLinks(page)} disabled={loading}>
                     <RefreshCw className="size-4" />
                   </Button>
                 </div>
               </div>
 
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-4">
-                <Input value={productFilter} onChange={(event) => setProductFilter(event.target.value)} placeholder="Ürün filtresi" />
-                <Input value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder="Model filtresi" />
-                <Input value={brandFilter} onChange={(event) => setBrandFilter(event.target.value)} placeholder="Marka filtresi" />
+                <Input
+                  value={productFilter}
+                  onChange={(event) => {
+                    setProductFilter(event.target.value)
+                    setPage(1)
+                  }}
+                  placeholder="Ürün filtresi"
+                />
+                <Input
+                  value={modelFilter}
+                  onChange={(event) => {
+                    setModelFilter(event.target.value)
+                    setPage(1)
+                  }}
+                  placeholder="Model filtresi"
+                />
+                <Input
+                  value={brandFilter}
+                  onChange={(event) => {
+                    setBrandFilter(event.target.value)
+                    setPage(1)
+                  }}
+                  placeholder="Marka filtresi"
+                />
                 <select
                   value={statusFilter}
-                  onChange={(event) => setStatusFilter(event.target.value)}
+                  onChange={(event) => {
+                    setStatusFilter(event.target.value)
+                    setPage(1)
+                  }}
                   className="rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <option value="">Tüm durumlar</option>
@@ -524,12 +626,28 @@ export default function TechnicalServiceQrProducts() {
                   <option value="revoked">İptal edildi</option>
                   <option value="expired">Süresi doldu</option>
                 </select>
+                <select
+                  value={perPage}
+                  onChange={(event) => {
+                    setPerPage(Number(event.target.value))
+                    setPage(1)
+                  }}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus-visible:ring-1 focus-visible:ring-ring md:col-span-4"
+                >
+                  <option value={25}>Sayfa başı 25</option>
+                  <option value={50}>Sayfa başı 50</option>
+                </select>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-blue-100 bg-blue-50 p-3">
-                <p className="text-sm font-semibold text-blue-900">
-                  Seçili QR: {selectedIds.length}. Seçim yoksa önizlenen QR yazdırılır.
-                </p>
+                <div className="grid gap-1">
+                  <p className="text-sm font-semibold text-blue-900">
+                    Toplam {listMeta.total} kayıt. {listMeta.from ?? 0}-{listMeta.to ?? 0} arası gösteriliyor.
+                  </p>
+                  <p className="text-xs font-medium text-blue-800">
+                    Seçili QR: {selectedIds.length}. Seçim yoksa önizlenen QR yazdırılır.
+                  </p>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
@@ -537,12 +655,24 @@ export default function TechnicalServiceQrProducts() {
                     onClick={() => setSelectedIds(links.map((link) => link.id))}
                     disabled={links.length === 0}
                   >
-                    Tümünü seç
+                    Görünenleri seç
                   </Button>
                   <Button type="button" variant="outline" onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0}>
                     Seçimi temizle
                   </Button>
                 </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3">
+                <Button type="button" variant="outline" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={loading || listMeta.page <= 1}>
+                  Önceki
+                </Button>
+                <p className="text-sm font-semibold text-slate-700">
+                  Sayfa {listMeta.page} / {listMeta.last_page}
+                </p>
+                <Button type="button" variant="outline" onClick={() => setPage((current) => Math.min(listMeta.last_page, current + 1))} disabled={loading || listMeta.page >= listMeta.last_page}>
+                  Sonraki
+                </Button>
               </div>
 
               <div className="grid gap-3">

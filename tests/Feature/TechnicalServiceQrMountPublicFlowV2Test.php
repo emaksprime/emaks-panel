@@ -179,6 +179,73 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertDatabaseCount('technical_service_qr_links', 2);
     }
 
+    public function test_qr_products_index_is_paginated_by_default(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        foreach (range(1, 60) as $index) {
+            TechnicalServiceQrLink::createPreSaleProductLink([
+                'serial_number' => sprintf('QR-PAGE-%03d', $index),
+                'product_name' => 'Sayfalı Test Kilit',
+                'product_model' => 'PAGE-'.$index,
+                'brand' => 'Emaks Prime',
+            ]);
+        }
+
+        $this->actingAs($user)
+            ->getJson('/api/technical-service/qr-products')
+            ->assertOk()
+            ->assertJsonCount(25, 'data')
+            ->assertJsonCount(25, 'links')
+            ->assertJsonPath('meta.total', 60)
+            ->assertJsonPath('meta.page', 1)
+            ->assertJsonPath('meta.per_page', 25)
+            ->assertJsonPath('meta.last_page', 3);
+    }
+
+    public function test_qr_products_search_is_server_side_and_paginated(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        foreach (range(1, 30) as $index) {
+            TechnicalServiceQrLink::createPreSaleProductLink([
+                'serial_number' => sprintf('QR-SEARCH-%03d', $index),
+                'product_name' => $index === 29 ? 'Aranan Akıllı Kilit' : 'Başka Ürün',
+                'product_model' => 'SEARCH-'.$index,
+                'brand' => 'Emaks Prime',
+            ]);
+        }
+
+        $this->actingAs($user)
+            ->getJson('/api/technical-service/qr-products?search=Aranan&per_page=25')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.serial_number', 'QR-SEARCH-029');
+    }
+
+    public function test_qr_bulk_upload_large_batch_returns_bounded_summary(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $rows = ['seri_no,product_name,model,brand'];
+
+        foreach (range(1, 30) as $index) {
+            $rows[] = ',Eksik Seri,MODEL,Emaks Prime';
+        }
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products/bulk', [
+                'csv_text' => implode("\n", $rows),
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.total', 30)
+            ->assertJsonPath('summary.failed', 30)
+            ->assertJsonCount(20, 'results')
+            ->assertJsonCount(20, 'errors')
+            ->assertJsonPath('meta.results_truncated', true)
+            ->assertJsonPath('meta.errors_truncated', true);
+    }
+
     public function test_ops_qr_product_svg_endpoint_returns_qr_svg(): void
     {
         $user = User::factory()->create(['role_code' => 'admin']);
@@ -653,6 +720,39 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertJsonPath('total_count', 1)
             ->assertJsonMissingPath('selectable_serials.0.hidden_reason')
             ->assertJsonMissingPath('selectable_serials.0.responsibility_code');
+    }
+
+    public function test_public_multi_serial_list_is_bounded_and_searchable(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        $rows = [];
+
+        foreach (range(1, 30) as $index) {
+            $rows[] = [
+                'Faturadaki Seri No' => sprintf('MULTI-%04d', $index),
+                'Sorumluluk Kodu' => 'PERAKENDE SATIŞ',
+                'stok_adi' => 'Çoklu Ürün '.$index,
+                'Bu Fatura Bu Seri İçin Son Satış mı' => 'Hayır',
+            ];
+        }
+
+        $this->fakeInvoiceSerialRows($rows);
+        [, $token] = $this->qrLink();
+
+        $this->postJson('/mount-request/'.$token.'/invoice-serials/check')
+            ->assertOk()
+            ->assertJsonPath('has_selectable_serials', true)
+            ->assertJsonCount(20, 'selectable_serials')
+            ->assertJsonPath('selectable_total', 30)
+            ->assertJsonPath('meta.total', 30)
+            ->assertJsonPath('meta.per_page', 20)
+            ->assertJsonPath('meta.last_page', 2);
+
+        $this->postJson('/mount-request/'.$token.'/invoice-serials/check?search=MULTI-0029')
+            ->assertOk()
+            ->assertJsonCount(1, 'selectable_serials')
+            ->assertJsonPath('selectable_serials.0.serial_number', 'MULTI-0029')
+            ->assertJsonPath('meta.total', 1);
     }
 
     public function test_multi_product_check_excludes_bayi_satis_rows_from_public_response(): void

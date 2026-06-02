@@ -114,10 +114,17 @@ type MultiProductLookupResponse = {
     selectable_serials?: MultiProductOption[];
     items?: MultiProductOption[];
     has_selectable_serials?: boolean;
+    selectable_total?: number;
     blocked_count?: number;
     returned_count?: number;
     total_count?: number;
     operation_only_count?: number;
+    meta?: {
+        total: number;
+        page: number;
+        per_page: number;
+        last_page: number;
+    };
     message?: string | null;
 };
 
@@ -376,6 +383,10 @@ export default function MountRequestV2({
     const [multiProductNotice, setMultiProductNotice] = useState('');
     const [multiProductOperationOnlyCount, setMultiProductOperationOnlyCount] = useState(0);
     const [multiProductTotalCount, setMultiProductTotalCount] = useState(0);
+    const [multiProductSelectableTotal, setMultiProductSelectableTotal] = useState(0);
+    const [multiProductSearch, setMultiProductSearch] = useState('');
+    const [multiProductPage, setMultiProductPage] = useState(1);
+    const [multiProductMeta, setMultiProductMeta] = useState({ total: 0, page: 1, per_page: 20, last_page: 1 });
     const [locationModalOpen, setLocationModalOpen] = useState(false);
     const [locationStatus, setLocationStatus] = useState('');
     const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false);
@@ -720,6 +731,8 @@ export default function MountRequestV2({
                 setMultiProductOptions([]);
                 setMultiProductModalOpen(false);
                 setMultiProductNotice('Ek ürün talebiniz operasyon ekibine iletilecek.');
+                setMultiProductSelectableTotal(0);
+                setMultiProductMeta({ total: 0, page: 1, per_page: 20, last_page: 1 });
             });
 
             return () => {
@@ -728,12 +741,23 @@ export default function MountRequestV2({
             };
         }
 
-        const loadingTimer = runSoon(() => {
+        const loadingTimer = window.setTimeout(() => {
+            if (ignore) {
+                return;
+            }
+
             setMultiProductLoading(true);
             setMultiProductNotice('');
-        });
+        }, 250);
+        const lookupUrl = new URL(actions.multi_product_lookup_url, window.location.origin);
+        lookupUrl.searchParams.set('page', String(multiProductPage));
+        lookupUrl.searchParams.set('per_page', '20');
 
-        fetch(actions.multi_product_lookup_url, {
+        if (multiProductSearch.trim()) {
+            lookupUrl.searchParams.set('search', multiProductSearch.trim());
+        }
+
+        fetch(lookupUrl.toString(), {
             method: 'POST',
             headers: {
                 Accept: 'application/json',
@@ -754,6 +778,8 @@ export default function MountRequestV2({
                     setMultiProductOptions(items);
                     setMultiProductOperationOnlyCount(typeof payload.operation_only_count === 'number' ? payload.operation_only_count : 0);
                     setMultiProductTotalCount(typeof payload.total_count === 'number' ? payload.total_count : 0);
+                    setMultiProductSelectableTotal(typeof payload.selectable_total === 'number' ? payload.selectable_total : items.length);
+                    setMultiProductMeta(payload.meta ?? { total: items.length, page: multiProductPage, per_page: 20, last_page: 1 });
                     setMultiProductModalOpen(hasSelectableSerials);
                     setMultiProductNotice(hasSelectableSerials ? '' : (payload.message || 'Ek ürün talebiniz operasyon ekibine iletilecek.'));
                 }
@@ -763,6 +789,8 @@ export default function MountRequestV2({
                     setMultiProductOptions([]);
                     setMultiProductOperationOnlyCount(0);
                     setMultiProductTotalCount(0);
+                    setMultiProductSelectableTotal(0);
+                    setMultiProductMeta({ total: 0, page: 1, per_page: 20, last_page: 1 });
                     setMultiProductModalOpen(false);
                     setMultiProductNotice('Ek ürün talebiniz operasyon ekibine iletilecek.');
                 }
@@ -777,7 +805,7 @@ export default function MountRequestV2({
             ignore = true;
             window.clearTimeout(loadingTimer);
         };
-    }, [form.data.multiple_products, actions?.multi_product_lookup_url]);
+    }, [form.data.multiple_products, actions?.multi_product_lookup_url, multiProductPage, multiProductSearch]);
 
     useEffect(() => {
         if (!locationModalOpen) {
@@ -857,6 +885,10 @@ export default function MountRequestV2({
         setMultiProductOptions([]);
         setMultiProductModalOpen(false);
         setMultiProductNotice('');
+        setMultiProductSelectableTotal(0);
+        setMultiProductSearch('');
+        setMultiProductPage(1);
+        setMultiProductMeta({ total: 0, page: 1, per_page: 20, last_page: 1 });
         setDoorPhotoPreviews({});
         setDraftRestored(false);
     };
@@ -943,6 +975,69 @@ export default function MountRequestV2({
             },
         });
     };
+
+    const selectedInvoiceSerials = form.data.selected_invoice_serials;
+    const multiProductHasNextPage = multiProductMeta.page < multiProductMeta.last_page;
+    const multiProductHasPreviousPage = multiProductMeta.page > 1;
+    const multiProductRangeStart = multiProductOptions.length > 0
+        ? ((multiProductMeta.page - 1) * multiProductMeta.per_page) + 1
+        : 0;
+    const multiProductRangeEnd = multiProductOptions.length > 0
+        ? multiProductRangeStart + multiProductOptions.length - 1
+        : 0;
+    const selectedInvoiceSerialsPanel = selectedInvoiceSerials.length > 0 ? (
+        <div className="grid gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Seçilenler</p>
+            <div className="flex flex-wrap gap-2">
+                {selectedInvoiceSerials.map((serial) => (
+                    <span key={serial} className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-900">
+                        {serial}
+                    </span>
+                ))}
+            </div>
+        </div>
+    ) : null;
+    const multiProductListControls = (
+        <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                        {multiProductSelectableTotal} seçilebilir ürün
+                    </p>
+                    <p className="text-xs text-slate-500">
+                        {multiProductRangeStart}-{multiProductRangeEnd} arası gösteriliyor. Sayfa {multiProductMeta.page}/{multiProductMeta.last_page}
+                    </p>
+                </div>
+                <input
+                    value={multiProductSearch}
+                    onChange={(event) => {
+                        setMultiProductSearch(event.target.value);
+                        setMultiProductPage(1);
+                    }}
+                    placeholder="Seri veya ürün ara"
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-blue-300 focus:bg-white sm:max-w-xs"
+                />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                    type="button"
+                    onClick={() => setMultiProductPage((current) => Math.max(1, current - 1))}
+                    disabled={!multiProductHasPreviousPage || multiProductLoading}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    Önceki
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setMultiProductPage((current) => Math.min(multiProductMeta.last_page, current + 1))}
+                    disabled={!multiProductHasNextPage || multiProductLoading}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    Sonraki
+                </button>
+            </div>
+        </div>
+    );
 
     return (
         <>
@@ -1392,6 +1487,8 @@ export default function MountRequestV2({
                                             <p className="text-sm font-semibold text-slate-900">
                                                 Bu adreste montajını istediğiniz diğer ürünleri seçin.
                                             </p>
+                                            {selectedInvoiceSerialsPanel}
+                                            {multiProductListControls}
                                             <button
                                                 type="button"
                                                 onClick={() => setMultiProductModalOpen(true)}
@@ -1580,6 +1677,8 @@ export default function MountRequestV2({
                                     ) : null}
                                 </div>
                             ) : null}
+                            {selectedInvoiceSerialsPanel}
+                            {multiProductListControls}
                             <div className="grid gap-2">
                                 {multiProductOptions.map((item) => {
                                     const serialNumber = item.serial_number ?? '';

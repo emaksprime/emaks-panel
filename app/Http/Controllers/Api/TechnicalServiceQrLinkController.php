@@ -27,6 +27,8 @@ class TechnicalServiceQrLinkController extends Controller
             'product_model' => ['nullable', 'string', 'max:255'],
             'brand' => ['nullable', 'string', 'max:255'],
             'status' => ['nullable', 'string', 'max:32'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -60,10 +62,24 @@ class TechnicalServiceQrLinkController extends Controller
             }
         }
 
-        $links = $query->limit((int) ($filters['limit'] ?? 40))->get();
+        $perPage = min(100, max(1, (int) ($filters['per_page'] ?? $filters['limit'] ?? 25)));
+        $page = max(1, (int) ($filters['page'] ?? 1));
+        $paginator = $query->paginate($perPage, ['*'], 'page', $page);
+        $links = $paginator->getCollection()
+            ->map(fn (TechnicalServiceQrLink $link): array => $this->linkPayload($link))
+            ->values();
 
         return response()->json([
-            'links' => $links->map(fn (TechnicalServiceQrLink $link): array => $this->linkPayload($link))->values(),
+            'data' => $links,
+            'links' => $links,
+            'meta' => [
+                'total' => $paginator->total(),
+                'page' => $paginator->currentPage(),
+                'per_page' => $paginator->perPage(),
+                'last_page' => $paginator->lastPage(),
+                'from' => $paginator->firstItem(),
+                'to' => $paginator->lastItem(),
+            ],
         ]);
     }
 
@@ -112,8 +128,8 @@ class TechnicalServiceQrLinkController extends Controller
     public function bulk(Request $request, SerialProductContextResolver $resolver): JsonResponse
     {
         $data = $request->validate([
-            'csv_text' => ['nullable', 'string', 'max:200000'],
-            'file' => ['nullable', 'file', 'mimes:csv,txt', 'max:2048'],
+            'csv_text' => ['nullable', 'string', 'max:5000000'],
+            'file' => ['nullable', 'file', 'mimes:csv,txt', 'max:10240'],
         ]);
 
         $csvText = $this->nullableText($data['csv_text'] ?? null);
@@ -128,43 +144,66 @@ class TechnicalServiceQrLinkController extends Controller
             ]);
         }
 
-        $results = [];
+        $resultPreview = [];
+        $errorPreview = [];
+        $summary = [
+            'total' => 0,
+            'created' => 0,
+            'updated' => 0,
+            'skipped' => 0,
+            'failed' => 0,
+        ];
+        $previewLimit = 20;
 
         foreach ($this->parseCsvRows($csvText) as $index => $row) {
+            $summary['total']++;
+
             try {
                 [$link, $context, $created] = $this->createOrReuseLink($row, $resolver, $request, allowResolverFallback: false);
-                $results[] = [
+                $result = [
                     'row' => $index + 2,
                     'status' => $created ? 'created' : 'skipped_duplicate',
                     'message' => $created ? 'QR oluşturuldu.' : 'Aynı seri için aktif QR zaten var.',
                     'link' => $this->linkPayload($link),
                     'context' => $this->contextPayload($context),
                 ];
+                $summary[$created ? 'created' : 'skipped']++;
             } catch (ValidationException $exception) {
-                $results[] = [
+                $result = [
                     'row' => $index + 2,
                     'status' => 'failed',
                     'message' => Arr::first(Arr::flatten($exception->errors())) ?? 'Satır işlenemedi.',
                     'serial_number' => $this->nullableText($row['serial_number'] ?? null),
                 ];
+                $summary['failed']++;
             } catch (\Throwable $exception) {
-                $results[] = [
+                $result = [
                     'row' => $index + 2,
                     'status' => 'failed',
                     'message' => $exception->getMessage(),
                     'serial_number' => $this->nullableText($row['serial_number'] ?? null),
                 ];
+                $summary['failed']++;
+            }
+
+            if (count($resultPreview) < $previewLimit) {
+                $resultPreview[] = $result;
+            }
+
+            if (($result['status'] ?? null) === 'failed' && count($errorPreview) < $previewLimit) {
+                $errorPreview[] = $result;
             }
         }
 
         return response()->json([
-            'summary' => [
-                'total' => count($results),
-                'created' => count(array_filter($results, fn (array $result): bool => $result['status'] === 'created')),
-                'skipped' => count(array_filter($results, fn (array $result): bool => $result['status'] === 'skipped_duplicate')),
-                'failed' => count(array_filter($results, fn (array $result): bool => $result['status'] === 'failed')),
+            'summary' => $summary,
+            'results' => $resultPreview,
+            'errors' => $errorPreview,
+            'meta' => [
+                'result_limit' => $previewLimit,
+                'results_truncated' => $summary['total'] > $previewLimit,
+                'errors_truncated' => $summary['failed'] > $previewLimit,
             ],
-            'results' => $results,
         ]);
     }
 

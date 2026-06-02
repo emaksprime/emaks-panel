@@ -591,25 +591,60 @@ const InvoiceSerialRow = ({
 const InvoiceSerialSection = ({
   title,
   items,
+  totalCount,
   onAdd,
   onRemove,
   actionInFlight,
 }: {
   title: string
   items?: ServiceRequestInvoiceSerial[]
+  totalCount?: number
   onAdd?: (serialId: number | string) => void | Promise<void>
   onRemove?: (serialId: number | string) => void | Promise<void>
   actionInFlight?: string | null
 }) => {
+  const [search, setSearch] = useState('')
+
   if (!items || items.length === 0) {
     return null
   }
 
+  const normalizedSearch = search.trim().toLocaleLowerCase('tr-TR')
+  const filteredItems = normalizedSearch
+    ? items.filter((serial) => [
+      serial.serial_number,
+      serial.product_name,
+      serial.product_model,
+      serial.brand,
+      serial.color,
+    ].some((value) => String(value ?? '').toLocaleLowerCase('tr-TR').includes(normalizedSearch)))
+    : items
+  const effectiveTotal = totalCount ?? items.length
+  const hasMore = effectiveTotal > items.length
+
   return (
     <section className="grid gap-3">
-      <p className="text-sm font-semibold text-slate-900">{title}</p>
+      <div className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">{title}</p>
+          <p className="mt-1 text-xs font-medium text-slate-500">
+            Toplam {effectiveTotal} kayıt. {hasMore ? `İlk ${items.length} kayıt gösteriliyor.` : `${items.length} kayıt gösteriliyor.`}
+          </p>
+        </div>
+        <Input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Seri veya ürün ara"
+          className="sm:max-w-xs"
+        />
+      </div>
+      {hasMore ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
+          Liste performans için sınırlandı. Gerekirse seri sorgusunu yenileyip arama ile daraltın.
+        </div>
+      ) : null}
       <div className="grid gap-3">
-        {items.map((serial, index) => (
+        {filteredItems.map((serial, index) => (
           <InvoiceSerialRow
             key={`${serial.serial_number ?? 'serial'}-${index}`}
             serial={serial}
@@ -618,6 +653,11 @@ const InvoiceSerialSection = ({
             actionInFlight={actionInFlight}
           />
         ))}
+        {filteredItems.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+            Aramaya uygun seri bulunamadı.
+          </div>
+        ) : null}
       </div>
     </section>
   )
@@ -933,7 +973,7 @@ export function ServiceRequestDetails({
   }
   const hasPortalActionNeedingOps = openAppointmentProposals.length > 0 || jobRejections.length > 0 || customerApprovalRejections.length > 0 || supportRequests.length > 0 || completionSubmissions.length > 0
   const [invoiceSerialsOpenByRequest, setInvoiceSerialsOpenByRequest] = useState<Record<string, boolean>>({})
-  const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? (!isFinalCheckStage && Boolean(invoiceSerials?.has_multi_product))
+  const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? false
   const setInvoiceSerialsOpen = (open: boolean) => {
     setInvoiceSerialsOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
@@ -2925,10 +2965,10 @@ export function ServiceRequestDetails({
               Fatura seri kontrolü bekliyor. Tekrar kontrol et aksiyonu ile sorgu yenilenebilir.
             </div>
           ) : null}
-          <InvoiceSerialSection title="Talep edilen seriler" items={invoiceSerials?.selected_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
-          <InvoiceSerialSection title="Aynı faturadaki diğer seriler" items={invoiceSerials?.other_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
-          <InvoiceSerialSection title="Müşteriye gösterilmeyen seriler" items={invoiceSerials?.hidden_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
-          <InvoiceSerialSection title="İade gelen seriler" items={invoiceSerials?.returned_serials} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="Talep edilen seriler" items={invoiceSerials?.selected_serials} totalCount={invoiceSerials?.selected_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="Aynı faturadaki diğer seriler" items={invoiceSerials?.other_serials} totalCount={invoiceSerials?.other_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="Müşteriye gösterilmeyen seriler" items={invoiceSerials?.hidden_serials} totalCount={invoiceSerials?.hidden_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="İade gelen seriler" items={invoiceSerials?.returned_serials} totalCount={invoiceSerials?.returned_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
           {!(invoiceSerials?.all_invoice_serials?.length) && !invoiceSerials?.check_error ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
               Fatura seri hareketi henüz kaydedilmedi.

@@ -1384,6 +1384,36 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertOk();
     }
 
+    public function test_ops_related_serials_are_bounded_in_detail_payload(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SERIAL-BOUND',
+        ]);
+
+        foreach (range(1, 35) as $index) {
+            $request->requestSerials()->create([
+                'mrn' => $request->mrn,
+                'serial_number' => sprintf('OPS-RELATED-%03d', $index),
+                'product_name' => 'Ops Seri Test',
+                'customer_selected' => false,
+                'operation_added' => false,
+                'customer_visible' => true,
+                'customer_selectable' => true,
+                'is_returned' => false,
+            ]);
+        }
+
+        $this->actingAs($user)
+            ->getJson("/api/technical-service/requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonCount(20, 'request.invoice_serials.other_serials')
+            ->assertJsonCount(20, 'request.invoice_serials.all_invoice_serials')
+            ->assertJsonPath('request.invoice_serials.other_serial_count', 35)
+            ->assertJsonPath('request.invoice_serials.all_invoice_serial_count', 35)
+            ->assertJsonPath('request.invoice_serials.display_limit', 20);
+    }
+
     public function test_invoice_serial_recheck_endpoint_updates_operation_payload(): void
     {
         $user = $this->adminUser();

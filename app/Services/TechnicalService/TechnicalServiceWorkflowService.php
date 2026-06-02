@@ -1597,16 +1597,22 @@ class TechnicalServiceWorkflowService
                 && ! (bool) ($row['customer_selected'] ?? false)
                 && ! (bool) ($row['operation_added'] ?? false))
             ->count();
+        $displayLimit = 20;
 
         return [
-            'selected_serials' => $selected->all(),
-            'other_serials' => $other->all(),
-            'hidden_serials' => $hidden->all(),
-            'returned_serials' => $returned->all(),
-            'all_invoice_serials' => $rows->all(),
+            'selected_serials' => $selected->take($displayLimit)->all(),
+            'other_serials' => $other->take($displayLimit)->all(),
+            'hidden_serials' => $hidden->take($displayLimit)->all(),
+            'returned_serials' => $returned->take($displayLimit)->all(),
+            'all_invoice_serials' => $rows->take($displayLimit)->all(),
+            'selected_serial_count' => $selected->count(),
+            'other_serial_count' => $other->count(),
+            'hidden_serial_count' => $hidden->count(),
             'added_serial_count' => $addedCount,
             'addable_serial_count' => $addableCount,
             'returned_serial_count' => $returned->count(),
+            'all_invoice_serial_count' => $rows->count(),
+            'display_limit' => $displayLimit,
             'has_returned' => $returned->isNotEmpty(),
             'has_multi_product' => $rows->count() > 1
                 || $request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT,

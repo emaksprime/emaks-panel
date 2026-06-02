@@ -285,9 +285,14 @@ export type ServiceRequestInvoiceSerials = {
   hidden_serials?: ServiceRequestInvoiceSerial[]
   returned_serials?: ServiceRequestInvoiceSerial[]
   all_invoice_serials?: ServiceRequestInvoiceSerial[]
+  selected_serial_count?: number
+  other_serial_count?: number
+  hidden_serial_count?: number
   added_serial_count?: number
   addable_serial_count?: number
   returned_serial_count?: number
+  all_invoice_serial_count?: number
+  display_limit?: number
   has_returned?: boolean
   has_multi_product?: boolean
   check_error?: string | null

@@ -203,6 +203,11 @@ class PublicMountRequestController extends Controller
         MountSessionEnrichmentService $enrichmentService,
         MikroInvoiceSerialsService $invoiceSerialsService,
     ) {
+        $filters = $request->validate([
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:50'],
+            'search' => ['nullable', 'string', 'max:120'],
+        ]);
         $link = TechnicalServiceQrLink::findActiveByToken($token);
 
         if (! $link instanceof TechnicalServiceQrLink) {
@@ -240,7 +245,29 @@ class PublicMountRequestController extends Controller
             },
             array_filter($selectableRows, fn (array $row): bool => (bool) ($row['customer_selectable'] ?? false)),
         ));
-        $hasSelectableSerials = count($publicRows) > 0;
+        $selectableTotal = count($publicRows);
+        $search = $this->nullableString($filters['search'] ?? null);
+
+        if ($search !== null) {
+            $needle = mb_strtolower($search, 'UTF-8');
+            $publicRows = array_values(array_filter($publicRows, function (array $row) use ($needle): bool {
+                $haystack = mb_strtolower(implode(' ', array_filter([
+                    $row['serial_number'] ?? null,
+                    $row['product_name'] ?? null,
+                    $row['product_model'] ?? null,
+                ], fn (mixed $value): bool => $value !== null && $value !== '')), 'UTF-8');
+
+                return str_contains($haystack, $needle);
+            }));
+        }
+
+        $page = max(1, (int) ($filters['page'] ?? 1));
+        $perPage = min(50, max(1, (int) ($filters['per_page'] ?? 20)));
+        $filteredTotal = count($publicRows);
+        $lastPage = max(1, (int) ceil($filteredTotal / $perPage));
+        $page = min($page, $lastPage);
+        $publicRows = array_slice($publicRows, ($page - 1) * $perPage, $perPage);
+        $hasSelectableSerials = $selectableTotal > 0;
         $returnedCount = count(array_filter($allRows, fn (mixed $row): bool => is_array($row)
             && mb_strtoupper((string) ($row['serial_number'] ?? ''), 'UTF-8') !== $primarySerial
             && (bool) ($row['is_returned'] ?? false)
@@ -258,10 +285,17 @@ class PublicMountRequestController extends Controller
             'selectable_serials' => $publicRows,
             'items' => $publicRows,
             'has_selectable_serials' => $hasSelectableSerials,
-            'operation_only_count' => max(0, $operationRowsCount - count($publicRows)),
+            'operation_only_count' => max(0, $operationRowsCount - $selectableTotal),
             'returned_count' => $returnedCount,
             'blocked_count' => $blockedCount,
             'total_count' => $operationRowsCount,
+            'selectable_total' => $selectableTotal,
+            'meta' => [
+                'total' => $filteredTotal,
+                'page' => $page,
+                'per_page' => $perPage,
+                'last_page' => $lastPage,
+            ],
             'message' => $hasSelectableSerials ? null : 'Ek ürün talebiniz operasyon ekibine iletilecek.',
         ]);
     }
