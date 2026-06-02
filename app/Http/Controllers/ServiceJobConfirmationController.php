@@ -32,97 +32,110 @@ class ServiceJobConfirmationController extends Controller
         $confirmation = $this->confirmation($token);
         $note = trim((string) $request->input('customer_note', ''));
 
-        if ($confirmation->status !== TechnicalServiceCustomerConfirmation::STATUS_APPROVED) {
-            $confirmation->forceFill([
-                'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
-                'approved_at' => now(),
-                'rejected_at' => null,
-                'customer_note' => $note !== '' ? $note : null,
+        if ($confirmation->status === TechnicalServiceCustomerConfirmation::STATUS_APPROVED) {
+            return response($this->html($confirmation->refresh(), 'approved'));
+        }
+
+        abort_unless(
+            $confirmation->status === TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+            410,
+            'Bu onay bağlantısı artık geçerli değil.'
+        );
+
+        $approvedAt = now();
+        $confirmation->forceFill([
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+            'approved_at' => $approvedAt,
+            'rejected_at' => null,
+            'customer_note' => $note !== '' ? $note : null,
+            'payload' => [
+                ...(is_array($confirmation->payload) ? $confirmation->payload : []),
+                'approved_from' => 'public_confirmation_link',
+                'approved_at' => $approvedAt->toIso8601String(),
+            ],
+        ])->save();
+
+        $job = $confirmation->request;
+        $fromStatus = $job->workflow_status;
+        $pendingCompletion = $job->partnerJobActions()
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
+            ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->latest()
+            ->first();
+        $jobPayload = [
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approval_method' => 'customer_link',
+            'customer_closure_approved_at' => $approvedAt,
+            'customer_closure_approval_code' => substr($confirmation->token, 0, 12),
+        ];
+
+        if ($pendingCompletion instanceof TechnicalServicePartnerJobAction) {
+            $jobPayload['status'] = 'Son Kontrol';
+            $jobPayload['workflow_status'] = 'Son Kontrol';
+            $jobPayload['field_status'] = 'son_kontrol';
+            $jobPayload['completed_at'] = null;
+            $jobPayload['installation_completed_at'] = null;
+            $jobPayload['field_completed_at'] = null;
+            $jobPayload['technician_completed_at'] = null;
+        }
+
+        $job->forceFill($jobPayload)->save();
+
+        $payload = is_array($confirmation->payload) ? $confirmation->payload : [];
+        $sourceAction = isset($payload['partner_action_id'])
+            ? TechnicalServicePartnerJobAction::query()->find($payload['partner_action_id'])
+            : null;
+
+        if ($sourceAction instanceof TechnicalServicePartnerJobAction) {
+            $sourcePayload = is_array($sourceAction->payload) ? $sourceAction->payload : [];
+            $sourceAction->forceFill([
+                'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
                 'payload' => [
-                    ...(is_array($confirmation->payload) ? $confirmation->payload : []),
-                    'approved_from' => 'public_confirmation_link',
-                    'approved_at' => now()->toIso8601String(),
+                    ...$sourcePayload,
+                    'confirmation_status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+                    'customer_approved_at' => $approvedAt->toIso8601String(),
+                    'ops_final_check_required' => $pendingCompletion instanceof TechnicalServicePartnerJobAction,
                 ],
             ])->save();
 
-            $job = $confirmation->request;
-            $pendingCompletion = $job->partnerJobActions()
-                ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
-                ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
-                ->latest()
-                ->first();
-            $jobPayload = [
-                'customer_closure_approval_status' => 'onaylandı',
-                'customer_closure_approval_method' => 'customer_link',
-                'customer_closure_approved_at' => now(),
-                'customer_closure_approval_code' => substr($confirmation->token, 0, 12),
-            ];
-
-            if ($pendingCompletion instanceof TechnicalServicePartnerJobAction) {
-                $jobPayload['workflow_status'] = 'Müşteri Kapanış Onayı Bekleyen';
-                $jobPayload['status'] = 'Son Kontrol';
-                $jobPayload['completed_at'] = null;
-                $jobPayload['technician_completed_at'] = null;
-            }
-
-            $job->forceFill($jobPayload)->save();
-
-            $payload = is_array($confirmation->payload) ? $confirmation->payload : [];
-            $sourceAction = isset($payload['partner_action_id'])
-                ? TechnicalServicePartnerJobAction::query()->find($payload['partner_action_id'])
-                : null;
-
-            if ($sourceAction instanceof TechnicalServicePartnerJobAction) {
-                $sourcePayload = is_array($sourceAction->payload) ? $sourceAction->payload : [];
-                $sourceAction->forceFill([
-                    'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
-                    'payload' => [
-                        ...$sourcePayload,
-                        'confirmation_status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
-                        'customer_approved_at' => now()->toIso8601String(),
-                        'ops_final_check_required' => $pendingCompletion instanceof TechnicalServicePartnerJobAction,
-                    ],
-                ])->save();
-
-                $approvalAction = TechnicalServicePartnerJobAction::query()->create([
-                    'technical_service_request_id' => $job->id,
-                    'partner_id' => $sourceAction->partner_id,
-                    'user_id' => $sourceAction->user_id,
-                    'technical_service_technician_id' => $sourceAction->technical_service_technician_id,
-                    'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
-                    'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
-                    'payload' => [
-                        'confirmation_id' => $confirmation->id,
-                        'customer_note' => $confirmation->customer_note,
-                    ],
-                    'note' => 'Müşteri montajı onayladı.',
-                ]);
-
-                $this->messages->send(
-                    'customer_installation_approved_ops',
-                    'ops',
-                    null,
-                    "Müşteri montajı onayladı. MRN: {$job->mrn}.",
-                    ['confirmation_id' => $confirmation->id],
-                    $job,
-                    null,
-                    $approvalAction,
-                );
-            }
-
-            $job->events()->create([
-                'event_type' => 'customer_installation_approved',
-                'title' => 'Müşteri montajı onayladı',
-                'note' => $note !== '' ? $note : null,
-                'from_status' => $job->workflow_status,
-                'to_status' => $job->workflow_status,
-                'author_user_id' => null,
-                'metadata' => [
+            $approvalAction = TechnicalServicePartnerJobAction::query()->create([
+                'technical_service_request_id' => $job->id,
+                'partner_id' => $sourceAction->partner_id,
+                'user_id' => $sourceAction->user_id,
+                'technical_service_technician_id' => $sourceAction->technical_service_technician_id,
+                'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
+                'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                'payload' => [
                     'confirmation_id' => $confirmation->id,
-                    'source' => 'public_confirmation_link',
+                    'customer_note' => $confirmation->customer_note,
                 ],
+                'note' => 'Müşteri montajı onayladı.',
             ]);
+
+            $this->messages->send(
+                'customer_installation_approved_ops',
+                'ops',
+                null,
+                "Müşteri montajı onayladı. MRN: {$job->mrn}.",
+                ['confirmation_id' => $confirmation->id],
+                $job,
+                null,
+                $approvalAction,
+            );
         }
+
+        $job->events()->create([
+            'event_type' => 'customer_installation_approved',
+            'title' => 'Müşteri montajı onayladı',
+            'note' => $note !== '' ? $note : null,
+            'from_status' => $fromStatus,
+            'to_status' => $job->workflow_status,
+            'author_user_id' => null,
+            'metadata' => [
+                'confirmation_id' => $confirmation->id,
+                'source' => 'public_confirmation_link',
+            ],
+        ]);
 
         return response($this->html($confirmation->refresh(), 'approved'));
     }
@@ -134,84 +147,94 @@ class ServiceJobConfirmationController extends Controller
             'customer_note' => ['required', 'string', 'min:3', 'max:2000'],
         ]);
 
-        if ($confirmation->status !== TechnicalServiceCustomerConfirmation::STATUS_REJECTED) {
-            $confirmation->forceFill([
-                'status' => TechnicalServiceCustomerConfirmation::STATUS_REJECTED,
-                'approved_at' => null,
-                'rejected_at' => now(),
-                'customer_note' => $data['customer_note'],
-                'payload' => [
-                    ...(is_array($confirmation->payload) ? $confirmation->payload : []),
-                    'rejected_from' => 'public_confirmation_link',
-                    'rejected_at' => now()->toIso8601String(),
-                ],
-            ])->save();
-
-            $job = $confirmation->request;
-            $job->forceFill([
-                'customer_closure_approval_status' => 'reddedildi',
-                'customer_closure_approval_method' => 'customer_link',
-                'customer_closure_approved_at' => null,
-                'completion_block_reason' => 'Müşteri montaj onayını reddetti.',
-            ])->save();
-
-            $payload = is_array($confirmation->payload) ? $confirmation->payload : [];
-            $sourceAction = isset($payload['partner_action_id'])
-                ? TechnicalServicePartnerJobAction::query()->find($payload['partner_action_id'])
-                : null;
-
-            if ($sourceAction instanceof TechnicalServicePartnerJobAction) {
-                $sourcePayload = is_array($sourceAction->payload) ? $sourceAction->payload : [];
-                $sourceAction->forceFill([
-                    'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
-                    'payload' => [
-                        ...$sourcePayload,
-                        'confirmation_status' => TechnicalServiceCustomerConfirmation::STATUS_REJECTED,
-                        'customer_rejected_at' => now()->toIso8601String(),
-                        'customer_rejection_note' => $data['customer_note'],
-                    ],
-                ])->save();
-
-                $rejectedAction = TechnicalServicePartnerJobAction::query()->create([
-                    'technical_service_request_id' => $job->id,
-                    'partner_id' => $sourceAction->partner_id,
-                    'user_id' => $sourceAction->user_id,
-                    'technical_service_technician_id' => $sourceAction->technical_service_technician_id,
-                    'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
-                    'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
-                    'payload' => [
-                        'confirmation_id' => $confirmation->id,
-                        'customer_note' => $data['customer_note'],
-                        'ops_review_required' => true,
-                    ],
-                    'note' => $data['customer_note'],
-                ]);
-
-                $this->messages->send(
-                    'customer_installation_rejected_ops',
-                    'ops',
-                    null,
-                    "Müşteri montaj onayını reddetti. MRN: {$job->mrn}. Açıklama: {$data['customer_note']}",
-                    ['confirmation_id' => $confirmation->id],
-                    $job,
-                    null,
-                    $rejectedAction,
-                );
-            }
-
-            $job->events()->create([
-                'event_type' => 'customer_installation_rejected',
-                'title' => 'Müşteri montaj onayını reddetti',
-                'note' => $data['customer_note'],
-                'from_status' => $job->workflow_status,
-                'to_status' => $job->workflow_status,
-                'author_user_id' => null,
-                'metadata' => [
-                    'confirmation_id' => $confirmation->id,
-                    'source' => 'public_confirmation_link',
-                ],
-            ]);
+        if ($confirmation->status === TechnicalServiceCustomerConfirmation::STATUS_REJECTED) {
+            return response($this->html($confirmation->refresh(), 'rejected'));
         }
+
+        abort_unless(
+            $confirmation->status === TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+            410,
+            'Bu onay bağlantısı artık geçerli değil.'
+        );
+
+        $rejectedAt = now();
+        $confirmation->forceFill([
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_REJECTED,
+            'approved_at' => null,
+            'rejected_at' => $rejectedAt,
+            'customer_note' => $data['customer_note'],
+            'payload' => [
+                ...(is_array($confirmation->payload) ? $confirmation->payload : []),
+                'rejected_from' => 'public_confirmation_link',
+                'rejected_at' => $rejectedAt->toIso8601String(),
+            ],
+        ])->save();
+
+        $job = $confirmation->request;
+        $fromStatus = $job->workflow_status;
+        $job->forceFill([
+            'customer_closure_approval_status' => 'reddedildi',
+            'customer_closure_approval_method' => 'customer_link',
+            'customer_closure_approved_at' => null,
+            'completion_block_reason' => 'Müşteri montaj onayını reddetti.',
+        ])->save();
+
+        $payload = is_array($confirmation->payload) ? $confirmation->payload : [];
+        $sourceAction = isset($payload['partner_action_id'])
+            ? TechnicalServicePartnerJobAction::query()->find($payload['partner_action_id'])
+            : null;
+
+        if ($sourceAction instanceof TechnicalServicePartnerJobAction) {
+            $sourcePayload = is_array($sourceAction->payload) ? $sourceAction->payload : [];
+            $sourceAction->forceFill([
+                'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+                'payload' => [
+                    ...$sourcePayload,
+                    'confirmation_status' => TechnicalServiceCustomerConfirmation::STATUS_REJECTED,
+                    'customer_rejected_at' => $rejectedAt->toIso8601String(),
+                    'customer_rejection_note' => $data['customer_note'],
+                ],
+            ])->save();
+
+            $rejectedAction = TechnicalServicePartnerJobAction::query()->create([
+                'technical_service_request_id' => $job->id,
+                'partner_id' => $sourceAction->partner_id,
+                'user_id' => $sourceAction->user_id,
+                'technical_service_technician_id' => $sourceAction->technical_service_technician_id,
+                'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+                'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+                'payload' => [
+                    'confirmation_id' => $confirmation->id,
+                    'customer_note' => $data['customer_note'],
+                    'ops_review_required' => true,
+                ],
+                'note' => $data['customer_note'],
+            ]);
+
+            $this->messages->send(
+                'customer_installation_rejected_ops',
+                'ops',
+                null,
+                "Müşteri montaj onayını reddetti. MRN: {$job->mrn}. Açıklama: {$data['customer_note']}",
+                ['confirmation_id' => $confirmation->id],
+                $job,
+                null,
+                $rejectedAction,
+            );
+        }
+
+        $job->events()->create([
+            'event_type' => 'customer_installation_rejected',
+            'title' => 'Müşteri montaj onayını reddetti',
+            'note' => $data['customer_note'],
+            'from_status' => $fromStatus,
+            'to_status' => $job->workflow_status,
+            'author_user_id' => null,
+            'metadata' => [
+                'confirmation_id' => $confirmation->id,
+                'source' => 'public_confirmation_link',
+            ],
+        ]);
 
         return response($this->html($confirmation->refresh(), 'rejected'));
     }

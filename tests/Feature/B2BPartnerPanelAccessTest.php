@@ -3492,6 +3492,13 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
             ->firstOrFail();
         $this->assertNull($completionAction->note);
+
+        $job->refresh();
+        $this->assertSame('Son Kontrol', $job->status);
+        $this->assertSame('Son Kontrol', $job->workflow_status);
+        $this->assertSame('son_kontrol', $job->field_status);
+        $this->assertNull($job->completed_at);
+        $this->assertNull($job->technician_completed_at);
     }
 
     public function test_customer_approval_link_is_required_for_partner_completion(): void
@@ -3526,6 +3533,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('role_code', 'b2b_locksmith')
             ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
             ->firstOrFail();
+        $oldConfirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $job->id,
+            'token' => 'old-partner-approval-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+            'payload' => ['partner_id' => $partner->id],
+        ]);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
@@ -3570,11 +3583,25 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
             ->assertJsonPath('dispatch.dispatch_status', 'sent')
             ->assertJsonPath('dispatch.target_phone', '905467647428')
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false)
             ->assertJsonPath('job.customer_otp_request.payload.message_payload.dispatch_status', 'sent')
             ->assertJsonPath('message', 'WhatsApp onay mesajı gönderildi.');
 
+        $this->assertDatabaseHas('technical_service_customer_confirmations', [
+            'id' => $oldConfirmation->id,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
+        ]);
+        $this->post("/service-job-confirmation/{$oldConfirmation->token}/approve")
+            ->assertStatus(410);
+        $this->assertDatabaseMissing('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
+        ]);
+
         $confirmation = TechnicalServiceCustomerConfirmation::query()
             ->where('technical_service_request_id', $job->id)
+            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+            ->latest('id')
             ->firstOrFail();
         $this->assertSame(TechnicalServiceCustomerConfirmation::STATUS_PENDING, $confirmation->status);
         $messageText = (string) ($confirmation->payload['message_payload']['message_text'] ?? '');
@@ -3646,6 +3673,187 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $job->refresh();
         $this->assertSame('tamamlandı', $job->checklist_status);
+        $this->assertSame('Son Kontrol', $job->status);
+        $this->assertSame('Son Kontrol', $job->workflow_status);
+        $this->assertSame('son_kontrol', $job->field_status);
+        $this->assertNull($job->completed_at);
+    }
+
+    public function test_mrn_like_sebrsovsl3_flow_docs_approval_completion_submit_reaches_final_review(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config([
+            'services.partner_portal.public_url' => 'https://portal.test',
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['ok' => true], 200),
+        ]);
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'SEBRSOVSL3 Regression Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'SEBRSOVSL3 Regression Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-SEBRSOVSL3-REGRESSION', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'field_status' => 'planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+            'customer_phone' => '05551112233',
+        ]);
+        $this->createPortalFieldDocument($job, 'before_photo');
+        $this->createPortalFieldDocument($job, 'after_photo');
+        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/customer-otp-request", [
+                'note' => 'Müşteri onayı alındıktan sonra tamamlama gönderilecek.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false);
+
+        $confirmation = TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+            ->latest('id')
+            ->firstOrFail();
+
+        $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
+            'customer_note' => 'Montaj onaylandı.',
+        ])->assertOk();
+
+        $job->refresh();
+        $this->assertSame('onaylandı', $job->customer_closure_approval_status);
+        $this->assertSame('Randevulu', $job->status);
+        $this->assertSame('Planlı', $job->workflow_status);
+        $this->assertNull($job->completed_at);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'final_check')
+            ->assertJsonPath('job.action_state', 'final_check_waiting');
+
+        $job->refresh();
+        $this->assertSame('Son Kontrol', $job->status);
+        $this->assertSame('Son Kontrol', $job->workflow_status);
+        $this->assertSame('son_kontrol', $job->field_status);
+        $this->assertNull($job->completed_at);
+        $this->assertNull($job->technician_completed_at);
+        $state = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
+        $this->assertTrue($state['is_pending_final_check']);
+        $this->assertSame('final_check', $state['ops_column']);
+        $this->assertSame('final_check', $state['partner_column']);
+    }
+
+    public function test_customer_approval_reject_blocks_completion_and_raises_ops_action(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config([
+            'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+            'services.evolution.real_send_enabled' => true,
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['ok' => true], 200),
+        ]);
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Reject Approval Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Reject Approval Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-CUSTOMER-REJECT-BLOCKS-COMPLETE', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $this->createPortalFieldDocument($job, 'before_photo');
+        $this->createPortalFieldDocument($job, 'after_photo');
+        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+        $otpAction = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_SUBMITTED,
+            'payload' => ['note' => 'Müşteri onay bağlantısı hazırlandı.'],
+            'note' => 'Müşteri onay bağlantısı hazırlandı.',
+        ]);
+        $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $job->id,
+            'token' => 'customer-reject-blocks-complete-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_PENDING,
+            'payload' => ['partner_action_id' => $otpAction->id],
+        ]);
+
+        $this->post("/service-job-confirmation/{$confirmation->token}/reject", [
+            'customer_note' => 'Montajı kabul etmiyorum.',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('technical_service_customer_confirmations', [
+            'id' => $confirmation->id,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_REJECTED,
+        ]);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]);
+        $job->refresh();
+        $this->assertSame('reddedildi', $job->customer_closure_approval_status);
+        $this->assertSame('Müşteri montaj onayını reddetti.', $job->completion_block_reason);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('customer_confirmation');
     }
 
     public function test_ops_completion_accepts_server_checked_portal_checklist_without_visible_backend_steps(): void
@@ -3779,7 +3987,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertDatabaseHas('technical_service_requests', [
             'id' => $job->id,
             'status' => 'Son Kontrol',
-            'workflow_status' => 'Müşteri Kapanış Onayı Bekleyen',
+            'workflow_status' => 'Son Kontrol',
+            'field_status' => 'son_kontrol',
             'completed_at' => null,
         ]);
         $this->assertDatabaseHas('technical_service_partner_job_actions', [

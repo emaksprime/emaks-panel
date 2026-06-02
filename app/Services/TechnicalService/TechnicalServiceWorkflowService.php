@@ -135,6 +135,7 @@ class TechnicalServiceWorkflowService
             'Parça Bekleniyor' => ['Randevu Planlandı', 'Belge / Fotoğraf Bekleyen', 'Beklemede'],
             'Belge / Fotoğraf Bekleyen' => ['Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı'],
             'Müşteri Kapanış Onayı Bekleyen' => ['Tamamlandı', 'Belge / Fotoğraf Bekleyen'],
+            'Son Kontrol' => ['Tamamlandı', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'],
             'Tamamlandı' => ['Yeni Talep'],
             'İptal' => ['Yeni Talep'],
         ];
@@ -312,6 +313,7 @@ class TechnicalServiceWorkflowService
             'parcabekleniyor' => 'Parça Bekleniyor',
             'belgefotografbekleyen' => 'Belge / Fotoğraf Bekleyen',
             'musterikapanisonayibekleyen' => 'Müşteri Kapanış Onayı Bekleyen',
+            'sonkontrol' => 'Son Kontrol',
             'tamamlandi' => 'Tamamlandı',
             'iptal' => 'İptal',
         ];
@@ -798,7 +800,7 @@ class TechnicalServiceWorkflowService
                 break;
 
             case 'complete':
-                $this->assertFieldWorkflowStatus($current, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen']);
+                $this->assertFieldWorkflowStatus($current, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Son Kontrol']);
                 return $this->completeFieldWorkflow($request, $payload, $user, $old, $current);
 
             default:

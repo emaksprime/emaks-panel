@@ -323,6 +323,14 @@ class PartnerServiceJobController extends Controller
             ];
 
             $job->forceFill([
+                'status' => 'Son Kontrol',
+                'workflow_status' => 'Son Kontrol',
+                'field_status' => 'son_kontrol',
+                'completed_at' => null,
+                'installation_completed_at' => null,
+                'field_completed_at' => null,
+                'technician_completed_at' => null,
+                'completion_block_reason' => null,
                 'checklist_payload' => $this->technicalChecklistPayload(),
                 'checklist_status' => 'tamamlandı',
                 'checklist_completed_at' => now(),
@@ -447,6 +455,11 @@ class PartnerServiceJobController extends Controller
         ]);
 
         [$action, $dispatchSummary] = DB::transaction(function () use ($job, $partner, $user, $data): array {
+            TechnicalServiceCustomerConfirmation::query()
+                ->where('technical_service_request_id', $job->id)
+                ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+                ->update(['status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED]);
+
             $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
                 'technical_service_request_id' => $job->id,
                 'token' => Str::random(64),
@@ -1102,13 +1115,15 @@ class PartnerServiceJobController extends Controller
      */
     private function hasCustomerConfirmation(TechnicalServiceRequest $job, array $data): bool
     {
-        if (in_array($job->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±', 'onaylandÃ„Â±'], true)) {
-            return true;
+        $latestConfirmation = $job->customerConfirmations()
+            ->latest('id')
+            ->first();
+
+        if ($latestConfirmation instanceof TechnicalServiceCustomerConfirmation) {
+            return $latestConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_APPROVED;
         }
 
-        return $job->customerConfirmations()
-            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED)
-            ->exists();
+        return in_array($job->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±', 'onaylandÃ„Â±'], true);
     }
 
     private function isPortalFieldDocument(TechnicalServiceRequestUpload $upload): bool

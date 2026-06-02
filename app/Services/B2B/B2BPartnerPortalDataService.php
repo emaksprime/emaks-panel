@@ -315,10 +315,9 @@ class B2BPartnerPortalDataService
         $earningSummary = $this->earningSummary($request, $assignmentOffer);
         $photoReadiness = $this->portalPhotoReadiness($request);
         $latestCustomerConfirmation = $request->customerConfirmations->first();
-        $approvedCustomerConfirmation = $request->customerConfirmations
-            ->firstWhere('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED);
-        $customerConfirmationReady = in_array($request->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±'], true)
-            || $approvedCustomerConfirmation instanceof TechnicalServiceCustomerConfirmation;
+        $customerConfirmationReady = $latestCustomerConfirmation instanceof TechnicalServiceCustomerConfirmation
+            ? $latestCustomerConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_APPROVED
+            : in_array($request->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±'], true);
         $completionRequirements = [
             'door_photos_required' => $photoReadiness['required'],
             'door_photos_uploaded' => $photoReadiness['count'],
