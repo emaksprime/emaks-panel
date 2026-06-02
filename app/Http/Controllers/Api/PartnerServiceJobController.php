@@ -507,6 +507,7 @@ class PartnerServiceJobController extends Controller
                     'confirmation_id' => $confirmation->id,
                     'whatsapp_url' => $whatsappUrl,
                     'public_url_warning' => $publicUrlWarning,
+                    'manual_ui_send' => true,
                 ],
                 $job,
                 $user,
@@ -1234,6 +1235,10 @@ class PartnerServiceJobController extends Controller
 
         if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE) {
             return 'Bu mesaj daha önce gönderildi; tekrar WhatsApp gönderilmedi.';
+        }
+
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_RATE_LIMITED) {
+            return 'WhatsApp gönderimi güvenlik limiti nedeniyle bastırıldı. Biraz sonra tekrar deneyin.';
         }
 
         if (in_array(($summary['dispatch_status'] ?? null), [

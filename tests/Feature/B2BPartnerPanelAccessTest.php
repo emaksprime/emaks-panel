@@ -3554,6 +3554,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
             'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
@@ -3688,6 +3689,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
             'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
@@ -3804,6 +3806,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
             'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
         ]);
         Http::fake([
             'https://n8n.test/*' => Http::response(['ok' => true], 200),
@@ -4028,6 +4031,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
             'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
             'services.partner_portal.public_url' => 'https://panel.test',
         ]);
         Http::fake([

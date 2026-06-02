@@ -44,7 +44,13 @@ return [
         'real_send_enabled' => env('EVOLUTION_REAL_SEND_ENABLED', false),
         'allow_test_fixture_send' => env('EVOLUTION_ALLOW_TEST_FIXTURE_SEND', false),
         'allow_browser_smoke_send' => env('EVOLUTION_ALLOW_BROWSER_SMOKE_SEND', false),
-        'idempotency_window_minutes' => env('EVOLUTION_IDEMPOTENCY_WINDOW_MINUTES', 10),
+        'allow_unit_test_http_fake' => false,
+        'idempotency_window_minutes' => env('EVOLUTION_IDEMPOTENCY_WINDOW_MINUTES', 30),
+        'target_min_seconds' => env('EVOLUTION_TARGET_MIN_SECONDS', 5),
+        'test_phone_min_seconds' => env('EVOLUTION_TEST_PHONE_MIN_SECONDS', 20),
+        'test_phone_window_minutes' => env('EVOLUTION_TEST_PHONE_WINDOW_MINUTES', 10),
+        'test_phone_window_max' => env('EVOLUTION_TEST_PHONE_WINDOW_MAX', 5),
+        'test_phone_daily_max' => env('EVOLUTION_TEST_PHONE_DAILY_MAX', 20),
         'customer_approval_text' => env(
             'TECHNICAL_SERVICE_CUSTOMER_APPROVAL_TEXT',
             'Montaj işleminin tamamlandığını ve montaj sonrası görünür hasar veya kusur bulunmadığını kontrol ederek onay verebilirsiniz.'

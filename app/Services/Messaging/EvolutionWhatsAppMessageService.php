@@ -16,6 +16,15 @@ use Throwable;
 
 class EvolutionWhatsAppMessageService
 {
+    private const TEST_FIXTURE_MRN_PREFIXES = [
+        'MRN-TEST',
+        'MRN-ACTION',
+        'MRN-PR88',
+        'ACCEPT-',
+        'TEST-',
+        'SMOKE-',
+    ];
+
     /**
      * @param  array<string, mixed>  $context
      */
@@ -75,6 +84,18 @@ class EvolutionWhatsAppMessageService
                 'contract' => 'EMAKS_Evo_WhatsApp_HTTPExact_AllMessages',
             ],
         ];
+        $payloadHash = $this->payloadHash($payload);
+        $idempotencyKey = $this->idempotencyKey(
+            $event,
+            $targetType,
+            $resolvedPhone,
+            $payloadHash,
+            $request,
+            $assignmentOffer,
+            $earning,
+        );
+        $payload['payload_hash'] = $payloadHash;
+        $payload['idempotency_key'] = $idempotencyKey;
 
         $dispatch = TechnicalServiceMessageDispatch::query()->create([
             'event' => $event,
@@ -96,16 +117,26 @@ class EvolutionWhatsAppMessageService
             return $this->markSuppressed($dispatch, $suppression['status'], $suppression['message']);
         }
 
-        if (! (bool) ($context['force_resend'] ?? false)) {
-            $duplicate = $this->recentSentDuplicate($dispatch, $event, $targetType, $resolvedPhone, $request, $assignmentOffer, $earning);
+        if (! $this->manualForceResend($context)) {
+            $duplicate = $this->recentSentDuplicate($dispatch, $idempotencyKey, $resolvedPhone);
             if ($duplicate instanceof TechnicalServiceMessageDispatch) {
                 return $this->markSuppressed(
                     $dispatch,
                     TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE,
-                    'Bu mesaj son 10 dakika içinde gönderildi.',
+                    'Bu mesaj son 30 dakika içinde gönderildi.',
                     ['duplicate_dispatch_id' => $duplicate->id],
                 );
             }
+        }
+
+        $rateLimit = $this->rateLimitStatus($resolvedPhone, $testMode);
+        if ($rateLimit !== null) {
+            return $this->markSuppressed(
+                $dispatch,
+                TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_RATE_LIMITED,
+                $rateLimit['message'],
+                $rateLimit['context'],
+            );
         }
 
         $url = trim((string) config('services.evolution.n8n_webhook_url', ''));
@@ -262,6 +293,13 @@ class EvolutionWhatsAppMessageService
     private function suppressionStatus(?TechnicalServiceRequest $request, array $context): ?array
     {
         $mrn = (string) ($request?->mrn ?? ($context['mrn'] ?? ''));
+        if (app()->runningUnitTests() && ! $this->allowUnitTestHttpFake($context)) {
+            return [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,
+                'message' => 'PHPUnit/test ortamında gerçek WhatsApp gönderimi engellendi.',
+            ];
+        }
+
         if ($this->isTestFixtureMrn($mrn) && ! filter_var(config('services.evolution.allow_test_fixture_send', false), FILTER_VALIDATE_BOOL)) {
             return [
                 'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE,
@@ -269,10 +307,17 @@ class EvolutionWhatsAppMessageService
             ];
         }
 
-        if (app()->environment('testing') && ! $this->realSendEnabled()) {
+        if (app()->environment('testing') && ! $this->realSendEnabled() && ! $this->allowUnitTestHttpFake($context)) {
             return [
                 'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,
                 'message' => 'PHPUnit/test ortamında gerçek WhatsApp gönderimi engellendi.',
+            ];
+        }
+
+        if ($this->isCiEnvironment()) {
+            return [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,
+                'message' => 'CI/test ortamında gerçek WhatsApp gönderimi engellendi.',
             ];
         }
 
@@ -295,7 +340,7 @@ class EvolutionWhatsAppMessageService
 
     private function isTestFixtureMrn(string $mrn): bool
     {
-        foreach (['MRN-TEST', 'MRN-ACTION', 'ACCEPT-', 'TEST-'] as $prefix) {
+        foreach (self::TEST_FIXTURE_MRN_PREFIXES as $prefix) {
             if (str_starts_with($mrn, $prefix)) {
                 return true;
             }
@@ -326,44 +371,186 @@ class EvolutionWhatsAppMessageService
         return $dispatch;
     }
 
-    private function recentSentDuplicate(
-        TechnicalServiceMessageDispatch $current,
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function allowUnitTestHttpFake(array $context): bool
+    {
+        if (! app()->runningUnitTests()) {
+            return false;
+        }
+
+        if (! filter_var(config('services.evolution.allow_unit_test_http_fake', false), FILTER_VALIDATE_BOOL)
+            && ! filter_var($context['allow_unit_test_http_fake'] ?? false, FILTER_VALIDATE_BOOL)) {
+            return false;
+        }
+
+        return filter_var($context['manual_ui_send'] ?? false, FILTER_VALIDATE_BOOL);
+    }
+
+    private function isCiEnvironment(): bool
+    {
+        return filter_var(env('CI', false), FILTER_VALIDATE_BOOL)
+            || filter_var(env('GITHUB_ACTIONS', false), FILTER_VALIDATE_BOOL);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function manualForceResend(array $context): bool
+    {
+        return filter_var($context['force_resend'] ?? false, FILTER_VALIDATE_BOOL)
+            && filter_var($context['manual_ui_send'] ?? false, FILTER_VALIDATE_BOOL);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function payloadHash(array $payload): string
+    {
+        return sha1($this->stableJson([
+            'event' => $payload['event'] ?? null,
+            'target_type' => $payload['target_type'] ?? null,
+            'target_phone' => $payload['target_phone'] ?? null,
+            'message_type' => $payload['message_type'] ?? null,
+            'message_text' => $payload['message_text'] ?? null,
+            'confirmation_url' => $payload['confirmation_url'] ?? null,
+            'approval_url' => $payload['approval_url'] ?? null,
+            'job_link' => $payload['job_link'] ?? null,
+        ]));
+    }
+
+    private function idempotencyKey(
         string $event,
         string $targetType,
         string $resolvedPhone,
+        string $payloadHash,
         ?TechnicalServiceRequest $request,
         ?TechnicalServiceAssignmentOffer $assignmentOffer,
         ?TechnicalServiceEarning $earning,
-    ): ?TechnicalServiceMessageDispatch {
+    ): string {
+        return sha1(implode('|', [
+            $event,
+            $targetType,
+            $resolvedPhone,
+            (string) ($request?->id ?? 'no-request'),
+            (string) ($assignmentOffer?->id ?? 'no-offer'),
+            (string) ($earning?->id ?? 'no-earning'),
+            $payloadHash,
+        ]));
+    }
+
+    /**
+     * @param  array<string, mixed>  $value
+     */
+    private function stableJson(array $value): string
+    {
+        ksort($value);
+
+        return (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * @return array{message:string,context:array<string, mixed>}|null
+     */
+    private function rateLimitStatus(string $resolvedPhone, bool $testMode): ?array
+    {
         if ($resolvedPhone === '') {
             return null;
         }
 
-        $minutes = max(1, (int) config('services.evolution.idempotency_window_minutes', 10));
-        $query = TechnicalServiceMessageDispatch::query()
-            ->where('id', '<>', $current->id)
-            ->where('event', $event)
-            ->where('target_type', $targetType)
-            ->where('target_phone', $resolvedPhone)
-            ->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)
-            ->where('created_at', '>=', now()->subMinutes($minutes));
+        $testPhone = $this->normalizePhone((string) config('services.evolution.test_phone', '905467647428'));
+        $isTestPhone = $testMode || ($testPhone !== '' && $resolvedPhone === $testPhone);
+        $minSeconds = $isTestPhone
+            ? max(0, (int) config('services.evolution.test_phone_min_seconds', 20))
+            : max(0, (int) config('services.evolution.target_min_seconds', 5));
 
-        $this->whereNullableKey($query, 'technical_service_request_id', $request?->id);
-        $this->whereNullableKey($query, 'technical_service_assignment_offer_id', $assignmentOffer?->id);
-        $this->whereNullableKey($query, 'technical_service_earning_id', $earning?->id);
+        if ($minSeconds > 0) {
+            $latest = TechnicalServiceMessageDispatch::query()
+                ->where('target_phone', $resolvedPhone)
+                ->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)
+                ->latest('id')
+                ->first();
 
-        return $query->latest('id')->first();
-    }
-
-    private function whereNullableKey($query, string $column, mixed $value): void
-    {
-        if ($value === null) {
-            $query->whereNull($column);
-
-            return;
+            if ($latest instanceof TechnicalServiceMessageDispatch && $latest->created_at?->gt(now()->subSeconds($minSeconds))) {
+                return [
+                    'message' => "WhatsApp gönderimi hız limiti nedeniyle engellendi. Aynı hedefe {$minSeconds} saniye içinde tekrar gönderilemez.",
+                    'context' => [
+                        'rate_limit' => 'min_seconds',
+                        'target_phone' => $resolvedPhone,
+                        'min_seconds' => $minSeconds,
+                        'latest_dispatch_id' => $latest->id,
+                    ],
+                ];
+            }
         }
 
-        $query->where($column, $value);
+        if (! $isTestPhone) {
+            return null;
+        }
+
+        $windowMinutes = max(1, (int) config('services.evolution.test_phone_window_minutes', 10));
+        $windowMax = max(1, (int) config('services.evolution.test_phone_window_max', 5));
+        $windowCount = TechnicalServiceMessageDispatch::query()
+            ->where('target_phone', $resolvedPhone)
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)
+            ->where('created_at', '>=', now()->subMinutes($windowMinutes))
+            ->count();
+
+        if ($windowCount >= $windowMax) {
+            return [
+                'message' => "WhatsApp test telefonu için {$windowMinutes} dakikada en fazla {$windowMax} gönderim yapılabilir.",
+                'context' => [
+                    'rate_limit' => 'test_phone_window',
+                    'target_phone' => $resolvedPhone,
+                    'window_minutes' => $windowMinutes,
+                    'window_max' => $windowMax,
+                    'sent_count' => $windowCount,
+                ],
+            ];
+        }
+
+        $dailyMax = max(1, (int) config('services.evolution.test_phone_daily_max', 20));
+        $dailyCount = TechnicalServiceMessageDispatch::query()
+            ->where('target_phone', $resolvedPhone)
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)
+            ->where('created_at', '>=', now()->startOfDay())
+            ->count();
+
+        if ($dailyCount >= $dailyMax) {
+            return [
+                'message' => "WhatsApp test telefonu için günlük en fazla {$dailyMax} gönderim yapılabilir.",
+                'context' => [
+                    'rate_limit' => 'test_phone_daily',
+                    'target_phone' => $resolvedPhone,
+                    'daily_max' => $dailyMax,
+                    'sent_count' => $dailyCount,
+                ],
+            ];
+        }
+
+        return null;
+    }
+
+    private function recentSentDuplicate(
+        TechnicalServiceMessageDispatch $current,
+        string $idempotencyKey,
+        string $resolvedPhone,
+    ): ?TechnicalServiceMessageDispatch {
+        if ($resolvedPhone === '' || $idempotencyKey === '') {
+            return null;
+        }
+
+        $minutes = max(1, (int) config('services.evolution.idempotency_window_minutes', 30));
+
+        return TechnicalServiceMessageDispatch::query()
+            ->where('id', '<>', $current->id)
+            ->where('target_phone', $resolvedPhone)
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_SENT)
+            ->where('created_at', '>=', now()->subMinutes($minutes))
+            ->latest('id')
+            ->get()
+            ->first(fn (TechnicalServiceMessageDispatch $dispatch): bool => (string) data_get($dispatch->request_payload, 'idempotency_key') === $idempotencyKey);
     }
 
     private function messageTextWithJobLink(string $messageText, string $targetType, mixed $jobLink): string

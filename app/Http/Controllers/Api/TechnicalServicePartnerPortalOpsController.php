@@ -72,7 +72,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'customer',
                 $job->customer_phone,
                 (string) ($messages['customer']['message_text'] ?? ''),
-                $messages['customer'] ?? [],
+                [...($messages['customer'] ?? []), 'manual_ui_send' => true],
                 $job,
                 $request->user(),
                 $partnerJobAction,
@@ -84,7 +84,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'technician',
                 $technicianPhone,
                 $this->technicianAppointmentMessageText($messages['technician'] ?? []),
-                $messages['technician'] ?? [],
+                [...($messages['technician'] ?? []), 'manual_ui_send' => true],
                 $job,
                 $request->user(),
                 $partnerJobAction,
@@ -328,7 +328,10 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'technician',
             $technicianPhone,
             $this->assignmentOfferMessageText($metadata['message_payload'] ?? []),
-            is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : [],
+            [
+                ...(is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : []),
+                'manual_ui_send' => true,
+            ],
             $technicalServiceRequest,
             $request->user(),
             null,
@@ -448,6 +451,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                     'public_url_warning' => $publicUrlWarning,
                     'force_resend' => true,
                     'message_type' => 'customer_approval_request',
+                    'manual_ui_send' => true,
                 ],
                 $job,
                 $request->user(),
@@ -876,6 +880,10 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE) {
             return 'Bu mesaj daha önce gönderildi; tekrar WhatsApp gönderilmedi.';
+        }
+
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_RATE_LIMITED) {
+            return 'WhatsApp gönderimi güvenlik limiti nedeniyle bastırıldı. Biraz sonra tekrar deneyin.';
         }
 
         if (in_array(($summary['dispatch_status'] ?? null), [

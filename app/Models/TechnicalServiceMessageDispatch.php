@@ -14,6 +14,7 @@ class TechnicalServiceMessageDispatch extends Model
     public const STATUS_SUPPRESSED_TESTING_ENVIRONMENT = 'suppressed_testing_environment';
     public const STATUS_SUPPRESSED_REAL_SEND_DISABLED = 'suppressed_real_send_disabled';
     public const STATUS_SUPPRESSED_DUPLICATE = 'suppressed_duplicate';
+    public const STATUS_SUPPRESSED_RATE_LIMITED = 'suppressed_rate_limited';
 
     protected $table = 'technical_service_message_dispatches';
 

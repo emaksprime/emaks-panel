@@ -928,6 +928,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             'services.evolution.test_mode' => true,
             'services.evolution.test_phone' => '905467647428',
             'services.evolution.real_send_enabled' => true,
+            'services.evolution.allow_unit_test_http_fake' => true,
             'services.partner_portal.public_url' => 'https://dashboard.test',
         ]);
         Http::fake([
