@@ -993,9 +993,9 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
         ))}
       </section>
       {selectedJob && detailOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 p-0 sm:p-4 lg:p-6">
+        <div className="fixed inset-0 z-50 overflow-x-clip overflow-y-auto bg-slate-950/45 p-0 sm:p-4 lg:p-6">
           <div className="absolute inset-0" onClick={closeJobDetail} />
-          <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-6xl flex-col overflow-hidden bg-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100vh-2rem)] lg:max-h-[calc(100vh-3rem)] sm:rounded-3xl">
+          <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-6xl min-w-0 flex-col overflow-hidden bg-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100vh-2rem)] lg:max-h-[calc(100vh-3rem)] sm:rounded-3xl">
             <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-4 py-4">
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">İş detayı</p>
@@ -1010,7 +1010,7 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                 ×
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 pb-36 sm:pb-4">
+            <div className="min-h-0 min-w-0 flex-1 overflow-x-clip overflow-y-auto px-4 py-4 pb-36 sm:pb-4">
               <ServiceJobDetail
                 job={selectedJob}
                 readOnly={readOnly}
@@ -1299,8 +1299,8 @@ function ServiceJobDetail({
   }
 
   return (
-    <section className="grid gap-5 rounded-2xl border border-slate-200 bg-white p-4 pb-36 shadow-sm lg:grid-cols-[minmax(0,1fr)_400px] lg:p-5">
-      <div className="min-w-0">
+    <section className="grid w-full min-w-0 max-w-full gap-5 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 pb-36 shadow-sm lg:grid-cols-[minmax(0,1fr)_400px] lg:p-5">
+      <div className="min-w-0 max-w-full">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">İş detayı</p>
@@ -1391,22 +1391,22 @@ function ServiceJobDetail({
           </div>
         </div>
         {showPhotoSection && (
-          <div className="mt-5 rounded-2xl bg-slate-50 p-4">
+          <div className="mt-5 min-w-0 max-w-full overflow-hidden rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fotoğraf / belge</p>
             <p className="mt-2 text-sm text-slate-700">Öncesi / Sonrası / Garanti Belgesi</p>
-            <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+            <div className="mt-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
               <p className="font-semibold">Tamamlama şartı</p>
               <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} fotoğraf/belge yüklendi.</p>
               <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri OTP/onay bekliyor.'}</p>
-              <div className="mt-2 grid gap-1">
+              <div className="mt-2 grid min-w-0 gap-1">
                 {photoStatuses.map((photo) => (
-                  <p key={photo.field} className={photo.uploaded ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>
+                  <p key={photo.field} className={`${photo.uploaded ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'} min-w-0 [overflow-wrap:anywhere]`}>
                     {photo.label}: {photo.uploaded ? 'yüklendi' : 'eksik'}
                   </p>
                 ))}
               </div>
             </div>
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div className="mt-3 grid min-w-0 max-w-full gap-3 sm:grid-cols-3">
               {portalPhotoFields.map(([field, label]) => {
                 const uploadedPhoto = photoByField(field)
                 const selectedFile = photoFiles[field]
@@ -1414,48 +1414,48 @@ function ServiceJobDetail({
                 const showPicker = !uploadedPhoto || photoPickerField === field
 
                 return (
-                  <div key={field} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-slate-950">{label}</p>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${uploadedPhoto ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                  <div key={field} className="grid min-w-0 max-w-full gap-3 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <p className="min-w-0 truncate text-sm font-semibold text-slate-950">{label}</p>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${uploadedPhoto ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                         {uploadedPhoto ? 'Yüklendi' : 'Eksik'}
                       </span>
                     </div>
                     {uploadedPhoto?.preview_url ? (
-                      <img src={uploadedPhoto.preview_url} alt={uploadedPhoto.label ?? label} className="h-40 w-full rounded-xl object-cover" />
+                      <img src={uploadedPhoto.preview_url} alt={uploadedPhoto.label ?? label} className="h-40 w-full max-w-full rounded-xl object-cover" />
                     ) : uploadedPhoto ? (
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">Belge yüklendi.</div>
+                      <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">Belge yüklendi.</div>
                     ) : null}
                     {selectedPreviewUrl && !photoPreviewErrors[field] ? (
-                      <div className="rounded-xl border border-blue-100 bg-blue-50 p-2">
-                        <img src={selectedPreviewUrl} alt={`${label} yeni seçim`} onError={() => setPhotoPreviewErrors((current) => ({ ...current, [field]: true }))} className="h-36 w-full rounded-lg object-cover" />
-                        <p className="mt-2 truncate text-xs font-semibold text-blue-800">{selectedFile?.name}</p>
+                      <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-blue-100 bg-blue-50 p-2">
+                        <img src={selectedPreviewUrl} alt={`${label} yeni seçim`} onError={() => setPhotoPreviewErrors((current) => ({ ...current, [field]: true }))} className="h-36 w-full max-w-full rounded-lg object-cover" />
+                        <p className="mt-2 min-w-0 max-w-full truncate text-xs font-semibold text-blue-800" title={selectedFile?.name}>{selectedFile?.name}</p>
                       </div>
                     ) : selectedFile ? (
-                      <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
-                        <p className="truncate">{selectedFile.name}</p>
-                        <p className="mt-1 font-normal text-blue-700">Bu dosya yüklenebilir; tarayıcı önizlemesi desteklemeyebilir.</p>
+                      <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+                        <p className="min-w-0 max-w-full truncate" title={selectedFile.name}>{selectedFile.name}</p>
+                        <p className="mt-1 min-w-0 font-normal text-blue-700 [overflow-wrap:anywhere]">Bu dosya yüklenebilir; tarayıcı önizlemesi desteklemeyebilir.</p>
                       </div>
                     ) : null}
                     {uploadedPhoto ? (
-                      <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="grid min-w-0 max-w-full gap-2 sm:grid-cols-2">
                         {uploadedPhoto.preview_url ? (
-                          <a href={uploadedPhoto.preview_url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-center text-xs font-semibold text-blue-700">
+                          <a href={uploadedPhoto.preview_url} target="_blank" rel="noreferrer" className="min-w-0 truncate rounded-xl border border-slate-200 bg-white px-3 py-2 text-center text-xs font-semibold text-blue-700">
                             Belgeyi aç
                           </a>
                         ) : null}
                         {job.can_upload_photos ? (
-                          <button type="button" onClick={() => setPhotoPickerField(field)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+                          <button type="button" onClick={() => setPhotoPickerField(field)} className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
                             Değiştir
                           </button>
                         ) : null}
                       </div>
                     ) : null}
                     {showPicker && job.can_upload_photos ? (
-                      <div className="grid gap-2 text-xs font-semibold text-slate-600">
-                        <span>{uploadedPhoto ? 'Yeni belge seç' : 'Belge ekle'}</span>
-                        <div className="grid grid-cols-2 gap-2">
-                          <label className="cursor-pointer rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-center text-blue-800">
+                      <div className="grid min-w-0 max-w-full gap-2 text-xs font-semibold text-slate-600">
+                        <span className="min-w-0 truncate">{uploadedPhoto ? 'Yeni belge seç' : 'Belge ekle'}</span>
+                        <div className="grid min-w-0 max-w-full grid-cols-2 gap-2">
+                          <label className="inline-flex min-w-0 max-w-full cursor-pointer items-center justify-center rounded-xl border border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-800">
                             Fotoğraf çek
                             <input
                               type="file"
@@ -1466,7 +1466,7 @@ function ServiceJobDetail({
                               className="sr-only"
                             />
                           </label>
-                          <label className="cursor-pointer rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-center text-slate-700">
+                          <label className="inline-flex min-w-0 max-w-full cursor-pointer items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-center text-slate-700">
                             Dosya seç
                             <input
                               type="file"
@@ -1479,8 +1479,8 @@ function ServiceJobDetail({
                         </div>
                       </div>
                     ) : null}
-                    {uploadedPhoto?.review_status ? <p className="text-xs text-slate-500">Uygunluk: {statusLabel(uploadedPhoto.review_status)}</p> : null}
-                    {uploadedPhoto?.review_note ? <p className="text-xs text-slate-500">{uploadedPhoto.review_note}</p> : null}
+                    {uploadedPhoto?.review_status ? <p className="min-w-0 text-xs text-slate-500 [overflow-wrap:anywhere]">Uygunluk: {statusLabel(uploadedPhoto.review_status)}</p> : null}
+                    {uploadedPhoto?.review_note ? <p className="min-w-0 text-xs text-slate-500 [overflow-wrap:anywhere]">{uploadedPhoto.review_note}</p> : null}
                   </div>
                 )
               })}
@@ -1489,7 +1489,7 @@ function ServiceJobDetail({
                   type="button"
                   disabled={readOnly || actionLoading === 'photos'}
                   onClick={() => void submitPhotoUpload()}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-3"
+                  className="w-full min-w-0 max-w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-3"
                 >
                   Fotoğrafları yükle
                 </button>
@@ -1666,48 +1666,48 @@ function ServiceJobDetail({
         </div>
       </aside>
       {!readOnly && !activeActionDialog && (
-        <div className="fixed inset-x-0 bottom-0 z-[80] grid max-h-[36vh] grid-cols-2 gap-1.5 overflow-y-auto border-t border-slate-200 bg-white/95 p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-[80] grid max-h-[36vh] max-w-[100dvw] grid-cols-2 gap-1.5 overflow-x-clip overflow-y-auto border-t border-slate-200 bg-white/95 p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
           {canAcceptAppointment && (
-            <button type="button" disabled={actionLoading === 'accept-appointment'} onClick={() => void submitAction('accept-appointment', { note: acceptNote || null }, 'Randevu onayı gönderildi.')} className="min-h-10 rounded-md border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs font-semibold leading-tight text-white disabled:cursor-not-allowed disabled:opacity-60">
+            <button type="button" disabled={actionLoading === 'accept-appointment'} onClick={() => void submitAction('accept-appointment', { note: acceptNote || null }, 'Randevu onayı gönderildi.')} className="min-h-10 min-w-0 truncate rounded-md border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs font-semibold leading-tight text-white disabled:cursor-not-allowed disabled:opacity-60">
               Randevu onayla
             </button>
           )}
           {canProposeAppointment && (
-            <button type="button" onClick={() => setActiveActionDialog('appointment')} className="min-h-10 rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold leading-tight text-blue-800">
+            <button type="button" onClick={() => setActiveActionDialog('appointment')} className="min-h-10 min-w-0 truncate rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold leading-tight text-blue-800">
               Randevu öner
             </button>
           )}
           {job.can_reject && (
-            <button type="button" onClick={() => setActiveActionDialog('reject')} className="min-h-10 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
+            <button type="button" onClick={() => setActiveActionDialog('reject')} className="min-h-10 min-w-0 truncate rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
               İşi reddet
             </button>
           )}
           {job.can_request_revisit && (
-            <button type="button" onClick={() => setActiveActionDialog('revisit')} className="min-h-10 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold leading-tight text-amber-800">
+            <button type="button" onClick={() => setActiveActionDialog('revisit')} className="min-h-10 min-w-0 truncate rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold leading-tight text-amber-800">
               Tekrar ziyaret
             </button>
           )}
           {job.can_request_support && (
-            <button type="button" onClick={() => setActiveActionDialog('support')} className="min-h-10 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold leading-tight text-amber-800">
+            <button type="button" onClick={() => setActiveActionDialog('support')} className="min-h-10 min-w-0 truncate rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold leading-tight text-amber-800">
               Ek talep
             </button>
           )}
           {job.can_request_customer_otp && (
-            <button type="button" onClick={openCustomerApprovalDialog} className="min-h-10 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-semibold leading-tight text-violet-800">
+            <button type="button" onClick={openCustomerApprovalDialog} className="min-h-10 min-w-0 truncate rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-semibold leading-tight text-violet-800">
               Müşteri onayı
             </button>
           )}
           {job.can_request_price_revision && (
-            <button type="button" onClick={() => setActiveActionDialog('price')} className="min-h-10 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
+            <button type="button" onClick={() => setActiveActionDialog('price')} className="min-h-10 min-w-0 truncate rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold leading-tight text-rose-800">
               Hakediş revize
             </button>
           )}
           {job.can_submit_completion && (
-            <button type="button" onClick={() => setActiveActionDialog('completion')} className="min-h-10 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-semibold leading-tight text-emerald-800">
+            <button type="button" onClick={() => setActiveActionDialog('completion')} className="min-h-10 min-w-0 truncate rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-semibold leading-tight text-emerald-800">
               Tamamlamaya gönder
             </button>
           )}
-          <button type="button" onClick={() => setActiveActionDialog('note')} className="min-h-10 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold leading-tight text-slate-700">
+          <button type="button" onClick={() => setActiveActionDialog('note')} className="min-h-10 min-w-0 truncate rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold leading-tight text-slate-700">
             Not ekle
           </button>
         </div>
