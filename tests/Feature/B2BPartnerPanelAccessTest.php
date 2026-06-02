@@ -3119,6 +3119,185 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonFragment(['mrn' => 'MRN-SCOPE-B']);
     }
 
+    public function test_partner_user_cannot_list_other_partner_jobs_even_with_partner_id_query(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $this->actingAs($scope['userA'])
+            ->get('/partner/service-jobs?partner_id='.$scope['partnerB']->id)
+            ->assertForbidden();
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerB']->id)
+            ->assertForbidden();
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonPath('partner_id', $scope['partnerA']->id)
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B']);
+    }
+
+    public function test_partner_user_cannot_see_completed_jobs_from_other_technician(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B-COMPLETED']);
+        $this->actingAs($scope['userB'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerB']->id)
+            ->assertOk()
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-B-COMPLETED'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
+    }
+
+    public function test_partner_user_cannot_open_other_partner_job_detail(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs/'.$scope['jobB']->id)
+            ->assertForbidden();
+    }
+
+    public function test_partner_user_cannot_act_on_other_partner_job(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        foreach ($this->partnerPortalCrossPartnerActionPayloads() as $action => $payload) {
+            $this->actingAs($scope['userA'])
+                ->postJson("/api/partner/service-jobs/{$scope['jobB']->id}/{$action}", $payload)
+                ->assertForbidden();
+        }
+    }
+
+    public function test_appointment_proposal_does_not_expand_partner_scope(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $this->actingAs($scope['userA'])
+            ->postJson("/api/partner/service-jobs/{$scope['jobA']->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B-COMPLETED']);
+    }
+
+    public function test_polling_refresh_keeps_partner_scope(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B']);
+        $this->actingAs($scope['userA'])
+            ->postJson("/api/partner/service-jobs/{$scope['jobA']->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']],
+            ])
+            ->assertOk();
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B']);
+    }
+
+    public function test_reassigned_job_disappears_from_old_technician_portal(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $scope['jobA']->forceFill(['technical_service_technician_id' => $scope['technicianB']->id])->save();
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs/'.$scope['jobA']->id)
+            ->assertForbidden();
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/earnings?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
+        $this->actingAs($scope['userB'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerB']->id)
+            ->assertOk()
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A']);
+    }
+
+    public function test_earnings_are_scoped_to_current_partner_technicians(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/earnings?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonPath('items.0.partner_id', $scope['partnerA']->id)
+            ->assertJsonFragment(['mrn' => 'MRN-SCOPE-A'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B'])
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B-COMPLETED']);
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/earnings?partner_id='.$scope['partnerB']->id)
+            ->assertForbidden();
+    }
+
+    public function test_dealer_contracted_technician_does_not_open_field_technician_mrns(): void
+    {
+        $dealer = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $contracted = $this->technician(['name' => 'Dealer Contracted Scope Usta']);
+        $fieldTechnician = $this->technician(['name' => 'Locksmith Field Scope Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $dealer->id,
+            'technical_service_technician_id' => $contracted->id,
+            'relationship_type' => 'contracted_technician',
+            'active' => true,
+            'is_primary' => true,
+        ]);
+        $this->serviceRequestForTechnician($contracted, 'MRN-DEALER-CONTRACTED-SCOPE');
+        $this->serviceRequestForTechnician($fieldTechnician, 'MRN-FIELD-SCOPE');
+
+        $this->assertSame([], app(B2BPartnerServiceJobScopeService::class)
+            ->serviceJobsQuery($dealer)
+            ->pluck('mrn')
+            ->all());
+    }
+
+    public function test_admin_preview_route_can_preview_but_partner_route_cannot_bypass_scope(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $operationUser = $this->userWithRole('b2b_preview_operator');
+        $this->grantPanelResource('b2b_preview_operator', 'b2b.portal_preview.view');
+        $scope = $this->partnerPortalScopeFixture(seedPermissions: false);
+
+        $this->actingAs($operationUser)
+            ->get("/panel/b2b/partners/{$scope['partnerB']->id}/portal-preview")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('panel/b2b/portal-preview')
+                ->where('preview.read_only', true)
+                ->where('partnerPortal.selectedPartner.id', $scope['partnerB']->id)
+            );
+        $this->actingAs($scope['userA'])
+            ->get('/partner/service-jobs?partner_id='.$scope['partnerB']->id)
+            ->assertForbidden();
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerB']->id)
+            ->assertForbidden();
+    }
+
     public function test_locksmith_partner_service_job_actions_are_scoped_and_audited(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -4230,6 +4409,123 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)->get('/sales/main')->assertForbidden();
         $this->actingAs($portalUser)->get('/stock')->assertForbidden();
         $this->actingAs($portalUser)->get('/orders')->assertForbidden();
+    }
+
+    /**
+     * @return array{
+     *     partnerA: B2BPartner,
+     *     partnerB: B2BPartner,
+     *     technicianA: TechnicalServiceTechnician,
+     *     technicianB: TechnicalServiceTechnician,
+     *     jobA: TechnicalServiceRequest,
+     *     jobB: TechnicalServiceRequest,
+     *     completedJobB: TechnicalServiceRequest,
+     *     userA: User,
+     *     userB: User
+     * }
+     */
+    private function partnerPortalScopeFixture(bool $seedPermissions = true): array
+    {
+        if ($seedPermissions) {
+            (new B2BPartnerPermissionSeeder)->run();
+        }
+
+        $partnerA = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Scope Locksmith A',
+        ]);
+        $partnerB = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Scope Locksmith B',
+        ]);
+        $technicianA = $this->technician(['name' => 'Scope Usta A']);
+        $technicianB = $this->technician(['name' => 'Scope Usta B']);
+
+        foreach ([[$partnerA, $technicianA], [$partnerB, $technicianB]] as [$partner, $technician]) {
+            B2BPartnerTechnician::query()->create([
+                'partner_id' => $partner->id,
+                'technical_service_technician_id' => $technician->id,
+                'relationship_type' => 'owner',
+                'active' => true,
+            ]);
+        }
+
+        $jobA = $this->serviceRequestForTechnician($technicianA, 'MRN-SCOPE-A');
+        $jobB = $this->serviceRequestForTechnician($technicianB, 'MRN-SCOPE-B');
+        $completedJobB = $this->serviceRequestForTechnician($technicianB, 'MRN-SCOPE-B-COMPLETED', [
+            'workflow_status' => 'Tamamland'."\u{0131}",
+            'status' => 'Tamamland'."\u{0131}",
+            'completed_at' => now(),
+        ]);
+
+        foreach ([[$jobA, $technicianA], [$jobB, $technicianB], [$completedJobB, $technicianB]] as [$request, $technician]) {
+            $this->partnerPortalAssignmentOffer($request, $technician);
+        }
+
+        $userA = $this->userWithRole('b2b_locksmith');
+        $userB = $this->userWithRole('b2b_locksmith');
+        foreach ([[$userA, $partnerA], [$userB, $partnerB]] as [$user, $partner]) {
+            B2BPartnerUserProfile::query()->create([
+                'user_id' => $user->id,
+                'partner_id' => $partner->id,
+                'active' => true,
+            ]);
+            foreach (['view', 'technical_service', 'finance'] as $scope) {
+                $this->grantPartnerAccess($user, $partner, $scope);
+            }
+        }
+
+        return [
+            'partnerA' => $partnerA,
+            'partnerB' => $partnerB,
+            'technicianA' => $technicianA,
+            'technicianB' => $technicianB,
+            'jobA' => $jobA,
+            'jobB' => $jobB,
+            'completedJobB' => $completedJobB,
+            'userA' => $userA,
+            'userB' => $userB,
+        ];
+    }
+
+    private function partnerPortalAssignmentOffer(
+        TechnicalServiceRequest $request,
+        TechnicalServiceTechnician $technician,
+    ): TechnicalServiceAssignmentOffer {
+        return TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1000,
+            'route_fee_amount' => 100,
+            'total_amount' => 1100,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function partnerPortalCrossPartnerActionPayloads(): array
+    {
+        return [
+            'accept' => ['note' => 'Cross partner forbidden'],
+            'accept-appointment' => ['note' => 'Cross partner forbidden'],
+            'appointment-proposal' => [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']],
+            ],
+            'reject' => ['reason' => 'other', 'note' => 'Cross partner forbidden'],
+            'photos' => [],
+            'customer-otp-request' => ['note' => 'Cross partner forbidden'],
+            'support-request' => ['type' => 'other', 'description' => 'Cross partner forbidden'],
+            'price-revision-request' => ['labor_amount' => 1200, 'note' => 'Cross partner forbidden'],
+            'request-revisit' => ['reason' => 'Cross partner forbidden'],
+            'submit-completion' => ['result' => 'completed'],
+            'note' => ['note' => 'Cross partner forbidden'],
+        ];
     }
 
     private function partnerUser(): User
