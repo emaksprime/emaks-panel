@@ -106,6 +106,33 @@ type ServiceJob = {
   appointment_proposal: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   rejection: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   support_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  part_requests?: Array<{
+    id: number
+    status: string
+    status_label: string
+    part_name: string
+    quantity: number
+    technician_note?: string | null
+    partner_message?: string | null
+    shipment_provider?: string | null
+    tracking_no?: string | null
+    sent_at?: string | null
+    received_at?: string | null
+  }>
+  active_part_request?: {
+    id: number
+    status: string
+    status_label: string
+    part_name: string
+    quantity: number
+    technician_note?: string | null
+    partner_message?: string | null
+    shipment_provider?: string | null
+    tracking_no?: string | null
+    sent_at?: string | null
+    received_at?: string | null
+  } | null
+  can_receive_part?: boolean
   price_revision_request?: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   customer_otp_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   customer_confirmation?: { id: number, status: string, approved_at: string | null, rejected_at?: string | null, customer_note: string | null, approval_url: string | null } | null
@@ -1390,6 +1417,34 @@ function ServiceJobDetail({
           <p className="mt-1 text-2xl font-semibold text-slate-950">{job.appointment_label ?? job.appointment_at ?? 'Randevu bekleniyor'}</p>
           <p className="mt-1 text-sm text-blue-800">{job.kanban_column === 'appointment_confirmed' ? 'Randevu onaylandı' : statusPlan}</p>
         </div>
+        {job.active_part_request ? (
+          <div className="mt-5 rounded-2xl border border-violet-100 bg-violet-50 p-4 text-violet-950">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-violet-600">Parça talebi</p>
+                <p className="mt-1 text-lg font-semibold text-slate-950">{job.active_part_request.part_name} {job.active_part_request.quantity > 1 ? `x${job.active_part_request.quantity}` : ''}</p>
+                <p className="mt-1 text-sm text-violet-800">{job.active_part_request.status_label}</p>
+              </div>
+              <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-violet-800">{job.active_part_request.status_label}</span>
+            </div>
+            {job.active_part_request.partner_message ? (
+              <p className="mt-3 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm text-violet-900">{job.active_part_request.partner_message}</p>
+            ) : null}
+            {job.active_part_request.tracking_no ? (
+              <p className="mt-3 text-sm text-violet-800">Kargo: {[job.active_part_request.shipment_provider, job.active_part_request.tracking_no].filter(Boolean).join(' / ')}</p>
+            ) : null}
+            {job.can_receive_part ? (
+              <button
+                type="button"
+                disabled={readOnly || actionLoading === `part-requests/${job.active_part_request.id}/received`}
+                onClick={() => void submitAction(`part-requests/${job.active_part_request?.id}/received`, {}, 'Parça teslim alındı olarak işaretlendi.')}
+                className="mt-3 rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Parçayı teslim aldım
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <InfoTile label="Müşteri" value={<span className="text-base font-semibold text-slate-950">{job.customer_name ?? '-'}</span>} />
           <InfoTile label="Telefon" value={job.customer_tel_link ? <a className="text-base font-semibold text-blue-700 hover:underline" href={job.customer_tel_link}>{job.customer_phone ?? 'Ara'}</a> : job.customer_phone ?? '-'} />

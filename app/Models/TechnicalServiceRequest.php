@@ -101,6 +101,13 @@ class TechnicalServiceRequest extends Model
         'reopen_reason',
         'reopen_note',
         'reopen_count',
+        'parent_request_id',
+        'root_mrn',
+        'service_sequence',
+        'service_code',
+        'service_visit_reason',
+        'source_part_request_id',
+        'source_partner_action_id',
         'description',
         'resolution_notes',
         'source_channel',
@@ -181,6 +188,10 @@ class TechnicalServiceRequest extends Model
         'cancelled_at' => 'datetime',
         'reopened_at' => 'datetime',
         'reopen_count' => 'integer',
+        'parent_request_id' => 'integer',
+        'service_sequence' => 'integer',
+        'source_part_request_id' => 'integer',
+        'source_partner_action_id' => 'integer',
         'qr_link_id' => 'integer',
         'mount_session_id' => 'integer',
         'has_current_sale' => 'boolean',
@@ -217,6 +228,31 @@ class TechnicalServiceRequest extends Model
     public function requestSerials(): HasMany
     {
         return $this->hasMany(TechnicalServiceRequestSerial::class, 'technical_service_request_id');
+    }
+
+    public function parentRequest(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'parent_request_id');
+    }
+
+    public function childRequests(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_request_id');
+    }
+
+    public function sourcePartRequest(): BelongsTo
+    {
+        return $this->belongsTo(TechnicalServicePartRequest::class, 'source_part_request_id');
+    }
+
+    public function partRequests(): HasMany
+    {
+        return $this->hasMany(TechnicalServicePartRequest::class, 'technical_service_request_id');
+    }
+
+    public function activePartRequests(): HasMany
+    {
+        return $this->partRequests()->whereIn('status', TechnicalServicePartRequest::ACTIVE_STATUSES);
     }
 
     public function uploads(): HasMany

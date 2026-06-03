@@ -929,6 +929,7 @@ class TechnicalServiceWorkflowService
             'latestRouteQuote',
             'latestAssignmentOffer.technician',
             'partnerJobActions' => fn ($query) => $query->latest()->limit(12),
+            'partRequests' => fn ($query) => $query->latest(),
         ]);
 
         $payload = $request->toArray();
@@ -964,6 +965,18 @@ class TechnicalServiceWorkflowService
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
         $payload['partner_portal_actions'] = $this->partnerPortalActionPayload($request);
+        $payload['part_requests'] = $request->partRequests
+            ->map(fn ($partRequest): array => app(TechnicalServicePartRequestService::class)->serialize($partRequest))
+            ->values()
+            ->all();
+        $payload['active_part_request'] = collect($payload['part_requests'])
+            ->first(fn (array $partRequest): bool => in_array((string) ($partRequest['status'] ?? ''), \App\Models\TechnicalServicePartRequest::ACTIVE_STATUSES, true));
+        $payload['root_mrn'] = $request->root_mrn;
+        $payload['service_code'] = $request->service_code;
+        $payload['service_visit_reason'] = $request->service_visit_reason;
+        $payload['display_mrn'] = $request->service_code
+            ? trim((string) ($request->root_mrn ?: $request->mrn)).' / '.$request->service_code
+            : $request->mrn;
         $operationalState = app(TechnicalServiceOperationalStatePresenter::class)->present($request);
         $payload['operational_state'] = $operationalState;
         $payload['kanban_column'] = $operationalState['ops_column'];

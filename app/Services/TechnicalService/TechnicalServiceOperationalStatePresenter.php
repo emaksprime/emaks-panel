@@ -3,6 +3,7 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -52,9 +53,11 @@ class TechnicalServiceOperationalStatePresenter
             'events' => fn ($query) => $query->latest(),
             'uploads',
             'customerConfirmations' => fn ($query) => $query->latest(),
+            'partRequests' => fn ($query) => $query->latest(),
         ]);
 
         $activeAction = $this->activeOpsReviewAction($request);
+        $activePartRequest = $this->activePartRequest($request);
         $doorIncompatible = $this->doorIncompatible($request);
         $isCancelled = $this->isCancelled($request);
         $isCompleted = $this->isCompleted($request);
@@ -72,6 +75,7 @@ class TechnicalServiceOperationalStatePresenter
             $isPendingFinalCheck,
             $isAppointmentConfirmed,
             $doorIncompatible,
+            $activePartRequest,
         );
         $partnerColumn = $this->partnerColumn(
             $request,
@@ -81,10 +85,11 @@ class TechnicalServiceOperationalStatePresenter
             $isPendingFinalCheck,
             $isAppointmentConfirmed,
             $doorIncompatible,
+            $activePartRequest,
         );
 
-        $attention = $this->attention($request, $activeAction, $appointmentAttention, $opsColumn, $isCompleted, $isCancelled, $doorIncompatible);
-        $displayActionLabel = $this->displayActionLabel($request, $activeAction, $attention, $opsColumn, $isCompleted);
+        $attention = $this->attention($request, $activeAction, $activePartRequest, $appointmentAttention, $opsColumn, $isCompleted, $isCancelled, $doorIncompatible);
+        $displayActionLabel = $this->displayActionLabel($request, $activeAction, $activePartRequest, $attention, $opsColumn, $isCompleted);
 
         return [
             'canonical_stage' => $opsColumn,
@@ -106,6 +111,8 @@ class TechnicalServiceOperationalStatePresenter
             'is_customer_approval_required' => $this->customerApprovalRequired($request, $opsColumn, $isCompleted),
             'is_field_docs_required' => $this->fieldDocumentsRequired($request, $opsColumn, $isCompleted),
             'is_assignment_review_required' => $opsColumn === self::OPS_COLUMN_ASSIGNMENT_PENDING,
+            'active_part_request_id' => $activePartRequest?->id,
+            'active_part_request_status' => $activePartRequest?->status,
             'attention' => $attention,
         ];
     }
@@ -118,6 +125,7 @@ class TechnicalServiceOperationalStatePresenter
         bool $isPendingFinalCheck,
         bool $isAppointmentConfirmed,
         bool $doorIncompatible,
+        ?TechnicalServicePartRequest $activePartRequest,
     ): string {
         if ($isCancelled) {
             return self::OPS_COLUMN_CANCELLED;
@@ -129,6 +137,10 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($isPendingFinalCheck) {
             return self::OPS_COLUMN_FINAL_CHECK;
+        }
+
+        if ($activePartRequest instanceof TechnicalServicePartRequest) {
+            return self::OPS_COLUMN_REVIEW;
         }
 
         if ($activeAction instanceof TechnicalServicePartnerJobAction) {
@@ -167,6 +179,7 @@ class TechnicalServiceOperationalStatePresenter
         bool $isPendingFinalCheck,
         bool $isAppointmentConfirmed,
         bool $doorIncompatible,
+        ?TechnicalServicePartRequest $activePartRequest,
     ): string {
         if ($isCompleted) {
             return self::PARTNER_COLUMN_COMPLETED;
@@ -177,6 +190,10 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         if ($doorIncompatible) {
+            return self::PARTNER_COLUMN_OPS_REVIEW;
+        }
+
+        if ($activePartRequest instanceof TechnicalServicePartRequest) {
             return self::PARTNER_COLUMN_OPS_REVIEW;
         }
 
@@ -237,6 +254,12 @@ class TechnicalServiceOperationalStatePresenter
         return null;
     }
 
+    private function activePartRequest(TechnicalServiceRequest $request): ?TechnicalServicePartRequest
+    {
+        return $request->partRequests
+            ->first(fn (TechnicalServicePartRequest $partRequest): bool => $partRequest->isActive());
+    }
+
     private function hasCompletionSubmitted(TechnicalServiceRequest $request): bool
     {
         return $request->partnerJobActions
@@ -293,6 +316,11 @@ class TechnicalServiceOperationalStatePresenter
             'spare_part' => 'Parça talebi incelenmeli',
             default => 'Ek talep var',
         };
+    }
+
+    private function partRequestAttentionReason(TechnicalServicePartRequest $partRequest): string
+    {
+        return TechnicalServicePartRequest::labelForStatus((string) $partRequest->status);
     }
 
     private function isAppointmentConfirmed(TechnicalServiceRequest $request): bool
@@ -373,6 +401,7 @@ class TechnicalServiceOperationalStatePresenter
     private function attention(
         TechnicalServiceRequest $request,
         ?TechnicalServicePartnerJobAction $activeAction,
+        ?TechnicalServicePartRequest $activePartRequest,
         ?array $appointmentAttention,
         string $opsColumn,
         bool $isCompleted,
@@ -394,6 +423,25 @@ class TechnicalServiceOperationalStatePresenter
                 'attention_reason' => 'Kapı uyumsuzluğu incelenmeli',
                 'last_action_at' => $request->operation_control_checked_at?->toDateTimeString() ?? $request->updated_at?->toDateTimeString(),
                 'action' => 'door_incompatible',
+            ];
+        }
+
+        if ($activePartRequest instanceof TechnicalServicePartRequest) {
+            $payload = match ((string) $activePartRequest->status) {
+                TechnicalServicePartRequest::STATUS_REQUESTED,
+                TechnicalServicePartRequest::STATUS_OPS_REVIEW => [4, 'warning'],
+                TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED => [4, 'critical'],
+                TechnicalServicePartRequest::STATUS_SENT,
+                TechnicalServicePartRequest::STATUS_RECEIVED => [8, 'warning'],
+                default => [9, 'warning'],
+            };
+
+            return [
+                'sort_priority' => $payload[0],
+                'attention_level' => $payload[1],
+                'attention_reason' => $this->partRequestAttentionReason($activePartRequest),
+                'last_action_at' => $activePartRequest->updated_at?->toDateTimeString(),
+                'action' => 'part_request_'.$activePartRequest->status,
             ];
         }
 
@@ -477,6 +525,7 @@ class TechnicalServiceOperationalStatePresenter
     private function displayActionLabel(
         TechnicalServiceRequest $request,
         ?TechnicalServicePartnerJobAction $activeAction,
+        ?TechnicalServicePartRequest $activePartRequest,
         array $attention,
         string $opsColumn,
         bool $isCompleted,
@@ -487,6 +536,10 @@ class TechnicalServiceOperationalStatePresenter
 
         if (($attention['attention_reason'] ?? null) !== null) {
             return (string) $attention['attention_reason'];
+        }
+
+        if ($activePartRequest instanceof TechnicalServicePartRequest) {
+            return $this->partRequestAttentionReason($activePartRequest);
         }
 
         if ($activeAction instanceof TechnicalServicePartnerJobAction) {

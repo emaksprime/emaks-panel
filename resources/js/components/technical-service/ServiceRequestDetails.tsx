@@ -119,6 +119,8 @@ type ServiceRequestDetailsProps = {
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
+  onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null }) => void | Promise<void>
+  onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
   onCustomerApprovalResend?: (payload?: { note?: string | null }) => void | Promise<void>
@@ -320,6 +322,7 @@ type OpsDetailSectionContext = {
   hasAppointmentProposal: boolean
   hasReviewBlocker: boolean
   hasSupportRequest: boolean
+  hasPartRequest: boolean
   hasAssignedTechnician: boolean
   workflowStatus?: string | null
   kanbanColumn?: string | null
@@ -338,7 +341,7 @@ const getOpsActiveSection = (context: OpsDetailSectionContext): OpsDetailSection
     return 'assignment'
   }
 
-  if (context.hasSupportRequest) {
+  if (context.hasSupportRequest || context.hasPartRequest) {
     return 'operation'
   }
 
@@ -997,6 +1000,8 @@ export function ServiceRequestDetails({
   onPartnerAppointmentProposalApprove,
   onPartnerAppointmentProposalReject,
   onPartnerCompletionApprove,
+  onPartRequestTransition,
+  onPartRequestServiceVisitCreate,
   onAssignmentOfferUpdate,
   onFieldDocumentReview,
   onCustomerApprovalResend,
@@ -1028,6 +1033,8 @@ export function ServiceRequestDetails({
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected' && action.status === 'ops_review')
   const customerApprovalRejections = partnerPortalActions.filter((action) => action.action === 'customer_approval_rejected' && action.status === 'ops_review')
   const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
+  const partRequests = request.partRequests ?? []
+  const activePartRequests = partRequests.filter((partRequest) => ['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status))
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
   const latestCustomerApprovalRequest = [...partnerPortalActions]
     .filter((action) => action.action === 'customer_otp_requested')
@@ -1063,6 +1070,7 @@ export function ServiceRequestDetails({
     hasAppointmentProposal: openAppointmentProposals.length > 0,
     hasReviewBlocker: jobRejections.length > 0 || customerApprovalRejections.length > 0,
     hasSupportRequest: supportRequests.length > 0,
+    hasPartRequest: activePartRequests.length > 0,
     hasAssignedTechnician,
     workflowStatus: request.workflowStatus,
     kanbanColumn: request.kanbanColumn,
@@ -1121,6 +1129,10 @@ export function ServiceRequestDetails({
   const [offerLaborInput, setOfferLaborInput] = useState('')
   const [offerRouteInput, setOfferRouteInput] = useState('')
   const [offerNoteInput, setOfferNoteInput] = useState('')
+  const [partRequestNotes, setPartRequestNotes] = useState<Record<string, string>>({})
+  const [partRequestPartnerMessages, setPartRequestPartnerMessages] = useState<Record<string, string>>({})
+  const [partRequestProviders, setPartRequestProviders] = useState<Record<string, string>>({})
+  const [partRequestTrackings, setPartRequestTrackings] = useState<Record<string, string>>({})
   const [fieldDocumentOverallRejectNote, setFieldDocumentOverallRejectNote] = useState('')
   const [fieldDocumentOverallReviewLoading, setFieldDocumentOverallReviewLoading] = useState(false)
   const [fieldDocumentOverallReviewEditing, setFieldDocumentOverallReviewEditing] = useState(false)
@@ -2531,6 +2543,84 @@ export function ServiceRequestDetails({
             {assignError ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">
                 {assignError}
+              </div>
+            ) : null}
+            {partRequests.length > 0 ? (
+              <div className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
+                <div>
+                  <p className="font-semibold">Parça Talepleri</p>
+                  <p className="mt-1 text-xs text-violet-800">Parça talebi kapanmadan iş tamamlamaya gönderilemez. SRV gerekirse aynı kök MRN altında yeni servis açılır.</p>
+                </div>
+                {partRequests.slice(0, 4).map((partRequest) => {
+                  const partKey = String(partRequest.id)
+                  const note = partRequestNotes[partKey] ?? ''
+                  const partnerMessage = partRequestPartnerMessages[partKey] ?? ''
+                  const provider = partRequestProviders[partKey] ?? ''
+                  const tracking = partRequestTrackings[partKey] ?? ''
+                  const transition = (status: string) => onPartRequestTransition?.(partRequest.id, {
+                    status,
+                    note: note || null,
+                    partner_message: partnerMessage || null,
+                    shipment_provider: provider || null,
+                    tracking_no: tracking || null,
+                  })
+
+                  return (
+                    <div key={partKey} className="grid gap-3 rounded-xl border border-violet-100 bg-white p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="font-semibold text-slate-950">{partRequest.part_name} {partRequest.quantity > 1 ? `x${partRequest.quantity}` : ''}</p>
+                          <p className="mt-1 text-xs text-slate-600">{partRequest.technician_note || partRequest.reason || 'Usta açıklaması yok'}</p>
+                          {partRequest.tracking_no ? (
+                            <p className="mt-1 text-xs text-slate-600">Kargo: {[partRequest.shipment_provider, partRequest.tracking_no].filter(Boolean).join(' / ')}</p>
+                          ) : null}
+                        </div>
+                        <Badge variant={partRequest.status === 'rejected' ? 'destructive' : partRequest.status === 'sent' ? 'warning' : 'outline'}>
+                          {partRequest.status_label}
+                        </Badge>
+                      </div>
+                      {partRequest.ops_note ? <p className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-700">Ops notu: {partRequest.ops_note}</p> : null}
+                      {partRequest.partner_message ? <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">Partner mesajı: {partRequest.partner_message}</p> : null}
+                      {['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status) ? (
+                        <div className="grid gap-2">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <Input value={note} onChange={(event) => setPartRequestNotes((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Operasyon notu" />
+                            <Input value={partnerMessage} onChange={(event) => setPartRequestPartnerMessages((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Partner'a gösterilecek mesaj" />
+                          </div>
+                          {(partRequest.status === 'approved' || partRequest.status === 'ordered') ? (
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <Input value={provider} onChange={(event) => setPartRequestProviders((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Kargo / sağlayıcı" />
+                              <Input value={tracking} onChange={(event) => setPartRequestTrackings((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Takip no" />
+                            </div>
+                          ) : null}
+                          <div className="flex flex-wrap justify-end gap-2">
+                            {partRequest.status === 'ops_review' || partRequest.status === 'requested' ? (
+                              <>
+                                <Button type="button" variant="outline" onClick={() => void transition('approved')}>Onayla</Button>
+                                <Button type="button" variant="destructive" disabled={note.trim().length < 3} onClick={() => void transition('rejected')}>Reddet</Button>
+                              </>
+                            ) : null}
+                            {partRequest.status === 'approved' ? (
+                              <Button type="button" variant="outline" onClick={() => void transition('ordered')}>Tedarikte işaretle</Button>
+                            ) : null}
+                            {(partRequest.status === 'approved' || partRequest.status === 'ordered') ? (
+                              <Button type="button" onClick={() => void transition('sent')}>Gönderildi işaretle</Button>
+                            ) : null}
+                            {partRequest.status === 'received' ? (
+                              <Button type="button" variant="outline" onClick={() => void transition('service_visit_required')}>Parça sonrası servis gerekli</Button>
+                            ) : null}
+                            {partRequest.status === 'service_visit_required' ? (
+                              <Button type="button" onClick={() => void onPartRequestServiceVisitCreate?.(partRequest.id, { reason: 'spare_part' })}>SRV oluştur</Button>
+                            ) : null}
+                            {['received', 'service_visit_created'].includes(partRequest.status) ? (
+                              <Button type="button" variant="outline" onClick={() => void transition('closed')}>Kapat</Button>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
             ) : null}
             {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || assignmentOffer) ? (

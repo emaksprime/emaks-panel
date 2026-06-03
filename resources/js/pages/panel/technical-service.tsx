@@ -191,6 +191,8 @@ type ApiTechnicalServiceRequest = {
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
   partner_portal_actions?: ServiceRequest['partnerPortalActions']
+  part_requests?: ServiceRequest['partRequests']
+  active_part_request?: ServiceRequest['activePartRequest']
   kanban_column?: ServiceRequest['kanbanColumn']
   display_action_label?: string | null
   display_tags?: ServiceRequest['displayTags']
@@ -828,6 +830,8 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
     partnerPortalActions: request.partner_portal_actions ?? [],
+    partRequests: request.part_requests ?? [],
+    activePartRequest: request.active_part_request ?? null,
     kanbanColumn: request.kanban_column ?? request.operational_state?.ops_column ?? null,
     displayActionLabel: request.display_action_label ?? request.operational_state?.display_action_label ?? null,
     displayTags: request.display_tags ?? request.operational_state?.display_tags ?? [],
@@ -2862,6 +2866,70 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handlePartRequestTransition = async (
+    partRequestId: number | string,
+    payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null },
+  ) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/part-requests/${partRequestId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+    if (updatedRequest) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+      await loadRequests({ silent: true, preserveSelection: true })
+    }
+  }
+
+  const handlePartRequestServiceVisitCreate = async (
+    partRequestId: number | string,
+    payload?: { reason?: string | null },
+  ) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/part-requests/${partRequestId}/service-visit`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+    const childRequest = response.child_request ? mapApiRequest(response.child_request) : null
+
+    preserveDetailScroll(() => {
+      setRequests((current) => {
+        const updated = updatedRequest
+          ? current.map((request) => (request.id === updatedRequest.id ? updatedRequest : request))
+          : current
+
+        return childRequest && !updated.some((request) => request.id === childRequest.id)
+          ? [childRequest, ...updated]
+          : updated
+      })
+
+      if (updatedRequest) {
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      }
+    })
+    await loadRequests({ silent: true, preserveSelection: true })
+  }
+
   const handleCustomerApprovalResend = async (payload?: { note?: string | null }) => {
     if (!selectedId) {
       return
@@ -4633,6 +4701,8 @@ export function TechnicalServiceOperationCenter() {
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}
                     onPartnerCompletionApprove={handlePartnerCompletionApprove}
+                    onPartRequestTransition={handlePartRequestTransition}
+                    onPartRequestServiceVisitCreate={handlePartRequestServiceVisitCreate}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
                     onFieldDocumentReview={handleFieldDocumentReview}
                     onCustomerApprovalResend={handleCustomerApprovalResend}

@@ -23,6 +23,7 @@ use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -3475,6 +3476,283 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertForbidden();
         $this->actingAs($portalUser)
             ->getJson('/api/technical-service/requests')
+            ->assertForbidden();
+    }
+
+    public function test_spare_part_request_lifecycle_blocks_completion_and_creates_srv_child(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Part Lifecycle Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Part Lifecycle Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addHour(),
+            'scheduled_date' => now()->addHour()->toDateString(),
+            'scheduled_time' => now()->addHour()->format('H:i'),
+            'customer_closure_approval_status' => 'onaylandi',
+            'product_model' => 'F3',
+            'brand' => 'Emaks Prime',
+            'serial_number' => 'SN-PART-001',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+            'operation_control_checked_at' => now(),
+            'operation_control_checked_by_user_id' => $admin->id,
+        ]);
+        $job->requestSerials()->create([
+            'mrn' => $job->mrn,
+            'serial_number' => 'SN-PART-001',
+            'product_name' => 'Test Kilit',
+            'product_model' => 'F3',
+            'brand' => 'Emaks Prime',
+            'customer_selected' => true,
+            'customer_visible' => true,
+            'customer_selectable' => true,
+            'is_primary' => true,
+        ]);
+        $this->createPortalFieldDocument($job, 'before_photo');
+        $this->createPortalFieldDocument($job, 'after_photo');
+        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
+                'type' => 'spare_part',
+                'description' => 'Kilit karşılığı değişmeli.',
+                'product_name' => 'Karşılık sacı',
+                'quantity' => 2,
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'ops_review')
+            ->assertJsonPath('job.active_part_request.status', TechnicalServicePartRequest::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.can_submit_completion', false);
+
+        $partRequest = TechnicalServicePartRequest::query()
+            ->where('technical_service_request_id', $job->id)
+            ->firstOrFail();
+        $this->assertSame('Karşılık sacı', $partRequest->part_name);
+        $this->assertSame(2, $partRequest->quantity);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+                'note' => 'Parça açıkken tamamlanamaz.',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('part_request');
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'note' => 'Parça onaylandı.',
+                'partner_message' => 'Parça talebiniz onaylandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_APPROVED)
+            ->assertJsonPath('request.active_part_request.status', TechnicalServicePartRequest::STATUS_APPROVED);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_ORDERED,
+                'note' => 'Tedarikte.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_ORDERED);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_SENT,
+                'shipment_provider' => 'Test Kargo',
+                'tracking_no' => 'TRK-123',
+                'partner_message' => 'Parça kargoya verildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_SENT)
+            ->assertJsonPath('request.active_part_request.tracking_no', 'TRK-123');
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}?partner_id={$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('job.can_receive_part', true);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/part-requests/{$partRequest->id}/received")
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_RECEIVED)
+            ->assertJsonPath('job.can_receive_part', false);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
+                'note' => 'Parça sonrası servis gerekiyor.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED);
+
+        $createSrvResponse = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}/service-visit", [
+                'reason' => 'spare_part',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('request.active_part_request.status', null);
+
+        $childId = $createSrvResponse->json('child_request.id');
+        $child = TechnicalServiceRequest::query()->findOrFail($childId);
+        $this->assertSame($job->id, $child->parent_request_id);
+        $this->assertSame($job->mrn, $child->root_mrn);
+        $this->assertSame('SRV-001', $child->service_code);
+        $this->assertSame($job->mrn.'-SRV-001', $child->mrn);
+        $this->assertSame('SN-PART-001', $child->serial_number);
+        $this->assertDatabaseHas('technical_service_request_serials', [
+            'technical_service_request_id' => $child->id,
+            'serial_number' => 'SN-PART-001',
+            'linked_mrn' => $job->mrn,
+        ]);
+        $this->assertDatabaseHas('technical_service_part_requests', [
+            'id' => $partRequest->id,
+            'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED,
+            'service_visit_request_id' => $child->id,
+        ]);
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->assertForbidden();
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$child->id}/technician", [
+                'technical_service_technician_id' => $technician->id,
+                'note' => 'SRV aynı ustaya atandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.kanban_column', 'assignment_pending');
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('job.mrn', $child->mrn);
+    }
+
+    public function test_ops_can_reject_spare_part_request_with_note_and_partner_cannot_act_on_other_partner_part_request(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Reject Part Locksmith',
+        ]);
+        $otherPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Other Part Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Reject Part Usta']);
+        $otherTechnician = $this->technician(['name' => 'Other Part Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $otherPartner->id,
+            'technical_service_technician_id' => $otherTechnician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-REJECT', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+        ]);
+        $otherJob = $this->serviceRequestForTechnician($otherTechnician, 'MRN-ACTION-PART-OTHER', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+        ]);
+        $otherPartRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $otherJob->id,
+            'root_request_id' => $otherJob->id,
+            'requested_by_user_id' => null,
+            'requested_by_technician_id' => $otherTechnician->id,
+            'status' => TechnicalServicePartRequest::STATUS_SENT,
+            'part_name' => 'Başka partner parçası',
+            'quantity' => 1,
+        ]);
+
+        $this->actingAs($admin)->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")->assertCreated();
+        $this->actingAs($admin)->postJson("/api/b2b/partners/{$otherPartner->id}/provision-admin-user")->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
+                'type' => 'spare_part',
+                'description' => 'Parça uyumsuz.',
+                'product_name' => 'Menteşe',
+            ])
+            ->assertOk();
+        $partRequest = TechnicalServicePartRequest::query()
+            ->where('technical_service_request_id', $job->id)
+            ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_REJECTED,
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('note');
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_REJECTED,
+                'note' => 'Parça gerekmiyor.',
+                'partner_message' => 'Parça talebi reddedildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_REJECTED)
+            ->assertJsonPath('request.active_part_request', null);
+
+        $this->assertDatabaseHas('technical_service_part_requests', [
+            'id' => $partRequest->id,
+            'status' => TechnicalServicePartRequest::STATUS_REJECTED,
+            'ops_note' => 'Parça gerekmiyor.',
+        ]);
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$otherJob->id}?partner_id={$otherPartner->id}")
+            ->assertForbidden();
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$otherJob->id}/part-requests/{$otherPartRequest->id}/received")
             ->assertForbidden();
     }
 

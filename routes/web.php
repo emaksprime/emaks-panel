@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\SupportActivationCodeSearchController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
+use App\Http\Controllers\Api\TechnicalServicePartRequestController;
 use App\Http\Controllers\Api\TechnicalServicePartnerPortalOpsController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
@@ -181,6 +182,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('service-jobs/{technicalServiceRequest}/support-request', [PartnerServiceJobController::class, 'supportRequest'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.support-request');
+                Route::post('service-jobs/{technicalServiceRequest}/part-requests/{partRequest}/received', [PartnerServiceJobController::class, 'receivePart'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.part-requests.received');
                 Route::post('service-jobs/{technicalServiceRequest}/price-revision-request', [PartnerServiceJobController::class, 'priceRevisionRequest'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.price-revision-request');
@@ -247,6 +251,12 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/customer-approval-requests', [TechnicalServicePartnerPortalOpsController::class, 'resendCustomerApprovalRequest'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.customer-approval-requests.resend');
+            Route::patch('requests/{technicalServiceRequest}/part-requests/{partRequest}', [TechnicalServicePartRequestController::class, 'transition'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.part-requests.transition');
+            Route::post('requests/{technicalServiceRequest}/part-requests/{partRequest}/service-visit', [TechnicalServicePartRequestController::class, 'createServiceVisit'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.part-requests.service-visit');
             Route::patch('requests/{technicalServiceRequest}/field-documents/{upload}/review', [TechnicalServiceController::class, 'reviewFieldDocument'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.field-documents.review');

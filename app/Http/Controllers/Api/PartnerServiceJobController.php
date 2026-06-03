@@ -8,6 +8,7 @@ use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceMessageDispatch;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -17,6 +18,7 @@ use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\PanelAccessService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Closure;
@@ -87,6 +89,7 @@ class PartnerServiceJobController extends Controller
         private readonly B2BPartnerServiceJobScopeService $scope,
         private readonly B2BPartnerPortalDataService $portalData,
         private readonly TechnicalServiceWorkflowService $workflow,
+        private readonly TechnicalServicePartRequestService $partRequests,
         private readonly PanelAccessService $panelAccess,
         private readonly EvolutionWhatsAppMessageService $messages,
     ) {}
@@ -103,6 +106,7 @@ class PartnerServiceJobController extends Controller
             ->serviceJobsQuery($partner)
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
+                'partRequests' => fn ($query) => $query->latest(),
                 'uploads',
             ])
             ->orderByRaw('scheduled_at IS NULL')
@@ -336,6 +340,7 @@ class PartnerServiceJobController extends Controller
         ]);
         $checklist = $data['checklist'] ?? $this->portalCompletionChecklist();
         $this->validateSimpleChecklist($checklist);
+        $this->validateNoOpenPartRequest($job);
         $this->validateCompletionEvidence($job, $data);
         $completionNote = trim((string) ($data['note'] ?? ''));
 
@@ -590,7 +595,7 @@ class PartnerServiceJobController extends Controller
         ]);
 
         $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
-            return $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
+            $action = $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
                 'type' => $data['type'],
                 'type_label' => $this->supportTypeLabel($data['type']),
                 'description' => $data['description'],
@@ -599,6 +604,19 @@ class PartnerServiceJobController extends Controller
                 'submitted_at' => now()->toISOString(),
                 'ops_review_required' => true,
             ], $data['description'], $job->workflow_status);
+
+            if ($data['type'] === 'spare_part') {
+                $partRequest = $this->partRequests->createFromPartnerSupport($job->refresh(), $user, $action, $data);
+                $action->forceFill([
+                    'payload' => [
+                        ...(is_array($action->payload) ? $action->payload : []),
+                        'part_request_id' => $partRequest->id,
+                        'part_request_status' => $partRequest->status,
+                    ],
+                ])->save();
+            }
+
+            return $action;
         });
 
         $this->messages->send(
@@ -615,6 +633,23 @@ class PartnerServiceJobController extends Controller
         return response()->json([
             'status' => $action->status,
             'action' => $action->action,
+            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+        ]);
+    }
+
+    public function receivePart(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePartRequest $partRequest,
+    ): JsonResponse {
+        [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
+        abort_unless((int) $partRequest->technical_service_request_id === (int) $job->id, 404);
+
+        $partRequest = $this->partRequests->markReceivedByTechnician($partRequest, $user);
+
+        return response()->json([
+            'status' => $partRequest->status,
+            'part_request' => $this->partRequests->serialize($partRequest, forPartner: true),
             'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
         ]);
     }
@@ -1153,6 +1188,17 @@ class PartnerServiceJobController extends Controller
                 'customer_confirmation' => 'MÃ¼ÅŸteri onayÄ± olmadan tamamlamaya gÃ¶nderilemez.',
             ]);
         }
+    }
+
+    private function validateNoOpenPartRequest(TechnicalServiceRequest $job): void
+    {
+        if (! $this->partRequests->hasOpenBlockingPartRequest($job)) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'part_request' => 'Açık parça talebi varken iş son kontrole gönderilemez.',
+        ]);
     }
 
     private function doorPhotoEvidenceCount(TechnicalServiceRequest $job): int

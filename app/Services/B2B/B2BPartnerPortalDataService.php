@@ -9,11 +9,13 @@ use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
+use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Collection;
 
@@ -238,6 +240,7 @@ class B2BPartnerPortalDataService
             ->serviceJobsQuery($partner)
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
+                'partRequests' => fn ($query) => $query->latest(),
                 'uploads',
             ])
             ->latest('updated_at')
@@ -292,6 +295,7 @@ class B2BPartnerPortalDataService
             'customerConfirmations' => fn ($query) => $query->latest(),
             'latestAssignmentOffer.technician',
             'technicianRecord',
+            'partRequests' => fn ($query) => $query->latest(),
         ]);
         $partnerActions = $this
             ->visibleActionsForPartner($request->partnerJobActions, $viewerPartner)
@@ -318,6 +322,12 @@ class B2BPartnerPortalDataService
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request, $partnerActions);
         $canonicalState = $this->operationalState->present($request);
+        $partRequestRows = $request->partRequests
+            ->map(fn (TechnicalServicePartRequest $partRequest): array => app(TechnicalServicePartRequestService::class)->serialize($partRequest, forPartner: true))
+            ->values();
+        $activePartRequest = $partRequestRows
+            ->first(fn (array $partRequest): bool => in_array((string) ($partRequest['status'] ?? ''), TechnicalServicePartRequest::ACTIVE_STATUSES, true));
+        $hasOpenPartRequest = is_array($activePartRequest);
         $assignmentOffer = $request->latestAssignmentOffer;
         $earningSummary = $this->earningSummary($request, $assignmentOffer);
         $photoReadiness = $this->portalPhotoReadiness($request);
@@ -330,6 +340,8 @@ class B2BPartnerPortalDataService
             'door_photos_uploaded' => $photoReadiness['count'],
             'photos_ready' => $photoReadiness['ready'],
             'customer_confirmation_ready' => $customerConfirmationReady,
+            'part_request_clear' => ! $hasOpenPartRequest,
+            'part_request_status_label' => is_array($activePartRequest) ? ($activePartRequest['status_label'] ?? null) : null,
             'checklist_required' => true,
             'ops_final_check_required' => true,
             'required_photo_labels' => array_values(self::requiredPortalPhotoFields()),
@@ -363,7 +375,7 @@ class B2BPartnerPortalDataService
             && ! $isRejectedInReview
             && ! $hasAppointmentProposalInReview;
         $canRequestAppointmentChange = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction;
-        $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction;
+        $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction && ! $hasOpenPartRequest;
         $nextActionLabel = $this->serviceJobNextActionLabel($request, $stateAction, $completionRequirements);
         $partnerNextActionLabel = $canonicalState['display_action_label'] ?? $nextActionLabel;
         if ($nextActionLabel === 'Tamamlamaya gönderilebilir') {
@@ -495,6 +507,10 @@ class B2BPartnerPortalDataService
                 'payload' => is_array($latestSupportRequest->payload) ? $latestSupportRequest->payload : [],
                 'created_at' => $latestSupportRequest->created_at?->toIso8601String(),
             ] : null,
+            'part_requests' => $partRequestRows->all(),
+            'active_part_request' => is_array($activePartRequest) ? $activePartRequest : null,
+            'can_receive_part' => is_array($activePartRequest)
+                && ($activePartRequest['status'] ?? null) === TechnicalServicePartRequest::STATUS_SENT,
             'price_revision_request' => $latestPriceRevisionRequest ? [
                 'id' => $latestPriceRevisionRequest->id,
                 'status' => $latestPriceRevisionRequest->status,
@@ -548,7 +564,7 @@ class B2BPartnerPortalDataService
             'card_priority' => $nextActionLabel === 'Tamamlamaya gönderilebilir'
                 ? 4
                 : ($canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction)),
-            'card_tone' => $this->serviceJobTone($request, $stateAction),
+            'card_tone' => $hasOpenPartRequest ? 'violet' : $this->serviceJobTone($request, $stateAction),
             'kanban_column' => $canonicalState['partner_column'] ?? $this->serviceJobColumn($request, $stateAction),
             'operational_state' => $canonicalState,
             'action_state' => $this->serviceJobActionState($request, $stateAction, $completionRequirements),

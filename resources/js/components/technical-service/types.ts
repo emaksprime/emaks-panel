@@ -51,6 +51,8 @@ export type ServiceRequest = {
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
   partnerPortalActions?: ServiceRequestPartnerPortalAction[]
+  partRequests?: ServiceRequestPartRequest[]
+  activePartRequest?: ServiceRequestPartRequest | null
   kanbanColumn?: ServiceRequestOpsColumn
   displayActionLabel?: string | null
   displayTags?: ServiceRequestDisplayTag[]
@@ -112,6 +114,31 @@ export type ServiceRequestPartnerPortalAction = {
   status: string
   note?: string | null
   payload?: Record<string, unknown>
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type ServiceRequestPartRequest = {
+  id: number | string
+  technical_service_request_id?: number | string | null
+  root_request_id?: number | string | null
+  request_serial_id?: number | string | null
+  source_partner_action_id?: number | string | null
+  status: string
+  status_label: string
+  part_name: string
+  part_code?: string | null
+  quantity: number
+  reason?: string | null
+  technician_note?: string | null
+  ops_note?: string | null
+  partner_message?: string | null
+  shipment_provider?: string | null
+  tracking_no?: string | null
+  sent_at?: string | null
+  received_at?: string | null
+  requires_service_visit?: boolean
+  service_visit_request_id?: number | string | null
   created_at?: string | null
   updated_at?: string | null
 }
