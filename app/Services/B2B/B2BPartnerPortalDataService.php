@@ -16,6 +16,7 @@ use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Collection;
 
@@ -295,6 +296,8 @@ class B2BPartnerPortalDataService
             'customerConfirmations' => fn ($query) => $query->latest(),
             'latestAssignmentOffer.technician',
             'technicianRecord',
+            'parentRequest',
+            'sourcePartRequest',
             'partRequests' => fn ($query) => $query->latest(),
         ]);
         $partnerActions = $this
@@ -478,7 +481,9 @@ class B2BPartnerPortalDataService
                 ->all(),
             'latest_partner_action' => $latestAction ? [
                 'action' => $latestAction->action,
+                'action_label' => TechnicalServiceUiLabelService::actionLabel($latestAction->action),
                 'status' => $latestAction->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($latestAction->status),
                 'note' => $latestAction->note,
                 'payload' => is_array($latestAction->payload) ? $latestAction->payload : [],
                 'created_at' => $latestAction->created_at?->toIso8601String(),
@@ -488,7 +493,9 @@ class B2BPartnerPortalDataService
                 ->map(fn (TechnicalServicePartnerJobAction $action): array => [
                     'id' => $action->id,
                     'action' => $action->action,
+                    'action_label' => TechnicalServiceUiLabelService::actionLabel($action->action),
                     'status' => $action->status,
+                    'status_label' => TechnicalServiceUiLabelService::statusLabel($action->status),
                     'note' => $action->note,
                     'payload' => is_array($action->payload) ? $action->payload : [],
                     'created_at' => $action->created_at?->toIso8601String(),
@@ -498,6 +505,7 @@ class B2BPartnerPortalDataService
             'appointment_proposal' => $latestAppointmentProposal ? [
                 'id' => $latestAppointmentProposal->id,
                 'status' => $latestAppointmentProposal->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($latestAppointmentProposal->status),
                 'note' => $latestAppointmentProposal->note,
                 'payload' => is_array($latestAppointmentProposal->payload) ? $latestAppointmentProposal->payload : [],
                 'created_at' => $latestAppointmentProposal->created_at?->toIso8601String(),
@@ -505,6 +513,7 @@ class B2BPartnerPortalDataService
             'rejection' => $latestRejection ? [
                 'id' => $latestRejection->id,
                 'status' => $latestRejection->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($latestRejection->status),
                 'note' => $latestRejection->note,
                 'payload' => is_array($latestRejection->payload) ? $latestRejection->payload : [],
                 'created_at' => $latestRejection->created_at?->toIso8601String(),
@@ -512,6 +521,7 @@ class B2BPartnerPortalDataService
             'support_request' => $latestSupportRequest ? [
                 'id' => $latestSupportRequest->id,
                 'status' => $latestSupportRequest->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($latestSupportRequest->status),
                 'note' => $latestSupportRequest->note,
                 'payload' => is_array($latestSupportRequest->payload) ? $latestSupportRequest->payload : [],
                 'created_at' => $latestSupportRequest->created_at?->toIso8601String(),
@@ -523,6 +533,7 @@ class B2BPartnerPortalDataService
             'price_revision_request' => $latestPriceRevisionRequest ? [
                 'id' => $latestPriceRevisionRequest->id,
                 'status' => $latestPriceRevisionRequest->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($latestPriceRevisionRequest->status),
                 'note' => $latestPriceRevisionRequest->note,
                 'payload' => is_array($latestPriceRevisionRequest->payload) ? $latestPriceRevisionRequest->payload : [],
                 'created_at' => $latestPriceRevisionRequest->created_at?->toIso8601String(),
@@ -530,6 +541,7 @@ class B2BPartnerPortalDataService
             'customer_otp_request' => $latestOtpRequest ? [
                 'id' => $latestOtpRequest->id,
                 'status' => $latestOtpRequest->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($latestOtpRequest->status),
                 'note' => $latestOtpRequest->note,
                 'payload' => is_array($latestOtpRequest->payload) ? $latestOtpRequest->payload : [],
                 'created_at' => $latestOtpRequest->created_at?->toIso8601String(),
@@ -547,6 +559,7 @@ class B2BPartnerPortalDataService
             'completion_submission' => $latestCompletionSubmission ? [
                 'id' => $latestCompletionSubmission->id,
                 'status' => $latestCompletionSubmission->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($latestCompletionSubmission->status),
                 'note' => $latestCompletionSubmission->note,
                 'payload' => is_array($latestCompletionSubmission->payload) ? $latestCompletionSubmission->payload : [],
                 'created_at' => $latestCompletionSubmission->created_at?->toIso8601String(),
@@ -576,6 +589,7 @@ class B2BPartnerPortalDataService
             'card_tone' => $hasOpenPartRequest ? 'violet' : $this->serviceJobTone($request, $stateAction),
             'kanban_column' => $canonicalState['partner_column'] ?? $this->serviceJobColumn($request, $stateAction),
             'operational_state' => $canonicalState,
+            'service_visit_context' => $this->serviceVisitContext($request),
             'action_state' => $this->serviceJobActionState($request, $stateAction, $completionRequirements),
             'can_accept' => $canAcceptAppointment,
             'can_propose_appointment' => $canProposeAppointment,
@@ -614,6 +628,48 @@ class B2BPartnerPortalDataService
                 return ! in_array($visibility, ['ops_internal', 'internal_partner'], true);
             })
             ->values();
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function serviceVisitContext(TechnicalServiceRequest $request): ?array
+    {
+        $isServiceVisit = filled($request->service_code) || $request->parent_request_id !== null;
+        $rootMrn = (string) ($request->root_mrn ?: $request->parentRequest?->mrn);
+
+        if (! $isServiceVisit && $rootMrn === '') {
+            return null;
+        }
+
+        $siblings = collect();
+        if ($rootMrn !== '') {
+            $siblings = TechnicalServiceRequest::query()
+                ->where('root_mrn', $rootMrn)
+                ->where('id', '!=', $request->id)
+                ->orderBy('service_sequence')
+                ->limit(8)
+                ->get()
+                ->map(fn (TechnicalServiceRequest $sibling): array => [
+                    'id' => $sibling->id,
+                    'mrn' => $sibling->mrn,
+                    'service_code' => $sibling->service_code,
+                    'status_label' => $sibling->workflow_status ?: $sibling->status,
+                ]);
+        }
+
+        return [
+            'root_mrn' => $rootMrn !== '' ? $rootMrn : null,
+            'parent_mrn' => $request->parentRequest?->mrn,
+            'service_code' => $request->service_code,
+            'reason' => $request->service_visit_reason,
+            'reason_label' => TechnicalServiceUiLabelService::serviceVisitReasonLabel($request->service_visit_reason),
+            'source_part_request_id' => $request->source_part_request_id,
+            'summary' => $request->service_code
+                ? 'Ana talep '.$rootMrn.' altında '.$request->service_code
+                : ($rootMrn !== '' ? 'Ana talep '.$rootMrn : null),
+            'sibling_service_visits' => $siblings->values()->all(),
+        ];
     }
 
     /**

@@ -157,6 +157,7 @@ type ApiTechnicalServiceRequest = {
     entity_type: string
     entity_id: string | number
     action_type: string
+    action_label?: string | null
     old_value?: Record<string, unknown> | null
     new_value?: Record<string, unknown> | null
     user_id?: number | null
@@ -197,6 +198,7 @@ type ApiTechnicalServiceRequest = {
   display_action_label?: string | null
   display_tags?: ServiceRequest['displayTags']
   operational_state?: ServiceRequest['operationalState']
+  service_visit_history?: ServiceRequest['serviceVisitHistory']
   document?: unknown
   documents?: unknown
   photo?: unknown
@@ -206,10 +208,14 @@ type ApiTechnicalServiceRequest = {
 type ApiTechnicalServiceEvent = {
   id: number | string
   event_type: string
+  event_type_label?: string | null
   title: string
+  title_label?: string | null
   note?: string | null
   from_status?: string | null
+  from_status_label?: string | null
   to_status?: string | null
+  to_status_label?: string | null
   author_user_id?: number | null
   metadata?: Record<string, unknown> | null
   created_at: string
@@ -836,6 +842,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     displayActionLabel: request.display_action_label ?? request.operational_state?.display_action_label ?? null,
     displayTags: request.display_tags ?? request.operational_state?.display_tags ?? [],
     operationalState: request.operational_state ?? null,
+    serviceVisitHistory: request.service_visit_history ?? null,
     attention: request.attention ?? null,
   }
 }

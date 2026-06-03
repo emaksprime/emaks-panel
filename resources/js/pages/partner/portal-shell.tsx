@@ -101,11 +101,11 @@ type ServiceJob = {
   checklist_payload: Record<string, boolean>
   photo_counts: { before: number, after: number, general: number }
   photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null, preview_url?: string | null, review_status?: string | null, review_note?: string | null }>
-  latest_partner_action: { action: string, status: string, note: string | null, payload?: Record<string, unknown>, created_at: string | null } | null
-  portal_actions: Array<{ id?: number, action: string, status: string, note: string | null, payload?: Record<string, unknown>, created_at: string | null }>
-  appointment_proposal: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
-  rejection: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
-  support_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  latest_partner_action: { action: string, action_label?: string | null, status: string, status_label?: string | null, note: string | null, payload?: Record<string, unknown>, created_at: string | null } | null
+  portal_actions: Array<{ id?: number, action: string, action_label?: string | null, status: string, status_label?: string | null, note: string | null, payload?: Record<string, unknown>, created_at: string | null }>
+  appointment_proposal: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  rejection: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  support_request: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   part_requests?: Array<{
     id: number
     status: string
@@ -133,10 +133,10 @@ type ServiceJob = {
     received_at?: string | null
   } | null
   can_receive_part?: boolean
-  price_revision_request?: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
-  customer_otp_request: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  price_revision_request?: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  customer_otp_request: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   customer_confirmation?: { id: number, status: string, approved_at: string | null, rejected_at?: string | null, customer_note: string | null, approval_url: string | null } | null
-  completion_submission: { id: number, status: string, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
+  completion_submission: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
   assignment_offer: {
     id: number
     labor_amount: number
@@ -169,6 +169,14 @@ type ServiceJob = {
   card_priority: number
   card_tone: 'blue' | 'green' | 'amber' | 'slate' | 'violet' | 'rose'
   kanban_column: 'new_jobs' | 'appointment_confirmed' | 'ops_review' | 'revisit' | 'final_check' | 'completed'
+  service_visit_context?: {
+    root_mrn?: string | null
+    parent_mrn?: string | null
+    service_code?: string | null
+    reason_label?: string | null
+    summary?: string | null
+    sibling_service_visits?: Array<{ id: number, mrn: string, service_code?: string | null, status_label?: string | null }>
+  } | null
   action_state?: string
   can_accept: boolean
   can_propose_appointment?: boolean
@@ -351,7 +359,18 @@ const jobEarningRoute = (job: ServiceJob): number => {
   return numericAmount(job.assignment_offer?.route_fee_amount ?? job.earning_summary.route_fee_amount)
 }
 
-const statusLabel = (status: string | null | undefined): string => ({
+const hasRawCodeShape = (value: string): boolean => /^[a-z0-9_-]+$/i.test(value)
+
+const statusLabel = (status: string | null | undefined, provided?: string | null): string => {
+  const normalizedProvided = String(provided ?? '').trim()
+
+  if (normalizedProvided !== '' && !hasRawCodeShape(normalizedProvided)) {
+    return normalizedProvided
+  }
+
+  const normalized = String(status ?? '').trim()
+
+  return ({
   ops_review: 'Operasyon incelemesinde',
   applied: 'Uygulandı',
   submitted: 'Gönderildi',
@@ -368,7 +387,8 @@ const statusLabel = (status: string | null | undefined): string => ({
   draft: 'Taslak',
   cancelled: 'İptal edildi',
   superseded: 'Yenilendi',
-}[String(status ?? '').trim()] ?? (String(status ?? '').trim() || '-'))
+}[normalized] ?? (normalized && !hasRawCodeShape(normalized) ? normalized : '-'))
+}
 
 const jobEarningStatus = (job: ServiceJob): string => {
   if (job.assignment_offer?.status) {
@@ -730,7 +750,13 @@ const cardToneClass = (tone: ServiceJob['card_tone']) => ({
   slate: 'border-slate-200 bg-white',
 }[tone])
 
-const actionLabel = (action: string, status?: string | null) => {
+const actionLabel = (action: string, status?: string | null, provided?: string | null) => {
+  const normalizedProvided = String(provided ?? '').trim()
+
+  if (normalizedProvided !== '' && !hasRawCodeShape(normalizedProvided)) {
+    return normalizedProvided
+  }
+
   if (action === 'appointment_proposed' && status === 'applied') {
     return 'Randevu onaylandı'
   }
@@ -750,7 +776,7 @@ const actionLabel = (action: string, status?: string | null) => {
   photos_uploaded: 'Fotoğraf yüklendi',
   price_revision_requested: 'Hakediş revize talebi',
   note_added: 'Not eklendi',
-}[action] ?? action)
+}[action] ?? 'Bilinmeyen işlem')
 }
 
 const todayDateValue = () => new Date().toISOString().slice(0, 10)
@@ -1408,7 +1434,7 @@ function ServiceJobDetail({
           </div>
           {job.latest_partner_action && (
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
-              {actionLabel(job.latest_partner_action.action, job.latest_partner_action.status)}
+              {actionLabel(job.latest_partner_action.action, job.latest_partner_action.status, job.latest_partner_action.action_label)}
             </span>
           )}
         </div>
@@ -1417,13 +1443,43 @@ function ServiceJobDetail({
           <p className="mt-1 text-2xl font-semibold text-slate-950">{job.appointment_label ?? job.appointment_at ?? 'Randevu bekleniyor'}</p>
           <p className="mt-1 text-sm text-blue-800">{job.kanban_column === 'appointment_confirmed' ? 'Randevu onaylandı' : statusPlan}</p>
         </div>
+        {job.service_visit_context ? (
+          <div className="mt-5 rounded-2xl border border-violet-100 bg-violet-50 p-4 text-violet-950">
+            <p className="text-xs font-semibold uppercase tracking-wide text-violet-600">Servis geçmişi</p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-xl bg-white px-3 py-2">
+                <p className="text-xs font-semibold text-violet-700">Ana talep</p>
+                <p className="mt-1 font-semibold text-slate-950">{job.service_visit_context.root_mrn ?? job.service_visit_context.parent_mrn ?? '-'}</p>
+              </div>
+              <div className="rounded-xl bg-white px-3 py-2">
+                <p className="text-xs font-semibold text-violet-700">Servis ziyareti</p>
+                <p className="mt-1 font-semibold text-slate-950">{job.service_visit_context.service_code ?? 'Ana talep'}</p>
+              </div>
+            </div>
+            <p className="mt-2 text-sm text-violet-800">
+              {job.service_visit_context.reason_label ?? job.service_visit_context.summary ?? 'Ek servis ziyareti'}
+            </p>
+            {(job.service_visit_context.sibling_service_visits?.length ?? 0) > 0 ? (
+              <details className="mt-3 rounded-xl bg-white px-3 py-2 text-sm">
+                <summary className="cursor-pointer font-semibold text-violet-800">Aynı ana talepteki diğer servisler</summary>
+                <div className="mt-2 grid gap-2">
+                  {job.service_visit_context.sibling_service_visits?.map((visit) => (
+                    <div key={visit.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-violet-50 px-2 py-1">
+                      <span className="font-semibold text-slate-800">{visit.mrn}</span>
+                      <span className="text-xs text-violet-700">{[visit.service_code, visit.status_label].filter(Boolean).join(' · ')}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </div>
+        ) : null}
         {job.active_part_request ? (
           <div className="mt-5 rounded-2xl border border-violet-100 bg-violet-50 p-4 text-violet-950">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-violet-600">Parça talebi</p>
                 <p className="mt-1 text-lg font-semibold text-slate-950">{job.active_part_request.part_name} {job.active_part_request.quantity > 1 ? `x${job.active_part_request.quantity}` : ''}</p>
-                <p className="mt-1 text-sm text-violet-800">{job.active_part_request.status_label}</p>
               </div>
               <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-violet-800">{job.active_part_request.status_label}</span>
             </div>
@@ -1485,7 +1541,7 @@ function ServiceJobDetail({
           <PartnerDetailPanel key={`${job.id}-appointment`} title="Randevu / bildirim" summary="Önerilen saatler ve operasyon bildirimi" tone="blue" defaultOpen={defaultOpenPartnerSections.has('appointment')} panelKey={`${job.id}-appointment`}>
             {job.appointment_proposal ? (
               <div className="mt-3 rounded-xl bg-white/80 p-3 text-xs text-blue-900">
-                <p className="font-semibold">{job.appointment_proposal.status === 'applied' ? 'Randevu onaylandı' : `Randevu: ${statusLabel(job.appointment_proposal.status)}`}</p>
+                <p className="font-semibold">{job.appointment_proposal.status === 'applied' ? 'Randevu onaylandı' : `Randevu: ${statusLabel(job.appointment_proposal.status, job.appointment_proposal.status_label)}`}</p>
                 <div className="mt-1 grid gap-1">
                   {appointmentSlotLabels(job.appointment_proposal.payload).length === 0 ? (
                     <p>-</p>
@@ -1621,7 +1677,7 @@ function ServiceJobDetail({
             <div className="mt-3 grid gap-2">
               {job.portal_actions.map((action, index) => (
                 <div key={`${action.action}-${action.created_at ?? index}`} className="rounded-xl bg-white px-3 py-2 text-sm">
-                  <div className="font-semibold text-slate-900">{actionLabel(action.action, action.status)} · {statusLabel(action.status)}</div>
+                  <div className="font-semibold text-slate-900">{actionLabel(action.action, action.status, action.action_label)} · {statusLabel(action.status, action.status_label)}</div>
                   {action.note && <div className="mt-1 text-slate-500">{action.note}</div>}
                 </div>
               ))}

@@ -153,6 +153,65 @@ const dateTimeOrEmpty = (value: string | null | undefined, fallback: string): st
   hasText(value) ? formatTechnicalServiceDateTime(value, fallback) : fallback
 )
 
+const actionCodeLabels: Record<string, string> = {
+  accepted: 'İş kabul edildi',
+  appointment_accepted_by_technician: 'Randevu onaylandı',
+  appointment_proposed: 'Randevu önerildi',
+  appointment_change_requested: 'Randevu değişikliği istendi',
+  schedule_updated: 'Randevu güncellendi',
+  appointment_approved: 'Randevu onaylandı',
+  customer_otp_requested: 'Müşteri onayı istendi',
+  customer_approval_request: 'Müşteri onayı istendi',
+  customer_approval_request_resent: 'Müşteri onayı istendi',
+  customer_approval_confirmed: 'Müşteri onayladı',
+  customer_approved: 'Müşteri onayladı',
+  customer_approval_rejected: 'Müşteri onaylamadı',
+  customer_rejected: 'Müşteri onaylamadı',
+  completion_submitted: 'Tamamlamaya gönderildi',
+  job_rejected: 'Usta işi reddetti',
+  revisit_requested: 'Tekrar ziyaret istendi',
+  support_requested: 'Ek talep oluşturuldu',
+  price_revision_requested: 'Hakediş revize talep edildi',
+  photos_uploaded: 'Fotoğraf yüklendi',
+  note_added: 'Not eklendi',
+  part_request_created: 'Parça talebi oluşturuldu',
+  part_request_approved: 'Parça talebi onaylandı',
+  part_request_ordered: 'Parça tedarik ediliyor',
+  part_request_sent: 'Parça gönderildi',
+  part_request_received: 'Parça teslim alındı',
+  part_request_service_visit_required: 'Operasyon servis planlıyor',
+  part_request_service_visit_created: 'Servis kaydı oluşturuldu',
+  part_request_rejected: 'Parça talebi reddedildi',
+  part_request_srv_created: 'Servis kaydı oluşturuldu',
+  service_visit_created: 'Servis kaydı oluşturuldu',
+  srv_child_created: 'Servis kaydı oluşturuldu',
+  technician_earning_message_sent: 'Hakediş bilgisi gönderildi',
+  technician_revision_requested: 'Usta revize talep etti',
+  customer_called: 'Müşteri arandı',
+  cancel: 'İptal edildi',
+  cancelled: 'İptal edildi',
+}
+
+const hasRawCodeShape = (value: string): boolean => /^[a-z0-9_-]+$/i.test(value)
+
+const actionLabel = (code: string | null | undefined, provided?: string | null): string => {
+  const normalizedProvided = String(provided ?? '').trim()
+
+  if (normalizedProvided !== '' && !hasRawCodeShape(normalizedProvided)) {
+    return normalizedProvided
+  }
+
+  const normalized = String(code ?? '').trim()
+
+  return actionCodeLabels[normalized] ?? (normalized && !hasRawCodeShape(normalized) ? normalized : 'Bilinmeyen işlem')
+}
+
+const stringValue = (source: Record<string, unknown> | null | undefined, key: string): string | null => {
+  const value = source?.[key]
+
+  return typeof value === 'string' && value.trim() !== '' ? value : null
+}
+
 const formatKmValue = (value: number | null | undefined): string => (
   typeof value === 'number' && Number.isFinite(value)
     ? `${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
@@ -1030,6 +1089,7 @@ export function ServiceRequestDetails({
   const saleAndPayment = request.saleAndPayment ?? null
   const documentInfo = request.documentInfo ?? null
   const invoiceSerials = request.invoiceSerials ?? null
+  const serviceVisitHistory = request.serviceVisitHistory ?? null
   const partnerPortalActions = request.partnerPortalActions ?? []
   const openAppointmentProposals = partnerPortalActions.filter((action) => ['appointment_proposed', 'appointment_change_requested'].includes(action.action) && action.status === 'ops_review')
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected' && action.status === 'ops_review')
@@ -1054,6 +1114,14 @@ export function ServiceRequestDetails({
     ?? latestCustomerApprovalPayload.dispatch_status
     ?? '',
   )
+  const latestCustomerApprovalUrl = stringValue(latestCustomerApprovalPayload, 'approval_url')
+    ?? stringValue(latestCustomerApprovalPayload, 'confirmation_url')
+    ?? stringValue(latestCustomerApprovalMessagePayload, 'approval_url')
+    ?? stringValue(latestCustomerApprovalMessagePayload, 'confirmation_url')
+  const latestCustomerApprovalWhatsappUrl = stringValue(latestCustomerApprovalPayload, 'whatsapp_url')
+    ?? stringValue(latestCustomerApprovalMessagePayload, 'whatsapp_url')
+  const latestCustomerApprovalMessageText = stringValue(latestCustomerApprovalPayload, 'message_text')
+    ?? stringValue(latestCustomerApprovalMessagePayload, 'message_text')
   const isFinalCheckStage = completionSubmissions.length > 0 || request.workflowStatus === 'Son Kontrol'
   const portalActionLabels: Record<string, string> = {
     appointment_proposed: 'Randevu önerildi',
@@ -1110,6 +1178,7 @@ export function ServiceRequestDetails({
   const setFieldCompletionOpen = (open: boolean) => {
     setFieldCompletionOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const [customerApprovalCopyMessage, setCustomerApprovalCopyMessage] = useState<string | null>(null)
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
@@ -1829,6 +1898,24 @@ export function ServiceRequestDetails({
       }, 1800)
     }, 80)
   }
+
+  const copyCustomerApprovalValue = async (value: string | null | undefined, successMessage: string) => {
+    const text = String(value ?? '').trim()
+
+    if (text === '') {
+      setCustomerApprovalCopyMessage('Kopyalanacak onay bilgisi yok.')
+
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(text)
+      setCustomerApprovalCopyMessage(successMessage)
+    } catch {
+      setCustomerApprovalCopyMessage('Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
+    }
+  }
+
   const handleNextActionClick = () => {
     const action = nextActionPayload?.primary_action
 
@@ -2084,6 +2171,72 @@ export function ServiceRequestDetails({
             <p className="mt-2 text-xs font-medium text-rose-700">{priorityUpdateError}</p>
           ) : null}
         </section>
+
+        {serviceVisitHistory ? (
+          <section className="order-15 grid gap-3 rounded-3xl border border-violet-100 bg-violet-50 p-4 text-sm text-violet-950 shadow-sm lg:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">SRV / Ana MRN Geçmişi</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-950">
+                  {serviceVisitHistory.service_code ? `Servis ziyareti: ${serviceVisitHistory.service_code}` : 'Ana talep servis geçmişi'}
+                </h3>
+                <p className="mt-1 text-sm text-violet-800">
+                  Ana talep: {serviceVisitHistory.root_mrn ?? serviceVisitHistory.parent_request?.mrn ?? '-'}
+                  {serviceVisitHistory.reason_label ? ` · ${serviceVisitHistory.reason_label}` : ''}
+                </p>
+              </div>
+              {serviceVisitHistory.parent_request ? (
+                <Badge variant="outline">
+                  Parent: {serviceVisitHistory.parent_request.mrn}
+                </Badge>
+              ) : null}
+            </div>
+            <div className="grid gap-3 lg:grid-cols-3">
+              <MiniMetric
+                label="Ana iş durumu"
+                value={displayOrEmpty(serviceVisitHistory.parent_request?.workflow_status ?? serviceVisitHistory.parent_request?.status, 'Bilgi yok')}
+                hint={serviceVisitHistory.parent_request?.completed_at ? `Tamamlandı: ${dateTimeOrEmpty(serviceVisitHistory.parent_request.completed_at, '-')}` : undefined}
+              />
+              <MiniMetric label="SRV kodu" value={displayOrEmpty(serviceVisitHistory.service_code, 'Ana talep')} />
+              <MiniMetric label="SRV nedeni" value={displayOrEmpty(serviceVisitHistory.reason_label, 'Ek servis ziyareti')} />
+            </div>
+            {(serviceVisitHistory.parent_part_requests?.length ?? 0) > 0 ? (
+              <div className="grid gap-2 rounded-2xl border border-violet-100 bg-white p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Parent parça geçmişi</p>
+                {serviceVisitHistory.parent_part_requests?.slice(0, 4).map((partRequest) => (
+                  <div key={String(partRequest.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                    <span className="font-semibold text-slate-800">{partRequest.part_name} {partRequest.quantity > 1 ? `x${partRequest.quantity}` : ''}</span>
+                    <span className="text-xs font-semibold text-violet-800">{partRequest.status_label}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {(serviceVisitHistory.sibling_service_visits?.length ?? 0) > 0 ? (
+              <div className="grid gap-2 rounded-2xl border border-violet-100 bg-white p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Aynı ana MRN altındaki SRV kayıtları</p>
+                {serviceVisitHistory.sibling_service_visits?.map((visit) => (
+                  <div key={String(visit.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                    <span className="font-semibold text-slate-800">{visit.mrn}</span>
+                    <span className="text-xs text-slate-600">{[visit.service_code, visit.workflow_status ?? visit.status].filter(Boolean).join(' · ')}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {(serviceVisitHistory.parent_events?.length ?? 0) > 0 ? (
+              <details className="rounded-2xl border border-violet-100 bg-white p-3">
+                <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Parent işlem geçmişi</summary>
+                <div className="mt-3 grid gap-2">
+                  {serviceVisitHistory.parent_events?.slice(0, 6).map((event) => (
+                    <div key={String(event.id)} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                      <p className="font-semibold text-slate-800">{event.title_label ?? event.event_type_label ?? actionLabel(event.event_type, event.title)}</p>
+                      <p className="text-xs text-slate-500">{eventTime(event.created_at)}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className={['order-20 rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(nextActionPayload?.severity)].join(' ')}>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -3326,6 +3479,51 @@ export function ServiceRequestDetails({
                       Son istek: {formatTechnicalServiceDateTime(latestCustomerApprovalRequest.created_at, 'Bilinmiyor')}
                     </p>
                   ) : null}
+                  {latestCustomerApprovalUrl ? (
+                    <div className="mt-3 grid gap-2 rounded-xl border border-violet-100 bg-white p-3">
+                      <p className="text-xs font-semibold text-violet-900">Onay linki</p>
+                      <input
+                        readOnly
+                        value={latestCustomerApprovalUrl}
+                        className="w-full rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-950"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerApprovalValue(latestCustomerApprovalUrl, 'Link kopyalandı.')}>
+                          Onay linkini kopyala
+                        </Button>
+                        <Button asChild type="button" size="sm" variant="outline">
+                          <a href={latestCustomerApprovalUrl} target="_blank" rel="noreferrer">
+                            Onay linkini aç
+                          </a>
+                        </Button>
+                        {latestCustomerApprovalWhatsappUrl ? (
+                          <Button asChild type="button" size="sm" variant="outline">
+                            <a href={latestCustomerApprovalWhatsappUrl} target="_blank" rel="noreferrer">
+                              WhatsApp mesajını aç
+                            </a>
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  {latestCustomerApprovalMessageText ? (
+                    <div className="mt-3 grid gap-2 rounded-xl border border-violet-100 bg-white p-3">
+                      <p className="text-xs font-semibold text-violet-900">WhatsApp mesaj metni</p>
+                      <textarea
+                        readOnly
+                        value={latestCustomerApprovalMessageText}
+                        className="min-h-24 w-full rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-950"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerApprovalValue(latestCustomerApprovalMessageText, 'Mesaj metni kopyalandı.')}>
+                          Mesaj metnini kopyala
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {customerApprovalCopyMessage ? (
+                    <p className="mt-2 text-xs font-semibold text-violet-800">{customerApprovalCopyMessage}</p>
+                  ) : null}
                   {customerApprovalResendError ? (
                     <p className="mt-2 text-xs font-semibold text-rose-700">{customerApprovalResendError}</p>
                   ) : null}
@@ -3463,7 +3661,7 @@ export function ServiceRequestDetails({
                 <div className="mt-3 grid gap-2">
                   {partnerPortalActions.slice(0, 6).map((action) => (
                     <div key={String(action.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white bg-white px-3 py-2 text-sm">
-                      <span className="font-medium text-slate-800">{portalActionLabels[action.action] ?? action.action}</span>
+                      <span className="font-medium text-slate-800">{portalActionLabels[action.action] ?? actionLabel(action.action, action.action_label)}</span>
                       <span className="text-xs text-slate-500">{dateTimeOrEmpty(action.created_at, 'Tarih yok')}</span>
                     </div>
                   ))}
@@ -3485,7 +3683,7 @@ export function ServiceRequestDetails({
                 (request.auditLogs ?? []).map((log) => (
                   <div key={String(log.id)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-slate-900">{log.action_type}</p>
+                      <p className="text-sm font-semibold text-slate-900">{actionLabel(log.action_type, log.action_label)}</p>
                       <span className="text-xs text-slate-500">{dateTimeOrEmpty(log.created_at, 'Tarih yok')}</span>
                     </div>
                     <p className="mt-2 text-xs text-slate-500">
@@ -3516,7 +3714,7 @@ export function ServiceRequestDetails({
                   <div key={String(event.id)} className="flex gap-3 text-sm">
                     <div className="mt-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
                     <div>
-                      <p className="font-semibold text-slate-900">{event.title}</p>
+                      <p className="font-semibold text-slate-900">{event.title_label ?? event.event_type_label ?? actionLabel(event.event_type, event.title)}</p>
                       <p className="text-xs text-slate-500">
                         {eventTime(event.created_at)}
                         {event.note ? ` · ${event.note}` : ''}

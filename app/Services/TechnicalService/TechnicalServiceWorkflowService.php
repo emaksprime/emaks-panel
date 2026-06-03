@@ -930,6 +930,8 @@ class TechnicalServiceWorkflowService
             'technicianRecord',
             'requestSerials',
             'uploads',
+            'parentRequest',
+            'sourcePartRequest',
             'latestRouteQuote',
             'latestAssignmentOffer.technician',
             'partnerJobActions' => fn ($query) => $query->latest()->limit(12),
@@ -937,6 +939,7 @@ class TechnicalServiceWorkflowService
         ]);
 
         $payload = $request->toArray();
+        $payload['events'] = $this->eventPayload($request->events);
         $payload['technician_phone'] = $request->technicianRecord?->phone;
         $payload['technical_service_technician_phone'] = $request->technicianRecord?->phone;
         $payload['technical_service_technician'] = $request->technicianRecord
@@ -981,6 +984,7 @@ class TechnicalServiceWorkflowService
         $payload['display_mrn'] = $request->service_code
             ? trim((string) ($request->root_mrn ?: $request->mrn)).' / '.$request->service_code
             : $request->mrn;
+        $payload['service_visit_history'] = $this->serviceVisitHistoryPayload($request);
         $operationalState = app(TechnicalServiceOperationalStatePresenter::class)->present($request);
         $payload['operational_state'] = $operationalState;
         $payload['kanban_column'] = $operationalState['ops_column'];
@@ -992,7 +996,7 @@ class TechnicalServiceWorkflowService
         if ($includeHistory) {
             if ($this->auditLogTableAvailable()) {
                 $request->loadMissing(['auditLogs' => fn ($query) => $query->latest()]);
-                $payload['audit_logs'] = $request->auditLogs->values()->all();
+                $payload['audit_logs'] = $this->auditLogPayload($request->auditLogs);
             } else {
                 $payload['audit_logs'] = [];
                 $payload['audit_logs_unavailable'] = true;
@@ -2056,6 +2060,137 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<int, array<string, mixed>>
      */
+    private function eventPayload($events): array
+    {
+        return $events
+            ->map(function ($event): array {
+                $row = $event->toArray();
+                $eventType = (string) ($event->event_type ?? '');
+
+                return [
+                    ...$row,
+                    'event_type_label' => TechnicalServiceUiLabelService::actionLabel($eventType),
+                    'title_label' => filled($event->title)
+                        ? TechnicalServiceUiLabelService::actionLabel($eventType)
+                        : TechnicalServiceUiLabelService::actionLabel($eventType),
+                    'from_status_label' => TechnicalServiceUiLabelService::statusLabel($event->from_status),
+                    'to_status_label' => TechnicalServiceUiLabelService::statusLabel($event->to_status),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function auditLogPayload($logs): array
+    {
+        return $logs
+            ->map(function (TechnicalServiceAuditLog $log): array {
+                $row = $log->toArray();
+
+                return [
+                    ...$row,
+                    'action_label' => TechnicalServiceUiLabelService::actionLabel($log->action_type),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function serviceVisitHistoryPayload(TechnicalServiceRequest $request): ?array
+    {
+        $rootMrn = (string) ($request->root_mrn ?: ($request->parent_request_id ? $request->parentRequest?->mrn : $request->mrn));
+        $isServiceVisit = filled($request->service_code) || $request->parent_request_id !== null;
+        $parent = $request->parentRequest;
+        $root = null;
+
+        if ($rootMrn !== '') {
+            $root = TechnicalServiceRequest::query()
+                ->with([
+                    'events' => fn ($query) => $query->latest()->limit(8),
+                    'partRequests' => fn ($query) => $query->latest()->limit(6),
+                ])
+                ->where('mrn', $rootMrn)
+                ->first();
+        }
+
+        if (! $root instanceof TechnicalServiceRequest && $parent instanceof TechnicalServiceRequest) {
+            $root = $parent;
+        }
+
+        $siblings = collect();
+        if ($root instanceof TechnicalServiceRequest) {
+            $siblings = TechnicalServiceRequest::query()
+                ->where(function ($query) use ($root, $rootMrn): void {
+                    $query->where('parent_request_id', $root->id);
+
+                    if ($rootMrn !== '') {
+                        $query->orWhere('root_mrn', $rootMrn);
+                    }
+                })
+                ->orderBy('service_sequence')
+                ->orderBy('id')
+                ->limit(12)
+                ->get();
+        }
+
+        if (! $isServiceVisit && $siblings->isEmpty()) {
+            return null;
+        }
+
+        $partRequestSerializer = app(TechnicalServicePartRequestService::class);
+
+        return [
+            'root_mrn' => $rootMrn !== '' ? $rootMrn : null,
+            'service_code' => $request->service_code,
+            'reason' => $request->service_visit_reason,
+            'reason_label' => TechnicalServiceUiLabelService::serviceVisitReasonLabel($request->service_visit_reason),
+            'parent_request' => $root instanceof TechnicalServiceRequest ? $this->serviceVisitRequestSummary($root) : null,
+            'parent_events' => $root instanceof TechnicalServiceRequest
+                ? array_slice($this->eventPayload($root->events), 0, 8)
+                : [],
+            'parent_part_requests' => $root instanceof TechnicalServiceRequest
+                ? $root->partRequests
+                    ->map(fn ($partRequest): array => $partRequestSerializer->serialize($partRequest))
+                    ->values()
+                    ->all()
+                : [],
+            'sibling_service_visits' => $siblings
+                ->reject(fn (TechnicalServiceRequest $sibling): bool => (int) $sibling->id === (int) $request->id)
+                ->map(fn (TechnicalServiceRequest $sibling): array => $this->serviceVisitRequestSummary($sibling))
+                ->values()
+                ->all(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function serviceVisitRequestSummary(TechnicalServiceRequest $request): array
+    {
+        return [
+            'id' => $request->id,
+            'mrn' => $request->mrn,
+            'root_mrn' => $request->root_mrn,
+            'service_code' => $request->service_code,
+            'service_visit_reason' => $request->service_visit_reason,
+            'service_visit_reason_label' => TechnicalServiceUiLabelService::serviceVisitReasonLabel($request->service_visit_reason),
+            'status' => $request->status,
+            'workflow_status' => $request->workflow_status,
+            'completed_at' => $this->dateTimeString($request->completed_at),
+            'created_at' => $this->dateTimeString($request->created_at),
+            'latest_event' => $request->relationLoaded('events') ? $request->events->first()?->title : null,
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
     private function partnerPortalActionPayload(TechnicalServiceRequest $request): array
     {
         if (! $request->relationLoaded('partnerJobActions')) {
@@ -2069,7 +2204,9 @@ class TechnicalServiceWorkflowService
                 'user_id' => $action->user_id,
                 'technical_service_technician_id' => $action->technical_service_technician_id,
                 'action' => $action->action,
+                'action_label' => TechnicalServiceUiLabelService::actionLabel($action->action),
                 'status' => $action->status,
+                'status_label' => TechnicalServiceUiLabelService::statusLabel($action->status),
                 'note' => $action->note,
                 'payload' => is_array($action->payload) ? $action->payload : [],
                 'created_at' => $this->dateTimeString($action->created_at),

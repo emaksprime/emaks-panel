@@ -3895,6 +3895,136 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.active_part_request.status_label', 'Parça talebi incelenmeli');
     }
 
+    public function test_srv_detail_shows_root_mrn_history(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'SRV History Usta']);
+        $parent = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-SRV-HISTORY', [
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now()->subHour(),
+            'serial_number' => 'SN-SRV-HISTORY-001',
+        ]);
+        $parent->events()->create([
+            'event_type' => 'completion_submitted',
+            'title' => 'Tamamlamaya gönderildi',
+            'from_status' => 'Planlı',
+            'to_status' => 'Son Kontrol',
+            'author_user_id' => $admin->id,
+            'metadata' => [],
+        ]);
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'root_request_id' => $parent->id,
+            'requested_by_user_id' => $admin->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED,
+            'part_name' => 'Karşılık sacı',
+            'quantity' => 1,
+        ]);
+        $child = TechnicalServiceRequest::query()->create([
+            'mrn' => $parent->mrn.'-SRV-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-001',
+            'service_visit_reason' => 'spare_part',
+            'source_part_request_id' => $partRequest->id,
+            'customer_name' => $parent->customer_name,
+            'customer_phone' => $parent->customer_phone,
+            'customer_city' => $parent->customer_city,
+            'customer_district' => $parent->customer_district,
+            'service_address' => $parent->service_address,
+            'product_name' => $parent->product_name,
+            'product_model' => $parent->product_model,
+            'serial_number' => $parent->serial_number,
+            'service_type' => $parent->service_type,
+            'status' => TechnicalServiceRequest::STATUS_NEW,
+            'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+            'priority' => TechnicalServiceRequest::PRIORITY_MEDIUM,
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$child->id}")
+            ->assertOk()
+            ->assertJsonPath('request.service_visit_history.root_mrn', $parent->mrn)
+            ->assertJsonPath('request.service_visit_history.service_code', 'SRV-001')
+            ->assertJsonPath('request.service_visit_history.reason_label', 'Parça sonrası servis')
+            ->assertJsonPath('request.service_visit_history.parent_request.mrn', $parent->mrn)
+            ->assertJsonPath('request.service_visit_history.parent_part_requests.0.part_name', 'Karşılık sacı')
+            ->assertJsonPath('request.service_visit_history.parent_events.0.event_type_label', 'Tamamlamaya gönderildi');
+    }
+
+    public function test_srv_child_does_not_inherit_parent_completion_gate(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'SRV Gate Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'SRV Gate Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $parent = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-SRV-GATE', [
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'customer_closure_approval_status' => 'onaylandi',
+            'technician_approval_status' => 'onayladı',
+            'serial_number' => 'SN-SRV-GATE-001',
+        ]);
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($parent, $fieldCode);
+        }
+        $child = TechnicalServiceRequest::query()->create([
+            'mrn' => $parent->mrn.'-SRV-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-001',
+            'service_visit_reason' => 'spare_part',
+            'technical_service_technician_id' => $technician->id,
+            'customer_name' => $parent->customer_name,
+            'customer_phone' => $parent->customer_phone,
+            'customer_city' => $parent->customer_city,
+            'customer_district' => $parent->customer_district,
+            'service_address' => $parent->service_address,
+            'product_name' => $parent->product_name,
+            'product_model' => $parent->product_model,
+            'serial_number' => $parent->serial_number,
+            'service_type' => $parent->service_type,
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addHour(),
+            'scheduled_date' => now()->addHour()->toDateString(),
+            'scheduled_time' => now()->addHour()->format('H:i'),
+            'priority' => TechnicalServiceRequest::PRIORITY_MEDIUM,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('job.service_visit_context.root_mrn', $parent->mrn)
+            ->assertJsonPath('job.service_visit_context.service_code', 'SRV-001')
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 0)
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false);
+    }
+
     public function test_ops_can_reject_spare_part_request_with_note_and_partner_cannot_act_on_other_partner_part_request(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -4519,6 +4649,60 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('w-[min(100%,calc(100dvw-1rem))]', $source);
         $this->assertStringContainsString('overflow-x-hidden', $source);
         $this->assertStringContainsString('Linki kopyala', $source);
+    }
+
+    public function test_ops_customer_approval_modal_exposes_copyable_link(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('Onay linkini kopyala', $source);
+        $this->assertStringContainsString('Mesaj metnini kopyala', $source);
+        $this->assertStringContainsString('WhatsApp mesajını aç', $source);
+        $this->assertStringContainsString('Kopyalama başarısız', $source);
+    }
+
+    public function test_customer_approval_link_copy_available_when_whatsapp_suppressed(): void
+    {
+        config()->set('services.evolution.real_send_enabled', false);
+        config()->set('services.evolution.test_mode', true);
+        config()->set('services.evolution.test_phone', '905467647428');
+        config()->set('app.url', 'https://panel.test');
+        config()->set('services.partner_portal.public_url', 'https://panel.test');
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Suppressed Approval Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Suppressed Approval Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-APPROVAL-COPY', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+        ]);
+
+        $response = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/customer-approval-requests", [
+                'note' => 'Ops linki tekrar istedi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('dispatch.dispatch_status', 'suppressed_testing_environment')
+            ->assertJsonPath('request.partner_portal_actions.0.action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
+
+        $messagePayload = $response->json('request.partner_portal_actions.0.payload.message_payload');
+        $this->assertIsArray($messagePayload);
+        $this->assertStringStartsWith('https://panel.test/service-job-confirmation/', $messagePayload['approval_url'] ?? '');
+        $this->assertStringStartsWith('https://panel.test/service-job-confirmation/', $messagePayload['confirmation_url'] ?? '');
+        $this->assertNotEmpty($messagePayload['message_text'] ?? null);
     }
 
     public function test_customer_approval_after_pending_completion_stays_in_final_check(): void

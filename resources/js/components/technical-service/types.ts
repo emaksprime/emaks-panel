@@ -57,6 +57,8 @@ export type ServiceRequest = {
   displayActionLabel?: string | null
   displayTags?: ServiceRequestDisplayTag[]
   operationalState?: ServiceRequestOperationalState | null
+  serviceVisitHistory?: ServiceRequestServiceVisitHistory | null
+  auditLogs?: ServiceRequestAuditLog[] | null
   attention?: {
     sort_priority?: number | null
     attention_level?: 'normal' | 'info' | 'warning' | 'critical' | string | null
@@ -64,6 +66,45 @@ export type ServiceRequest = {
     last_action_at?: string | null
     action?: string | null
   } | null
+}
+
+export type ServiceRequestAuditLog = {
+  id: number | string
+  entity_type?: string | null
+  entity_id?: number | string | null
+  action_type: string
+  action_label?: string | null
+  old_value?: Record<string, unknown> | null
+  new_value?: Record<string, unknown> | null
+  user_id?: number | null
+  user_name?: string | null
+  note?: string | null
+  created_at: string
+}
+
+export type ServiceRequestServiceVisitSummary = {
+  id: number | string
+  mrn: string
+  root_mrn?: string | null
+  service_code?: string | null
+  service_visit_reason?: string | null
+  service_visit_reason_label?: string | null
+  status?: string | null
+  workflow_status?: string | null
+  completed_at?: string | null
+  created_at?: string | null
+  latest_event?: string | null
+}
+
+export type ServiceRequestServiceVisitHistory = {
+  root_mrn?: string | null
+  service_code?: string | null
+  reason?: string | null
+  reason_label?: string | null
+  parent_request?: ServiceRequestServiceVisitSummary | null
+  parent_events?: ServiceRequestEvent[]
+  parent_part_requests?: ServiceRequestPartRequest[]
+  sibling_service_visits?: ServiceRequestServiceVisitSummary[]
 }
 
 export type ServiceRequestDisplayTag = {
@@ -111,7 +152,9 @@ export type ServiceRequestPartnerPortalAction = {
   user_id?: number | string | null
   technical_service_technician_id?: number | string | null
   action: string
+  action_label?: string | null
   status: string
+  status_label?: string | null
   note?: string | null
   payload?: Record<string, unknown>
   created_at?: string | null
@@ -483,10 +526,14 @@ export type ServiceTechnician = {
 export type ServiceRequestEvent = {
   id: string
   event_type: string
+  event_type_label?: string | null
   title: string
+  title_label?: string | null
   note?: string | null
   from_status?: string | null
+  from_status_label?: string | null
   to_status?: string | null
+  to_status_label?: string | null
   author_user_id?: number | null
   created_at: string
 }
