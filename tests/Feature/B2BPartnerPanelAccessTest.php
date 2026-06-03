@@ -3659,6 +3659,84 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.mrn', $child->mrn);
     }
 
+    public function test_partner_part_request_review_label_is_partner_friendly(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Partner Friendly Part Label Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Partner Friendly Part Label Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-LABEL-PARTNER', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addHour(),
+            'scheduled_date' => now()->addHour()->toDateString(),
+            'scheduled_time' => now()->addHour()->format('H:i'),
+        ]);
+
+        $this->actingAs($this->userWithRole('admin', true))
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $response = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
+                'type' => 'spare_part',
+                'description' => 'Parça operasyon incelemesine düşmeli.',
+                'product_name' => 'Karşılık sacı',
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.active_part_request.status', TechnicalServicePartRequest::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.next_action', 'Parça talebi operasyon incelemesinde')
+            ->assertJsonPath('job.active_part_request.status_label', 'Parça talebi operasyon incelemesinde')
+            ->assertJsonPath('job.completion_requirements.part_request_status_label', 'Parça talebi operasyon incelemesinde');
+
+        $this->assertNotContains('Aksiyon: Parça talebi incelenmeli', $response->json('job.badges', []));
+    }
+
+    public function test_ops_part_request_review_label_stays_action_oriented(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Ops Part Label Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-LABEL-OPS', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+        ]);
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $job->id,
+            'root_request_id' => $job->id,
+            'requested_by_user_id' => $admin->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Karşılık sacı',
+            'quantity' => 1,
+            'technician_note' => 'Parça ops incelemesinde.',
+        ]);
+
+        $this->assertSame('Parça talebi incelenmeli', $partRequest->statusLabel());
+        $this->assertSame('Parça talebi operasyon incelemesinde', $partRequest->partnerStatusLabel());
+
+        $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('request.active_part_request.status', TechnicalServicePartRequest::STATUS_OPS_REVIEW)
+            ->assertJsonPath('request.active_part_request.status_label', 'Parça talebi incelenmeli');
+    }
+
     public function test_ops_can_reject_spare_part_request_with_note_and_partner_cannot_act_on_other_partner_part_request(): void
     {
         (new B2BPartnerPermissionSeeder)->run();

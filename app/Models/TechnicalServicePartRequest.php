@@ -116,6 +116,11 @@ class TechnicalServicePartRequest extends Model
         return self::labelForStatus((string) $this->status);
     }
 
+    public function partnerStatusLabel(): string
+    {
+        return self::partnerLabelForStatus((string) $this->status);
+    }
+
     public static function labelForStatus(string $status): string
     {
         return match ($status) {
@@ -128,6 +133,23 @@ class TechnicalServicePartRequest extends Model
             self::STATUS_RECEIVED => 'Parça teslim alındı',
             self::STATUS_SERVICE_VISIT_REQUIRED => 'Parça sonrası servis oluşturulmalı',
             self::STATUS_SERVICE_VISIT_CREATED => 'SRV oluşturuldu',
+            self::STATUS_CLOSED => 'Parça talebi kapatıldı',
+            default => 'Parça talebi',
+        };
+    }
+
+    public static function partnerLabelForStatus(string $status): string
+    {
+        return match ($status) {
+            self::STATUS_REQUESTED,
+            self::STATUS_OPS_REVIEW => 'Parça talebi operasyon incelemesinde',
+            self::STATUS_APPROVED => 'Parça talebi onaylandı',
+            self::STATUS_REJECTED => 'Parça talebi reddedildi',
+            self::STATUS_ORDERED => 'Parça tedarik ediliyor',
+            self::STATUS_SENT => 'Parça gönderildi',
+            self::STATUS_RECEIVED => 'Parça teslim alındı',
+            self::STATUS_SERVICE_VISIT_REQUIRED => 'Operasyon servis planlıyor',
+            self::STATUS_SERVICE_VISIT_CREATED => 'Servis kaydı oluşturuldu',
             self::STATUS_CLOSED => 'Parça talebi kapatıldı',
             default => 'Parça talebi',
         };

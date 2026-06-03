@@ -266,7 +266,7 @@ class TechnicalServicePartRequestService
             'request_serial_id' => $partRequest->request_serial_id,
             'source_partner_action_id' => $partRequest->source_partner_action_id,
             'status' => $partRequest->status,
-            'status_label' => $partRequest->statusLabel(),
+            'status_label' => $forPartner ? $partRequest->partnerStatusLabel() : $partRequest->statusLabel(),
             'part_name' => $partRequest->part_name,
             'part_code' => $partRequest->part_code,
             'quantity' => $partRequest->quantity,

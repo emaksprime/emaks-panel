@@ -388,16 +388,25 @@ class B2BPartnerPortalDataService
         if ($partnerNextActionLabel === 'Fotoğraf eksik') {
             $partnerNextActionLabel = 'Fotoğraf bekliyor';
         }
+        if (is_array($activePartRequest) && filled($activePartRequest['status_label'] ?? null)) {
+            $partnerNextActionLabel = (string) $activePartRequest['status_label'];
+        }
+        $activePartRequestOpsLabel = is_array($activePartRequest)
+            ? TechnicalServicePartRequest::labelForStatus((string) ($activePartRequest['status'] ?? ''))
+            : null;
         $badges = collect($this->serviceJobBadges($request, $stateAction, $completionRequirements))
             ->reject(fn (string $badge): bool => $badge === $nextActionLabel)
             ->values()
             ->all();
         $displayBadges = collect($canonicalState['display_tags'] ?? [])
             ->pluck('label')
-            ->reject(function (?string $badge) use ($partnerNextActionLabel, $nextActionLabel): bool {
+            ->reject(function (?string $badge) use ($partnerNextActionLabel, $nextActionLabel, $activePartRequestOpsLabel): bool {
                 return blank($badge)
                     || $badge === $partnerNextActionLabel
                     || $badge === 'Aksiyon: '.$partnerNextActionLabel
+                    || $badge === 'Aksiyon: '.$nextActionLabel
+                    || ($activePartRequestOpsLabel !== null && $badge === $activePartRequestOpsLabel)
+                    || ($activePartRequestOpsLabel !== null && $badge === 'Aksiyon: '.$activePartRequestOpsLabel)
                     || ($nextActionLabel === 'Tamamlamaya gönderilebilir' && str_starts_with((string) $badge, 'Aksiyon: '));
             })
             ->values()
