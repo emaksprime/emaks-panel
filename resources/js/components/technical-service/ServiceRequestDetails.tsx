@@ -433,11 +433,11 @@ const getOpsActiveSection = (context: OpsDetailSectionContext): OpsDetailSection
     return 'fieldCompletion'
   }
 
-  if (context.hasReviewBlocker || context.hasAppointmentProposal || !context.hasAssignedTechnician) {
+  if (context.hasReviewBlocker || context.hasAppointmentProposal || context.hasSupportRequest || context.hasPartRequest) {
     return 'assignment'
   }
 
-  if (context.hasSupportRequest || context.hasPartRequest) {
+  if (!context.hasAssignedTechnician) {
     return 'operation'
   }
 
@@ -1563,6 +1563,20 @@ export function ServiceRequestDetails({
       : assignmentOfferDispatchStatus
         ? 'Hakediş mesajı hazırlandı, gerçek WhatsApp gönderimi kapalı'
         : 'Hakediş bilgisi gönderilmedi'
+  const hasSupportRequestDetail = supportRequests.length > 0 || Boolean(String(request.technicianRevisionNote ?? '').trim())
+  const hasSparePartDetail = supportRequests.length > 0 || partRequests.length > 0 || Boolean(String(request.pendingReason ?? '').trim())
+  const hasPriceRevisionDetail = Boolean(String(request.technicianRevisionNote ?? '').trim())
+  const hasRevisitDetail = revisitRequests.length > 0 || Boolean(request.requiresSecondVisit)
+  const showAssignmentPortalActionBlock = Boolean(
+    openAppointmentProposals.length > 0
+    || jobRejections.length > 0
+    || customerApprovalRejections.length > 0
+    || supportRequests.length > 0
+    || revisitRequests.length > 0
+    || assignmentOffer,
+  )
+  const assignedTechnicianCityLabel = displayOrEmpty(selectedTechnician?.location ?? request.city, '-')
+  const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || routeQuoteLoading
   const routeFeeEditorSnapshot = (
     oneWay: string,
     roundTrip: string,
@@ -2287,8 +2301,8 @@ export function ServiceRequestDetails({
         </section>
 
         {serviceVisitHistory ? (
-          <section className="order-15 grid gap-3 rounded-3xl border border-violet-100 bg-violet-50 p-4 text-sm text-violet-950 shadow-sm lg:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+          <details className="order-15 rounded-3xl border border-violet-100 bg-violet-50 p-4 text-sm text-violet-950 shadow-sm lg:p-5">
+            <summary className="flex cursor-pointer list-none flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">SRV / Ana MRN Geçmişi</p>
                 <h3 className="mt-1 text-lg font-bold text-slate-950">
@@ -2304,8 +2318,8 @@ export function ServiceRequestDetails({
                   Parent: {serviceVisitHistory.parent_request.mrn}
                 </Badge>
               ) : null}
-            </div>
-            <div className="grid gap-3 lg:grid-cols-3">
+            </summary>
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
               <MiniMetric
                 label="Ana iş durumu"
                 value={displayOrEmpty(serviceVisitHistory.parent_request?.workflow_status ?? serviceVisitHistory.parent_request?.status, 'Bilgi yok')}
@@ -2349,7 +2363,7 @@ export function ServiceRequestDetails({
                 </div>
               </details>
             ) : null}
-          </section>
+          </details>
         ) : null}
 
         <section className={['order-20 rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(nextActionPayload?.severity)].join(' ')}>
@@ -2597,7 +2611,7 @@ export function ServiceRequestDetails({
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ödeme / Montaj Bloğu</p>
                 <p className="mt-1 text-sm text-slate-600">Ödeme bilgisi ve ödeme kontrolü aynı blokta takip edilir.</p>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <MiniMetric label="Satış montaj durumu" value={resolvedSaleMountLabel} />
                 <MiniMetric
                   label="Montaj ödeme durumu"
@@ -2605,10 +2619,20 @@ export function ServiceRequestDetails({
                 />
                 <MiniMetric label="Tahsilat durumu" value={paymentCollectionStatusLabel} />
                 <MiniMetric label="Alınan ödeme tutarı" value={paidAmountDisplayLabel} />
-                <MiniMetric label="Ödeme referansı" value={<span className="break-all" title={displayOrEmpty(saleAndPayment?.payment_reference, '-')}>{displayOrEmpty(saleAndPayment?.payment_reference, '-')}</span>} />
-                <MiniMetric label="Ödeme tarihi" value={paymentPaidAtLabel} />
                 <MiniMetric label="Operasyon ödeme kontrolü" value={opsPaymentCheckLabel} />
               </div>
+              {(saleAndPayment?.payment_reference || paymentPaidAtLabel !== '-' || saleAndPayment?.payment_provider) ? (
+                <details className="rounded-2xl border border-slate-200 bg-white/80 p-3 text-sm text-slate-700">
+                  <summary className="cursor-pointer font-semibold text-slate-800">Ödeme teknik detayları</summary>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <MiniMetric label="Ödeme referansı" value={<span className="break-all" title={displayOrEmpty(saleAndPayment?.payment_reference, '-')}>{displayOrEmpty(saleAndPayment?.payment_reference, '-')}</span>} />
+                    <MiniMetric label="Ödeme tarihi" value={paymentPaidAtLabel} />
+                    {saleAndPayment?.payment_provider ? (
+                      <MiniMetric label="Sağlayıcı" value={saleAndPayment.payment_provider} />
+                    ) : null}
+                  </div>
+                </details>
+              ) : null}
               {paymentControlMissing ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">
                   Ödeme kontrol edilmedi
@@ -2817,6 +2841,28 @@ export function ServiceRequestDetails({
                 {assignError}
               </div>
             ) : null}
+            {hasAssignedTechnician ? (
+              <div className="grid gap-3 rounded-2xl border border-sky-100 bg-white p-3 text-sm text-slate-800">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-sky-700">Atanan usta özeti</p>
+                    <p className="mt-1 text-base font-bold text-slate-950">{displayOrEmpty(request.technician, 'Atanmadı')}</p>
+                    <p className="mt-1 text-xs font-semibold text-blue-700">{displayOrEmpty(request.technicianPhone, 'Telefon yok')}</p>
+                  </div>
+                  <Badge variant={assignmentOfferDispatchStatus === 'sent' ? 'secondary' : activeAssignmentOffer ? 'outline' : 'warning'}>
+                    {earningDispatchStatusLabel}
+                  </Badge>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+                  <MiniMetric label="Şehir" value={assignedTechnicianCityLabel} />
+                  <MiniMetric label="İşçilik" value={technicianLaborCostLabel} />
+                  <MiniMetric label="Yol" value={travelCostLabel} />
+                  <MiniMetric label="Toplam hakediş" value={totalTechnicianCostLabel} />
+                  <MiniMetric label="Müşteri tahsilatı" value={totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : '-'} />
+                  <MiniMetric label="Net fark / kâr" value={netProfitLabel} />
+                </div>
+              </div>
+            ) : null}
             {partRequests.length > 0 ? (
               <div className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-sm text-violet-950">
                 <div>
@@ -2895,7 +2941,7 @@ export function ServiceRequestDetails({
                 })}
               </div>
             ) : null}
-            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || revisitRequests.length > 0 || assignmentOffer) ? (
+            {showAssignmentPortalActionBlock ? (
               <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
                 <div>
                   <p className="font-semibold">Çilingir Portal Aksiyonları</p>
@@ -3039,7 +3085,14 @@ export function ServiceRequestDetails({
                 ) : null}
               </div>
             ) : null}
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+            <details
+              className="rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-700"
+              open={assignmentDetailsExpandedByDefault}
+            >
+              <summary className="cursor-pointer font-semibold text-slate-900">
+                {hasAssignedTechnician ? 'Usta ve yol detayını aç' : 'Usta seçimi ve yol önerileri'}
+              </summary>
+              <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
@@ -3313,7 +3366,8 @@ export function ServiceRequestDetails({
                   </div>
                 ) : null}
               </div>
-            </div>
+              </div>
+            </details>
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3">
               <div>
                 <p className="text-sm font-semibold text-slate-950">Hakediş / Maliyet Özeti</p>
@@ -3362,9 +3416,9 @@ export function ServiceRequestDetails({
                   </label>
                 </div>
                 {displayedEarningMessageText ? (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
-                    <p className="font-semibold">Hakediş mesajı</p>
-                    <pre className="mt-2 whitespace-pre-wrap break-words font-sans">{displayedEarningMessageText}</pre>
+                  <details className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+                    <summary className="cursor-pointer font-semibold">Hakediş mesajını göster</summary>
+                    <pre className="mt-3 whitespace-pre-wrap break-words font-sans">{displayedEarningMessageText}</pre>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(displayedEarningMessageText)}>
                         Mesajı kopyala
@@ -3384,7 +3438,7 @@ export function ServiceRequestDetails({
                         </Button>
                       ) : null}
                     </div>
-                  </div>
+                  </details>
                 ) : null}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-slate-500">
@@ -3446,10 +3500,18 @@ export function ServiceRequestDetails({
                 <>
                   <MiniMetric label="Servis onay durumu" value={approvalState.title} hint={approvalState.detail ?? undefined} />
                   <MiniMetric label="Kabul / red" value={approvalState.title} />
-                  <MiniMetric label="Destek talebi" value={displayOrEmpty(request.technicianRevisionNote || request.pendingReason, 'Bilgi yok')} />
-                  <MiniMetric label="Yedek parça" value={displayOrEmpty(request.pendingReason, 'Bilgi yok')} />
-                  <MiniMetric label="Fiyat değişikliği" value={displayOrEmpty(request.technicianRevisionNote, 'Bilgi yok')} />
-                  <MiniMetric label="Tekrar ziyaret" value={request.requiresSecondVisit ? 'Evet' : 'Hayır'} hint={displayOrEmpty(request.secondVisitReason, 'Bilgi yok')} />
+                  {hasSupportRequestDetail ? (
+                    <MiniMetric label="Destek talebi" value={displayOrEmpty(request.technicianRevisionNote || request.pendingReason, 'İnceleniyor')} />
+                  ) : null}
+                  {hasSparePartDetail ? (
+                    <MiniMetric label="Yedek parça" value={partRequests.length > 0 ? `${partRequests.length} talep` : displayOrEmpty(request.pendingReason, 'İnceleniyor')} />
+                  ) : null}
+                  {hasPriceRevisionDetail ? (
+                    <MiniMetric label="Fiyat değişikliği" value={displayOrEmpty(request.technicianRevisionNote, 'Revize talebi var')} />
+                  ) : null}
+                  {hasRevisitDetail ? (
+                    <MiniMetric label="Tekrar ziyaret" value={request.requiresSecondVisit ? 'Evet' : `${revisitRequests.length} talep`} hint={request.secondVisitReason || undefined} />
+                  ) : null}
                 </>
               ) : (
                 <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-600 sm:col-span-2">
