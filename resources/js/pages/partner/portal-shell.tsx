@@ -93,6 +93,7 @@ type ServiceJob = {
   status: string | null
   workflow_status: string | null
   next_action: string | null
+  field_action_hint?: string | null
   route_distance_summary: string | null
   payment_status_summary: string | null
   maps_link: string | null
@@ -752,6 +753,49 @@ const cardToneClass = (tone: ServiceJob['card_tone']) => ({
 
 const actionLabel = (action: string, status?: string | null, provided?: string | null) => {
   const normalizedProvided = String(provided ?? '').trim()
+  const labels: Record<string, string> = {
+    accepted: 'Randevu onaylandı',
+    appointment_accepted_by_technician: 'Randevu onaylandı',
+    appointment_proposed: 'Randevu önerildi',
+    partner_portal_appointment_proposed: 'Randevu önerildi',
+    appointment_change_requested: 'Randevu değişikliği istendi',
+    appointment_approved: 'Randevu onaylandı',
+    appointment_updated: 'Randevu güncellendi',
+    schedule_updated: 'Randevu güncellendi',
+    assignment_created: 'Servis ataması oluşturuldu',
+    assignment_updated: 'Servis ataması güncellendi',
+    assignment_reassigned: 'Servis ataması güncellendi',
+    assignment_offer_sent: 'Hakediş bilgisi gönderildi',
+    job_rejected: 'İş reddedildi',
+    revisit_requested: 'Tekrar ziyaret istendi',
+    completion_submitted: 'Tamamlama gönderildi',
+    customer_otp_requested: 'Müşteri onayı istendi',
+    customer_approval_request: 'Müşteri onayı istendi',
+    customer_approval_request_resent: 'Müşteri onayı istendi',
+    customer_approval_confirmed: 'Müşteri onayı alındı',
+    customer_approval_rejected: 'Müşteri onayı reddedildi',
+    support_requested: 'Ek talep',
+    partner_portal_support_requested: 'Ek talep',
+    photos_uploaded: 'Fotoğraf yüklendi',
+    price_revision_requested: 'Hakediş revize talebi',
+    part_requested: 'Parça talebi oluşturuldu',
+    part_request_created: 'Parça talebi oluşturuldu',
+    part_approved: 'Parça talebi onaylandı',
+    part_ordered: 'Parça tedarik ediliyor',
+    part_sent: 'Parça gönderildi',
+    part_received: 'Parça teslim alındı',
+    srv_created: 'Servis kaydı oluşturuldu',
+    service_visit_created: 'Servis kaydı oluşturuldu',
+    note_added: 'Not eklendi',
+    submitted: 'Gönderildi',
+    applied: 'Uygulandı',
+    revised: 'Revize edildi',
+    ops_review: 'Operasyon incelemesinde',
+  }
+
+  if (labels[normalizedProvided]) {
+    return labels[normalizedProvided]
+  }
 
   if (normalizedProvided !== '' && !hasRawCodeShape(normalizedProvided)) {
     return normalizedProvided
@@ -761,22 +805,7 @@ const actionLabel = (action: string, status?: string | null, provided?: string |
     return 'Randevu onaylandı'
   }
 
-  return ({
-  accepted: 'Randevu onaylandı',
-  appointment_accepted_by_technician: 'Randevu onaylandı',
-  appointment_proposed: 'Randevu önerildi',
-  appointment_change_requested: 'Randevu değişikliği istendi',
-  job_rejected: 'İş reddedildi',
-  revisit_requested: 'Tekrar ziyaret istendi',
-  completion_submitted: 'Tamamlama gönderildi',
-  customer_otp_requested: 'Müşteri onayı istendi',
-  customer_approval_confirmed: 'Müşteri onayı alındı',
-  customer_approval_rejected: 'Müşteri onayı reddedildi',
-  support_requested: 'Ek talep',
-  photos_uploaded: 'Fotoğraf yüklendi',
-  price_revision_requested: 'Hakediş revize talebi',
-  note_added: 'Not eklendi',
-}[action] ?? 'Bilinmeyen işlem')
+  return labels[action] ?? (hasRawCodeShape(action) ? 'İşlem kaydı' : action)
 }
 
 const todayDateValue = () => new Date().toISOString().slice(0, 10)
@@ -859,16 +888,16 @@ const getPartnerDefaultOpenSections = (job: ServiceJob, completionReady: boolean
     return new Set()
   }
 
-  if (completionReady) {
-    return new Set()
-  }
-
   if (job.action_state === 'appointment_proposed_waiting' || job.action_state === 'appointment_change_requested') {
     return new Set(['appointment'])
   }
 
   if (job.kanban_column === 'appointment_confirmed' && job.can_upload_photos) {
     return new Set(['photos'])
+  }
+
+  if (completionReady) {
+    return new Set()
   }
 
   return new Set()
@@ -1073,6 +1102,11 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                     <p className="mt-1 text-[11px] font-semibold text-emerald-700">Durum: {jobEarningStatus(job)}</p>
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
+                  {job.kanban_column === 'appointment_confirmed' ? (
+                    <p className="mt-2 rounded-lg border border-blue-100 bg-white/80 px-2.5 py-2 text-xs font-semibold leading-5 text-blue-900">
+                      {job.field_action_hint ?? 'İş sonrası 3 fotoğrafı yükleyin, ardından müşteri onayı alın.'}
+                    </p>
+                  ) : null}
                   {completionReady && (
                     <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-600 px-3 py-2 text-white shadow-sm">
                       <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-100">Ana aksiyon</p>
@@ -1226,6 +1260,8 @@ function ServiceJobDetail({
   const canProposeAppointment = Boolean(job.can_propose_appointment ?? true)
   const canRequestAppointmentChange = Boolean(job.can_request_appointment_change)
   const canUseAppointmentProposal = canProposeAppointment || canRequestAppointmentChange
+  const canRequestCustomerApproval = Boolean(job.can_request_customer_otp && photosReady)
+  const customerApprovalPhotoGateMessage = 'Müşteri onayı için önce 3 fotoğrafı yükleyin.'
   const canOnlyAddNote = job.kanban_column === 'ops_review'
     || ['final_check_waiting', 'rejected_ops_review', 'completed', 'appointment_change_requested', 'support_requested', 'revisit_requested'].includes(job.action_state ?? '')
   const statusPlan = (() => {
@@ -1258,7 +1294,7 @@ function ServiceJobDetail({
     }
 
     if (job.kanban_column === 'appointment_confirmed') {
-      return 'Randevu onaylandı. Fotoğrafları, müşteri onayını ve ara talepleri bu ekrandan yönetin.'
+      return job.field_action_hint ?? 'İş sonrası 3 fotoğrafı yükleyin, ardından müşteri onayı alın.'
     }
 
     if (job.kanban_column === 'revisit') {
@@ -1301,6 +1337,12 @@ function ServiceJobDetail({
   }
 
   const openCustomerApprovalDialog = () => {
+    if (!photosReady) {
+      onMessage(customerApprovalPhotoGateMessage)
+
+      return
+    }
+
     setOtpMessageText(customerApprovalDefaultMessage(job, approvalUrl, confirmationMessageText))
     setActiveActionDialog('otp')
   }
@@ -1321,6 +1363,12 @@ function ServiceJobDetail({
   }
 
   const submitCustomerOtpRequest = async () => {
+    if (!photosReady) {
+      onMessage(customerApprovalPhotoGateMessage)
+
+      return
+    }
+
     const messageText = otpMessageText.trim()
 
     if (messageText.length < 3) {
@@ -1419,7 +1467,7 @@ function ServiceJobDetail({
 
   return (
     <section className="grid w-full min-w-0 max-w-full gap-5 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 pb-36 shadow-sm lg:grid-cols-[minmax(0,1fr)_400px] lg:p-5">
-      <div className="min-w-0 max-w-full">
+      <div className="flex min-w-0 max-w-full flex-col">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">İş detayı</p>
@@ -1501,7 +1549,7 @@ function ServiceJobDetail({
             ) : null}
           </div>
         ) : null}
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
+        <div className="order-[40] mt-5 grid gap-3 md:grid-cols-2">
           <InfoTile label="Müşteri" value={<span className="text-base font-semibold text-slate-950">{job.customer_name ?? '-'}</span>} />
           <InfoTile label="Telefon" value={job.customer_tel_link ? <a className="text-base font-semibold text-blue-700 hover:underline" href={job.customer_tel_link}>{job.customer_phone ?? 'Ara'}</a> : job.customer_phone ?? '-'} />
           <InfoTile label="Adres" value={job.address_summary ?? '-'} />
@@ -1567,11 +1615,11 @@ function ServiceJobDetail({
           </PartnerDetailPanel>
         </div>
         {showPhotoSection && (
-          <PartnerDetailPanel key={`${job.id}-photos`} title="Fotoğraf / belge" summary="Öncesi, sonrası ve garanti belgesi" tone="slate" defaultOpen={defaultOpenPartnerSections.has('photos')} panelKey={`${job.id}-photos`} className="mt-5">
+          <PartnerDetailPanel key={`${job.id}-photos`} title="Fotoğraf / belge" summary="Öncesi, sonrası ve garanti belgesi" tone="slate" defaultOpen={defaultOpenPartnerSections.has('photos')} panelKey={`${job.id}-photos`} className="order-[35] mt-5">
             <div className="mt-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
               <p className="font-semibold">Tamamlama şartı</p>
               <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} fotoğraf/belge yüklendi.</p>
-              <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri OTP/onay bekliyor.'}</p>
+              <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri onayı bekliyor.'}</p>
               <div className="mt-2 grid min-w-0 gap-1">
                 {photoStatuses.map((photo) => (
                   <p key={photo.field} className={`${photo.uploaded ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'} min-w-0 [overflow-wrap:anywhere]`}>
@@ -1760,6 +1808,11 @@ function ServiceJobDetail({
           )}
           {job.can_request_customer_otp && (
           <ActionBox title="Müşteri OTP / onay" className="hidden lg:grid">
+            {!photosReady ? (
+              <p className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
+                {customerApprovalPhotoGateMessage}
+              </p>
+            ) : null}
             {approvalUrl || whatsappUrl ? (
               <div className="rounded-xl border border-violet-100 bg-white p-3 text-xs text-slate-600">
                 <p className={dispatchStatus === 'failed' ? 'font-semibold text-rose-800' : 'font-semibold text-violet-900'}>{otpDispatchTitle}</p>
@@ -1781,7 +1834,7 @@ function ServiceJobDetail({
                 ) : null}
               </div>
             ) : null}
-            <button type="button" disabled={readOnly} onClick={openCustomerApprovalDialog} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" disabled={readOnly || !canRequestCustomerApproval} onClick={openCustomerApprovalDialog} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
               Müşteri onayı iste
             </button>
           </ActionBox>
@@ -1800,7 +1853,7 @@ function ServiceJobDetail({
             </button>
           </ActionBox>
           )}
-          {job.can_submit_completion && (
+          {completionReady && (
           <ActionBox title="Tamamlamaya gönder" className="hidden lg:grid">
             <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={completionResult} onChange={(event) => setCompletionResult(event.target.value)} disabled={readOnly || !job.can_submit_completion}>
               <option value="completed">Tamamlandı</option>
@@ -1847,7 +1900,7 @@ function ServiceJobDetail({
       </aside>
       {!readOnly && !activeActionDialog && (
         <div className="fixed inset-x-0 bottom-0 z-[80] grid max-h-[36vh] max-w-[100dvw] grid-cols-2 gap-1.5 overflow-x-clip overflow-y-auto border-t border-slate-200 bg-white/95 p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
-          {job.can_submit_completion && (
+          {completionReady && (
             <button type="button" onClick={() => setActiveActionDialog('completion')} className={`min-w-0 truncate font-semibold leading-tight ${completionReady ? 'col-span-2 min-h-12 rounded-xl border border-emerald-700 bg-emerald-600 px-3 py-2.5 text-sm text-white shadow-lg shadow-emerald-200' : 'min-h-10 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs text-emerald-800'}`}>
               Tamamlamaya gönder
             </button>
@@ -1878,7 +1931,7 @@ function ServiceJobDetail({
             </button>
           )}
           {job.can_request_customer_otp && (
-            <button type="button" onClick={openCustomerApprovalDialog} className="min-h-10 min-w-0 truncate rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-semibold leading-tight text-violet-800">
+            <button type="button" disabled={!canRequestCustomerApproval} onClick={openCustomerApprovalDialog} className="min-h-10 min-w-0 truncate rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-semibold leading-tight text-violet-800 disabled:cursor-not-allowed disabled:opacity-50">
               Müşteri onayı
             </button>
           )}
@@ -1997,7 +2050,7 @@ function ServiceJobDetail({
           <span className="text-xs font-normal text-slate-500">Onay linki metinde yoksa gönderim sırasında ayrı satır olarak eklenecek.</span>
         </label>
         <textarea className="min-h-20 w-full min-w-0 rounded-xl border border-slate-200 p-3 text-sm" value={otpNote} onChange={(event) => setOtpNote(event.target.value)} placeholder="Operasyona not" disabled={readOnly} />
-        <button type="button" disabled={readOnly || otpMessageText.trim().length < 3 || actionLoading === 'customer-otp-request'} onClick={() => void submitCustomerOtpRequest()} className="sticky bottom-0 rounded-xl bg-violet-700 px-3 py-2.5 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300">
+        <button type="button" disabled={readOnly || !canRequestCustomerApproval || otpMessageText.trim().length < 3 || actionLoading === 'customer-otp-request'} onClick={() => void submitCustomerOtpRequest()} className="sticky bottom-0 rounded-xl bg-violet-700 px-3 py-2.5 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300">
           {actionLoading === 'customer-otp-request' ? 'Gönderiliyor...' : 'WhatsApp onay mesajı gönder'}
         </button>
       </ActionDialog>
@@ -2133,9 +2186,18 @@ function PartnerDetailPanel({
     blue: 'border-blue-100 bg-blue-50 text-blue-950',
     slate: 'border-slate-200 bg-slate-50 text-slate-950',
   }[tone]
+  const [panelState, setPanelState] = useState({ panelKey, defaultOpen, open: defaultOpen })
+  const panelOpen = panelState.panelKey === panelKey && panelState.defaultOpen === defaultOpen
+    ? panelState.open
+    : defaultOpen
 
   return (
-    <details key={panelKey} defaultOpen={defaultOpen} className={`group min-w-0 max-w-full overflow-hidden rounded-2xl border p-4 text-sm shadow-sm ${toneClass} ${className}`}>
+    <details
+      key={panelKey}
+      open={panelOpen}
+      onToggle={(event) => setPanelState({ panelKey, defaultOpen, open: event.currentTarget.open })}
+      className={`group min-w-0 max-w-full overflow-hidden rounded-2xl border p-4 text-sm shadow-sm ${toneClass} ${className}`}
+    >
       <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
         <span className="min-w-0">
           <span className="block text-xs font-semibold uppercase tracking-wide opacity-80">{title}</span>

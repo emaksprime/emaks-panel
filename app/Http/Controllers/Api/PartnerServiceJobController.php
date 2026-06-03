@@ -467,6 +467,12 @@ class PartnerServiceJobController extends Controller
     {
         [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
         $this->ensureFieldActionStage($job, 'Müşteri onayı sadece randevu onaylandıktan sonra istenebilir.');
+        if (! $this->portalPhotoReadiness($job)['ready']) {
+            throw ValidationException::withMessages([
+                'photos' => 'Müşteri onayı için önce 3 fotoğrafı yükleyin.',
+            ]);
+        }
+
         $data = $request->validate([
             'note' => ['nullable', 'string', 'max:1000'],
             'message_text' => ['nullable', 'string', 'max:5000'],

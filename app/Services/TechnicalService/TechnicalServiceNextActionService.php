@@ -12,6 +12,10 @@ class TechnicalServiceNextActionService
      */
     public function forRequest(TechnicalServiceRequest $request): array
     {
+        if ($this->isAssignedFieldProcess($request)) {
+            return $this->fieldProcessPayload();
+        }
+
         $operation = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
         $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
 
@@ -108,14 +112,31 @@ class TechnicalServiceNextActionService
             );
         }
 
+        return $this->fieldProcessPayload();
+    }
+
+    /**
+     * @return array{code:string,title:string,description:string,severity:string,primary_action:?string,secondary_actions:array<int, string>,blocking:bool}
+     */
+    private function fieldProcessPayload(): array
+    {
         return $this->payload(
             'field_process',
-            'Randevu onaylandı',
-            'Randevu zamanı geldiğinde kart otomatik öne çıkar. İş tamamlanınca son kontrole düşer.',
-            'success',
+            'İş ustada',
+            'Usta fotoğrafları ve müşteri onayını tamamlayacak.',
+            'neutral',
             null,
             false
         );
+    }
+
+    private function isAssignedFieldProcess(TechnicalServiceRequest $request): bool
+    {
+        if ($request->completed_at !== null || ! filled($request->technical_service_technician_id) || ! filled($request->scheduled_at)) {
+            return false;
+        }
+
+        return in_array($request->workflow_status, ['Planlı', 'Yolda', 'Sahada'], true);
     }
 
     /**

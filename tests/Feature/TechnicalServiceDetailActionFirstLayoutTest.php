@@ -25,9 +25,31 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString("return 'order-30'", $source);
         $this->assertStringContainsString("product: 'order-60'", $source);
         $this->assertStringContainsString("customer: 'order-65'", $source);
+        $this->assertStringContainsString("product: 'order-30'", $source);
+        $this->assertStringContainsString("customer: 'order-35'", $source);
+        $this->assertStringContainsString("assignment: 'order-40'", $source);
+        $this->assertStringContainsString("operation: 'order-70'", $source);
         $this->assertStringContainsString("history: 'order-[90]'", $source);
         $this->assertStringContainsString('className={opsSectionClass(\'fieldCompletion\', activeOpsSection)}', $source);
         $this->assertStringContainsString('className={opsSectionClass(\'assignment\', activeOpsSection)}', $source);
+    }
+
+    public function test_ops_assigned_jobs_use_neutral_info_order_instead_of_operation_control(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $nextActionService = $this->source('app/Services/TechnicalService/TechnicalServiceNextActionService.php');
+
+        $this->assertStringContainsString('const isAssignedTechnicianStage', $source);
+        $this->assertStringContainsString("return isAssignedTechnicianStage(context) ? null : 'assignment'", $source);
+        $this->assertStringContainsString("return new Set(['product', 'customer', 'assignment'])", $source);
+        $this->assertStringContainsString("Usta fotoğrafları ve müşteri onayını tamamlayacak.", $source);
+        $this->assertStringContainsString("displayedNextActionHeader = isAssignedPartnerActionStage ? 'Süreç Bilgisi'", $source);
+        $this->assertStringContainsString("displayedNextActionSeverity = isAssignedPartnerActionStage ? 'neutral'", $source);
+        $this->assertStringContainsString('const hasSupportRequestDetail = supportRequests.length > 0', $source);
+        $this->assertStringContainsString('const hasSparePartDetail = partRequests.length > 0', $source);
+        $this->assertStringContainsString("'field_process'", $nextActionService);
+        $this->assertStringContainsString("'İş ustada'", $nextActionService);
+        $this->assertStringContainsString("'neutral'", $nextActionService);
     }
 
     public function test_partner_detail_uses_stage_based_collapsed_panels(): void
@@ -49,8 +71,52 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString("if (job.kanban_column === 'completed')", $source);
         $this->assertStringContainsString("if (job.kanban_column === 'final_check' || job.action_state === 'final_check_waiting')", $source);
         $this->assertStringContainsString('return new Set()', $source);
-        $this->assertStringContainsString('{job.can_submit_completion && (', $source);
+        $this->assertStringContainsString('{completionReady && (', $source);
         $this->assertStringContainsString('{job.can_request_customer_otp && (', $source);
+    }
+
+    public function test_partner_appointment_confirmed_prioritizes_photo_and_customer_approval_flow(): void
+    {
+        $source = $this->source('resources/js/pages/partner/portal-shell.tsx');
+        $service = $this->source('app/Services/B2B/B2BPartnerPortalDataService.php');
+
+        $this->assertStringContainsString('field_action_hint?: string | null', $source);
+        $this->assertStringContainsString('className="order-[35] mt-5"', $source);
+        $this->assertStringContainsString('const canRequestCustomerApproval = Boolean(job.can_request_customer_otp && photosReady)', $source);
+        $this->assertStringContainsString('Müşteri onayı için önce 3 fotoğrafı yükleyin.', $source);
+        $this->assertStringContainsString('disabled={readOnly || !canRequestCustomerApproval}', $source);
+        $this->assertStringContainsString('disabled={readOnly || !canRequestCustomerApproval || otpMessageText.trim().length < 3', $source);
+        $this->assertStringContainsString('{completionReady && (', $source);
+        $this->assertStringContainsString('const [panelState, setPanelState] = useState({ panelKey, defaultOpen, open: defaultOpen })', $source);
+        $this->assertStringContainsString('open={panelOpen}', $source);
+        $this->assertStringContainsString('appointmentConfirmedPartnerBadges', $service);
+        $this->assertStringContainsString('Fotoğraf bekleniyor', $service);
+        $this->assertStringContainsString('Müşteri onayı bekleniyor', $service);
+        $this->assertStringContainsString('İş sonrası 3 fotoğrafı yükleyin, ardından müşteri onayı alın.', $service);
+
+        $photosSectionIndex = strpos($source, "if (job.kanban_column === 'appointment_confirmed' && job.can_upload_photos)");
+        $completionSectionIndex = strpos($source, 'if (completionReady)');
+
+        $this->assertIsInt($photosSectionIndex);
+        $this->assertIsInt($completionSectionIndex);
+        $this->assertLessThan($completionSectionIndex, $photosSectionIndex);
+    }
+
+    public function test_timeline_label_fallbacks_do_not_render_unknown_operation(): void
+    {
+        $opsSource = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $partnerSource = $this->source('resources/js/pages/partner/portal-shell.tsx');
+        $labelService = $this->source('app/Services/TechnicalService/TechnicalServiceUiLabelService.php');
+
+        foreach ([$opsSource, $partnerSource, $labelService] as $source) {
+            $this->assertStringNotContainsString('Bilinmeyen işlem', $source);
+            $this->assertStringContainsString('İşlem kaydı', $source);
+        }
+
+        $this->assertStringContainsString('schedule_updated', $opsSource);
+        $this->assertStringContainsString('assignment_offer_sent', $opsSource);
+        $this->assertStringContainsString('partner_portal_support_requested', $partnerSource);
+        $this->assertStringContainsString('assignment_offer_sent', $labelService);
     }
 
     private function source(string $relativePath): string

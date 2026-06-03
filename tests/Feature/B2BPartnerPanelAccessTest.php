@@ -4373,6 +4373,57 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNull($job->completed_at);
     }
 
+    public function test_partner_customer_approval_is_blocked_until_three_field_docs_uploaded(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Photo Gate Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Photo Gate Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-PHOTO-GATE-OTP', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+            'customer_phone' => '05551112233',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/customer-otp-request", [
+                'note' => 'Fotoğraf olmadan müşteri onayı istenmemeli.',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('photos');
+
+        $this->assertDatabaseMissing('technical_service_customer_confirmations', [
+            'technical_service_request_id' => $job->id,
+        ]);
+        $this->assertDatabaseMissing('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
+        ]);
+    }
+
     public function test_mrn_like_sebrsovsl3_flow_docs_approval_completion_submit_reaches_final_review(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -5015,6 +5066,15 @@ class B2BPartnerPanelAccessTest extends TestCase
         $job = collect($refreshResponse->json('jobs'))->firstWhere('mrn', 'MRN-SCOPE-A');
         $this->assertSame('appointment_confirmed', $job['kanban_column']);
         $this->assertTrue($job['operational_state']['is_appointment_confirmed']);
+        $this->assertFalse($job['operational_state']['is_completed']);
+        $this->assertFalse($job['operational_state']['is_pending_final_check']);
+        $this->assertSame('assigned', $job['operational_state']['ops_column']);
+        $this->assertSame([
+            'Randevu onaylandı',
+            'Fotoğraf bekleniyor',
+            'Müşteri onayı bekleniyor',
+        ], $job['badges']);
+        $this->assertSame('İş sonrası 3 fotoğrafı yükleyin, ardından müşteri onayı alın.', $job['field_action_hint']);
         $this->assertSame(TechnicalServicePartnerJobAction::STATUS_APPLIED, $job['appointment_proposal']['status']);
         $this->assertNotContains('Operasyon onayı bekleniyor', $job['badges']);
         $this->assertNotContains('Randevu önerildi', $job['badges']);

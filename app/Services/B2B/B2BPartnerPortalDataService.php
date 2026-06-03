@@ -325,6 +325,7 @@ class B2BPartnerPortalDataService
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request, $partnerActions);
         $canonicalState = $this->operationalState->present($request);
+        $partnerColumn = (string) ($canonicalState['partner_column'] ?? $this->serviceJobColumn($request, $stateAction));
         $partRequestRows = $request->partRequests
             ->map(fn (TechnicalServicePartRequest $partRequest): array => app(TechnicalServicePartRequestService::class)->serialize($partRequest, forPartner: true))
             ->values();
@@ -417,6 +418,9 @@ class B2BPartnerPortalDataService
         if ($displayBadges === []) {
             $displayBadges = $badges;
         }
+        if ($partnerColumn === 'appointment_confirmed') {
+            $displayBadges = $this->appointmentConfirmedPartnerBadges($completionRequirements);
+        }
         if ($nextActionLabel === 'Tamamlamaya gönderilebilir' && ! in_array('Tamamlamaya gönderilebilir', $displayBadges, true)) {
             array_unshift($displayBadges, 'Tamamlamaya gönderilebilir');
         }
@@ -452,6 +456,9 @@ class B2BPartnerPortalDataService
             'status' => $request->status,
             'workflow_status' => $request->workflow_status,
             'next_action' => $partnerNextActionLabel,
+            'field_action_hint' => $partnerColumn === 'appointment_confirmed'
+                ? $this->appointmentConfirmedPartnerHint($completionRequirements)
+                : null,
             'route_distance_summary' => $request->travel_round_trip_km !== null ? ((float) $request->travel_round_trip_km).' km' : null,
             'payment_status_summary' => $request->mount_payment_label ?? $request->mount_payment_status,
             'maps_link' => $this->mapsLink($request),
@@ -587,7 +594,7 @@ class B2BPartnerPortalDataService
                 ? 4
                 : ($canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction)),
             'card_tone' => $hasOpenPartRequest ? 'violet' : $this->serviceJobTone($request, $stateAction),
-            'kanban_column' => $canonicalState['partner_column'] ?? $this->serviceJobColumn($request, $stateAction),
+            'kanban_column' => $partnerColumn,
             'operational_state' => $canonicalState,
             'service_visit_context' => $this->serviceVisitContext($request),
             'action_state' => $this->serviceJobActionState($request, $stateAction, $completionRequirements),
@@ -1071,11 +1078,11 @@ class B2BPartnerPortalDataService
         }
 
         if (($completionRequirements['customer_confirmation_ready'] ?? false) !== true && $this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
-            $badges[] = 'OTP bekliyor';
+            $badges[] = 'Müşteri onayı bekleniyor';
         }
 
         if (($completionRequirements['photos_ready'] ?? false) === true && $this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
-            $badges[] = 'Saha belgeleri yüklendi';
+            $badges[] = 'Fotoğraflar yüklendi';
         }
 
         if (($completionRequirements['customer_confirmation_ready'] ?? false) === true && $this->serviceJobColumn($request, $action) === 'appointment_confirmed') {
@@ -1089,6 +1096,45 @@ class B2BPartnerPortalDataService
         }
 
         return array_values(array_unique($badges));
+    }
+
+    /**
+     * @param  array<string, mixed>  $completionRequirements
+     * @return array<int, string>
+     */
+    private function appointmentConfirmedPartnerBadges(array $completionRequirements): array
+    {
+        $photosReady = ($completionRequirements['photos_ready'] ?? false) === true;
+        $customerReady = ($completionRequirements['customer_confirmation_ready'] ?? false) === true;
+
+        if ($photosReady && $customerReady) {
+            return ['Tamamlamaya gönderilebilir', 'Fotoğraflar yüklendi', 'Müşteri onayı alındı'];
+        }
+
+        return array_values(array_filter([
+            'Randevu onaylandı',
+            $photosReady ? 'Fotoğraflar yüklendi' : 'Fotoğraf bekleniyor',
+            $customerReady ? 'Müşteri onayı alındı' : 'Müşteri onayı bekleniyor',
+        ]));
+    }
+
+    /**
+     * @param  array<string, mixed>  $completionRequirements
+     */
+    private function appointmentConfirmedPartnerHint(array $completionRequirements): string
+    {
+        $photosReady = ($completionRequirements['photos_ready'] ?? false) === true;
+        $customerReady = ($completionRequirements['customer_confirmation_ready'] ?? false) === true;
+
+        if ($photosReady && $customerReady) {
+            return 'Fotoğraflar ve müşteri onayı tamam. İşi tamamlamaya gönderebilirsiniz.';
+        }
+
+        if ($photosReady) {
+            return 'Fotoğraflar tamam. Şimdi müşteri onayı alın.';
+        }
+
+        return 'İş sonrası 3 fotoğrafı yükleyin, ardından müşteri onayı alın.';
     }
 
     /**

@@ -155,11 +155,21 @@ const dateTimeOrEmpty = (value: string | null | undefined, fallback: string): st
 
 const actionCodeLabels: Record<string, string> = {
   accepted: 'İş kabul edildi',
+  assignment_archived: 'Önceki usta ataması arşivlendi',
+  assignment_created: 'Servis ataması oluşturuldu',
+  assignment_reassigned: 'Servis ataması güncellendi',
+  assignment_updated: 'Servis ataması güncellendi',
+  assignment_offer: 'Hakediş teklifi oluşturuldu',
+  assignment_offer_sent: 'Hakediş bilgisi gönderildi',
+  assignment_offer_cancelled: 'Eski hakediş teklifi iptal edildi',
+  reassign_after_review_resolved: 'İş yeniden atamaya alındı',
   appointment_accepted_by_technician: 'Randevu onaylandı',
   appointment_proposed: 'Randevu önerildi',
+  partner_portal_appointment_proposed: 'Randevu önerildi',
   appointment_change_requested: 'Randevu değişikliği istendi',
   schedule_updated: 'Randevu güncellendi',
   appointment_approved: 'Randevu onaylandı',
+  appointment_updated: 'Randevu güncellendi',
   customer_otp_requested: 'Müşteri onayı istendi',
   customer_approval_request: 'Müşteri onayı istendi',
   customer_approval_request_resent: 'Müşteri onayı istendi',
@@ -171,10 +181,30 @@ const actionCodeLabels: Record<string, string> = {
   job_rejected: 'Usta işi reddetti',
   revisit_requested: 'Tekrar ziyaret istendi',
   support_requested: 'Ek talep oluşturuldu',
+  partner_portal_support_requested: 'Ek talep oluşturuldu',
+  technical_support: 'Teknik destek istendi',
   price_revision_requested: 'Hakediş revize talep edildi',
   photos_uploaded: 'Fotoğraf yüklendi',
+  route_quote_created: 'Yol hakedişi hesaplandı',
+  route_quote_updated: 'Yol hakedişi güncellendi',
+  manual_fee: 'Manuel ücret girildi',
+  payment_paid: 'Ödeme alındı',
+  mount_payment_paid: 'Ödeme alındı',
+  payment_pending: 'Ödeme bekleniyor',
+  payment_failed: 'Ödeme başarısız',
+  final_check: 'Son kontrol bekliyor',
+  submitted: 'Gönderildi',
+  applied: 'Uygulandı',
+  revised: 'Revize edildi',
+  ops_review: 'Operasyon incelemesinde',
   note_added: 'Not eklendi',
+  contact_customer_called: 'Müşteri arandı',
   part_request_created: 'Parça talebi oluşturuldu',
+  part_requested: 'Parça talebi oluşturuldu',
+  part_approved: 'Parça talebi onaylandı',
+  part_ordered: 'Parça tedarik ediliyor',
+  part_sent: 'Parça gönderildi',
+  part_received: 'Parça teslim alındı',
   part_request_approved: 'Parça talebi onaylandı',
   part_request_ordered: 'Parça tedarik ediliyor',
   part_request_sent: 'Parça gönderildi',
@@ -184,7 +214,10 @@ const actionCodeLabels: Record<string, string> = {
   part_request_rejected: 'Parça talebi reddedildi',
   part_request_srv_created: 'Servis kaydı oluşturuldu',
   service_visit_created: 'Servis kaydı oluşturuldu',
+  srv_created: 'Servis kaydı oluşturuldu',
   srv_child_created: 'Servis kaydı oluşturuldu',
+  second_visit_required: 'Tekrar randevu gerekli',
+  technician_updated: 'Usta bilgisi güncellendi',
   technician_earning_message_sent: 'Hakediş bilgisi gönderildi',
   technician_revision_requested: 'Usta revize talep etti',
   customer_called: 'Müşteri arandı',
@@ -194,8 +227,20 @@ const actionCodeLabels: Record<string, string> = {
 
 const hasRawCodeShape = (value: string): boolean => /^[a-z0-9_-]+$/i.test(value)
 
+const safeActionLabelFallback = (value: string): string => {
+  if (value === '') {
+    return 'İşlem kaydı'
+  }
+
+  return hasRawCodeShape(value) ? 'İşlem kaydı' : value
+}
+
 const actionLabel = (code: string | null | undefined, provided?: string | null): string => {
   const normalizedProvided = String(provided ?? '').trim()
+
+  if (actionCodeLabels[normalizedProvided]) {
+    return actionCodeLabels[normalizedProvided]
+  }
 
   if (normalizedProvided !== '' && !hasRawCodeShape(normalizedProvided)) {
     return normalizedProvided
@@ -203,7 +248,7 @@ const actionLabel = (code: string | null | undefined, provided?: string | null):
 
   const normalized = String(code ?? '').trim()
 
-  return actionCodeLabels[normalized] ?? (normalized && !hasRawCodeShape(normalized) ? normalized : 'Bilinmeyen işlem')
+  return actionCodeLabels[normalized] ?? safeActionLabelFallback(normalized)
 }
 
 const stringValue = (source: Record<string, unknown> | null | undefined, key: string): string | null => {
@@ -369,6 +414,8 @@ const nextActionTone = (severity: string | null | undefined): string => {
       return 'border-rose-200 bg-rose-50 text-rose-950'
     case 'warning':
       return 'border-amber-200 bg-amber-50 text-amber-950'
+    case 'neutral':
+      return 'border-slate-200 bg-slate-50 text-slate-900'
     default:
       return 'border-blue-200 bg-blue-50 text-blue-950'
   }
@@ -424,6 +471,17 @@ type OpsDetailSectionContext = {
   kanbanColumn?: string | null
 }
 
+const isAssignedTechnicianStage = (context: OpsDetailSectionContext): boolean => (
+  context.hasAssignedTechnician
+  && !context.isCompleted
+  && !context.isFinalCheckStage
+  && context.kanbanColumn === 'assigned'
+  && !context.hasAppointmentProposal
+  && !context.hasReviewBlocker
+  && !context.hasSupportRequest
+  && !context.hasPartRequest
+)
+
 const getOpsActiveSection = (context: OpsDetailSectionContext): OpsDetailSectionKey | null => {
   if (context.isCompleted) {
     return 'finalCheck'
@@ -441,7 +499,7 @@ const getOpsActiveSection = (context: OpsDetailSectionContext): OpsDetailSection
     return 'operation'
   }
 
-  return 'operation'
+  return isAssignedTechnicianStage(context) ? null : 'assignment'
 }
 
 const getOpsDefaultOpenSections = (context: OpsDetailSectionContext): Set<OpsDetailSectionKey> => {
@@ -459,12 +517,35 @@ const getOpsDefaultOpenSections = (context: OpsDetailSectionContext): Set<OpsDet
     return new Set(['finalCheck'])
   }
 
+  if (!activeSection && isAssignedTechnicianStage(context)) {
+    return new Set(['product', 'customer', 'assignment'])
+  }
+
+  if (!activeSection) {
+    return new Set()
+  }
+
   return new Set([activeSection])
 }
 
 const opsSectionClass = (section: OpsDetailSectionKey, activeSection: OpsDetailSectionKey | null): string => {
   if (section === activeSection) {
     return 'order-30'
+  }
+
+  if (!activeSection) {
+    const passiveOrder: Record<OpsDetailSectionKey, string> = {
+      product: 'order-30',
+      customer: 'order-35',
+      assignment: 'order-40',
+      fieldCompletion: 'order-60',
+      operation: 'order-70',
+      finalCheck: 'order-75',
+      invoiceSerials: 'order-80',
+      history: 'order-[90]',
+    }
+
+    return passiveOrder[section]
   }
 
   const order: Record<OpsDetailSectionKey, string> = {
@@ -1563,8 +1644,8 @@ export function ServiceRequestDetails({
       : assignmentOfferDispatchStatus
         ? 'Hakediş mesajı hazırlandı, gerçek WhatsApp gönderimi kapalı'
         : 'Hakediş bilgisi gönderilmedi'
-  const hasSupportRequestDetail = supportRequests.length > 0 || Boolean(String(request.technicianRevisionNote ?? '').trim())
-  const hasSparePartDetail = supportRequests.length > 0 || partRequests.length > 0 || Boolean(String(request.pendingReason ?? '').trim())
+  const hasSupportRequestDetail = supportRequests.length > 0
+  const hasSparePartDetail = partRequests.length > 0
   const hasPriceRevisionDetail = Boolean(String(request.technicianRevisionNote ?? '').trim())
   const hasRevisitDetail = revisitRequests.length > 0 || Boolean(request.requiresSecondVisit)
   const showAssignmentPortalActionBlock = Boolean(
@@ -1982,6 +2063,14 @@ export function ServiceRequestDetails({
   const nextActionPayload = request.nextActionPayload
   const nextActionTitle = displayOrEmpty(nextActionPayload?.title, nextActionLabel)
   const nextActionDescription = displayOrEmpty(nextActionPayload?.description, 'Operasyon akışı için sıradaki adım bekleniyor.')
+  const isAssignedPartnerActionStage = isAssignedTechnicianStage(opsSectionContext)
+  const displayedNextActionTitle = isAssignedPartnerActionStage ? 'İş ustada' : nextActionTitle
+  const displayedNextActionDescription = isAssignedPartnerActionStage
+    ? 'Usta fotoğrafları ve müşteri onayını tamamlayacak.'
+    : nextActionDescription
+  const displayedNextActionSeverity = isAssignedPartnerActionStage ? 'neutral' : nextActionPayload?.severity
+  const displayedNextActionHeader = isAssignedPartnerActionStage ? 'Süreç Bilgisi' : 'Sıradaki Operasyon Aksiyonu'
+  const showNextActionPrimaryButton = Boolean(nextActionPayload?.primary_action && !isAssignedPartnerActionStage)
   const scrollToNextActionSection = (target: NextActionSectionTarget) => {
     const targetRef = {
       operation: operationInfoRef,
@@ -2366,14 +2455,14 @@ export function ServiceRequestDetails({
           </details>
         ) : null}
 
-        <section className={['order-20 rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(nextActionPayload?.severity)].join(' ')}>
+        <section className={['order-20 rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(displayedNextActionSeverity)].join(' ')}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] opacity-70">Sıradaki Operasyon Aksiyonu</p>
-              <h3 className="mt-1 text-lg font-bold">{nextActionTitle}</h3>
-              <p className="mt-1 max-w-3xl text-sm leading-6 opacity-90">{nextActionDescription}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] opacity-70">{displayedNextActionHeader}</p>
+              <h3 className="mt-1 text-lg font-bold">{displayedNextActionTitle}</h3>
+              <p className="mt-1 max-w-3xl text-sm leading-6 opacity-90">{displayedNextActionDescription}</p>
             </div>
-            {nextActionPayload?.primary_action ? (
+            {showNextActionPrimaryButton ? (
               <Button
                 type="button"
                 size="sm"
