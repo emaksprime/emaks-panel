@@ -144,6 +144,10 @@ export type ServiceRequestAssignmentOffer = {
   note?: string | null
   sent_at?: string | null
   metadata?: Record<string, unknown>
+  message_payload?: Record<string, unknown>
+  message_text?: string | null
+  job_link?: string | null
+  dispatch_status?: string | null
 }
 
 export type ServiceRequestPartnerPortalAction = {

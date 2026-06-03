@@ -1248,6 +1248,37 @@ export function ServiceRequestDetails({
   const assignmentOffer = request.assignmentOffer ?? null
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
   const selectedTechnicianIdString = selectedTechnicianId ? String(selectedTechnicianId) : null
+  const assignmentOfferTechnicianIdString = assignmentOffer?.technical_service_technician_id !== null && assignmentOffer?.technical_service_technician_id !== undefined
+    ? String(assignmentOffer.technical_service_technician_id)
+    : null
+  const assignmentOfferMatchesSelectedTechnician = Boolean(
+    assignmentOffer
+    && (!selectedTechnicianIdString || !assignmentOfferTechnicianIdString || assignmentOfferTechnicianIdString === selectedTechnicianIdString),
+  )
+  const activeAssignmentOffer = assignmentOfferMatchesSelectedTechnician ? assignmentOffer : null
+  const assignmentOfferLaborAmount = activeAssignmentOffer && Number.isFinite(Number(activeAssignmentOffer.labor_amount))
+    ? Number(activeAssignmentOffer.labor_amount)
+    : null
+  const assignmentOfferRouteAmount = activeAssignmentOffer && Number.isFinite(Number(activeAssignmentOffer.route_fee_amount))
+    ? Number(activeAssignmentOffer.route_fee_amount)
+    : null
+  const assignmentOfferTotalAmount = activeAssignmentOffer && Number.isFinite(Number(activeAssignmentOffer.total_amount))
+    ? Number(activeAssignmentOffer.total_amount)
+    : assignmentOfferLaborAmount !== null || assignmentOfferRouteAmount !== null
+      ? roundTwo((assignmentOfferLaborAmount ?? 0) + (assignmentOfferRouteAmount ?? 0))
+      : null
+  const assignmentOfferMessagePayload = activeAssignmentOffer?.message_payload && typeof activeAssignmentOffer.message_payload === 'object'
+    ? activeAssignmentOffer.message_payload
+    : activeAssignmentOffer?.metadata
+      && typeof activeAssignmentOffer.metadata === 'object'
+      && activeAssignmentOffer.metadata.message_payload
+      && typeof activeAssignmentOffer.metadata.message_payload === 'object'
+        ? activeAssignmentOffer.metadata.message_payload as Record<string, unknown>
+        : null
+  const assignmentOfferMessageText = activeAssignmentOffer?.message_text
+    ?? stringValue(assignmentOfferMessagePayload, 'message_text')
+  const assignmentOfferJobLink = activeAssignmentOffer?.job_link
+    ?? stringValue(assignmentOfferMessagePayload, 'job_link')
   const routeQuoteTechnicianIdString = routeQuote?.technician_id !== null && routeQuote?.technician_id !== undefined
     ? String(routeQuote.technician_id)
     : null
@@ -1458,22 +1489,31 @@ export function ServiceRequestDetails({
   const totalCustomerCollectedAmount = customerMountAmount !== null
     ? roundTwo(customerMountAmount + paidExtraCustomerAmount)
     : paidExtraCustomerAmount > 0 ? paidExtraCustomerAmount : null
-  const technicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
+  const fallbackTechnicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
     ? selectedTechnician.technicianAmountLabel
     : basePaymentInfo.technicianAmountLabel && basePaymentInfo.technicianAmountLabel !== 'Belirlenmedi'
       ? basePaymentInfo.technicianAmountLabel
       : 'Hakediş ayarı eksik'
-  const technicianLaborCostAmount = typeof request.technicianPaymentAmount === 'number' && Number.isFinite(request.technicianPaymentAmount)
+  const fallbackTechnicianLaborCostAmount = typeof request.technicianPaymentAmount === 'number' && Number.isFinite(request.technicianPaymentAmount)
     ? request.technicianPaymentAmount
     : basePaymentInfo.customerAmount
-  const travelCostLabel = hasActiveRouteQuote
+  const technicianLaborCostAmount = assignmentOfferLaborAmount ?? fallbackTechnicianLaborCostAmount
+  const technicianLaborCostLabel = assignmentOfferLaborAmount !== null
+    ? formatMoneyValue(assignmentOfferLaborAmount)
+    : fallbackTechnicianLaborCostLabel
+  const fallbackTravelCostLabel = hasActiveRouteQuote
     ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required
       ? 'Km başı ücret ayarı eksik'
       : formatMoneyValue(routeFeeAmount)
     : 'Hesaplanmadı'
-  const totalTechnicianCostAmount = technicianLaborCostAmount !== null
-    ? roundTwo(technicianLaborCostAmount + (hasActiveRouteQuote && routeFeeAmount !== null ? routeFeeAmount : 0))
-    : null
+  const travelCostLabel = assignmentOfferRouteAmount !== null
+    ? formatMoneyValue(assignmentOfferRouteAmount)
+    : fallbackTravelCostLabel
+  const totalTechnicianCostAmount = assignmentOfferTotalAmount !== null
+    ? assignmentOfferTotalAmount
+    : technicianLaborCostAmount !== null
+      ? roundTwo(technicianLaborCostAmount + (hasActiveRouteQuote && routeFeeAmount !== null ? routeFeeAmount : 0))
+      : null
   const earningTotalAmount = totalTechnicianCostAmount
   const totalTechnicianCostLabel = totalTechnicianCostAmount !== null
     ? formatMoneyValue(totalTechnicianCostAmount)
@@ -1496,13 +1536,33 @@ export function ServiceRequestDetails({
       `Bölge: ${[request.city, request.district].filter(Boolean).join(' / ') || '-'}`,
       `Ürün / Seri: ${[request.product || '-', request.serialNumber || '-'].join(' / ')}`,
       `Montaj işçilik: ${formatMoneyValue(technicianLaborCostAmount ?? 0)}`,
-      `Usta yol hakedişi: ${formatMoneyValue(hasActiveRouteQuote ? routeFeeAmount ?? 0 : 0)}`,
+      `Usta yol hakedişi: ${formatMoneyValue(assignmentOfferRouteAmount ?? (hasActiveRouteQuote ? routeFeeAmount ?? 0 : 0))}`,
       `Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`,
       `Randevu: ${request.scheduledAt ? dateTimeOrEmpty(request.scheduledAt, '-') : request.scheduledDate ? [request.scheduledDate, request.scheduledTime].filter(Boolean).join(' ') : '-'}`,
       earningNoteInput.trim() ? `Not: ${earningNoteInput.trim()}` : null,
     ].filter((line): line is string => typeof line === 'string' && line.trim() !== '').join('\n')
     : ''
-  const displayedEarningMessageText = earningMessageText || technicianEarningPreviewText || technicianEarningMessage?.message_text || ''
+  const displayedEarningMessageText = earningMessageText || assignmentOfferMessageText || technicianEarningMessage?.message_text || technicianEarningPreviewText || ''
+  const displayedEarningWhatsappUrl = earningMessageUrl
+    || (displayedEarningMessageText && (selectedTechnician?.phone || request.technicianPhone)
+      ? `${whatsappHrefForPhone(selectedTechnician?.phone ?? request.technicianPhone)}?text=${encodeURIComponent(displayedEarningMessageText)}`
+      : '')
+  const assignmentOfferDispatchStatus = activeAssignmentOffer?.dispatch_status
+    ?? (
+      activeAssignmentOffer?.metadata
+      && typeof activeAssignmentOffer.metadata === 'object'
+      && activeAssignmentOffer.metadata.message_dispatch
+      && typeof activeAssignmentOffer.metadata.message_dispatch === 'object'
+        ? stringValue(activeAssignmentOffer.metadata.message_dispatch as Record<string, unknown>, 'status')
+        : null
+    )
+  const earningDispatchStatusLabel = technicianEarningMessage?.status === 'sent'
+    ? 'Hakediş bilgisi gönderildi'
+    : assignmentOfferDispatchStatus === 'sent'
+      ? 'Hakediş bilgisi gönderildi'
+      : assignmentOfferDispatchStatus
+        ? 'Hakediş mesajı hazırlandı, gerçek WhatsApp gönderimi kapalı'
+        : 'Hakediş bilgisi gönderilmedi'
   const routeFeeEditorSnapshot = (
     oneWay: string,
     roundTrip: string,
@@ -3270,8 +3330,8 @@ export function ServiceRequestDetails({
                 <MiniMetric label="Net fark / kâr" value={netProfitLabel} />
                 <MiniMetric
                   label="Hakediş durumu"
-                  value={technicianEarningMessage?.status === 'sent' ? 'Hakediş bilgisi gönderildi' : 'Hakediş bilgisi gönderilmedi'}
-                  hint={technicianEarningMessage?.sent_at ? dateTimeOrEmpty(technicianEarningMessage.sent_at, '-') : undefined}
+                  value={earningDispatchStatusLabel}
+                  hint={technicianEarningMessage?.sent_at ? dateTimeOrEmpty(technicianEarningMessage.sent_at, '-') : activeAssignmentOffer?.sent_at ? dateTimeOrEmpty(activeAssignmentOffer.sent_at, '-') : undefined}
                 />
               </div>
               {technicianEarningMessageError ? (
@@ -3309,10 +3369,17 @@ export function ServiceRequestDetails({
                       <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(displayedEarningMessageText)}>
                         Mesajı kopyala
                       </Button>
-                      {(earningMessageUrl || selectedTechnician?.phone) ? (
+                      {displayedEarningWhatsappUrl ? (
                         <Button asChild type="button" size="sm" variant="outline">
-                          <a href={earningMessageUrl || whatsappHrefForPhone(selectedTechnician?.phone)} target="_blank" rel="noreferrer">
+                          <a href={displayedEarningWhatsappUrl} target="_blank" rel="noreferrer">
                             WhatsApp Aç
+                          </a>
+                        </Button>
+                      ) : null}
+                      {assignmentOfferJobLink ? (
+                        <Button asChild type="button" size="sm" variant="outline">
+                          <a href={assignmentOfferJobLink} target="_blank" rel="noreferrer">
+                            İş kartını aç
                           </a>
                         </Button>
                       ) : null}

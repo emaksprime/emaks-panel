@@ -27,6 +27,7 @@ use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
+use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
@@ -5289,13 +5290,31 @@ class B2BPartnerPanelAccessTest extends TestCase
             ],
             'technician_payment_amount' => 900,
         ]);
+        $routeQuote = TechnicalServiceRouteQuote::query()->create([
+            'technical_service_request_id' => $job->id,
+            'technician_id' => $technician->id,
+            'distance_meters' => 61000,
+            'distance_km' => 61,
+            'threshold_km' => 30,
+            'extra_km' => 31,
+            'fee_per_km' => 94.9,
+            'fee_amount' => 2942,
+            'travel_fee_required' => true,
+            'provider' => TechnicalServiceRouteQuote::PROVIDER_GOOGLE_ROUTES,
+            'status' => TechnicalServiceRouteQuote::STATUS_CALCULATED,
+            'raw_payload' => [
+                'one_way_distance_meters' => 30500,
+                'round_trip_distance_meters' => 61000,
+            ],
+            'calculated_at' => now(),
+        ]);
 
         $this->actingAs($admin)
             ->postJson("/api/technical-service/requests/{$job->id}/assign", [
                 'technical_service_technician_id' => $technician->id,
-                'travel_round_trip_km' => 44,
-                'labor_amount' => 950,
-                'travel_amount' => 210,
+                'route_quote_id' => $routeQuote->id,
+                'labor_amount' => 2000,
+                'travel_amount' => 1000,
                 'earning_note' => 'Final hakediş onayı.',
                 'confirm_assignment' => true,
                 'assignment_offer' => [
@@ -5306,25 +5325,27 @@ class B2BPartnerPanelAccessTest extends TestCase
                 ],
             ])
             ->assertOk()
-            ->assertJsonPath('request.assignment_offer.labor_amount', 950)
-            ->assertJsonPath('request.assignment_offer.route_fee_amount', 210)
-            ->assertJsonPath('request.assignment_offer.total_amount', 1160);
+            ->assertJsonPath('request.assignment_offer.labor_amount', 2000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 1000)
+            ->assertJsonPath('request.assignment_offer.total_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.route_quote_id', $routeQuote->id)
+            ->assertJsonPath('request.route_quote.fee_amount', 2942);
 
         $offer = TechnicalServiceAssignmentOffer::query()
             ->where('technical_service_request_id', $job->id)
             ->firstOrFail();
         $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_SENT, $offer->status);
-        $this->assertSame(950.0, (float) $offer->labor_amount);
-        $this->assertSame(210.0, (float) $offer->route_fee_amount);
-        $this->assertSame(1160.0, (float) $offer->total_amount);
+        $this->assertSame(2000.0, (float) $offer->labor_amount);
+        $this->assertSame(1000.0, (float) $offer->route_fee_amount);
+        $this->assertSame(3000.0, (float) $offer->total_amount);
         $this->assertIsArray($offer->metadata['message_payload'] ?? null);
         $this->assertTrue((bool) ($offer->metadata['confirmed_by_ops'] ?? false));
         $this->assertStringContainsString('/partner/service-jobs?', (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
         $this->assertStringContainsString('partner_id='.$partner->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
         $this->assertStringContainsString('job_id='.$job->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
-        $this->assertStringContainsString('İşçilik: 950 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
-        $this->assertStringContainsString('Yol: 210 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
-        $this->assertStringContainsString('Toplam: 1.160 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('2.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Yol: 1.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Toplam: 3.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringContainsString('İş kartı:', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringNotContainsString('TRY', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertDatabaseHas('technical_service_message_dispatches', [
@@ -5341,6 +5362,19 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
 
         $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.id', $offer->id)
+            ->assertJsonPath('request.assignment_offer.labor_amount', 2000)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 1000)
+            ->assertJsonPath('request.assignment_offer.total_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.message_payload.route_fee_amount', 1000)
+            ->assertJsonPath('request.assignment_offer.message_payload.total_amount', 3000)
+            ->assertJsonPath('request.assignment_offer.job_link', $offer->metadata['message_payload']['job_link'])
+            ->assertJsonPath('request.travel_fee_amount', '1000.00')
+            ->assertJsonPath('request.technician_payment_amount', '2000.00');
+
+        $this->actingAs($admin)
             ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
             ->assertCreated();
         $portalUser = User::query()
@@ -5351,10 +5385,56 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
             ->assertOk()
-            ->assertJsonPath('job.assignment_offer.labor_amount', 950)
-            ->assertJsonPath('job.assignment_offer.route_fee_amount', 210)
-            ->assertJsonPath('job.assignment_offer.total_amount', 1160)
-            ->assertJsonPath('job.earning_summary.total_amount', 1160);
+            ->assertJsonPath('job.assignment_offer.labor_amount', 2000)
+            ->assertJsonPath('job.assignment_offer.route_fee_amount', 1000)
+            ->assertJsonPath('job.assignment_offer.total_amount', 3000)
+            ->assertJsonPath('job.earning_summary.labor_amount', 2000)
+            ->assertJsonPath('job.earning_summary.route_fee_amount', 1000)
+            ->assertJsonPath('job.earning_summary.total_amount', 3000);
+
+        $this->actingAs($portalUser)
+            ->getJson('/api/partner/earnings')
+            ->assertOk()
+            ->assertJsonPath('items.0.earnings.pending.rows.0.labor_amount', 2000)
+            ->assertJsonPath('items.0.earnings.pending.rows.0.travel_fee_amount', 1000)
+            ->assertJsonPath('items.0.earnings.pending.rows.0.line_total', 3000);
+
+        $otherPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Other Locksmith',
+        ]);
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$otherPartner->id}/provision-admin-user")
+            ->assertCreated();
+        $otherPortalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $otherPartner->id))
+            ->firstOrFail();
+
+        $this->actingAs($otherPortalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}?partner_id={$otherPartner->id}&job_id={$job->id}")
+            ->assertForbidden();
+
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $job->id,
+            'technical_service_technician_id' => $technician->id,
+            'route_quote_id' => $routeQuote->id,
+            'labor_amount' => 1,
+            'route_fee_amount' => 2,
+            'total_amount' => 3,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_CANCELLED,
+            'sent_at' => now(),
+            'metadata' => ['source' => 'cancelled_history'],
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.id', $offer->id)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 1000)
+            ->assertJsonPath('request.assignment_offer.total_amount', 3000);
     }
 
     public function test_technical_service_assignment_requires_final_earning_confirmation_when_final_amounts_are_sent(): void

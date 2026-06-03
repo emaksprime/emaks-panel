@@ -282,7 +282,12 @@ class TechnicalServiceRequest extends Model
 
     public function latestAssignmentOffer(): HasOne
     {
-        return $this->hasOne(TechnicalServiceAssignmentOffer::class, 'technical_service_request_id')->latestOfMany();
+        return $this->hasOne(TechnicalServiceAssignmentOffer::class, 'technical_service_request_id')
+            ->ofMany(['id' => 'max'], fn ($query) => $query->whereIn('status', [
+                TechnicalServiceAssignmentOffer::STATUS_SENT,
+                TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+                TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            ]));
     }
 
     public function assignmentArchives(): HasMany

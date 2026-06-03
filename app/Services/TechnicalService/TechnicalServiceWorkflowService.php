@@ -1945,6 +1945,10 @@ class TechnicalServiceWorkflowService
             return null;
         }
 
+        $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+        $messagePayload = is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : [];
+        $messageDispatch = is_array($metadata['message_dispatch'] ?? null) ? $metadata['message_dispatch'] : [];
+
         return [
             'id' => $offer->id,
             'technical_service_request_id' => $offer->technical_service_request_id,
@@ -1958,7 +1962,11 @@ class TechnicalServiceWorkflowService
             'status' => $offer->status,
             'note' => $offer->note,
             'sent_at' => $this->dateTimeString($offer->sent_at),
-            'metadata' => is_array($offer->metadata) ? $offer->metadata : [],
+            'metadata' => $metadata,
+            'message_payload' => $messagePayload,
+            'message_text' => $messagePayload['message_text'] ?? null,
+            'job_link' => $messagePayload['job_link'] ?? null,
+            'dispatch_status' => $messageDispatch['status'] ?? null,
             'created_at' => $this->dateTimeString($offer->created_at),
             'updated_at' => $this->dateTimeString($offer->updated_at),
         ];
