@@ -398,6 +398,10 @@ function parseNullableNumber(value: number | string | null | undefined): number 
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function roundTwo(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
 function formatMoneyLabel(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value)
     ? `${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
@@ -911,6 +915,7 @@ export function TechnicalServiceOperationCenter() {
   const [assignOfferLaborAmount, setAssignOfferLaborAmount] = useState('')
   const [assignOfferRouteFeeAmount, setAssignOfferRouteFeeAmount] = useState('')
   const [assignOfferNote, setAssignOfferNote] = useState('')
+  const [assignmentConfirmDialogOpen, setAssignmentConfirmDialogOpen] = useState(false)
   const [contactMethod, setContactMethod] = useState('telefon')
   const [contactNote, setContactNote] = useState('')
   const [contactPreferredDate, setContactPreferredDate] = useState('')
@@ -1617,6 +1622,11 @@ export function TechnicalServiceOperationCenter() {
     assignmentRouteQuote?.billable_km ?? assignmentRouteQuote?.extra_km ?? null,
     modalRequest?.technicianPaymentAmount,
   )
+  const modalCollectedPaymentAmount = parseNullableNumber(modalRequest?.saleAndPayment?.paid_amount)
+    ?? parseNullableNumber(modalRequest?.saleAndPayment?.payment_status?.amount)
+    ?? modalPayment.customerAmount
+  const modalCollectedPaymentLabel = modalRequest?.saleAndPayment?.paid_amount_label
+    ?? (modalCollectedPaymentAmount !== null ? `${formatMoneyLabel(modalCollectedPaymentAmount)} KDV dahil` : modalPayment.customerAmountLabel)
   const assignPaymentPreview = getServicePaymentInfo(
     modalRequest?.serviceType,
     assignmentRouteQuote?.round_trip_distance_km ?? assignmentRouteQuote?.distance_km ?? null,
@@ -1638,6 +1648,12 @@ export function TechnicalServiceOperationCenter() {
   const assignmentTotalTechnicianCostLabel = assignmentTotalTechnicianCostAmount !== null
     ? formatMoneyLabel(assignmentTotalTechnicianCostAmount)
     : 'Belirlenmedi'
+  const finalAssignmentLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
+  const finalAssignmentRouteAmount = parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0
+  const finalAssignmentTotalAmount = roundTwo(finalAssignmentLaborAmount + finalAssignmentRouteAmount)
+  const finalAssignmentNetDifference = modalCollectedPaymentAmount !== null
+    ? roundTwo(modalCollectedPaymentAmount - finalAssignmentTotalAmount)
+    : null
   const effectiveMountPaymentMissing = Boolean(
     modalRequest?.serviceType === 'Montaj'
     && isMountPaymentMissing(mikroMountCheck)
@@ -2100,6 +2116,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignOfferLaborAmount('')
     setAssignOfferRouteFeeAmount('')
     setAssignOfferNote('')
+    setAssignmentConfirmDialogOpen(false)
     setShowNearbyTechnicians(false)
     setAssignError(null)
     setRouteQuoteError(null)
@@ -3076,6 +3093,53 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleAssignmentFinalConfirmOpen = () => {
+    const isManualTechnician = assignTechnicianOption === 'other'
+    const selectedTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption)
+    const selectedTechnician = isManualTechnician
+      ? assignOtherTechnician.trim()
+      : selectedTechnicianRecord ? technicianDisplayName(selectedTechnicianRecord) : ''
+
+    if (!selectedTechnician) {
+      setAssignError('Lütfen bir usta seçin veya manuel isim girin.')
+
+      return
+    }
+
+    if (assignmentBlockerMessages.length > 0) {
+      setAssignError(assignmentBlockerMessages.join(' '))
+
+      return
+    }
+
+    const paymentOverrideRequired = !hasMountPaymentReceived(modalRequest) && (effectiveMountPaymentMissing || mountExclusionAckRequired)
+
+    if (paymentOverrideRequired && !assignOverrideWithoutPayment) {
+      setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
+
+      return
+    }
+
+    if (paymentOverrideRequired && assignOverrideReason.trim().length < 5) {
+      setAssignError('Atama nedeni en az 5 karakter olmalıdır.')
+
+      return
+    }
+
+    const parsedTravelRoundTripKm = typeof assignmentRouteRoundTripKm === 'number'
+      ? assignmentRouteRoundTripKm
+      : travelRoundTripKm.trim() === '' ? 0 : Number(travelRoundTripKm)
+
+    if (!Number.isFinite(parsedTravelRoundTripKm) || parsedTravelRoundTripKm < 0) {
+      setAssignError('Lütfen gidiş-geliş km bilgisini girin.')
+
+      return
+    }
+
+    setAssignError(null)
+    setAssignmentConfirmDialogOpen(true)
+  }
+
   const handleAssignSubmit = async () => {
     if (!selectedId) {
       return
@@ -3145,6 +3209,10 @@ export function TechnicalServiceOperationCenter() {
           override_reason: paymentOverrideRequired ? assignOverrideReason.trim() || null : null,
           mount_exclusion_acknowledged: mountExclusionAckRequired ? assignOverrideWithoutPayment : false,
           mount_exclusion_note: mountExclusionAckRequired ? assignOverrideReason.trim() || null : null,
+          labor_amount: offerLaborAmount,
+          travel_amount: offerRouteFeeAmount,
+          earning_note: assignOfferNote.trim() || assignNote || null,
+          confirm_assignment: true,
           assignment_offer: {
             labor_amount: offerLaborAmount,
             route_fee_amount: offerRouteFeeAmount,
@@ -3157,6 +3225,7 @@ export function TechnicalServiceOperationCenter() {
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
+      setAssignmentConfirmDialogOpen(false)
       setAssignDialogOpen(false)
       setAssignOtherTechnician('')
       setAssignNote('')
@@ -4021,13 +4090,13 @@ export function TechnicalServiceOperationCenter() {
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
                     <span className="font-medium text-slate-600">Müşteriden alınan montaj ödemesi</span>
-                    <span className="font-semibold text-slate-950">{modalPayment.customerAmountLabel}</span>
+                    <span className="font-semibold text-slate-950">{modalCollectedPaymentLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-600">Net fark / kâr</span>
                     <span className="font-semibold text-slate-950">
-                      {modalPayment.customerAmount !== null && assignmentTotalTechnicianCostAmount !== null
-                        ? formatMoneyLabel(modalPayment.customerAmount - assignmentTotalTechnicianCostAmount)
+                      {modalCollectedPaymentAmount !== null && assignmentTotalTechnicianCostAmount !== null
+                        ? formatMoneyLabel(modalCollectedPaymentAmount - assignmentTotalTechnicianCostAmount)
                         : '-'}
                     </span>
                   </div>
@@ -4083,10 +4152,92 @@ export function TechnicalServiceOperationCenter() {
                 </DialogClose>
                 <Button
                   type="button"
-                  onClick={handleAssignSubmit}
+                  onClick={handleAssignmentFinalConfirmOpen}
                   disabled={!canSubmitAssign}
                 >
                   {assignLoading ? 'Kaydediliyor...' : 'Usta Ata'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={assignmentConfirmDialogOpen} onOpenChange={setAssignmentConfirmDialogOpen}>
+            <DialogContent className="max-w-xl rounded-[28px]">
+              <DialogHeader>
+                <DialogTitle>Son hakediş onayı</DialogTitle>
+                <DialogDescription>
+                  Ustaya gönderilecek son işçilik ve yol hakedişini onaylayın. Popup'taki tutar backend'e kaydedilir ve mesajda bu tutar kullanılır.
+                </DialogDescription>
+              </DialogHeader>
+
+              {assignError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {assignError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-4">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Usta</p>
+                  <p className="mt-1 text-base font-semibold text-slate-950">
+                    {assignTechnicianOption === 'other'
+                      ? assignOtherTechnician.trim() || 'Manuel usta'
+                      : selectedAssignTechnicianRecord ? technicianDisplayName(selectedAssignTechnicianRecord) : 'Usta seçilmedi'}
+                  </p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    İşçilik / montaj hakedişi
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={assignOfferLaborAmount}
+                      onChange={(event) => setAssignOfferLaborAmount(event.target.value)}
+                      placeholder={String(assignmentTechnicianLaborAmount ?? 0)}
+                    />
+                  </label>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Yol hakedişi
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={assignOfferRouteFeeAmount}
+                      onChange={(event) => setAssignOfferRouteFeeAmount(event.target.value)}
+                      placeholder={String(assignmentRouteFeeAmount ?? 0)}
+                    />
+                  </label>
+                </div>
+
+                <div className="grid gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-950 sm:grid-cols-2">
+                  <div>
+                    <p className="text-xs font-semibold text-emerald-700">Toplam hakediş</p>
+                    <p className="mt-1 text-lg font-semibold">{formatMoneyLabel(finalAssignmentTotalAmount)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-emerald-700">Müşteri tahsilatı</p>
+                    <p className="mt-1 text-lg font-semibold">{modalCollectedPaymentLabel}</p>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <p className="text-xs font-semibold text-emerald-700">Net fark / kâr</p>
+                    <p className="mt-1 text-lg font-semibold">{finalAssignmentNetDifference !== null ? formatMoneyLabel(finalAssignmentNetDifference) : '-'}</p>
+                  </div>
+                </div>
+
+                <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                  Operasyon notu / usta mesaj notu
+                  <Input value={assignOfferNote} onChange={(event) => setAssignOfferNote(event.target.value)} placeholder="Ustaya gidecek bilgilendirme notu" />
+                </label>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <Button type="button" variant="secondary" onClick={() => setAssignmentConfirmDialogOpen(false)}>
+                  Vazgeç
+                </Button>
+                <Button type="button" onClick={handleAssignSubmit} disabled={!canSubmitAssign || assignLoading}>
+                  {assignLoading ? 'Kaydediliyor...' : 'Servise ata ve mesaj gönder'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -4447,7 +4598,7 @@ export function TechnicalServiceOperationCenter() {
                 </DialogDescription>
                 {modalRequest?.serviceType ? (
                   <p className="text-sm leading-6 text-slate-600">
-                    Montaj ödeme durumu: {modalPayment.customerAmountLabel}
+                    Montaj ödeme durumu: {modalCollectedPaymentLabel}
                   </p>
                 ) : null}
               </DialogHeader>
@@ -4756,7 +4907,7 @@ export function TechnicalServiceOperationCenter() {
                     customerApprovalResendError={customerApprovalResendError}
                     extraPaymentCreateLoading={extraPaymentCreateLoading}
                     extraPaymentCreateError={extraPaymentCreateError}
-                    onAssignSelectedTechnician={handleAssignSubmit}
+                    onAssignSelectedTechnician={handleAssignmentFinalConfirmOpen}
                   />
                 ) : (
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">

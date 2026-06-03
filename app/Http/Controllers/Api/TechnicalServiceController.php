@@ -12,6 +12,7 @@ use App\Http\Requests\UpdateTechnicalServiceRequestStatus;
 use App\Http\Requests\UpdateTechnicalServiceScheduleRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
 use App\Http\Requests\UpdateTechnicalServiceWorkflowRequest;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceCustomerConfirmation;
@@ -307,7 +308,7 @@ class TechnicalServiceController extends Controller
         $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
         $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
         $oldPartnerId = $oldTechnicianId
-            ? \App\Models\B2B\B2BPartnerTechnician::query()
+            ? B2BPartnerTechnician::query()
                 ->where('technical_service_technician_id', $oldTechnicianId)
                 ->where('active', true)
                 ->whereIn('relationship_type', ['owner', 'field_technician'])
@@ -325,7 +326,7 @@ class TechnicalServiceController extends Controller
         $technicalServiceRequest = $this->workflowService->updateTechnician($technicalServiceRequest, $payload, $request->user());
 
         $newPartnerId = $technician
-            ? \App\Models\B2B\B2BPartnerTechnician::query()
+            ? B2BPartnerTechnician::query()
                 ->where('technical_service_technician_id', $technician->id)
                 ->where('active', true)
                 ->whereIn('relationship_type', ['owner', 'field_technician'])
@@ -983,7 +984,7 @@ class TechnicalServiceController extends Controller
         $isReviewReassignment = $this->workflowService->canReopenForAssignment($technicalServiceRequest);
         $oldTechnicianId = $technicalServiceRequest->technical_service_technician_id;
         $oldPartnerId = $oldTechnicianId
-            ? \App\Models\B2B\B2BPartnerTechnician::query()
+            ? B2BPartnerTechnician::query()
                 ->where('technical_service_technician_id', $oldTechnicianId)
                 ->where('active', true)
                 ->whereIn('relationship_type', ['owner', 'field_technician'])
@@ -1006,7 +1007,7 @@ class TechnicalServiceController extends Controller
         );
 
         $newPartnerId = $technician
-            ? \App\Models\B2B\B2BPartnerTechnician::query()
+            ? B2BPartnerTechnician::query()
                 ->where('technical_service_technician_id', $technician->id)
                 ->where('active', true)
                 ->whereIn('relationship_type', ['owner', 'field_technician'])
@@ -1061,12 +1062,30 @@ class TechnicalServiceController extends Controller
             $technicalServiceRequest->save();
         }
 
+        $assignmentOfferPayload = is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [];
+
+        if (array_key_exists('labor_amount', $payload)) {
+            $assignmentOfferPayload['labor_amount'] = $payload['labor_amount'];
+        }
+
+        if (array_key_exists('travel_amount', $payload)) {
+            $assignmentOfferPayload['route_fee_amount'] = $payload['travel_amount'];
+        }
+
+        if (array_key_exists('earning_note', $payload)) {
+            $assignmentOfferPayload['note'] = $payload['earning_note'];
+        }
+
+        if (array_key_exists('confirm_assignment', $payload)) {
+            $assignmentOfferPayload['confirmed_by_ops'] = (bool) $payload['confirm_assignment'];
+        }
+
         if ($technician instanceof TechnicalServiceTechnician) {
             $this->createAssignmentOfferFromAssignPayload(
                 $technicalServiceRequest->refresh(),
                 $technician,
                 $routeQuote,
-                is_array($payload['assignment_offer'] ?? null) ? $payload['assignment_offer'] : [],
+                $assignmentOfferPayload,
                 $request->user(),
             );
         }
@@ -1410,8 +1429,7 @@ class TechnicalServiceController extends Controller
             ?? $this->nullableMoney($routeQuote?->fee_amount)
             ?? $this->nullableMoney($request->travel_fee_amount)
             ?? 0.0;
-        $totalAmount = $this->nullableMoney($offerPayload['total_amount'] ?? null)
-            ?? round($laborAmount + $routeFeeAmount, 2);
+        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
         $note = trim((string) ($offerPayload['note'] ?? ''));
         $currency = strtoupper(substr((string) ($offerPayload['currency'] ?? 'TRY'), 0, 8)) ?: 'TRY';
         $messagePayload = $this->technicianAssignmentMessagePayload($request, $technician, [
@@ -1421,6 +1439,8 @@ class TechnicalServiceController extends Controller
             'currency' => $currency,
             'note' => $note !== '' ? $note : null,
         ]);
+        $messageText = $this->technicianAssignmentMessageText($messagePayload);
+        $messagePayload['message_text'] = $messageText;
 
         TechnicalServiceAssignmentOffer::query()
             ->where('technical_service_request_id', $request->id)
@@ -1447,10 +1467,16 @@ class TechnicalServiceController extends Controller
             'sent_at' => now(),
             'metadata' => [
                 'source' => 'technical_service_assignment',
+                'confirmed_by_ops' => (bool) ($offerPayload['confirmed_by_ops'] ?? false),
                 'message_payload' => $messagePayload,
                 'route_quote_id' => $routeQuote?->id,
             ],
         ]);
+
+        $request->forceFill([
+            'technician_payment_amount' => round($laborAmount, 2),
+            'travel_fee_amount' => round($routeFeeAmount, 2),
+        ])->save();
 
         $request->events()->create([
             'event_type' => 'assignment_offer_sent',
@@ -1474,7 +1500,7 @@ class TechnicalServiceController extends Controller
             'assignment_offer_technician',
             'technician',
             $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
-            $this->technicianAssignmentMessageText($messagePayload),
+            $messageText,
             [...$messagePayload, 'manual_ui_send' => true],
             $request,
             $user,
@@ -1583,6 +1609,7 @@ class TechnicalServiceController extends Controller
     {
         $phone = $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone);
         $address = $request->location_formatted_address ?: $request->service_address;
+        $mapsLink = $this->mapsLink($request, $address);
 
         return [
             'channel' => 'system_payload',
@@ -1596,8 +1623,12 @@ class TechnicalServiceController extends Controller
             'customer_phone' => $request->customer_phone,
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'address' => $address,
-            'maps_link' => $this->mapsLink($request, $address),
-            'job_link' => PartnerPortalPublicUrl::url('/partner/service-jobs?job_id='.$request->id),
+            'maps_link' => $mapsLink,
+            'maps_url' => $mapsLink,
+            'product_name' => $request->product_name,
+            'model' => $request->product_model,
+            'serial_no' => $request->serial_number,
+            'job_link' => $this->partnerJobLink($request, $technician),
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
@@ -1613,20 +1644,53 @@ class TechnicalServiceController extends Controller
      */
     private function technicianAssignmentMessageText(array $payload): string
     {
+        $appointment = trim((string) ($payload['appointment_date'] ?? '').' '.(string) ($payload['appointment_time'] ?? ''));
+
         return trim(implode("\n", array_filter([
-            'Emaks Prime teknik servis işi',
+            'EMAKS Prime Teknik Servis',
+            '',
+            'Yeni iş ataması yapıldı.',
+            '',
             'MRN: '.($payload['mrn'] ?? '-'),
             'Müşteri: '.($payload['customer_name'] ?? '-'),
-            'Telefon: '.($payload['customer_tel_link'] ?? ($payload['customer_phone'] ?? '-')),
+            'Telefon: '.($payload['customer_phone'] ?? '-'),
             'Adres: '.($payload['address'] ?? '-'),
             'Harita: '.($payload['maps_link'] ?? '-'),
-            'İş linki: '.($payload['job_link'] ?? '-'),
-            'Randevu: '.trim((string) ($payload['appointment_date'] ?? '').' '.(string) ($payload['appointment_time'] ?? '')),
-            'İşçilik / montaj: '.($payload['labor_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
-            'Usta yol hakedişi: '.($payload['route_fee_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
-            'Toplam: '.($payload['total_amount'] ?? 0).' '.($payload['currency'] ?? 'TRY'),
+            $appointment !== '' ? 'Randevu: '.$appointment : null,
+            '',
+            'Hakediş:',
+            'İşçilik: '.$this->messageMoney($payload['labor_amount'] ?? 0),
+            'Yol: '.$this->messageMoney($payload['route_fee_amount'] ?? 0),
+            'Toplam: '.$this->messageMoney($payload['total_amount'] ?? 0),
+            '',
+            'İş kartı:',
+            $payload['job_link'] ?? '-',
             $payload['note'] ?? null,
         ], fn ($line) => is_string($line) && trim($line) !== '')));
+    }
+
+    private function partnerJobLink(TechnicalServiceRequest $request, TechnicalServiceTechnician $technician): string
+    {
+        $partnerId = B2BPartnerTechnician::query()
+            ->where('technical_service_technician_id', $technician->id)
+            ->where('active', true)
+            ->whereIn('relationship_type', ['owner', 'field_technician'])
+            ->value('partner_id');
+
+        $query = http_build_query(array_filter([
+            'partner_id' => $partnerId,
+            'job_id' => $request->id,
+        ], fn ($value) => $value !== null && $value !== ''));
+
+        return PartnerPortalPublicUrl::url('/partner/service-jobs'.($query !== '' ? '?'.$query : ''));
+    }
+
+    private function messageMoney(mixed $amount): string
+    {
+        $value = is_numeric($amount) ? (float) $amount : 0.0;
+        $decimals = floor($value) === $value ? 0 : 2;
+
+        return number_format($value, $decimals, ',', '.').' TL';
     }
 
     private function nullableMoney(mixed $value): ?float

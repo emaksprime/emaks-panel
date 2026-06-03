@@ -5294,25 +5294,39 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->postJson("/api/technical-service/requests/{$job->id}/assign", [
                 'technical_service_technician_id' => $technician->id,
                 'travel_round_trip_km' => 44,
+                'labor_amount' => 950,
+                'travel_amount' => 210,
+                'earning_note' => 'Final hakediş onayı.',
+                'confirm_assignment' => true,
                 'assignment_offer' => [
                     'labor_amount' => 900,
                     'route_fee_amount' => 180,
-                    'total_amount' => 1080,
+                    'total_amount' => 99999,
                     'note' => 'Atama hakedişi.',
                 ],
             ])
             ->assertOk()
-            ->assertJsonPath('request.assignment_offer.labor_amount', 900)
-            ->assertJsonPath('request.assignment_offer.route_fee_amount', 180)
-            ->assertJsonPath('request.assignment_offer.total_amount', 1080);
+            ->assertJsonPath('request.assignment_offer.labor_amount', 950)
+            ->assertJsonPath('request.assignment_offer.route_fee_amount', 210)
+            ->assertJsonPath('request.assignment_offer.total_amount', 1160);
 
         $offer = TechnicalServiceAssignmentOffer::query()
             ->where('technical_service_request_id', $job->id)
             ->firstOrFail();
         $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_SENT, $offer->status);
-        $this->assertSame(1080.0, (float) $offer->total_amount);
+        $this->assertSame(950.0, (float) $offer->labor_amount);
+        $this->assertSame(210.0, (float) $offer->route_fee_amount);
+        $this->assertSame(1160.0, (float) $offer->total_amount);
         $this->assertIsArray($offer->metadata['message_payload'] ?? null);
-        $this->assertStringContainsString('/partner/service-jobs?job_id='.$job->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
+        $this->assertTrue((bool) ($offer->metadata['confirmed_by_ops'] ?? false));
+        $this->assertStringContainsString('/partner/service-jobs?', (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
+        $this->assertStringContainsString('partner_id='.$partner->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
+        $this->assertStringContainsString('job_id='.$job->id, (string) ($offer->metadata['message_payload']['job_link'] ?? ''));
+        $this->assertStringContainsString('İşçilik: 950 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Yol: 210 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Toplam: 1.160 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('İş kartı:', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringNotContainsString('TRY', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
             'technical_service_assignment_offer_id' => $offer->id,
@@ -5337,10 +5351,45 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
             ->assertOk()
-            ->assertJsonPath('job.assignment_offer.labor_amount', 900)
-            ->assertJsonPath('job.assignment_offer.route_fee_amount', 180)
-            ->assertJsonPath('job.assignment_offer.total_amount', 1080)
-            ->assertJsonPath('job.earning_summary.total_amount', 1080);
+            ->assertJsonPath('job.assignment_offer.labor_amount', 950)
+            ->assertJsonPath('job.assignment_offer.route_fee_amount', 210)
+            ->assertJsonPath('job.assignment_offer.total_amount', 1160)
+            ->assertJsonPath('job.earning_summary.total_amount', 1160);
+    }
+
+    public function test_technical_service_assignment_requires_final_earning_confirmation_when_final_amounts_are_sent(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Final Onay Usta']);
+        $job = TechnicalServiceRequest::query()->create([
+            'mrn' => 'MRN-FINAL-CONFIRM',
+            'customer_name' => 'Final Onay Musteri',
+            'customer_phone' => '+905550000333',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Final onay adresi',
+            'product_name' => 'Final Onay Kilit',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+            'workflow_status' => 'Usta AtamasÄ± Bekleyen',
+            'source_channel' => TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM,
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+            'technician_payment_amount' => 700,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 10,
+                'labor_amount' => 700,
+                'travel_amount' => 80,
+                'confirm_assignment' => false,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('confirm_assignment');
     }
 
     public function test_partner_portal_earning_summary_corrects_stale_earning_message_total(): void

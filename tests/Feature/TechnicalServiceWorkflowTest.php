@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
@@ -1103,6 +1104,12 @@ class TechnicalServiceWorkflowTest extends TestCase
             'display_name' => 'Reassign Message Locksmith',
             'active' => true,
         ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $newTechnician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
         $request = $this->technicalServiceRequest([
             'mrn' => 'MRN-MANUAL-WP',
             'status' => 'Devam Ediyor',
@@ -1154,12 +1161,20 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
         $this->assertSame('905467647428', $dispatch->target_phone);
-        $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?job_id=', (string) data_get($dispatch->request_payload, 'job_link'));
+        $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?', (string) data_get($dispatch->request_payload, 'job_link'));
+        $this->assertStringContainsString('partner_id='.$partner->id, (string) data_get($dispatch->request_payload, 'job_link'));
+        $this->assertStringContainsString('job_id='.$request->id, (string) data_get($dispatch->request_payload, 'job_link'));
+        $this->assertStringContainsString('İşçilik: 1.500 TL', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Yol: 100 TL', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Toplam: 1.600 TL', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringNotContainsString('TRY', (string) data_get($dispatch->request_payload, 'message_text'));
 
         Http::assertSent(fn ($httpRequest): bool => $httpRequest->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
             && $httpRequest['target_phone'] === '905467647428'
             && $httpRequest['event'] === 'assignment_offer_technician'
-            && str_starts_with((string) $httpRequest['job_link'], 'https://dashboard.test/partner/service-jobs?job_id='));
+            && str_starts_with((string) $httpRequest['job_link'], 'https://dashboard.test/partner/service-jobs?')
+            && str_contains((string) $httpRequest['job_link'], 'partner_id='.$partner->id)
+            && str_contains((string) $httpRequest['job_link'], 'job_id='.$request->id));
     }
 
     public function test_rejected_job_can_be_sent_to_same_technician_again_and_clears_active_rejection(): void
