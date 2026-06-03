@@ -251,6 +251,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/customer-approval-requests', [TechnicalServicePartnerPortalOpsController::class, 'resendCustomerApprovalRequest'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.customer-approval-requests.resend');
+            Route::post('requests/{technicalServiceRequest}/partner-revisits/{partnerJobAction}/service-visit', [TechnicalServicePartnerPortalOpsController::class, 'createServiceVisitFromRevisit'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.partner-revisits.service-visit');
             Route::patch('requests/{technicalServiceRequest}/part-requests/{partRequest}', [TechnicalServicePartRequestController::class, 'transition'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.part-requests.transition');

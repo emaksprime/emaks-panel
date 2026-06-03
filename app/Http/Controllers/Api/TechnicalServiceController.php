@@ -85,7 +85,7 @@ class TechnicalServiceController extends Controller
             $query->where('sla_status', $filters['sla_status']);
         }
 
-        $limit = $filters['limit'] ?? 25;
+        $limit = $filters['limit'] ?? 200;
 
         $paginator = $query
             ->orderByRaw('scheduled_at IS NULL')

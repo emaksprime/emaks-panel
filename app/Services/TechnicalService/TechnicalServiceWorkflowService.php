@@ -587,6 +587,10 @@ class TechnicalServiceWorkflowService
         $request->pending_reason = null;
         $request->requires_reschedule = false;
         $request->reschedule_reason = null;
+        $request->scheduled_at = null;
+        $request->scheduled_date = null;
+        $request->scheduled_time = null;
+        $request->technician_approved_at = null;
     }
 
     /**

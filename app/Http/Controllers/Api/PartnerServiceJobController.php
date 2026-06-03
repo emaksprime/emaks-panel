@@ -292,39 +292,22 @@ class PartnerServiceJobController extends Controller
             'note' => ['nullable', 'string', 'max:2000'],
         ]);
 
-        $result = DB::transaction(function () use ($job, $partner, $user, $data): array {
-            $from = $job->workflow_status;
-            $status = TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW;
-            $payload = [
+        $action = DB::transaction(function () use ($job, $partner, $user, $data): TechnicalServicePartnerJobAction {
+            return $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
                 'reason' => $data['reason'],
                 'preferred_date' => $data['preferred_date'] ?? null,
                 'note' => $data['note'] ?? null,
-            ];
-
-            if (in_array($job->workflow_status, ['Planlı', 'PlanlÄ±', 'Yolda', 'Sahada', 'Belge / Fotoğraf Bekleyen', 'Belge / FotoÄŸraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'MÃ¼ÅŸteri KapanÄ±ÅŸ OnayÄ± Bekleyen'], true)) {
-                try {
-                    $job = $this->workflow->updateFieldWorkflow($job, 'mark-incomplete', [
-                        'workflow_status' => 'Beklemede',
-                        'incomplete_reason' => $data['reason'],
-                        'pending_reason' => $data['reason'],
-                        'requires_second_visit' => true,
-                        'second_visit_reason' => $data['reason'],
-                        'note' => $data['note'] ?? $data['reason'],
-                    ], $user);
-                    $status = TechnicalServicePartnerJobAction::STATUS_APPLIED;
-                } catch (Throwable $exception) {
-                    $payload['workflow_error'] = $exception->getMessage();
-                }
-            }
-
-            $this->recordAction($job->refresh(), $partner, $user, TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED, $status, $payload, $data['note'] ?? $data['reason'], $from);
-
-            return $this->jobResponse($job->refresh(), $status, $partner);
+                'ops_review_required' => true,
+                'submitted_at' => now()->toISOString(),
+            ], $data['note'] ?? $data['reason'], $job->workflow_status);
         });
 
-        return response()->json($result);
+        return response()->json([
+            'status' => $action->status,
+            'action' => $action->action,
+            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+        ]);
     }
-
     public function submitCompletion(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);

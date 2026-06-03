@@ -119,6 +119,7 @@ type ServiceRequestDetailsProps = {
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
+  onRevisitServiceVisitCreate?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
@@ -1000,6 +1001,7 @@ export function ServiceRequestDetails({
   onPartnerAppointmentProposalApprove,
   onPartnerAppointmentProposalReject,
   onPartnerCompletionApprove,
+  onRevisitServiceVisitCreate,
   onPartRequestTransition,
   onPartRequestServiceVisitCreate,
   onAssignmentOfferUpdate,
@@ -1033,6 +1035,7 @@ export function ServiceRequestDetails({
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected' && action.status === 'ops_review')
   const customerApprovalRejections = partnerPortalActions.filter((action) => action.action === 'customer_approval_rejected' && action.status === 'ops_review')
   const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
+  const revisitRequests = partnerPortalActions.filter((action) => action.action === 'revisit_requested' && action.status === 'ops_review')
   const partRequests = request.partRequests ?? []
   const activePartRequests = partRequests.filter((partRequest) => ['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status))
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
@@ -1655,7 +1658,7 @@ export function ServiceRequestDetails({
     return priority(leftKey, leftAction.label) - priority(rightKey, rightAction.label)
   })
   const finalCheckCompletionAction = completionSubmissions[0] ?? null
-  const canReassignAfterReview = jobRejections.length > 0 || customerApprovalRejections.length > 0 || completionSubmissions.length > 0
+  const canReassignAfterReview = jobRejections.length > 0 || customerApprovalRejections.length > 0 || completionSubmissions.length > 0 || revisitRequests.length > 0
   const sameTechnicianReviewActionLabel = completionSubmissions.length > 0
     ? 'Revize için ustaya geri gönder'
     : customerApprovalRejections.length > 0
@@ -2623,7 +2626,7 @@ export function ServiceRequestDetails({
                 })}
               </div>
             ) : null}
-            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || assignmentOffer) ? (
+            {(openAppointmentProposals.length > 0 || jobRejections.length > 0 || supportRequests.length > 0 || revisitRequests.length > 0 || assignmentOffer) ? (
               <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
                 <div>
                   <p className="font-semibold">Çilingir Portal Aksiyonları</p>
@@ -2712,6 +2715,22 @@ export function ServiceRequestDetails({
                         <p className="mt-1 text-xs">{String(action.payload?.description ?? action.note ?? 'Açıklama yok')}</p>
                       </div>
                       <Badge variant="warning">Operasyon incelemede</Badge>
+                    </div>
+                  </div>
+                ))}
+                {revisitRequests.slice(0, 3).map((action) => (
+                  <div key={String(action.id)} className="rounded-xl border border-violet-100 bg-violet-50 p-3 text-violet-950">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-semibold">Tekrar ziyaret talebi</p>
+                        <p className="mt-1 text-xs">{String(action.payload?.reason ?? action.note ?? 'Açıklama yok')}</p>
+                      </div>
+                      <Badge variant="warning">Operasyon incelemede</Badge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap justify-end gap-2">
+                      <Button type="button" onClick={() => void onRevisitServiceVisitCreate?.(action.id, { note: action.note ?? null })}>
+                        SRV oluştur
+                      </Button>
                     </div>
                   </div>
                 ))}

@@ -147,7 +147,7 @@ class TechnicalServiceOperationalStatePresenter
             return match ($activeAction->action) {
                 TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => self::OPS_COLUMN_ASSIGNMENT_PENDING,
                 TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => self::OPS_COLUMN_ASSIGNMENT_PENDING,
-                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => self::OPS_COLUMN_ASSIGNED,
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => self::OPS_COLUMN_ASSIGNMENT_PENDING,
                 TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
                 TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
                 TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
@@ -264,11 +264,20 @@ class TechnicalServiceOperationalStatePresenter
     {
         return $request->partnerJobActions
             ->contains(fn (TechnicalServicePartnerJobAction $action): bool => $action->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED
+                && ! $this->actionResolvedForNewWork($action)
                 && in_array($action->status, [
                     TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
                     TechnicalServicePartnerJobAction::STATUS_SUBMITTED,
                     TechnicalServicePartnerJobAction::STATUS_APPLIED,
                 ], true));
+    }
+
+    private function actionResolvedForNewWork(TechnicalServicePartnerJobAction $action): bool
+    {
+        $payload = is_array($action->payload) ? $action->payload : [];
+
+        return (bool) ($payload['resolved_by_reassignment'] ?? false)
+            || isset($payload['service_visit_created']);
     }
 
     private function isCompleted(TechnicalServiceRequest $request): bool

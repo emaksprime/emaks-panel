@@ -3420,11 +3420,17 @@ class B2BPartnerPanelAccessTest extends TestCase
             'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
             'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
         ]);
+        $appointmentChangeState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)
+            ->present($acceptJob->fresh());
+        $this->assertSame('assignment_pending', $appointmentChangeState['ops_column']);
+        $this->assertSame('Usta randevu değişikliği istiyor', $appointmentChangeState['display_action_label']);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$revisitJob->id}/request-revisit", ['reason' => 'Müşteri yeni tarih istedi'])
             ->assertOk()
-            ->assertJsonPath('job.kanban_column', 'revisit');
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'ops_review')
+            ->assertJsonPath('job.action_state', 'revisit_requested');
         $this->assertDatabaseHas('technical_service_partner_job_actions', [
             'technical_service_request_id' => $revisitJob->id,
             'action' => TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
@@ -3657,6 +3663,158 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
             ->assertOk()
             ->assertJsonPath('job.mrn', $child->mrn);
+    }
+
+    public function test_revisit_request_creates_isolated_srv_child_without_parent_completion_state(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Revisit SRV Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Revisit SRV Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-REVISIT-SRV', [
+            'workflow_status' => 'PlanlÄ±',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladÄ±',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+            'customer_closure_approval_status' => 'onaylandÄ±',
+            'customer_closure_approved_at' => now(),
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+            'operation_control_checked_at' => now(),
+            'operation_control_checked_by_user_id' => $admin->id,
+            'serial_number' => 'SN-REVISIT-SRV-001',
+        ]);
+        $job->requestSerials()->create([
+            'mrn' => $job->mrn,
+            'serial_number' => 'SN-REVISIT-SRV-001',
+            'product_name' => 'Test Kilit',
+            'customer_selected' => true,
+            'customer_visible' => true,
+            'customer_selectable' => true,
+            'is_primary' => true,
+        ]);
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($job, $fieldCode);
+        }
+        $job->customerConfirmations()->create([
+            'token' => 'revisit-parent-approved-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+            'approved_at' => now(),
+            'payload' => [],
+        ]);
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $job->id,
+            'partner_id' => $partner->id,
+            'user_id' => $admin->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'note' => 'Eski ziyaret tamamlaması',
+            'payload' => [
+                'ops_final_check_required' => true,
+                'resolved_by_reassignment' => true,
+            ],
+        ]);
+
+        $parentState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
+        $this->assertFalse($parentState['is_pending_final_check']);
+        $this->assertSame('assigned', $parentState['ops_column']);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/request-revisit", ['reason' => 'MÃ¼ÅŸteri tekrar kontrol istedi'])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'ops_review')
+            ->assertJsonPath('job.can_submit_completion', false);
+
+        $job->refresh();
+        $this->assertSame('PlanlÄ±', $job->workflow_status);
+        $this->assertFalse((bool) $job->requires_second_visit);
+
+        $revisitAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED)
+            ->firstOrFail();
+
+        $createSrvResponse = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-revisits/{$revisitAction->id}/service-visit", [
+                'note' => 'Tekrar ziyaret iÃ§in SRV aÃ§Ä±ldÄ±.',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('status', 'created');
+
+        $childId = $createSrvResponse->json('child_request.id');
+        $child = TechnicalServiceRequest::query()->findOrFail($childId);
+        $this->assertSame($job->id, $child->parent_request_id);
+        $this->assertSame($job->mrn, $child->root_mrn);
+        $this->assertSame('SRV-001', $child->service_code);
+        $this->assertSame($job->mrn.'-SRV-001', $child->mrn);
+        $this->assertSame('revisit', $child->service_visit_reason);
+        $this->assertSame($revisitAction->id, $child->source_partner_action_id);
+        $this->assertSame('Yeni Talep', $child->workflow_status);
+        $this->assertNull($child->technical_service_technician_id);
+        $this->assertNull($child->scheduled_at);
+        $this->assertNull($child->technician_approved_at);
+        $this->assertNull($child->customer_closure_approval_status);
+        $this->assertSame(0, $child->uploads()->count());
+        $this->assertSame(0, $child->customerConfirmations()->count());
+        $this->assertFalse($child->partnerJobActions()->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)->exists());
+        $this->assertDatabaseHas('technical_service_request_serials', [
+            'technical_service_request_id' => $child->id,
+            'serial_number' => 'SN-REVISIT-SRV-001',
+            'linked_mrn' => $job->mrn,
+        ]);
+
+        $childState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
+        $this->assertSame('new', $childState['ops_column']);
+        $this->assertFalse($childState['is_pending_final_check']);
+
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'id' => $revisitAction->id,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->assertForbidden();
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$child->id}/technician", [
+                'technical_service_technician_id' => $technician->id,
+                'note' => 'SRV tekrar ziyaret atamasÄ±.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.kanban_column', 'assignment_pending');
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'new_jobs')
+            ->assertJsonPath('job.can_propose_appointment', true)
+            ->assertJsonPath('job.can_submit_completion', false);
     }
 
     public function test_partner_part_request_review_label_is_partner_friendly(): void

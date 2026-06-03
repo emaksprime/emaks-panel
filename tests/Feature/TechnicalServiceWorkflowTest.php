@@ -248,6 +248,34 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('Son kontrol bekliyor', $state['display_action_label']);
     }
 
+    public function test_resolved_completion_submission_does_not_force_final_check(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'PlanlÄ±',
+            'technician_approval_status' => 'onayladÄ±',
+            'technician_approved_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+            'scheduled_date' => CarbonImmutable::now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => [
+                'ops_final_check_required' => true,
+                'resolved_by_reassignment' => true,
+            ],
+            'note' => 'Eski ziyaret tamamlamasÄ±.',
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertFalse($state['is_pending_final_check']);
+        $this->assertSame('assigned', $state['ops_column']);
+        $this->assertSame('appointment_confirmed', $state['partner_column']);
+    }
+
     public function test_ops_final_complete_moves_ops_and_partner_to_completed_without_old_appointment_tag(): void
     {
         $request = $this->technicalServiceRequest([
@@ -824,6 +852,9 @@ class TechnicalServiceWorkflowTest extends TestCase
             'technician_name' => $oldTechnician->name,
             'technician_approval_status' => 'onayladı',
             'technician_approved_at' => now()->subHours(2),
+            'scheduled_at' => now()->subDay(),
+            'scheduled_date' => now()->subDay()->toDateString(),
+            'scheduled_time' => '14:00',
             'field_completed_at' => now()->subHour(),
             'checklist_status' => 'tamamlandı',
             'document_status' => 'tamamlandı',
@@ -878,6 +909,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.status', 'Atandı')
             ->assertJsonPath('request.technical_service_technician_id', $newTechnician->id)
             ->assertJsonPath('request.technician_approved_at', null)
+            ->assertJsonPath('request.scheduled_at', null)
             ->assertJsonPath('request.customer_closure_approval_status', null)
             ->assertJsonPath('request.checklist_status', null);
 
@@ -885,6 +917,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('Usta Onayı Bekleyen', $request->workflow_status);
         $this->assertSame('Atandı', $request->status);
         $this->assertNull($request->technician_approved_at);
+        $this->assertNull($request->scheduled_at);
+        $this->assertNull($request->scheduled_date);
+        $this->assertNull($request->scheduled_time);
         $this->assertNull($request->customer_closure_approval_status);
         $this->assertNull($request->field_completed_at);
 

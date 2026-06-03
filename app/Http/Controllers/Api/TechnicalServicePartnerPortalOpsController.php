@@ -13,6 +13,7 @@ use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\WarrantyService;
 use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Http\JsonResponse;
@@ -28,6 +29,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflow,
         private readonly EvolutionWhatsAppMessageService $messages,
+        private readonly TechnicalServiceServiceVisitService $serviceVisits,
     ) {}
 
     public function approveAppointmentProposal(
@@ -182,6 +184,69 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'status' => $status,
             'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
         ]);
+    }
+
+    public function createServiceVisitFromRevisit(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePartnerJobAction $partnerJobAction,
+    ): JsonResponse {
+        abort_unless((int) $partnerJobAction->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        if ($partnerJobAction->action !== TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED) {
+            throw ValidationException::withMessages([
+                'partner_job_action' => 'Bu kayıt tekrar ziyaret talebi değildir.',
+            ]);
+        }
+
+        if ($partnerJobAction->status !== TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            throw ValidationException::withMessages([
+                'partner_job_action' => 'SRV oluşturmak için tekrar ziyaret talebi operasyon incelemesinde olmalıdır.',
+            ]);
+        }
+
+        $validated = $request->validate([
+            'note' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $request, $validated): array {
+            $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
+            $reason = trim((string) ($payload['reason'] ?? $partnerJobAction->note ?? 'Tekrar ziyaret'));
+            $child = $this->serviceVisits->createServiceVisitFromRequest(
+                $technicalServiceRequest,
+                $request->user(),
+                'revisit',
+                [
+                    'source_partner_action' => $partnerJobAction,
+                    'description' => 'Tekrar ziyaret servisi: '.$reason,
+                    'parent_event_type' => 'revisit_srv_created',
+                    'parent_event_title' => 'Tekrar ziyaret SRV kaydı oluşturuldu',
+                ],
+            );
+
+            $partnerJobAction->forceFill([
+                'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                'payload' => [
+                    ...$payload,
+                    'service_visit_created' => [
+                        'request_id' => $child->id,
+                        'mrn' => $child->mrn,
+                        'service_code' => $child->service_code,
+                        'created_at' => now()->toISOString(),
+                        'created_by_user_id' => $request->user()?->id,
+                        'note' => $validated['note'] ?? null,
+                    ],
+                ],
+            ])->save();
+
+            return [
+                'status' => 'created',
+                'child_request' => $this->workflow->serialize($child->refresh(), true),
+                'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
+            ];
+        });
+
+        return response()->json($result, 201);
     }
 
     public function approveCompletionSubmission(

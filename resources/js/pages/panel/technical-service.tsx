@@ -982,7 +982,7 @@ export function TechnicalServiceOperationCenter() {
     setError(null)
 
     try {
-      const response = await apiRequest('/api/technical-service/requests')
+      const response = await apiRequest('/api/technical-service/requests?limit=200')
       const items = Array.isArray(response.items) ? response.items : []
       const mappedItems = items.map(mapApiRequest)
       setRequests(mappedItems)
@@ -2930,6 +2930,42 @@ export function TechnicalServiceOperationCenter() {
     await loadRequests({ silent: true, preserveSelection: true })
   }
 
+  const handleRevisitServiceVisitCreate = async (
+    actionId: number | string,
+    payload?: { note?: string | null },
+  ) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/partner-revisits/${actionId}/service-visit`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+    const childRequest = response.child_request ? mapApiRequest(response.child_request) : null
+
+    preserveDetailScroll(() => {
+      setRequests((current) => {
+        const updated = updatedRequest
+          ? current.map((request) => (request.id === updatedRequest.id ? updatedRequest : request))
+          : current
+
+        return childRequest && !updated.some((request) => request.id === childRequest.id)
+          ? [childRequest, ...updated]
+          : updated
+      })
+
+      if (updatedRequest) {
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      }
+    })
+    await loadRequests({ silent: true, preserveSelection: true })
+  }
+
   const handleCustomerApprovalResend = async (payload?: { note?: string | null }) => {
     if (!selectedId) {
       return
@@ -4701,6 +4737,7 @@ export function TechnicalServiceOperationCenter() {
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}
                     onPartnerCompletionApprove={handlePartnerCompletionApprove}
+                    onRevisitServiceVisitCreate={handleRevisitServiceVisitCreate}
                     onPartRequestTransition={handlePartRequestTransition}
                     onPartRequestServiceVisitCreate={handlePartRequestServiceVisitCreate}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
