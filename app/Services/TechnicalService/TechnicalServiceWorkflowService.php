@@ -560,6 +560,7 @@ class TechnicalServiceWorkflowService
             TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
         ];
     }

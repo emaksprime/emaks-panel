@@ -580,7 +580,10 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     private function assertProposalBelongsToRequest(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): void
     {
         abort_unless((int) $action->technical_service_request_id === (int) $request->id, 404);
-        if ($action->action !== TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED) {
+        if (! in_array($action->action, [
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
+        ], true)) {
             throw ValidationException::withMessages([
                 'partner_job_action' => 'Bu kayÄ±t randevu Ã¶nerisi deÄŸildir.',
             ]);

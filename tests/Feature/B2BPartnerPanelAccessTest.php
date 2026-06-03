@@ -2941,12 +2941,14 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('columns.0.count', 1)
             ->assertJsonPath('columns.1.key', 'appointment_confirmed')
             ->assertJsonPath('columns.1.count', 1)
-            ->assertJsonPath('columns.2.key', 'revisit')
-            ->assertJsonPath('columns.2.count', 1)
-            ->assertJsonPath('columns.3.key', 'final_check')
-            ->assertJsonPath('columns.3.count', 0)
-            ->assertJsonPath('columns.4.key', 'completed')
-            ->assertJsonPath('columns.4.count', 1)
+            ->assertJsonPath('columns.2.key', 'ops_review')
+            ->assertJsonPath('columns.2.count', 0)
+            ->assertJsonPath('columns.3.key', 'revisit')
+            ->assertJsonPath('columns.3.count', 1)
+            ->assertJsonPath('columns.4.key', 'final_check')
+            ->assertJsonPath('columns.4.count', 0)
+            ->assertJsonPath('columns.5.key', 'completed')
+            ->assertJsonPath('columns.5.count', 1)
             ->assertJsonPath('appointment_slot_options.0.value', '10:00-11:00')
             ->assertJsonPath('appointment_slot_options.6.value', '16:00-17:00')
             ->assertJsonMissing(['mrn' => 'MRN-KANBAN-CONTRACTED']);
@@ -3153,6 +3155,24 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
     }
 
+    public function test_cancelled_service_job_is_hidden_from_partner_active_portal(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $scope['jobA']->forceFill([
+            'cancelled_at' => now(),
+            'status' => 'İptal',
+            'workflow_status' => 'İptal',
+        ])->save();
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs/'.$scope['jobA']->id)
+            ->assertForbidden();
+    }
+
     public function test_partner_user_cannot_open_other_partner_job_detail(): void
     {
         $scope = $this->partnerPortalScopeFixture();
@@ -3352,8 +3372,17 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$unplannedAcceptJob->id}/accept-appointment", ['note' => 'Randevu yok'])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('appointment');
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
+            ->assertJsonPath('job.kanban_column', 'new_jobs')
+            ->assertJsonPath('job.can_propose_appointment', true);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $unplannedAcceptJob->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_ACCEPTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$acceptJob->id}/accept-appointment", ['note' => 'Randevu uygundur'])
@@ -3373,6 +3402,25 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
 
         $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$acceptJob->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDays(2)->toDateString(), 'slot' => '14:00-15:00']],
+                'note' => 'Müşteri randevu saatini değiştirmek istiyor.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED)
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'ops_review')
+            ->assertJsonPath('job.action_state', 'appointment_change_requested')
+            ->assertJsonPath('job.can_request_appointment_change', false);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $acceptJob->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]);
+
+        $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$revisitJob->id}/request-revisit", ['reason' => 'Müşteri yeni tarih istedi'])
             ->assertOk()
             ->assertJsonPath('job.kanban_column', 'revisit');
@@ -3383,13 +3431,13 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$revisitJob->id}/support-request", [
-                'type' => 'spare_part',
-                'description' => 'Yedek kilit parcasi gerekiyor.',
-                'product_name' => 'Kilit parcasi',
-                'quantity' => 1,
+                'type' => 'technical_support',
+                'description' => 'Teknik destek gerekiyor.',
             ])
             ->assertOk()
-            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.kanban_column', 'ops_review')
+            ->assertJsonPath('job.action_state', 'support_requested');
         $this->assertDatabaseHas('technical_service_partner_job_actions', [
             'technical_service_request_id' => $revisitJob->id,
             'action' => TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
@@ -4505,9 +4553,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.latest_partner_action', null);
 
         $this->assertNotContains('Reddedildi', $newPortalJobResponse->json('job.badges'));
-        $this->assertTrue(collect($newPortalJobResponse->json('job.portal_actions'))
-            ->contains(fn (array $action): bool => $action['action'] === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
-                && $action['status'] === TechnicalServicePartnerJobAction::STATUS_APPLIED));
+        $this->assertFalse(collect($newPortalJobResponse->json('job.portal_actions'))
+            ->contains(fn (array $action): bool => $action['action'] === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED));
     }
 
     public function test_technical_service_assignment_creates_assignment_offer_for_portal(): void

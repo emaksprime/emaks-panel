@@ -148,7 +148,7 @@ export function getTechnicalServiceKanbanColumn(request: ServiceRequest): Techni
     return 'assignment_pending'
   }
 
-  if (['job_rejected', 'support_requested', 'revisit_requested'].includes(partnerAction?.action ?? '')) {
+  if (['job_rejected', 'appointment_change_requested', 'support_requested', 'revisit_requested'].includes(partnerAction?.action ?? '')) {
     return 'review'
   }
 

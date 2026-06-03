@@ -19,6 +19,7 @@ class TechnicalServiceOperationalStatePresenter
 
     private const PARTNER_COLUMN_NEW = 'new_jobs';
     private const PARTNER_COLUMN_APPOINTMENT_CONFIRMED = 'appointment_confirmed';
+    private const PARTNER_COLUMN_OPS_REVIEW = 'ops_review';
     private const PARTNER_COLUMN_REVISIT = 'revisit';
     private const PARTNER_COLUMN_FINAL_CHECK = 'final_check';
     private const PARTNER_COLUMN_COMPLETED = 'completed';
@@ -54,6 +55,7 @@ class TechnicalServiceOperationalStatePresenter
         ]);
 
         $activeAction = $this->activeOpsReviewAction($request);
+        $doorIncompatible = $this->doorIncompatible($request);
         $isCancelled = $this->isCancelled($request);
         $isCompleted = $this->isCompleted($request);
         $isPendingFinalCheck = ! $isCompleted && $this->hasCompletionSubmitted($request);
@@ -69,6 +71,7 @@ class TechnicalServiceOperationalStatePresenter
             $isCompleted,
             $isPendingFinalCheck,
             $isAppointmentConfirmed,
+            $doorIncompatible,
         );
         $partnerColumn = $this->partnerColumn(
             $request,
@@ -77,9 +80,10 @@ class TechnicalServiceOperationalStatePresenter
             $isCompleted,
             $isPendingFinalCheck,
             $isAppointmentConfirmed,
+            $doorIncompatible,
         );
 
-        $attention = $this->attention($request, $activeAction, $appointmentAttention, $opsColumn, $isCompleted, $isCancelled);
+        $attention = $this->attention($request, $activeAction, $appointmentAttention, $opsColumn, $isCompleted, $isCancelled, $doorIncompatible);
         $displayActionLabel = $this->displayActionLabel($request, $activeAction, $attention, $opsColumn, $isCompleted);
 
         return [
@@ -113,6 +117,7 @@ class TechnicalServiceOperationalStatePresenter
         bool $isCompleted,
         bool $isPendingFinalCheck,
         bool $isAppointmentConfirmed,
+        bool $doorIncompatible,
     ): string {
         if ($isCancelled) {
             return self::OPS_COLUMN_CANCELLED;
@@ -128,14 +133,19 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($activeAction instanceof TechnicalServicePartnerJobAction) {
             return match ($activeAction->action) {
+                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => self::OPS_COLUMN_ASSIGNMENT_PENDING,
                 TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => self::OPS_COLUMN_ASSIGNMENT_PENDING,
-                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => self::OPS_COLUMN_ASSIGNED,
                 TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
                 TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
                 TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
                 TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => self::OPS_COLUMN_REVIEW,
                 default => self::OPS_COLUMN_REVIEW,
             };
+        }
+
+        if ($doorIncompatible) {
+            return self::OPS_COLUMN_REVIEW;
         }
 
         if ($isAppointmentConfirmed || $this->technicianApproved($request)) {
@@ -156,6 +166,7 @@ class TechnicalServiceOperationalStatePresenter
         bool $isCompleted,
         bool $isPendingFinalCheck,
         bool $isAppointmentConfirmed,
+        bool $doorIncompatible,
     ): string {
         if ($isCompleted) {
             return self::PARTNER_COLUMN_COMPLETED;
@@ -163,6 +174,24 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($isPendingFinalCheck) {
             return self::PARTNER_COLUMN_FINAL_CHECK;
+        }
+
+        if ($doorIncompatible) {
+            return self::PARTNER_COLUMN_OPS_REVIEW;
+        }
+
+        if ($activeAction instanceof TechnicalServicePartnerJobAction
+            && $activeAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+        ) {
+            return match ($activeAction->action) {
+                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+                TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+                TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => self::PARTNER_COLUMN_OPS_REVIEW,
+                default => self::PARTNER_COLUMN_NEW,
+            };
         }
 
         if (
@@ -193,6 +222,7 @@ class TechnicalServiceOperationalStatePresenter
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
             TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
@@ -245,6 +275,24 @@ class TechnicalServiceOperationalStatePresenter
         return $request->cancelled_at !== null
             || $this->statusIn($request->workflow_status, self::CANCELLED_STATUSES)
             || $this->statusIn($request->status, self::CANCELLED_STATUSES);
+    }
+
+    private function doorIncompatible(TechnicalServiceRequest $request): bool
+    {
+        $payload = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+
+        return ($payload['door_photos_checked'] ?? null) === 'incompatible';
+    }
+
+    private function supportAttentionReason(TechnicalServicePartnerJobAction $action): string
+    {
+        $payload = is_array($action->payload) ? $action->payload : [];
+
+        return match ((string) ($payload['type'] ?? '')) {
+            'technical_support' => 'Servis destek talep etti',
+            'spare_part' => 'Parça talebi incelenmeli',
+            default => 'Ek talep var',
+        };
     }
 
     private function isAppointmentConfirmed(TechnicalServiceRequest $request): bool
@@ -329,6 +377,7 @@ class TechnicalServiceOperationalStatePresenter
         string $opsColumn,
         bool $isCompleted,
         bool $isCancelled,
+        bool $doorIncompatible,
     ): array {
         if ($isCompleted || $isCancelled) {
             return $this->normalAttention($request, 100);
@@ -336,6 +385,16 @@ class TechnicalServiceOperationalStatePresenter
 
         if (($appointmentAttention['sort_priority'] ?? null) === 1) {
             return $appointmentAttention;
+        }
+
+        if ($doorIncompatible) {
+            return [
+                'sort_priority' => 4,
+                'attention_level' => 'critical',
+                'attention_reason' => 'Kapı uyumsuzluğu incelenmeli',
+                'last_action_at' => $request->operation_control_checked_at?->toDateTimeString() ?? $request->updated_at?->toDateTimeString(),
+                'action' => 'door_incompatible',
+            ];
         }
 
         if ($activeAction instanceof TechnicalServicePartnerJobAction) {
@@ -348,6 +407,18 @@ class TechnicalServiceOperationalStatePresenter
                 TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => [9, 'warning', 'Ek talep var'],
                 TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => [9, 'warning', 'Tekrar ziyaret talebi'],
                 default => [20, 'warning', 'Operasyon incelemesi'],
+            };
+
+            $payload = match ($activeAction->action) {
+                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => [2, 'critical', 'Usta işi reddetti - yeni usta atayın'],
+                TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => [3, 'critical', 'Müşteri onayı reddedildi'],
+                TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => [4, 'critical', 'Hakediş revize talebi'],
+                TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => [5, 'warning', 'Son kontrol bekliyor'],
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => [6, 'warning', 'Usta randevu önerdi'],
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => [7, 'warning', 'Usta randevu değişikliği istiyor'],
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => [9, 'warning', $this->supportAttentionReason($activeAction)],
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => [9, 'warning', 'Tekrar ziyaret talebi incelenmeli'],
+                default => $payload,
             };
 
             return [

@@ -3,6 +3,7 @@
 namespace App\Services\B2B;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -105,6 +106,14 @@ class B2BPartnerServiceJobScopeService
      */
     public function assertCanViewServiceJob(User $user, TechnicalServiceRequest $request): B2BPartner
     {
+        if ($this->isCancelled($request)) {
+            throw new AuthorizationException('Bu iş aktif partner işlerinde görünmez.');
+        }
+
+        if ($this->hasActiveRejectedAction($request)) {
+            throw new AuthorizationException('Bu iş usta reddi sonrası operasyon incelemesinde.');
+        }
+
         $technicianId = (int) ($request->technical_service_technician_id ?? 0);
         if ($technicianId <= 0) {
             throw new AuthorizationException('Bu iş için görünür usta bağlantısı yok.');
@@ -123,6 +132,27 @@ class B2BPartnerServiceJobScopeService
     public function serviceJobsQuery(B2BPartner $partner): Builder
     {
         return TechnicalServiceRequest::query()
-            ->whereIn('technical_service_technician_id', $this->activeTechnicianIds($partner));
+            ->whereIn('technical_service_technician_id', $this->activeTechnicianIds($partner))
+            ->whereNull('cancelled_at')
+            ->whereNotIn('status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->whereNotIn('workflow_status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->whereDoesntHave('partnerJobActions', fn (Builder $query): Builder => $query
+                ->where('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED)
+                ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW));
+    }
+
+    private function isCancelled(TechnicalServiceRequest $request): bool
+    {
+        return $request->cancelled_at !== null
+            || in_array($request->status, ['İptal', 'Iptal', 'Ä°ptal'], true)
+            || in_array($request->workflow_status, ['İptal', 'Iptal', 'Ä°ptal'], true);
+    }
+
+    private function hasActiveRejectedAction(TechnicalServiceRequest $request): bool
+    {
+        return $request->partnerJobActions()
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED)
+            ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->exists();
     }
 }

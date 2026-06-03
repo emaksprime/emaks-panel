@@ -1024,7 +1024,7 @@ export function ServiceRequestDetails({
   const documentInfo = request.documentInfo ?? null
   const invoiceSerials = request.invoiceSerials ?? null
   const partnerPortalActions = request.partnerPortalActions ?? []
-  const openAppointmentProposals = partnerPortalActions.filter((action) => action.action === 'appointment_proposed' && action.status === 'ops_review')
+  const openAppointmentProposals = partnerPortalActions.filter((action) => ['appointment_proposed', 'appointment_change_requested'].includes(action.action) && action.status === 'ops_review')
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected' && action.status === 'ops_review')
   const customerApprovalRejections = partnerPortalActions.filter((action) => action.action === 'customer_approval_rejected' && action.status === 'ops_review')
   const supportRequests = partnerPortalActions.filter((action) => action.action === 'support_requested' && action.status === 'ops_review')
@@ -1047,6 +1047,7 @@ export function ServiceRequestDetails({
   const isFinalCheckStage = completionSubmissions.length > 0 || request.workflowStatus === 'Son Kontrol'
   const portalActionLabels: Record<string, string> = {
     appointment_proposed: 'Randevu önerildi',
+    appointment_change_requested: 'Randevu değişikliği istendi',
     appointment_accepted_by_technician: 'Usta randevuyu onayladı',
     customer_otp_requested: 'Müşteri onayı istendi',
     customer_approval_confirmed: 'Müşteri montajı onayladı',

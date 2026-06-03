@@ -222,6 +222,9 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
     } else if (latestPortalOpsAction?.action === 'appointment_proposed') {
       addBadge({ label: 'Usta randevu önerdi', tone: 'amber', icon: 'warning', important: true })
       primaryActionBadgeAdded = true
+    } else if (latestPortalOpsAction?.action === 'appointment_change_requested') {
+      addBadge({ label: 'Aksiyon: Randevu değişikliği', tone: 'amber', icon: 'warning', important: true })
+      primaryActionBadgeAdded = true
     } else if (latestPortalOpsAction?.action === 'support_requested') {
       addBadge({ label: 'Aksiyon: Ek talep', tone: 'purple', icon: 'warning', important: true })
       primaryActionBadgeAdded = true
@@ -335,6 +338,7 @@ const latestPortalOpsActionForCard = (request: ServiceRequest) =>
 
 const portalActionLabel = (action: string) => ({
   appointment_proposed: 'Randevu önerisi',
+  appointment_change_requested: 'Randevu değişikliği',
   job_rejected: 'Usta reddetti',
   support_requested: 'Ek talep',
   revisit_requested: 'Tekrar ziyaret',

@@ -141,10 +141,11 @@ type ServiceJob = {
   badges: string[]
   card_priority: number
   card_tone: 'blue' | 'green' | 'amber' | 'slate' | 'violet' | 'rose'
-  kanban_column: 'new_jobs' | 'appointment_confirmed' | 'revisit' | 'final_check' | 'completed'
+  kanban_column: 'new_jobs' | 'appointment_confirmed' | 'ops_review' | 'revisit' | 'final_check' | 'completed'
   action_state?: string
   can_accept: boolean
   can_propose_appointment?: boolean
+  can_request_appointment_change?: boolean
   can_request_revisit: boolean
   can_request_support?: boolean
   can_request_price_revision?: boolean
@@ -678,6 +679,7 @@ function ProductsView({ products, readOnly }: { products: Product[], readOnly: b
 const serviceJobColumns: Array<Omit<ServiceJobColumn, 'count' | 'jobs'>> = [
   { key: 'new_jobs', label: 'Yeni işler', tone: 'blue' },
   { key: 'appointment_confirmed', label: 'Randevu onaylandı', tone: 'green' },
+  { key: 'ops_review', label: 'Operasyon incelemede', tone: 'violet' },
   { key: 'revisit', label: 'Tekrar ziyaret', tone: 'amber' },
   { key: 'final_check', label: 'Son kontrol bekliyor', tone: 'violet' },
   { key: 'completed', label: 'Tamamlanan işler', tone: 'slate' },
@@ -710,6 +712,7 @@ const actionLabel = (action: string, status?: string | null) => {
   accepted: 'Randevu onaylandı',
   appointment_accepted_by_technician: 'Randevu onaylandı',
   appointment_proposed: 'Randevu önerildi',
+  appointment_change_requested: 'Randevu değişikliği istendi',
   job_rejected: 'İş reddedildi',
   revisit_requested: 'Tekrar ziyaret istendi',
   completion_submitted: 'Tamamlama gönderildi',
@@ -807,7 +810,7 @@ const getPartnerDefaultOpenSections = (job: ServiceJob, completionReady: boolean
     return new Set()
   }
 
-  if (job.action_state === 'appointment_proposed_waiting') {
+  if (job.action_state === 'appointment_proposed_waiting' || job.action_state === 'appointment_change_requested') {
     return new Set(['appointment'])
   }
 
@@ -1168,7 +1171,10 @@ function ServiceJobDetail({
   const appointmentSlotError = slotValidationMessage(appointmentSlots)
   const canAcceptAppointment = Boolean(job.can_accept)
   const canProposeAppointment = Boolean(job.can_propose_appointment ?? true)
-  const canOnlyAddNote = ['final_check_waiting', 'rejected_ops_review', 'completed'].includes(job.action_state ?? '')
+  const canRequestAppointmentChange = Boolean(job.can_request_appointment_change)
+  const canUseAppointmentProposal = canProposeAppointment || canRequestAppointmentChange
+  const canOnlyAddNote = job.kanban_column === 'ops_review'
+    || ['final_check_waiting', 'rejected_ops_review', 'completed', 'appointment_change_requested', 'support_requested', 'revisit_requested'].includes(job.action_state ?? '')
   const statusPlan = (() => {
     if (job.action_state === 'rejected_ops_review') {
       return 'İş reddi operasyona iletildi. Bu aşamada sadece not ekleyebilirsiniz.'
@@ -1184,6 +1190,14 @@ function ServiceJobDetail({
 
     if (job.action_state === 'appointment_proposed_waiting') {
       return 'Operasyon önerdiğiniz saatlerden birini onayladığında müşteriye ve size bilgilendirme gönderilecek.'
+    }
+
+    if (job.action_state === 'appointment_change_requested') {
+      return 'Randevu değişikliği operasyona iletildi. Operasyon onayını bekleyin.'
+    }
+
+    if (job.kanban_column === 'ops_review') {
+      return 'Talebiniz operasyona iletildi. Bu aşamada sadece not ekleyebilirsiniz.'
     }
 
     if (completionReady) {
@@ -1574,8 +1588,8 @@ function ServiceJobDetail({
               </button>
             </ActionBox>
           )}
-          {canProposeAppointment && (
-            <ActionBox title={job.action_state === 'appointment_proposed_waiting' ? 'Randevu önerisini revize et' : 'Randevu saatleri öner'}>
+          {canUseAppointmentProposal && (
+            <ActionBox title={canRequestAppointmentChange ? 'Randevu değişikliği iste' : (job.action_state === 'appointment_proposed_waiting' ? 'Randevu önerisini revize et' : 'Randevu saatleri öner')}>
             <div className="grid gap-2">
               {appointmentSlots.map((slot, index) => (
                 <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1612,10 +1626,10 @@ function ServiceJobDetail({
               onClick={() => void submitAction('appointment-proposal', {
                 slots: appointmentSlots.map((slot) => ({ ...slot, ...slotTimeRange(slot.slot) })),
                 note: proposalNote || null,
-              }, 'Randevu önerisi operasyona gönderildi.')}
+              }, canRequestAppointmentChange ? 'Randevu değişikliği operasyona gönderildi.' : 'Randevu önerisi operasyona gönderildi.')}
               className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Randevu öner
+              {canRequestAppointmentChange ? 'Randevu değişikliği iste' : 'Randevu öner'}
             </button>
           </ActionBox>
           )}
@@ -1732,9 +1746,9 @@ function ServiceJobDetail({
               Randevu onayla
             </button>
           )}
-          {canProposeAppointment && (
+          {canUseAppointmentProposal && (
             <button type="button" onClick={() => setActiveActionDialog('appointment')} className="min-h-10 min-w-0 truncate rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold leading-tight text-blue-800">
-              Randevu öner
+              {canRequestAppointmentChange ? 'Randevu güncelle' : 'Randevu öner'}
             </button>
           )}
           {job.can_reject && (
@@ -1767,7 +1781,7 @@ function ServiceJobDetail({
           </button>
         </div>
       )}
-      <ActionDialog title="Randevu saatleri öner" open={activeActionDialog === 'appointment'} onClose={() => setActiveActionDialog(null)}>
+      <ActionDialog title={canRequestAppointmentChange ? 'Randevu değişikliği iste' : 'Randevu saatleri öner'} open={activeActionDialog === 'appointment'} onClose={() => setActiveActionDialog(null)}>
         <div className="grid gap-2">
           {appointmentSlots.map((slot, index) => (
             <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1804,10 +1818,10 @@ function ServiceJobDetail({
           onClick={() => void submitAction('appointment-proposal', {
             slots: appointmentSlots.map((slot) => ({ ...slot, ...slotTimeRange(slot.slot) })),
             note: proposalNote || null,
-          }, 'Randevu önerisi operasyona gönderildi.').then(() => setActiveActionDialog(null))}
+          }, canRequestAppointmentChange ? 'Randevu değişikliği operasyona gönderildi.' : 'Randevu önerisi operasyona gönderildi.').then(() => setActiveActionDialog(null))}
           className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Randevu öner
+          {canRequestAppointmentChange ? 'Randevu değişikliği iste' : 'Randevu öner'}
         </button>
       </ActionDialog>
       <ActionDialog title="İşi reddet" open={activeActionDialog === 'reject'} onClose={() => setActiveActionDialog(null)}>
@@ -1879,6 +1893,7 @@ function ServiceJobDetail({
       <ActionDialog title="Yedek parça / ek talep" open={activeActionDialog === 'support'} onClose={() => setActiveActionDialog(null)}>
         <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={supportType} onChange={(event) => setSupportType(event.target.value)} disabled={readOnly}>
           <option value="spare_part">Yedek parça</option>
+          <option value="technical_support">Teknik destek</option>
           <option value="extra_product">Ek ürün</option>
           <option value="missing_info">Eksik bilgi</option>
           <option value="customer_call">Müşteri aransın</option>

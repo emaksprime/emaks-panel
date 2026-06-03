@@ -23,6 +23,8 @@ class TechnicalServicePartnerJobAction extends Model
 
     public const ACTION_APPOINTMENT_PROPOSED = 'appointment_proposed';
 
+    public const ACTION_APPOINTMENT_CHANGE_REQUESTED = 'appointment_change_requested';
+
     public const ACTION_JOB_REJECTED = 'job_rejected';
 
     public const ACTION_CUSTOMER_OTP_REQUESTED = 'customer_otp_requested';

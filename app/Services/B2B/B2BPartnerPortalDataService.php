@@ -243,7 +243,7 @@ class B2BPartnerPortalDataService
             ->latest('updated_at')
             ->limit(50)
             ->get()
-            ->map(fn (TechnicalServiceRequest $request): array => $this->safeServiceJobSummary($request))
+            ->map(fn (TechnicalServiceRequest $request): array => $this->safeServiceJobSummary($request, $partner))
             ->values()
             ->all();
     }
@@ -257,6 +257,7 @@ class B2BPartnerPortalDataService
         $columns = collect([
             ['key' => 'new_jobs', 'label' => 'Yeni işler', 'tone' => 'blue'],
             ['key' => 'appointment_confirmed', 'label' => 'Randevu onaylandı', 'tone' => 'green'],
+            ['key' => 'ops_review', 'label' => 'Operasyon incelemede', 'tone' => 'violet'],
             ['key' => 'revisit', 'label' => 'Tekrar ziyaret', 'tone' => 'amber'],
             ['key' => 'final_check', 'label' => 'Son kontrol bekliyor', 'tone' => 'violet'],
             ['key' => 'completed', 'label' => 'Tamamlanan işler', 'tone' => 'slate'],
@@ -283,7 +284,7 @@ class B2BPartnerPortalDataService
     /**
      * @return array<string, mixed>
      */
-    public function safeServiceJobSummary(TechnicalServiceRequest $request): array
+    public function safeServiceJobSummary(TechnicalServiceRequest $request, ?B2BPartner $viewerPartner = null): array
     {
         $request->loadMissing([
             'partnerJobActions' => fn ($query) => $query->latest(),
@@ -292,7 +293,13 @@ class B2BPartnerPortalDataService
             'latestAssignmentOffer.technician',
             'technicianRecord',
         ]);
-        $partnerActions = $request->partnerJobActions->sortByDesc('id')->values();
+        $partnerActions = $this
+            ->visibleActionsForPartner($request->partnerJobActions, $viewerPartner)
+            ->sortByDesc('id')
+            ->values();
+        if ($viewerPartner instanceof B2BPartner) {
+            $request->setRelation('partnerJobActions', $partnerActions);
+        }
         $latestAction = $this->latestVisiblePartnerAction($request, $partnerActions);
         $latestAppointmentProposal = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED);
@@ -309,7 +316,7 @@ class B2BPartnerPortalDataService
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED);
         $latestCustomerApprovalRejection = $partnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
-        $stateAction = $this->stateAction($request);
+        $stateAction = $this->stateAction($request, $partnerActions);
         $canonicalState = $this->operationalState->present($request);
         $assignmentOffer = $request->latestAssignmentOffer;
         $earningSummary = $this->earningSummary($request, $assignmentOffer);
@@ -355,7 +362,8 @@ class B2BPartnerPortalDataService
             && ! $isFinalCheck
             && ! $isRejectedInReview
             && ! $hasAppointmentProposalInReview;
-        $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview;
+        $canRequestAppointmentChange = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction;
+        $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction;
         $nextActionLabel = $this->serviceJobNextActionLabel($request, $stateAction, $completionRequirements);
         $partnerNextActionLabel = $canonicalState['display_action_label'] ?? $nextActionLabel;
         if ($nextActionLabel === 'Tamamlamaya gönderilebilir') {
@@ -546,6 +554,7 @@ class B2BPartnerPortalDataService
             'action_state' => $this->serviceJobActionState($request, $stateAction, $completionRequirements),
             'can_accept' => $canAcceptAppointment,
             'can_propose_appointment' => $canProposeAppointment,
+            'can_request_appointment_change' => $canRequestAppointmentChange,
             'can_request_revisit' => $canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit',
             'can_request_support' => $canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit',
             'can_request_customer_otp' => $canFieldActions,
@@ -556,6 +565,30 @@ class B2BPartnerPortalDataService
             'can_reject' => ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview,
             'updated_at' => $request->updated_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * @param  Collection<int, TechnicalServicePartnerJobAction>  $actions
+     * @return Collection<int, TechnicalServicePartnerJobAction>
+     */
+    private function visibleActionsForPartner(Collection $actions, ?B2BPartner $viewerPartner): Collection
+    {
+        if (! $viewerPartner instanceof B2BPartner) {
+            return $actions;
+        }
+
+        return $actions
+            ->filter(function (TechnicalServicePartnerJobAction $action) use ($viewerPartner): bool {
+                if ((int) $action->partner_id !== (int) $viewerPartner->id) {
+                    return false;
+                }
+
+                $payload = is_array($action->payload) ? $action->payload : [];
+                $visibility = (string) ($payload['visibility'] ?? '');
+
+                return ! in_array($visibility, ['ops_internal', 'internal_partner'], true);
+            })
+            ->values();
     }
 
     /**
@@ -857,9 +890,12 @@ class B2BPartnerPortalDataService
         };
     }
 
-    private function stateAction(TechnicalServiceRequest $request): ?TechnicalServicePartnerJobAction
+    /**
+     * @param  Collection<int, TechnicalServicePartnerJobAction>|null  $actions
+     */
+    private function stateAction(TechnicalServiceRequest $request, ?Collection $actions = null): ?TechnicalServicePartnerJobAction
     {
-        $opsReview = $request->partnerJobActions
+        $opsReview = ($actions ?? $request->partnerJobActions)
             ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
 
         foreach ([
@@ -867,6 +903,7 @@ class B2BPartnerPortalDataService
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
@@ -916,6 +953,11 @@ class B2BPartnerPortalDataService
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
             && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $badges[] = 'Randevu önerildi';
+        }
+
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            $badges[] = 'Randevu değişikliği istendi';
         }
 
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
@@ -998,6 +1040,11 @@ class B2BPartnerPortalDataService
             return 'appointment_proposed_waiting';
         }
 
+        if ($action?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED
+            && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return 'appointment_change_requested';
+        }
+
         if ($action?->action === TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED
             && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             return 'revisit_requested';
@@ -1043,6 +1090,7 @@ class B2BPartnerPortalDataService
                 TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => 'Müşteri onayı reddedildi',
                 TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 'Son kontrol bekliyor',
                 TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 'Randevu önerildi',
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => 'Randevu değişikliği operasyon incelemesinde',
                 TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => 'Ek talep operasyon incelemesinde',
                 TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 'Tekrar ziyaret talebi operasyon incelemesinde',
                 default => 'Operasyon incelemesinde',
@@ -1090,6 +1138,7 @@ class B2BPartnerPortalDataService
             TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => 4,
             TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => 5,
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => 6,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => 7,
             TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 9,
             default => 12,
@@ -1113,8 +1162,17 @@ class B2BPartnerPortalDataService
             return 'violet';
         }
 
+        if ($action?->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return in_array($action->action, [
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+            ], true) ? 'violet' : 'blue';
+        }
+
         return match ($this->serviceJobColumn($request, $action)) {
             'appointment_confirmed' => 'green',
+            'ops_review' => 'violet',
             'revisit' => 'amber',
             'final_check' => 'violet',
             'completed' => 'slate',
@@ -1216,8 +1274,11 @@ class B2BPartnerPortalDataService
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
             TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
             TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED,
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
             ], true)) {
-            return 'new_jobs';
+            return 'ops_review';
         }
 
         if ($this->isAppointmentConfirmedStatus($request)) {
