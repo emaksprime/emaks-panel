@@ -1407,6 +1407,7 @@ class TechnicalServiceWorkflowService
     {
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+        $paidAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment);
 
         return [
             'sale_mount_status' => $request->sale_mount_status,
@@ -1415,10 +1416,14 @@ class TechnicalServiceWorkflowService
             'mount_payment_label' => $request->mount_payment_label ?? $this->mountPaymentLabel($request->mount_payment_status, $request->sale_mount_status),
             'mount_payment_received' => $paymentStatus['is_paid'],
             'payment_stage_label' => $paymentStatus['stage_label'],
-            'paid_amount' => $paymentStatus['amount'],
+            'paid_amount' => $paidAmount,
+            'paid_amount_label' => $this->moneyLabel($paidAmount),
+            'payment_status_label' => $this->paymentStatusLabel($request->mount_payment_status, $paymentStatus),
             'payment_reference' => $request->mount_payment_reference,
             'payment_provider' => $request->mount_payment_provider,
             'paid_at' => $paymentStatus['paid_at'] ?? $this->dateTimeString($request->mount_payment_paid_at),
+            'payment_paid_at' => $paymentStatus['paid_at'] ?? $this->dateTimeString($request->mount_payment_paid_at),
+            'ops_payment_check_label' => $this->opsPaymentCheckLabel($request),
             'payment_status' => $paymentStatus,
             'extra_mount_payment' => $extraPayment,
             'technician_earning_message' => $this->technicianEarningMessagePayload($request),
@@ -2370,13 +2375,84 @@ class TechnicalServiceWorkflowService
         return (string) $value;
     }
 
+    private function moneyLabel(?float $amount): ?string
+    {
+        if ($amount === null) {
+            return null;
+        }
+
+        $decimals = floor($amount) === $amount ? 0 : 2;
+
+        return number_format($amount, $decimals, ',', '.').' TL';
+    }
+
+    /**
+     * @param array<string, mixed> $paymentStatus
+     */
+    private function paymentStatusLabel(?string $status, array $paymentStatus): string
+    {
+        if ((bool) ($paymentStatus['is_paid'] ?? false)) {
+            return 'Ödendi';
+        }
+
+        return match ($this->normalizeToken($status)) {
+            'paid' => 'Ödendi',
+            'pending' => 'Ödeme bekleniyor',
+            'failed' => 'Ödeme başarısız',
+            'cancelled' => 'İptal edildi',
+            'expired' => 'Süresi doldu',
+            'notrequired' => 'Ödeme gerekmiyor',
+            'skippedmultiproduct' => 'Operasyon kontrolünde',
+            default => 'Ödeme bilgisi yok',
+        };
+    }
+
+    private function opsPaymentCheckLabel(TechnicalServiceRequest $request): string
+    {
+        $payload = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+
+        return match ((string) ($payload['payment_checked'] ?? 'unreviewed')) {
+            'yes' => 'Evet',
+            'no' => 'Hayır',
+            default => 'Kontrol edilmedi',
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $paymentStatus
+     * @param array<string, mixed>|null $extraPayment
+     */
+    private function primaryMountPaidAmount(TechnicalServiceRequest $request, array $paymentStatus, ?array $extraPayment): ?float
+    {
+        $latestPaymentId = $paymentStatus['latest_payment_id'] ?? null;
+        $extraPaymentId = $extraPayment['id'] ?? null;
+        $latestPaymentIsExtra = $latestPaymentId !== null
+            && $extraPaymentId !== null
+            && (int) $latestPaymentId === (int) $extraPaymentId;
+
+        if ((bool) ($paymentStatus['is_paid'] ?? false)
+            && ! $latestPaymentIsExtra
+            && isset($paymentStatus['amount'])
+            && is_numeric($paymentStatus['amount'])) {
+            return (float) $paymentStatus['amount'];
+        }
+
+        if ($request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_PAID) {
+            return $this->customerAmountForService($request->service_type);
+        }
+
+        return null;
+    }
+
     /**
      * @return array<string, float|int|string|null>
      */
     private function financialAliases(TechnicalServiceRequest $request): array
     {
-        $customerAmount = $this->customerAmountForService($request->service_type);
+        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
+        $customerAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment)
+            ?? $this->customerAmountForService($request->service_type);
         $paidExtraCustomerAmount = ($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
             ? (float) ($extraPayment['amount'] ?? 0)
             : 0.0;

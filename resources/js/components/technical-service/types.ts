@@ -227,9 +227,13 @@ export type ServiceRequestSaleAndPayment = {
   mount_payment_received?: boolean
   payment_stage_label?: string | null
   paid_amount?: number | null
+  paid_amount_label?: string | null
   payment_reference?: string | null
   payment_provider?: string | null
   paid_at?: string | null
+  payment_status_label?: string | null
+  payment_paid_at?: string | null
+  ops_payment_check_label?: string | null
   payment_status?: ServiceRequestPaymentStatus | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null

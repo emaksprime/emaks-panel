@@ -224,6 +224,42 @@ const formatMoneyValue = (value: number | null | undefined): string => (
     : '-'
 )
 
+const paymentStatusLabel = (status: string | null | undefined, isPaid = false): string => {
+  if (isPaid) {
+    return 'Ödendi'
+  }
+
+  switch (String(status ?? '').trim()) {
+    case 'paid':
+      return 'Ödendi'
+    case 'pending':
+      return 'Ödeme bekleniyor'
+    case 'failed':
+      return 'Ödeme başarısız'
+    case 'cancelled':
+      return 'İptal edildi'
+    case 'expired':
+      return 'Süresi doldu'
+    case 'not_required':
+      return 'Ödeme gerekmiyor'
+    case 'skipped_multi_product':
+      return 'Operasyon kontrolünde'
+    default:
+      return 'Ödeme bilgisi yok'
+  }
+}
+
+const operationPaymentCheckLabel = (status: string | null | undefined): string => {
+  switch (String(status ?? 'unreviewed')) {
+    case 'yes':
+      return 'Evet'
+    case 'no':
+      return 'Hayır'
+    default:
+      return 'Kontrol edilmedi'
+  }
+}
+
 const roundTwo = (value: number): number => Math.round(value * 100) / 100
 
 const numericInputValue = (value: number | null | undefined): string => (
@@ -1348,18 +1384,26 @@ export function ServiceRequestDetails({
     canonicalPaymentStatus?.stage_label ?? saleAndPayment?.payment_stage_label,
     mountPaymentReceived ? 'Ödeme onaylandı' : canonicalPaymentRequiresPayment ? 'Montaj ödemesi henüz alınmadı' : 'Montaj ödemesi gerekmiyor',
   )
-  const mountPaymentAmountLabel = typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
-    ? formatMoneyValue(canonicalPaymentStatus.amount)
-    : typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
+  const mountPaymentAmountLabel = saleAndPayment?.paid_amount_label
+    ?? (typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
       ? formatMoneyValue(saleAndPayment.paid_amount)
-      : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
-        ? formatMoneyValue(extraMountPayment.amount)
-        : '-'
+      : typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
+        ? formatMoneyValue(canonicalPaymentStatus.amount)
+        : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
+          ? formatMoneyValue(extraMountPayment.amount)
+          : '-')
+  const paymentCollectionStatusLabel = saleAndPayment?.payment_status_label
+    ?? paymentStatusLabel(saleAndPayment?.mount_payment_status, mountPaymentReceived)
+  const paidAmountDisplayLabel = saleAndPayment?.paid_amount_label
+    ?? mountPaymentAmountLabel
+  const paymentPaidAtLabel = dateTimeOrEmpty(saleAndPayment?.payment_paid_at ?? saleAndPayment?.paid_at, '-')
+  const opsPaymentCheckLabel = saleAndPayment?.ops_payment_check_label
+    ?? operationPaymentCheckLabel(operationControl.payment_checked)
   const paidMountPaymentAmount = mountPaymentReceived
-    ? typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
-      ? canonicalPaymentStatus.amount
-      : typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
-        ? saleAndPayment.paid_amount
+    ? typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
+      ? saleAndPayment.paid_amount
+      : typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
+        ? canonicalPaymentStatus.amount
         : null
     : null
   const customerMountAmount = paidMountPaymentAmount ?? basePaymentInfo.customerAmount
@@ -2498,10 +2542,12 @@ export function ServiceRequestDetails({
                 <MiniMetric
                   label="Montaj ödeme durumu"
                   value={resolvedMountPaymentLabel}
-                  hint={saleAndPayment?.mount_payment_status ?? undefined}
                 />
+                <MiniMetric label="Tahsilat durumu" value={paymentCollectionStatusLabel} />
+                <MiniMetric label="Alınan ödeme tutarı" value={paidAmountDisplayLabel} />
                 <MiniMetric label="Ödeme referansı" value={<span className="break-all" title={displayOrEmpty(saleAndPayment?.payment_reference, '-')}>{displayOrEmpty(saleAndPayment?.payment_reference, '-')}</span>} />
-                <MiniMetric label="Ödeme tarihi" value={dateTimeOrEmpty(saleAndPayment?.paid_at, '-')} />
+                <MiniMetric label="Ödeme tarihi" value={paymentPaidAtLabel} />
+                <MiniMetric label="Operasyon ödeme kontrolü" value={opsPaymentCheckLabel} />
               </div>
               {paymentControlMissing ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">

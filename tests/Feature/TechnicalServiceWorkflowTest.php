@@ -567,6 +567,120 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame([], $payload['assignment_blockers']['messages']);
     }
 
+    public function test_payment_block_shows_paid_amount(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_label' => 'Form üzerinden ödeme alındı',
+            'mount_payment_provider' => 'fake',
+            'mount_payment_reference' => 'fake-paid-3500',
+            'mount_payment_paid_at' => now(),
+        ]);
+        $session = $this->mountSessionForRequest($request);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-3500',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'public_form_payment'],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame(3500.0, $payload['sale_and_payment']['paid_amount']);
+        $this->assertSame('3.500 TL', $payload['sale_and_payment']['paid_amount_label']);
+        $this->assertSame('fake-paid-3500', $payload['sale_and_payment']['payment_reference']);
+        $this->assertNotNull($payload['sale_and_payment']['payment_paid_at']);
+    }
+
+    public function test_payment_block_translates_paid_status(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame('Ödendi', $payload['sale_and_payment']['payment_status_label']);
+    }
+
+    public function test_payment_block_keeps_ops_payment_check_separate(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+            ],
+        ]);
+        $session = $this->mountSessionForRequest($request);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-unreviewed',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'public_form_payment'],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame('Ödendi', $payload['sale_and_payment']['payment_status_label']);
+        $this->assertSame('Kontrol edilmedi', $payload['sale_and_payment']['ops_payment_check_label']);
+        $this->assertSame('unreviewed', $payload['operation_control']['payment_checked']);
+    }
+
+    public function test_paid_amount_matches_earning_customer_collection(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'technician_payment_amount' => 3000,
+            'travel_fee_amount' => 0,
+        ]);
+        $session = $this->mountSessionForRequest($request);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-total',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'public_form_payment'],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame(3500.0, $payload['sale_and_payment']['paid_amount']);
+        $this->assertSame(3500.0, $payload['total_customer_collected']);
+        $this->assertSame(500.0, $payload['cost_delta']);
+    }
+
+    public function test_raw_payment_status_is_not_rendered_in_ops_payload(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringNotContainsString('hint={saleAndPayment?.mount_payment_status', $source);
+        $this->assertStringContainsString('Tahsilat durumu', $source);
+        $this->assertStringContainsString('Alınan ödeme tutarı', $source);
+        $this->assertStringContainsString('Operasyon ödeme kontrolü', $source);
+    }
+
     public function test_payment_resolver_uses_paid_serial_payload_over_mikro_excluded_signal(): void
     {
         $request = $this->technicalServiceRequest([
