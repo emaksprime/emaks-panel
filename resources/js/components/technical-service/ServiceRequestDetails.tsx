@@ -1071,7 +1071,7 @@ export function ServiceRequestDetails({
   customerApprovalResendLoading = false,
   customerApprovalResendError = null,
 }: ServiceRequestDetailsProps) {
-  const paymentInfo = getServicePaymentInfo(
+  const basePaymentInfo = getServicePaymentInfo(
     request.serviceType,
     null,
     null,
@@ -1082,9 +1082,6 @@ export function ServiceRequestDetails({
   const disabledTitle = 'Tamamlanan veya iptal edilen taleplerde işlem yapılamaz'
   const isReopenVisible = isActionDisabled
   const hasAssignedTechnician = Boolean(request.technicianId || (request.technician && request.technician !== 'Atanmadı'))
-  const mountPaymentLabel = paymentInfo.customerAmountLabel && paymentInfo.customerAmountLabel !== 'Belirlenmedi'
-    ? paymentInfo.customerAmountLabel
-    : '-'
   const productInfo = request.productInfo ?? null
   const saleAndPayment = request.saleAndPayment ?? null
   const documentInfo = request.documentInfo ?? null
@@ -1358,6 +1355,19 @@ export function ServiceRequestDetails({
       : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
         ? formatMoneyValue(extraMountPayment.amount)
         : '-'
+  const paidMountPaymentAmount = mountPaymentReceived
+    ? typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
+      ? canonicalPaymentStatus.amount
+      : typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
+        ? saleAndPayment.paid_amount
+        : null
+    : null
+  const customerMountAmount = paidMountPaymentAmount ?? basePaymentInfo.customerAmount
+  const mountPaymentLabel = paidMountPaymentAmount !== null
+    ? `${formatMoneyValue(paidMountPaymentAmount)} KDV dahil`
+    : basePaymentInfo.customerAmountLabel && basePaymentInfo.customerAmountLabel !== 'Belirlenmedi'
+      ? basePaymentInfo.customerAmountLabel
+      : '-'
   const mountPaymentHeaderLabel = mountPaymentReceived
     ? `Montaj ödeme: ${mountPaymentStageLabel}`
     : canonicalPaymentRequiresPayment
@@ -1401,17 +1411,17 @@ export function ServiceRequestDetails({
   const paidExtraCustomerAmount = extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
     ? extraMountPayment.amount
     : 0
-  const totalCustomerCollectedAmount = paymentInfo.customerAmount !== null
-    ? roundTwo(paymentInfo.customerAmount + paidExtraCustomerAmount)
+  const totalCustomerCollectedAmount = customerMountAmount !== null
+    ? roundTwo(customerMountAmount + paidExtraCustomerAmount)
     : paidExtraCustomerAmount > 0 ? paidExtraCustomerAmount : null
   const technicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
     ? selectedTechnician.technicianAmountLabel
-    : paymentInfo.technicianAmountLabel && paymentInfo.technicianAmountLabel !== 'Belirlenmedi'
-      ? paymentInfo.technicianAmountLabel
+    : basePaymentInfo.technicianAmountLabel && basePaymentInfo.technicianAmountLabel !== 'Belirlenmedi'
+      ? basePaymentInfo.technicianAmountLabel
       : 'Hakediş ayarı eksik'
   const technicianLaborCostAmount = typeof request.technicianPaymentAmount === 'number' && Number.isFinite(request.technicianPaymentAmount)
     ? request.technicianPaymentAmount
-    : paymentInfo.customerAmount
+    : basePaymentInfo.customerAmount
   const travelCostLabel = hasActiveRouteQuote
     ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required
       ? 'Km başı ücret ayarı eksik'

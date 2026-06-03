@@ -156,12 +156,23 @@ class TechnicalServicePaymentStatusResolver
             $sessionQuery->where('status', $status);
         }
 
-        return $sessionQuery->get()
+        $sessionPayments = $sessionQuery->get();
+
+        return $sessionPayments
             ->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
                 $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
 
                 return (int) ($payload['technical_service_request_id'] ?? 0) === (int) $request->id;
-            });
+            })
+            ?? $sessionPayments
+                ->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
+                    $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+                    return $request->source_channel === TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM
+                        && $request->mount_session_id !== null
+                        && $payment->technical_service_request_id === null
+                        && in_array(($payload['source'] ?? null), ['public_mount_payment', 'public_form_payment'], true);
+                });
     }
 
     private function serialPayloadHasPaidMount(TechnicalServiceRequest $request): bool

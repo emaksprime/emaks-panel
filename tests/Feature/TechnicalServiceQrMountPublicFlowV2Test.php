@@ -5,11 +5,17 @@ namespace Tests\Feature;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
+use App\Models\TechnicalServiceRequest;
 use App\Models\User;
-use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
+use App\Services\TechnicalService\SerialProductContextResolver;
+use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
@@ -398,6 +404,62 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ->where('statusLabel', 'Montaj ödemesi alındı'));
     }
 
+    public function test_mrn_generator_uses_date_initials_and_daily_sequence(): void
+    {
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $generator = app(TechnicalServiceCodeGenerator::class);
+
+            $this->assertSame('MRN-2606MP030001', $generator->nextMrn('Mehmet Burhan Pekguzel'));
+
+            $this->createRequestWithMrn('MRN-2606MP030001');
+
+            $this->assertSame('MRN-2606AC030002', $generator->nextMrn('Ayse Celik'));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_mrn_generator_normalizes_turkish_characters(): void
+    {
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $this->assertSame(
+                'MRN-2606IS030001',
+                app(TechnicalServiceCodeGenerator::class)->nextMrn("\u{0130}lker \u{015E}ahin")
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_mrn_generator_handles_single_word_customer(): void
+    {
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $this->assertSame('MRN-2606MX030001', app(TechnicalServiceCodeGenerator::class)->nextMrn('Mehmet'));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_mrn_generator_avoids_collision(): void
+    {
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $this->createRequestWithMrn('MRN-2606MP030001');
+            $this->createRequestWithMrn('MRN-2606MP030002');
+
+            $this->assertSame('MRN-2606MP030003', app(TechnicalServiceCodeGenerator::class)->nextMrn('Mehmet Pekguzel'));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function test_form_ready_public_page_does_not_show_mount_status_block(): void
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
@@ -498,6 +560,102 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ->where('statusLabel', 'Montaj ödemesi alındı'));
     }
 
+    public function test_paid_mount_payment_shows_continue_to_form_button(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
+            ->assertRedirect('/mount-request/'.$token);
+
+        $this->get('/mount-payment/'.$payment->provider_reference)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-payment')
+                ->where('payment.status', TechnicalServiceMountPayment::STATUS_PAID)
+                ->where('payment.mount_form_url', route('mount-request.show', ['token' => $token]))
+                ->where('requestSummary.serial_number', 'QR-V2-PUBLIC-001')
+                ->where('requestSummary.product_name', 'Emaks Prime Test Kilit'));
+    }
+
+    public function test_paid_mount_payment_does_not_redirect_if_request_already_submitted(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+        Storage::fake('public');
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+            [, $token] = $this->qrLink();
+
+            $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+            $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+            $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
+                ->assertRedirect('/mount-request/'.$token);
+
+            $this->submitMountRequest($token)->assertOk();
+
+            $this->get('/mount-payment/'.$payment->provider_reference)
+                ->assertOk()
+                ->assertInertia(fn (Assert $page) => $page
+                    ->component('public/mount-payment')
+                    ->where('payment.status', TechnicalServiceMountPayment::STATUS_PAID)
+                    ->where('payment.mount_form_url', null)
+                    ->where('requestSummary.mrn', 'MRN-2606MP030001'));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_paid_mount_amount_is_used_as_customer_collection(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+        Storage::fake('public');
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+            [, $token] = $this->qrLink();
+
+            $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+            $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+            $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
+                ->assertRedirect('/mount-request/'.$token);
+
+            $this->submitMountRequest($token)->assertOk();
+
+            $request = TechnicalServiceRequest::query()->where('mrn', 'MRN-2606MP030001')->firstOrFail();
+            $payment->refresh();
+            $this->assertSame($request->id, $payment->technical_service_request_id);
+            $this->assertSame(3500.0, (float) $payment->amount);
+
+            $serialized = app(TechnicalServiceWorkflowService::class)
+                ->serialize($request->fresh(['requestSerials', 'uploads']), true);
+
+            $this->assertTrue($serialized['sale_and_payment']['mount_payment_received']);
+            $this->assertSame(3500.0, $serialized['sale_and_payment']['payment_status']['amount']);
+            $this->assertSame(3500.0, $serialized['sale_and_payment']['paid_amount']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function test_public_payment_page_fake_approve_requires_explicit_non_production_gate(): void
     {
         config([
@@ -520,7 +678,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ->where('payment.fake_approve_url', route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference])));
 
         $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
-            ->assertRedirect('/mount-payment/'.$payment->provider_reference);
+            ->assertRedirect('/mount-request/'.$token);
 
         $payment->refresh();
 
@@ -922,6 +1080,56 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertStringContainsString('Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.', $source);
         $this->assertStringContainsString('Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.', $source);
         $this->assertStringContainsString('Ek ürün talebiniz operasyon ekibine iletilecek.', $source);
+    }
+
+    private function createRequestWithMrn(string $mrn): TechnicalServiceRequest
+    {
+        return TechnicalServiceRequest::query()->create([
+            'mrn' => $mrn,
+            'customer_name' => 'Test Customer',
+            'customer_phone' => '+905551112233',
+            'customer_city' => 'Istanbul',
+            'customer_district' => 'Kadikoy',
+            'service_address' => 'Test adres',
+            'product_name' => 'Test Urun',
+            'product_model' => 'TST',
+            'serial_number' => 'SN-'.$mrn,
+            'service_type' => 'Montaj',
+            'status' => TechnicalServiceRequest::STATUS_NEW,
+            'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+            'priority' => TechnicalServiceRequest::PRIORITY_MEDIUM,
+            'risk_level' => TechnicalServiceRequest::RISK_MEDIUM,
+        ]);
+    }
+
+    private function submitMountRequest(string $token)
+    {
+        return $this->post('/mount-request/'.$token.'/submit', [
+            'first_name' => 'Mehmet',
+            'last_name' => 'Pekguzel',
+            'phone' => '5551112233',
+            'city' => 'Istanbul',
+            'district' => 'Kadikoy',
+            'address' => 'Moda Caddesi No 10',
+            'installation_consent' => '1',
+            'kvkk_consent' => '1',
+            'door_front_photo' => $this->fakeUploadImage('front.png'),
+            'door_side_photo' => $this->fakeUploadImage('side.png'),
+            'door_back_photo' => $this->fakeUploadImage('back.png'),
+        ]);
+    }
+
+    private function fakeUploadImage(string $name): UploadedFile
+    {
+        $path = tempnam(sys_get_temp_dir(), 'ts-upload-');
+        $this->assertIsString($path);
+
+        file_put_contents($path, base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+            true
+        ));
+
+        return new UploadedFile($path, $name, 'image/png', null, true);
     }
 
     private function fakeContext(

@@ -15,7 +15,10 @@ class MountRequestSubmitService
 {
     public const CUSTOMER_ADDRESS_GEOCODE_WARNING = 'Müşteri adresi koordinata çevrilemedi.';
 
-    public function __construct(private readonly TechnicalServiceGeocodingService $geocodingService) {}
+    public function __construct(
+        private readonly TechnicalServiceGeocodingService $geocodingService,
+        private readonly TechnicalServiceCodeGenerator $codeGenerator,
+    ) {}
 
     public const MULTI_PRODUCT_OPERATION_WARNING = 'Müşteri birden fazla ürün montaj talebi iletti. Müşteri ile iletişime geçiniz.';
     public const CHECK_PENDING_WARNING = 'Seri / montaj kontrolü bekliyor.';
@@ -57,8 +60,21 @@ class MountRequestSubmitService
             ];
         }
 
+        if ($payment instanceof TechnicalServiceMountPayment && $payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            $requestContextPayload['payment'] = [
+                'status' => TechnicalServiceMountPayment::STATUS_PAID,
+                'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'paid_at' => $payment->paid_at?->toISOString(),
+                'provider' => $payment->provider,
+                'provider_reference' => $payment->provider_reference,
+            ];
+            $requestContextPayload['paid_amount'] = (float) $payment->amount;
+            $requestContextPayload['mount_payment_status'] = TechnicalServiceMountSession::PAYMENT_PAID;
+        }
+
         $request = TechnicalServiceRequest::query()->create([
-            'mrn' => $this->nextMrn(),
+            'mrn' => $this->codeGenerator->nextMrn($customerName),
             'customer_name' => $customerName,
             'customer_phone' => $this->nullableText($payload['customer_phone'] ?? null) ?? '+900000000000',
             'customer_city' => $this->nullableText($payload['customer_city'] ?? null) ?? '-',
@@ -126,6 +142,7 @@ class MountRequestSubmitService
             $request,
             is_array($payload['door_photos'] ?? null) ? $payload['door_photos'] : [],
         );
+        $this->linkPaymentToRequest($payment, $request);
 
         $session->forceFill([
             'decision_status' => TechnicalServiceMountSession::DECISION_SUBMITTED,
@@ -498,15 +515,6 @@ class MountRequestSubmitService
         return $number ?? $series;
     }
 
-    private function nextMrn(): string
-    {
-        do {
-            $mrn = 'MRN-'.Str::upper(Str::random(10));
-        } while (TechnicalServiceRequest::query()->where('mrn', $mrn)->exists());
-
-        return $mrn;
-    }
-
     private function nullableBool(mixed $value): ?bool
     {
         if ($value === null || $value === '') {
@@ -545,5 +553,25 @@ class MountRequestSubmitService
         $value = trim((string) $value);
 
         return $value === '' ? null : $value;
+    }
+
+    private function linkPaymentToRequest(?TechnicalServiceMountPayment $payment, TechnicalServiceRequest $request): void
+    {
+        if (! $payment instanceof TechnicalServiceMountPayment) {
+            return;
+        }
+
+        $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $rawPayload['source'] = 'public_form_payment';
+        $rawPayload['technical_service_request_id'] = $request->id;
+        $rawPayload['mrn'] = $request->mrn;
+        $rawPayload['mount_payment_status'] = $payment->status;
+        $rawPayload['paid_amount'] = (float) $payment->amount;
+        $rawPayload['paid_at'] = $payment->paid_at?->toISOString();
+
+        $payment->forceFill([
+            'technical_service_request_id' => $request->id,
+            'raw_payload' => $rawPayload,
+        ])->save();
     }
 }

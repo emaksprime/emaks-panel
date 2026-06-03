@@ -3633,8 +3633,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $child = TechnicalServiceRequest::query()->findOrFail($childId);
         $this->assertSame($job->id, $child->parent_request_id);
         $this->assertSame($job->mrn, $child->root_mrn);
-        $this->assertSame('SRV-001', $child->service_code);
-        $this->assertSame($job->mrn.'-SRV-001', $child->mrn);
+        $this->assertSame('SRV-ACTION-PART-001', $child->service_code);
+        $this->assertSame('SRV-ACTION-PART-001', $child->mrn);
         $this->assertSame('SN-PART-001', $child->serial_number);
         $this->assertDatabaseHas('technical_service_request_serials', [
             'technical_service_request_id' => $child->id,
@@ -3770,8 +3770,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $child = TechnicalServiceRequest::query()->findOrFail($childId);
         $this->assertSame($job->id, $child->parent_request_id);
         $this->assertSame($job->mrn, $child->root_mrn);
-        $this->assertSame('SRV-001', $child->service_code);
-        $this->assertSame($job->mrn.'-SRV-001', $child->mrn);
+        $this->assertSame('SRV-ACTION-REVISIT-SRV-001', $child->service_code);
+        $this->assertSame('SRV-ACTION-REVISIT-SRV-001', $child->mrn);
         $this->assertSame('revisit', $child->service_visit_reason);
         $this->assertSame($revisitAction->id, $child->source_partner_action_id);
         $this->assertSame('Yeni Talep', $child->workflow_status);
@@ -3923,11 +3923,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             'quantity' => 1,
         ]);
         $child = TechnicalServiceRequest::query()->create([
-            'mrn' => $parent->mrn.'-SRV-001',
+            'mrn' => 'SRV-ACTION-SRV-HISTORY-001',
             'parent_request_id' => $parent->id,
             'root_mrn' => $parent->mrn,
             'service_sequence' => 1,
-            'service_code' => 'SRV-001',
+            'service_code' => 'SRV-ACTION-SRV-HISTORY-001',
             'service_visit_reason' => 'spare_part',
             'source_part_request_id' => $partRequest->id,
             'customer_name' => $parent->customer_name,
@@ -3948,7 +3948,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson("/api/technical-service/requests/{$child->id}")
             ->assertOk()
             ->assertJsonPath('request.service_visit_history.root_mrn', $parent->mrn)
-            ->assertJsonPath('request.service_visit_history.service_code', 'SRV-001')
+            ->assertJsonPath('request.service_visit_history.service_code', 'SRV-ACTION-SRV-HISTORY-001')
             ->assertJsonPath('request.service_visit_history.reason_label', 'Parça sonrası servis')
             ->assertJsonPath('request.service_visit_history.parent_request.mrn', $parent->mrn)
             ->assertJsonPath('request.service_visit_history.parent_part_requests.0.part_name', 'Karşılık sacı')
@@ -3982,11 +3982,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             $this->createPortalFieldDocument($parent, $fieldCode);
         }
         $child = TechnicalServiceRequest::query()->create([
-            'mrn' => $parent->mrn.'-SRV-001',
+            'mrn' => 'SRV-ACTION-SRV-GATE-001',
             'parent_request_id' => $parent->id,
             'root_mrn' => $parent->mrn,
             'service_sequence' => 1,
-            'service_code' => 'SRV-001',
+            'service_code' => 'SRV-ACTION-SRV-GATE-001',
             'service_visit_reason' => 'spare_part',
             'technical_service_technician_id' => $technician->id,
             'customer_name' => $parent->customer_name,
@@ -4020,7 +4020,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
             ->assertOk()
             ->assertJsonPath('job.service_visit_context.root_mrn', $parent->mrn)
-            ->assertJsonPath('job.service_visit_context.service_code', 'SRV-001')
+            ->assertJsonPath('job.service_visit_context.service_code', 'SRV-ACTION-SRV-GATE-001')
             ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 0)
             ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false);
     }

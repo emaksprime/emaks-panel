@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServiceQrLink;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -15,6 +17,7 @@ class PublicMountPaymentController extends Controller
     {
         $payment = $this->paymentForToken($token);
         $serviceRequest = $payment->technicalServiceRequest;
+        $mountFormUrl = $this->mountFormUrl($payment);
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
 
         return Inertia::render('public/mount-payment', [
@@ -26,6 +29,7 @@ class PublicMountPaymentController extends Controller
                 'purpose' => $payload['purpose'] ?? $payload['reason'] ?? 'mount_extra',
                 'note' => $payload['note'] ?? null,
                 'payment_url' => $payment->payment_url,
+                'mount_form_url' => $mountFormUrl,
                 'fake_approve_url' => $this->canShowFakeApprove($payment)
                     ? route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference])
                     : null,
@@ -34,6 +38,9 @@ class PublicMountPaymentController extends Controller
                 'mrn' => $serviceRequest?->mrn,
                 'customer' => $this->maskName($serviceRequest?->customer_name),
                 'phone' => $this->maskPhone($serviceRequest?->customer_phone),
+                'product_name' => $serviceRequest?->product_name ?? $payment->session?->qrLink?->product_name,
+                'product_model' => $serviceRequest?->product_model ?? $payment->session?->qrLink?->product_model,
+                'serial_number' => $serviceRequest?->serial_number ?? $payment->session?->serial_number,
             ],
         ]);
     }
@@ -46,6 +53,14 @@ class PublicMountPaymentController extends Controller
         $settlementService->markPaid($payment, [
             'source' => 'fake_public_payment_page',
         ]);
+
+        $freshPayment = $payment->fresh(['session.qrLink']);
+        $mountFormUrl = $freshPayment instanceof TechnicalServiceMountPayment
+            ? $this->mountFormUrl($freshPayment)
+            : null;
+        if ($mountFormUrl !== null) {
+            return redirect($mountFormUrl);
+        }
 
         return redirect()->route('mount-payment.show', ['token' => $token]);
     }
@@ -62,6 +77,26 @@ class PublicMountPaymentController extends Controller
         return $payment->provider === 'fake'
             && $payment->status === TechnicalServiceMountPayment::STATUS_PENDING
             && $this->fakeApproveEnabled();
+    }
+
+    private function mountFormUrl(TechnicalServiceMountPayment $payment): ?string
+    {
+        if ($payment->technical_service_request_id !== null) {
+            return null;
+        }
+
+        $session = $payment->session;
+        if (! $session instanceof TechnicalServiceMountSession
+            || $session->decision_status === TechnicalServiceMountSession::DECISION_SUBMITTED) {
+            return null;
+        }
+
+        $qrLink = $session->qrLink;
+        if (! $qrLink instanceof TechnicalServiceQrLink) {
+            return null;
+        }
+
+        return route('mount-request.show', ['token' => $qrLink->publicToken()]);
     }
 
     private function fakeApproveEnabled(): bool

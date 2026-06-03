@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\DB;
 
 class TechnicalServiceServiceVisitService
 {
+    public function __construct(private readonly TechnicalServiceCodeGenerator $codeGenerator) {}
+
     /**
      * @param array<string, mixed> $options
      */
@@ -27,9 +29,9 @@ class TechnicalServiceServiceVisitService
                 ->findOrFail($parent->id);
             $root = $this->rootRequest($parent);
             $sequence = $this->nextServiceSequence($root);
-            $serviceCode = sprintf('SRV-%03d', $sequence);
             $rootMrn = (string) ($root->root_mrn ?: $root->mrn);
-            $mrn = $this->uniqueServiceVisitMrn($rootMrn, $serviceCode);
+            $serviceCode = $this->codeGenerator->serviceCodeForRoot($rootMrn, $sequence);
+            $mrn = $this->uniqueServiceVisitMrn($serviceCode);
             $sourcePartRequest = $options['source_part_request'] ?? null;
             $sourcePartnerAction = $options['source_partner_action'] ?? null;
 
@@ -144,9 +146,9 @@ class TechnicalServiceServiceVisitService
         return max(1, ((int) $max) + 1);
     }
 
-    private function uniqueServiceVisitMrn(string $rootMrn, string $serviceCode): string
+    private function uniqueServiceVisitMrn(string $serviceCode): string
     {
-        $base = $rootMrn.'-'.$serviceCode;
+        $base = $serviceCode;
         $candidate = $base;
         $index = 2;
 

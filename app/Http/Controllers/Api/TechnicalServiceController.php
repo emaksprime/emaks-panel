@@ -27,6 +27,7 @@ use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
+use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
@@ -45,6 +46,7 @@ class TechnicalServiceController extends Controller
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflowService,
         private readonly EvolutionWhatsAppMessageService $messages,
+        private readonly TechnicalServiceCodeGenerator $codeGenerator,
     ) {
     }
 
@@ -125,7 +127,7 @@ class TechnicalServiceController extends Controller
         $payload['updated_by_user_id'] = $user?->id;
 
         $requestModel = DB::transaction(function () use ($payload, $user) {
-            $payload['mrn'] = $this->generateMrn();
+            $payload['mrn'] = $this->codeGenerator->nextMrn((string) ($payload['customer_name'] ?? ''));
 
             /** @var TechnicalServiceRequest $requestModel */
             $requestModel = TechnicalServiceRequest::query()->create($payload);
@@ -1370,23 +1372,6 @@ class TechnicalServiceController extends Controller
             ->unique();
 
         return collect($required)->every(fn (string $field): bool => $presentTypes->contains($field));
-    }
-
-    private function generateMrn(): string
-    {
-        $today = now()->format('Ymd');
-        $last = TechnicalServiceRequest::query()
-            ->where('mrn', 'like', "MRN-{$today}-%")
-            ->orderByDesc('id')
-            ->value('mrn');
-
-        $sequence = 1;
-
-        if ($last !== null && preg_match('/-(\d{4})$/', $last, $matches)) {
-            $sequence = (int) $matches[1] + 1;
-        }
-
-        return sprintf('MRN-%s-%04d', $today, $sequence);
     }
 
     /**

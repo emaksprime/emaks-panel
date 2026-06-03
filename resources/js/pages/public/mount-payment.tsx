@@ -10,12 +10,16 @@ type MountPaymentPageProps = {
     purpose?: string | null
     note?: string | null
     payment_url?: string | null
+    mount_form_url?: string | null
     fake_approve_url?: string | null
   }
   requestSummary?: {
     mrn?: string | null
     customer?: string | null
     phone?: string | null
+    product_name?: string | null
+    product_model?: string | null
+    serial_number?: string | null
   } | null
 }
 
@@ -49,6 +53,8 @@ export default function MountPayment({ payment, requestSummary }: MountPaymentPa
             <InfoRow label="MRN" value={requestSummary?.mrn ?? '-'} />
             <InfoRow label="Müşteri" value={requestSummary?.customer ?? '-'} />
             <InfoRow label="Telefon" value={requestSummary?.phone ?? '-'} />
+            <InfoRow label="Ürün" value={[requestSummary?.product_name, requestSummary?.product_model].filter(Boolean).join(' / ') || '-'} />
+            <InfoRow label="Seri No" value={requestSummary?.serial_number ?? '-'} />
             <InfoRow label="Tutar" value={<span className="text-lg font-bold">{formatMoney(payment.amount, payment.currency)}</span>} strong={false} />
             <InfoRow
               label="Durum"
@@ -74,6 +80,15 @@ export default function MountPayment({ payment, requestSummary }: MountPaymentPa
               className="inline-flex min-h-11 w-full min-w-0 items-center justify-center rounded-xl bg-slate-950 px-4 py-3 text-center text-sm font-semibold text-white transition hover:bg-slate-800 sm:w-auto"
             >
               Ödeme yap
+            </Link>
+          ) : null}
+
+          {paid && payment.mount_form_url ? (
+            <Link
+              href={payment.mount_form_url}
+              className="inline-flex min-h-11 w-full min-w-0 items-center justify-center rounded-xl bg-emerald-700 px-4 py-3 text-center text-sm font-semibold text-white transition hover:bg-emerald-800 sm:w-auto"
+            >
+              Forma devam et
             </Link>
           ) : null}
         </section>
