@@ -124,6 +124,41 @@ class TechnicalServiceUiLabelService
         };
     }
 
+    public static function cleanDisplayText(?string $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return $value;
+        }
+
+        return strtr($value, [
+            'ÃƒÂ‡' => 'Ç',
+            'ÃƒÂ–' => 'Ö',
+            'ÃƒÂœ' => 'Ü',
+            'ÃƒÂ§' => 'ç',
+            'ÃƒÂ¶' => 'ö',
+            'ÃƒÂ¼' => 'ü',
+            'Ã„Â°' => 'İ',
+            'Ã„Â±' => 'ı',
+            'Ã„ÂŸ' => 'ğ',
+            'Ã…ÂŸ' => 'ş',
+            'Ã…Âž' => 'Ş',
+            'Ã‡' => 'Ç',
+            'Ã–' => 'Ö',
+            'Ãœ' => 'Ü',
+            'Ã§' => 'ç',
+            'Ã¶' => 'ö',
+            'Ã¼' => 'ü',
+            'Ä°' => 'İ',
+            'Ä±' => 'ı',
+            'ÄŸ' => 'ğ',
+            'ÅŸ' => 'ş',
+            'Åž' => 'Ş',
+            'Ã‚' => '',
+            'Â' => '',
+            'ï¿½' => '',
+        ]);
+    }
+
     private static function safeFallback(string $value, string $fallback): string
     {
         if ($value === '') {

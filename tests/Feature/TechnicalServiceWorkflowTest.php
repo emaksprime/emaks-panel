@@ -746,10 +746,34 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(1000.0, $payload['sale_and_payment']['customer_charges']['paid_service_amount']);
         $this->assertSame(250.0, $payload['sale_and_payment']['customer_charges']['paid_part_amount']);
         $this->assertSame('Ödendi', $payload['sale_and_payment']['customer_charges']['latest']['status_label']);
+        $this->assertSame('Servis ve parça ödeme linki.', $payload['sale_and_payment']['customer_charges']['latest']['message_template']);
+        $this->assertStringContainsString('Servis ve parça ödeme linki.', $payload['sale_and_payment']['customer_charges']['latest']['message_text']);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $request->id,
             'event_type' => 'customer_charge_paid',
         ]);
+    }
+
+    public function test_presenter_normalizes_legacy_mojibake_system_messages(): void
+    {
+        $legacy = 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.';
+
+        $this->assertSame(
+            'Partner portal tamamlama gönderimi operasyon tarafından onaylandı.',
+            \App\Services\TechnicalService\TechnicalServiceUiLabelService::cleanDisplayText($legacy)
+        );
+    }
+
+    public function test_ops_service_part_payment_link_button_is_rendered_as_action(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('aria-label="Servis/parça ödeme linki"', $source);
+        $this->assertStringContainsString('Servis/parça ödeme linki oluştur', $source);
+        $this->assertStringContainsString('setCustomerChargeModalOpen(true)', $source);
+        $this->assertStringContainsString('Mesaj metnini kopyala', $source);
+        $this->assertStringContainsString('WhatsApp mesajını aç', $source);
     }
 
     public function test_ops_payload_groups_parent_and_srv_earning_breakdown(): void

@@ -4876,7 +4876,18 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
             ->assertJsonPath('job.kanban_column', 'final_check')
-            ->assertJsonPath('job.action_state', 'final_check_waiting');
+            ->assertJsonPath('job.action_state', 'final_check_waiting')
+            ->assertJsonPath('job.can_submit_completion', false)
+            ->assertJsonPath('job.next_action', 'Son kontrol bekliyor');
+
+        $finalCheckResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'final_check')
+            ->assertJsonPath('job.action_state', 'final_check_waiting')
+            ->assertJsonPath('job.can_submit_completion', false)
+            ->assertJsonPath('job.next_action', 'Son kontrol bekliyor');
+        $this->assertNotContains('Tamamlamaya gönderilebilir', $finalCheckResponse->json('job.badges'));
 
         $job->refresh();
         $this->assertSame('Son Kontrol', $job->status);

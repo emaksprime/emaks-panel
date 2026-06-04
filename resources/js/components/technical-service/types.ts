@@ -339,6 +339,7 @@ export type ServiceRequestCustomerCharge = {
   purpose_label?: string | null
   note?: string | null
   message_template?: string | null
+  message_text?: string | null
 }
 
 export type ServiceRequestCustomerChargeSummary = {

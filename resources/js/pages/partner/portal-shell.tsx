@@ -1318,8 +1318,16 @@ function ServiceJobDetail({
       return 'Talebiniz operasyona iletildi. Bu aşamada sadece not ekleyebilirsiniz.'
     }
 
+    if (job.kanban_column === 'final_check' || job.action_state === 'final_check_waiting') {
+      return 'Tamamlama gönderimi operasyonda son kontrol bekliyor. Bu aşamada sadece not ekleyebilirsiniz.'
+    }
+
     if (completionReady) {
       return 'Saha belgeleri ve müşteri onayı tamam. İşi operasyon son kontrolüne gönderebilirsiniz.'
+    }
+
+    if (job.action_state === 'completion_ready') {
+      return 'Tamamlama için eksik kontrol var. Fotoğraf ve müşteri onayı durumunu kontrol edin.'
     }
 
     if (job.kanban_column === 'appointment_confirmed') {

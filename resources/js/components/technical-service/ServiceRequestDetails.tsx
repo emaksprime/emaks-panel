@@ -1309,6 +1309,8 @@ export function ServiceRequestDetails({
   const [customerPartChargeInput, setCustomerPartChargeInput] = useState('')
   const [customerChargeNoteInput, setCustomerChargeNoteInput] = useState('')
   const [customerChargeMessageInput, setCustomerChargeMessageInput] = useState('')
+  const [customerChargeModalOpen, setCustomerChargeModalOpen] = useState(false)
+  const [customerChargeCopyMessage, setCustomerChargeCopyMessage] = useState<string | null>(null)
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
   const [earningNoteInput, setEarningNoteInput] = useState('')
@@ -1859,6 +1861,8 @@ export function ServiceRequestDetails({
       note: customerChargeNoteInput.trim() || null,
       message_template: customerChargeMessageInput.trim() || null,
     })
+    setCustomerChargeCopyMessage(null)
+    setCustomerChargeModalOpen(true)
     setRouteFeeEditorMessage('Müşteri servis/parça ödeme linki oluşturuldu.')
   }
   const handleTechnicianEarningMessageCreate = async () => {
@@ -1904,6 +1908,16 @@ export function ServiceRequestDetails({
     void onOperationControlChange?.({ [key]: value } as Partial<NonNullable<ServiceRequest['operationControl']>>)
   }
   const whatsappHref = whatsappHrefForPhone(request.phone)
+  const latestCustomerChargePaymentUrl = latestCustomerCharge?.payment_url ?? ''
+  const customerChargeDefaultMessage = latestCustomerCharge?.message_text
+    ?? latestCustomerCharge?.message_template
+    ?? (latestCustomerChargePaymentUrl
+      ? `Emaks Prime servis/parça ödemeniz için bağlantı:\n\n${latestCustomerChargePaymentUrl}`
+      : 'Emaks Prime servis/parça ödemeniz için ödeme bağlantısı oluşturulacaktır.')
+  const customerChargeMessageText = customerChargeMessageInput.trim() || customerChargeDefaultMessage
+  const customerChargeWhatsappUrl = whatsappHref && customerChargeMessageText.trim() !== ''
+    ? `${whatsappHref}?text=${encodeURIComponent(customerChargeMessageText)}`
+    : ''
   const approvalState = technicianApprovalState(request, events)
   const operationSteps: Array<{ title: string, status: OperationStepStatus, message: string }> = [
     operationControl.door_photos_checked === 'compatible'
@@ -2175,6 +2189,23 @@ export function ServiceRequestDetails({
       setCustomerApprovalCopyMessage(successMessage)
     } catch {
       setCustomerApprovalCopyMessage('Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
+    }
+  }
+
+  const copyCustomerChargeValue = async (value: string | null | undefined, successMessage: string) => {
+    const text = String(value ?? '').trim()
+
+    if (text === '') {
+      setCustomerChargeCopyMessage('Kopyalanacak ödeme bilgisi yok.')
+
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(text)
+      setCustomerChargeCopyMessage(successMessage)
+    } catch {
+      setCustomerChargeCopyMessage('Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
     }
   }
 
@@ -2767,49 +2798,127 @@ export function ServiceRequestDetails({
                   </div>
                 </details>
               ) : null}
-              <details className="rounded-2xl border border-blue-100 bg-white/80 p-3 text-sm text-slate-700">
-                <summary className="cursor-pointer font-semibold text-slate-800">Servis / parça müşteri ödeme linki</summary>
-                <div className="mt-3 grid gap-3">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                      Servis ücreti
-                      <Input type="number" min="0" step="0.01" value={customerServiceChargeInput} onChange={(event) => setCustomerServiceChargeInput(event.target.value)} />
-                    </label>
-                    <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                      Parça ücreti
-                      <Input type="number" min="0" step="0.01" value={customerPartChargeInput} onChange={(event) => setCustomerPartChargeInput(event.target.value)} />
-                    </label>
-                    <MiniMetric label="Toplam" value={formatMoneyValue(customerChargeTotalAmount)} />
+              <div className="rounded-2xl border border-blue-100 bg-white/80 p-3 text-sm text-slate-700">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-slate-800">Servis / parça müşteri ödeme linki</p>
+                    <p className="mt-1 text-xs text-slate-500">Garanti dışı servis veya parça tahsilatı için ayrı ödeme linki oluşturulur.</p>
                   </div>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                    Müşteriye gidecek mesaj
-                    <Input value={customerChargeMessageInput} onChange={(event) => setCustomerChargeMessageInput(event.target.value)} placeholder="Servis/parça ödeme açıklaması" />
-                  </label>
-                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                    Operasyon notu
-                    <Input value={customerChargeNoteInput} onChange={(event) => setCustomerChargeNoteInput(event.target.value)} placeholder="İç not" />
-                  </label>
-                  {latestCustomerCharge ? (
-                    <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
-                      <p className="font-semibold">Son link: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
-                      <p className="mt-1">Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
-                      {latestCustomerCharge.payment_url ? (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <Button asChild size="sm" variant="outline">
-                            <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
-                          </Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(latestCustomerCharge.payment_url ?? '')}>Linki kopyala</Button>
+                  <button
+                    type="button"
+                    aria-label="Servis/parça ödeme linki oluştur"
+                    onClick={() => setCustomerChargeModalOpen(true)}
+                    className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-100"
+                  >
+                    Servis/parça ödeme linki oluştur
+                  </button>
+                </div>
+                {latestCustomerCharge ? (
+                  <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
+                    <p className="font-semibold">Son link: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
+                    <p className="mt-1">Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
+                    {latestCustomerCharge.payment_url ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button asChild size="sm" variant="outline">
+                          <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              {customerChargeModalOpen ? (
+                <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Servis/parça ödeme linki">
+                  <div className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-blue-100 bg-white p-4 shadow-2xl">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-base font-semibold text-slate-950">Servis/parça ödeme linki</p>
+                        <p className="mt-1 text-xs text-slate-600">Servis ve parça tutarını girin; toplam server tarafında yeniden hesaplanır.</p>
+                      </div>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setCustomerChargeModalOpen(false)}>
+                        Kapat
+                      </Button>
+                    </div>
+                    <div className="mt-4 grid gap-3">
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                          Servis ücreti
+                          <Input type="number" min="0" step="0.01" value={customerServiceChargeInput} onChange={(event) => setCustomerServiceChargeInput(event.target.value)} />
+                        </label>
+                        <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                          Parça ücreti
+                          <Input type="number" min="0" step="0.01" value={customerPartChargeInput} onChange={(event) => setCustomerPartChargeInput(event.target.value)} />
+                        </label>
+                        <MiniMetric label="Toplam" value={formatMoneyValue(customerChargeTotalAmount)} />
+                      </div>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Açıklama
+                        <Input value={customerChargeNoteInput} onChange={(event) => setCustomerChargeNoteInput(event.target.value)} placeholder="İç operasyon notu" />
+                      </label>
+                      <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                        Müşteriye gönderilecek mesaj
+                        <textarea
+                          value={customerChargeMessageInput}
+                          onChange={(event) => setCustomerChargeMessageInput(event.target.value)}
+                          placeholder="Servis/parça ödeme açıklaması"
+                          className="min-h-24 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+                        />
+                      </label>
+                      {latestCustomerCharge ? (
+                        <div className="grid gap-2 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
+                          <p className="font-semibold">Son ödeme linki: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
+                          <p>Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
+                          {latestCustomerChargePaymentUrl ? (
+                            <>
+                              <input
+                                readOnly
+                                value={latestCustomerChargePaymentUrl}
+                                className="w-full rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-950"
+                              />
+                              <textarea
+                                readOnly
+                                value={customerChargeMessageText}
+                                className="min-h-24 w-full rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-950"
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerChargePaymentUrl, 'Link kopyalandı.')}>
+                                  Linki kopyala
+                                </Button>
+                                <Button asChild type="button" size="sm" variant="outline">
+                                  <a href={latestCustomerChargePaymentUrl} target="_blank" rel="noreferrer">Linki aç</a>
+                                </Button>
+                                <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(customerChargeMessageText, 'Mesaj metni kopyalandı.')}>
+                                  Mesaj metnini kopyala
+                                </Button>
+                                {customerChargeWhatsappUrl ? (
+                                  <Button asChild type="button" size="sm" variant="outline">
+                                    <a href={customerChargeWhatsappUrl} target="_blank" rel="noreferrer">WhatsApp mesajını aç</a>
+                                  </Button>
+                                ) : null}
+                              </div>
+                            </>
+                          ) : null}
                         </div>
                       ) : null}
+                      {customerChargeCopyMessage ? (
+                        <p className="text-xs font-semibold text-blue-800">{customerChargeCopyMessage}</p>
+                      ) : null}
+                      {routeFeeEditorMessage ? (
+                        <p className="text-xs font-semibold text-slate-700">{routeFeeEditorMessage}</p>
+                      ) : null}
+                      <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+                        <Button type="button" variant="outline" size="sm" onClick={() => setCustomerChargeModalOpen(false)}>
+                          Vazgeç
+                        </Button>
+                        <Button type="button" size="sm" onClick={() => void handleCustomerChargeCreate()} disabled={!canCreateCustomerCharge || extraPaymentCreateLoading}>
+                          {extraPaymentCreateLoading ? 'Link oluşturuluyor...' : 'Link oluştur'}
+                        </Button>
+                      </div>
                     </div>
-                  ) : null}
-                  <div className="flex justify-end">
-                    <Button type="button" variant="outline" onClick={() => void handleCustomerChargeCreate()} disabled={!canCreateCustomerCharge || extraPaymentCreateLoading}>
-                      {extraPaymentCreateLoading ? 'Link oluşturuluyor...' : 'Servis/parça ödeme linki oluştur'}
-                    </Button>
                   </div>
                 </div>
-              </details>
+              ) : null}
               {paymentControlMissing ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">
                   Ödeme kontrol edilmedi

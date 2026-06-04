@@ -381,10 +381,20 @@ class B2BPartnerPortalDataService
             && ! $hasAppointmentProposalInReview;
         $canRequestAppointmentChange = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction;
         $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction && ! $hasOpenPartRequest;
+        $completionReadyForSubmit = $partnerColumn === 'appointment_confirmed'
+            && $canFieldActions
+            && ($completionRequirements['photos_ready'] ?? false) === true
+            && ($completionRequirements['customer_confirmation_ready'] ?? false) === true;
         $nextActionLabel = $this->serviceJobNextActionLabel($request, $stateAction, $completionRequirements);
         $partnerNextActionLabel = $canonicalState['display_action_label'] ?? $nextActionLabel;
-        if ($nextActionLabel === 'Tamamlamaya gönderilebilir') {
+        if ($completionReadyForSubmit) {
+            $nextActionLabel = 'Tamamlamaya gönderilebilir';
             $partnerNextActionLabel = $nextActionLabel;
+        } elseif ($isFinalCheck || $partnerColumn === 'final_check') {
+            $nextActionLabel = 'Son kontrol bekliyor';
+            $partnerNextActionLabel = 'Son kontrol bekliyor';
+        } elseif ($nextActionLabel === 'Tamamlamaya gönderilebilir') {
+            $nextActionLabel = (string) ($canonicalState['display_action_label'] ?? 'Randevu onaylandı');
         }
         if ($stateAction?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
             && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
@@ -422,12 +432,28 @@ class B2BPartnerPortalDataService
         if ($partnerColumn === 'appointment_confirmed') {
             $displayBadges = $this->appointmentConfirmedPartnerBadges($completionRequirements);
         }
-        if ($nextActionLabel === 'Tamamlamaya gönderilebilir' && ! in_array('Tamamlamaya gönderilebilir', $displayBadges, true)) {
+        if ($completionReadyForSubmit && ! in_array('Tamamlamaya gönderilebilir', $displayBadges, true)) {
             array_unshift($displayBadges, 'Tamamlamaya gönderilebilir');
+        }
+        if (! $completionReadyForSubmit) {
+            $displayBadges = array_values(array_filter(
+                $displayBadges,
+                fn (string $badge): bool => $badge !== 'Tamamlamaya gönderilebilir'
+            ));
         }
         if ($stateAction?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
             && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $displayBadges = ['Operasyon onayı bekleniyor'];
+        }
+        $actionState = $this->serviceJobActionState($request, $stateAction, $completionRequirements);
+        if ($isFinalCheck || $partnerColumn === 'final_check') {
+            $actionState = 'final_check_waiting';
+        } elseif ($isTerminal || $partnerColumn === 'completed') {
+            $actionState = 'completed';
+        } elseif ($completionReadyForSubmit) {
+            $actionState = 'completion_ready';
+        } elseif ($actionState === 'completion_ready') {
+            $actionState = $partnerColumn === 'appointment_confirmed' ? 'otp_waiting' : 'new';
         }
         $appointmentLabel = $this->appointmentLabel($request);
         if ($appointmentLabel === null && $hasAppointmentProposalInReview) {
@@ -492,7 +518,7 @@ class B2BPartnerPortalDataService
                 'action_label' => TechnicalServiceUiLabelService::actionLabel($latestAction->action),
                 'status' => $latestAction->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($latestAction->status),
-                'note' => $latestAction->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($latestAction->note),
                 'payload' => is_array($latestAction->payload) ? $latestAction->payload : [],
                 'created_at' => $latestAction->created_at?->toIso8601String(),
             ] : null,
@@ -504,7 +530,7 @@ class B2BPartnerPortalDataService
                     'action_label' => TechnicalServiceUiLabelService::actionLabel($action->action),
                     'status' => $action->status,
                     'status_label' => TechnicalServiceUiLabelService::statusLabel($action->status),
-                    'note' => $action->note,
+                    'note' => TechnicalServiceUiLabelService::cleanDisplayText($action->note),
                     'payload' => is_array($action->payload) ? $action->payload : [],
                     'created_at' => $action->created_at?->toIso8601String(),
                 ])
@@ -514,7 +540,7 @@ class B2BPartnerPortalDataService
                 'id' => $latestAppointmentProposal->id,
                 'status' => $latestAppointmentProposal->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($latestAppointmentProposal->status),
-                'note' => $latestAppointmentProposal->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($latestAppointmentProposal->note),
                 'payload' => is_array($latestAppointmentProposal->payload) ? $latestAppointmentProposal->payload : [],
                 'created_at' => $latestAppointmentProposal->created_at?->toIso8601String(),
             ] : null,
@@ -522,7 +548,7 @@ class B2BPartnerPortalDataService
                 'id' => $latestRejection->id,
                 'status' => $latestRejection->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($latestRejection->status),
-                'note' => $latestRejection->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($latestRejection->note),
                 'payload' => is_array($latestRejection->payload) ? $latestRejection->payload : [],
                 'created_at' => $latestRejection->created_at?->toIso8601String(),
             ] : null,
@@ -530,7 +556,7 @@ class B2BPartnerPortalDataService
                 'id' => $latestSupportRequest->id,
                 'status' => $latestSupportRequest->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($latestSupportRequest->status),
-                'note' => $latestSupportRequest->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($latestSupportRequest->note),
                 'payload' => is_array($latestSupportRequest->payload) ? $latestSupportRequest->payload : [],
                 'created_at' => $latestSupportRequest->created_at?->toIso8601String(),
             ] : null,
@@ -542,7 +568,7 @@ class B2BPartnerPortalDataService
                 'id' => $latestPriceRevisionRequest->id,
                 'status' => $latestPriceRevisionRequest->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($latestPriceRevisionRequest->status),
-                'note' => $latestPriceRevisionRequest->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($latestPriceRevisionRequest->note),
                 'payload' => is_array($latestPriceRevisionRequest->payload) ? $latestPriceRevisionRequest->payload : [],
                 'created_at' => $latestPriceRevisionRequest->created_at?->toIso8601String(),
             ] : null,
@@ -550,7 +576,7 @@ class B2BPartnerPortalDataService
                 'id' => $latestOtpRequest->id,
                 'status' => $latestOtpRequest->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($latestOtpRequest->status),
-                'note' => $latestOtpRequest->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($latestOtpRequest->note),
                 'payload' => is_array($latestOtpRequest->payload) ? $latestOtpRequest->payload : [],
                 'created_at' => $latestOtpRequest->created_at?->toIso8601String(),
             ] : null,
@@ -568,7 +594,7 @@ class B2BPartnerPortalDataService
                 'id' => $latestCompletionSubmission->id,
                 'status' => $latestCompletionSubmission->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($latestCompletionSubmission->status),
-                'note' => $latestCompletionSubmission->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($latestCompletionSubmission->note),
                 'payload' => is_array($latestCompletionSubmission->payload) ? $latestCompletionSubmission->payload : [],
                 'created_at' => $latestCompletionSubmission->created_at?->toIso8601String(),
             ] : null,
@@ -579,7 +605,7 @@ class B2BPartnerPortalDataService
                 'total_amount' => (float) $assignmentOffer->total_amount,
                 'currency' => $assignmentOffer->currency,
                 'status' => $assignmentOffer->status,
-                'note' => $assignmentOffer->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($assignmentOffer->note),
                 'sent_at' => $assignmentOffer->sent_at?->toIso8601String(),
                 'message_payload' => is_array($assignmentOffer->metadata) ? ($assignmentOffer->metadata['message_payload'] ?? null) : null,
             ] : null,
@@ -594,14 +620,14 @@ class B2BPartnerPortalDataService
             'earning_breakdown' => $earningBreakdown,
             'completion_requirements' => $completionRequirements,
             'badges' => $displayBadges,
-            'card_priority' => $nextActionLabel === 'Tamamlamaya gönderilebilir'
+            'card_priority' => $completionReadyForSubmit
                 ? 4
                 : ($canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction)),
             'card_tone' => $hasOpenPartRequest ? 'violet' : $this->serviceJobTone($request, $stateAction),
             'kanban_column' => $partnerColumn,
             'operational_state' => $canonicalState,
             'service_visit_context' => $this->serviceVisitContext($request),
-            'action_state' => $this->serviceJobActionState($request, $stateAction, $completionRequirements),
+            'action_state' => $actionState,
             'can_accept' => $canAcceptAppointment,
             'can_propose_appointment' => $canProposeAppointment,
             'can_request_appointment_change' => $canRequestAppointmentChange,
@@ -609,7 +635,7 @@ class B2BPartnerPortalDataService
             'can_request_support' => $canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit',
             'can_request_customer_otp' => $canFieldActions,
             'can_upload_photos' => $canFieldActions,
-            'can_submit_completion' => $canFieldActions,
+            'can_submit_completion' => $completionReadyForSubmit,
             'can_request_price_revision' => ! $isTerminal && ! $isRejectedInReview && $assignmentOffer !== null,
             'can_complete_directly' => false,
             'can_reject' => ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview,

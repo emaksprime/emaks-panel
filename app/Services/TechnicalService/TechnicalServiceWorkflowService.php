@@ -955,6 +955,8 @@ class TechnicalServiceWorkflowService
         $payload['status'] = $request->status;
         $payload['workflow_status'] = $request->workflow_status;
         $payload['next_action'] = $request->next_action;
+        $payload['field_completion_note'] = TechnicalServiceUiLabelService::cleanDisplayText($request->field_completion_note);
+        $payload['completion_block_reason'] = TechnicalServiceUiLabelService::cleanDisplayText($request->completion_block_reason);
         $payload['sla_status'] = $request->sla_status ?? self::SLA_NORMAL;
         $payload['allowed_workflow_actions'] = $this->allowedActionsFor($request);
         $payload['allowed_workflow_transitions'] = self::transitionMap()[$this->currentWorkflowStatus($request)] ?? [];
@@ -1721,6 +1723,12 @@ class TechnicalServiceWorkflowService
                 $serviceAmount = $amount;
             }
         }
+        $messageTemplate = TechnicalServiceUiLabelService::cleanDisplayText($payload['message_template'] ?? null);
+        $paymentUrl = (string) ($payment->payment_url ?? '');
+        $messageText = trim((string) ($messageTemplate ?: 'Emaks Prime servis/parça ödemeniz için bağlantı aşağıdadır.'));
+        if ($paymentUrl !== '' && ! str_contains($messageText, $paymentUrl)) {
+            $messageText = trim($messageText)."\n\n".$paymentUrl;
+        }
 
         return [
             'id' => $payment->id,
@@ -1742,8 +1750,9 @@ class TechnicalServiceWorkflowService
             'paid_at' => $this->dateTimeString($payment->paid_at),
             'purpose' => $payload['purpose'] ?? $payload['charge_type'] ?? null,
             'purpose_label' => $this->customerChargePurposeLabel((string) ($payload['purpose'] ?? $payload['charge_type'] ?? '')),
-            'note' => $payload['note'] ?? null,
-            'message_template' => $payload['message_template'] ?? null,
+            'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
+            'message_template' => $messageTemplate,
+            'message_text' => $messageText,
         ];
     }
 
@@ -2327,6 +2336,8 @@ class TechnicalServiceWorkflowService
 
                 return [
                     ...$row,
+                    'title' => TechnicalServiceUiLabelService::cleanDisplayText($event->title),
+                    'note' => TechnicalServiceUiLabelService::cleanDisplayText($event->note),
                     'event_type_label' => TechnicalServiceUiLabelService::actionLabel($eventType),
                     'title_label' => filled($event->title)
                         ? TechnicalServiceUiLabelService::actionLabel($eventType)
@@ -2474,7 +2485,7 @@ class TechnicalServiceWorkflowService
                 'action_label' => TechnicalServiceUiLabelService::actionLabel($action->action),
                 'status' => $action->status,
                 'status_label' => TechnicalServiceUiLabelService::statusLabel($action->status),
-                'note' => $action->note,
+                'note' => TechnicalServiceUiLabelService::cleanDisplayText($action->note),
                 'payload' => is_array($action->payload) ? $action->payload : [],
                 'created_at' => $this->dateTimeString($action->created_at),
                 'updated_at' => $this->dateTimeString($action->updated_at),
