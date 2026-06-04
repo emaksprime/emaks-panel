@@ -161,6 +161,26 @@ const attentionBadgeTone = (level: string | null | undefined): RequestBadge['ton
   return 'amber'
 }
 
+const actionCardClassName = (request: ServiceRequest, selected: boolean, isUnread: boolean): string => {
+  if (selected) {
+    return 'border-[#06143A] bg-white ring-2 ring-[#06143A]/15'
+  }
+
+  if (request.operationalState?.requires_ops_action) {
+    if (request.operationalState.action_priority === 'critical') {
+      return 'border-rose-300 bg-rose-50/85 hover:border-rose-400 hover:bg-rose-50'
+    }
+
+    return 'border-amber-300 bg-amber-50/85 hover:border-amber-400 hover:bg-amber-50'
+  }
+
+  if (isUnread) {
+    return 'border-amber-300 bg-amber-50/80 hover:border-amber-400 hover:bg-amber-50'
+  }
+
+  return 'border-slate-200 bg-white hover:border-slate-300'
+}
+
 const buildBadges = (request: ServiceRequest): RequestBadge[] => {
   if (request.displayTags?.length) {
     return request.displayTags
@@ -433,11 +453,7 @@ export function TechnicalServiceKanbanCard({
       onClick={onClick}
       className={[
         'group relative min-w-0 w-full overflow-hidden rounded-[18px] border p-2.5 text-left shadow-[0_8px_20px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_26px_rgba(15,23,42,0.09)] xl:p-3',
-        selected
-          ? 'border-[#06143A] bg-white ring-2 ring-[#06143A]/15'
-          : isUnread
-            ? 'border-amber-300 bg-amber-50/80 hover:border-amber-400 hover:bg-amber-50'
-            : 'border-slate-200 bg-white hover:border-slate-300',
+        actionCardClassName(request, selected, isUnread),
       ].join(' ')}
     >
       {isUnread ? <span className="absolute inset-x-0 top-0 h-1 bg-amber-400" aria-hidden="true" /> : null}

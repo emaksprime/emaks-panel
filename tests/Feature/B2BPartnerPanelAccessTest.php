@@ -4985,7 +4985,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $this->assertSame('Usta randevu önerdi', $opsState['display_action_label']);
         $this->assertSame(6, $opsState['sort_priority']);
-        $this->assertSame(['Usta randevu önerdi', 'Randevuyu onaylayın'], $labels);
+        $this->assertSame(['OPS aksiyonu: Usta randevu önerdi', 'Randevuyu onaylayın'], $labels);
         $this->assertNotContains('Randevu önerisi bekliyor', $labels);
     }
 

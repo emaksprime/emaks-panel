@@ -125,6 +125,13 @@ export type ServiceRequestOperationalState = {
   attention_reason?: string | null
   sort_priority?: number | null
   active_action_required?: boolean | null
+  action_owner?: 'ops' | 'technician' | 'customer' | 'system' | 'none' | string | null
+  action_priority?: 'critical' | 'high' | 'normal' | 'low' | string | null
+  requires_ops_action?: boolean | null
+  requires_technician_action?: boolean | null
+  requires_customer_action?: boolean | null
+  action_label?: string | null
+  action_hint?: string | null
   is_completed?: boolean | null
   is_pending_final_check?: boolean | null
   is_appointment_confirmed?: boolean | null

@@ -90,6 +90,23 @@ class TechnicalServiceOperationalStatePresenter
 
         $attention = $this->attention($request, $activeAction, $activePartRequest, $appointmentAttention, $opsColumn, $isCompleted, $isCancelled, $doorIncompatible);
         $displayActionLabel = $this->displayActionLabel($request, $activeAction, $activePartRequest, $attention, $opsColumn, $isCompleted);
+        $isCustomerApprovalRequired = $this->customerApprovalRequired($request, $opsColumn, $isCompleted);
+        $isFieldDocsRequired = $this->fieldDocumentsRequired($request, $opsColumn, $isCompleted);
+        $actionMeta = $this->actionMeta(
+            $request,
+            $activeAction,
+            $activePartRequest,
+            $attention,
+            $opsColumn,
+            $displayActionLabel,
+            $isCompleted,
+            $isCancelled,
+            $isPendingFinalCheck,
+            $isAppointmentConfirmed,
+            $isCustomerApprovalRequired,
+            $isFieldDocsRequired,
+            $doorIncompatible,
+        );
 
         return [
             'canonical_stage' => $opsColumn,
@@ -97,19 +114,26 @@ class TechnicalServiceOperationalStatePresenter
             'partner_column' => $partnerColumn,
             'display_status_label' => $this->displayStatusLabel($opsColumn),
             'display_action_label' => $displayActionLabel,
-            'display_tags' => $this->displayTags($request, $displayActionLabel, $opsColumn, $attention, $isCompleted),
+            'display_tags' => $this->displayTags($request, $displayActionLabel, $opsColumn, $attention, $actionMeta, $isCompleted),
             'attention_level' => $attention['attention_level'],
             'attention_reason' => $attention['attention_reason'],
             'sort_priority' => $attention['sort_priority'],
             'last_action_at' => $attention['last_action_at'],
-            'active_action_required' => $attention['attention_level'] !== 'normal',
+            'active_action_required' => $actionMeta['action_owner'] !== 'none',
+            'action_owner' => $actionMeta['action_owner'],
+            'action_priority' => $actionMeta['action_priority'],
+            'requires_ops_action' => $actionMeta['requires_ops_action'],
+            'requires_technician_action' => $actionMeta['requires_technician_action'],
+            'requires_customer_action' => $actionMeta['requires_customer_action'],
+            'action_label' => $actionMeta['action_label'],
+            'action_hint' => $actionMeta['action_hint'],
             'allowed_ops_actions' => [],
             'allowed_technician_actions' => [],
             'is_completed' => $isCompleted,
             'is_pending_final_check' => $isPendingFinalCheck,
             'is_appointment_confirmed' => $isAppointmentConfirmed,
-            'is_customer_approval_required' => $this->customerApprovalRequired($request, $opsColumn, $isCompleted),
-            'is_field_docs_required' => $this->fieldDocumentsRequired($request, $opsColumn, $isCompleted),
+            'is_customer_approval_required' => $isCustomerApprovalRequired,
+            'is_field_docs_required' => $isFieldDocsRequired,
             'is_assignment_review_required' => $opsColumn === self::OPS_COLUMN_ASSIGNMENT_PENDING,
             'active_part_request_id' => $activePartRequest?->id,
             'active_part_request_status' => $activePartRequest?->status,
@@ -578,6 +602,118 @@ class TechnicalServiceOperationalStatePresenter
 
     /**
      * @param array<string, mixed> $attention
+     * @return array<string, mixed>
+     */
+    private function actionMeta(
+        TechnicalServiceRequest $request,
+        ?TechnicalServicePartnerJobAction $activeAction,
+        ?TechnicalServicePartRequest $activePartRequest,
+        array $attention,
+        string $opsColumn,
+        string $displayActionLabel,
+        bool $isCompleted,
+        bool $isCancelled,
+        bool $isPendingFinalCheck,
+        bool $isAppointmentConfirmed,
+        bool $isCustomerApprovalRequired,
+        bool $isFieldDocsRequired,
+        bool $doorIncompatible,
+    ): array {
+        $action = (string) ($attention['action'] ?? '');
+
+        if ($isCompleted || $isCancelled) {
+            return $this->actionMetaPayload('none', 'low', $displayActionLabel, null);
+        }
+
+        if ($action === 'appointment_overdue_for_closure') {
+            return $this->actionMetaPayload('ops', 'critical', $displayActionLabel, 'Randevu saati geçti. Operasyon usta ile kapanışı netleştirmeli.');
+        }
+
+        if ($doorIncompatible || $action === 'door_incompatible') {
+            return $this->actionMetaPayload('ops', 'critical', $displayActionLabel, 'Kapı görselleri uyumsuz işaretlendi. Operasyon karar vermeli.');
+        }
+
+        if ($activePartRequest instanceof TechnicalServicePartRequest) {
+            return match ((string) $activePartRequest->status) {
+                TechnicalServicePartRequest::STATUS_REQUESTED,
+                TechnicalServicePartRequest::STATUS_OPS_REVIEW => $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta yedek parça talep etti. Operasyon karar vermeli.'),
+                TechnicalServicePartRequest::STATUS_APPROVED,
+                TechnicalServicePartRequest::STATUS_ORDERED => $this->actionMetaPayload('ops', 'normal', $displayActionLabel, 'Parça tedarik ve gönderim bilgisi operasyon tarafında takip edilmeli.'),
+                TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED => $this->actionMetaPayload('ops', 'critical', $displayActionLabel, 'Parça sonrası servis kaydı operasyon tarafında oluşturulmalı.'),
+                TechnicalServicePartRequest::STATUS_SENT => $this->actionMetaPayload('technician', 'normal', $displayActionLabel, 'Parça gönderildi. Ustanın teslim aldım demesi bekleniyor.'),
+                TechnicalServicePartRequest::STATUS_RECEIVED => $this->actionMetaPayload('system', 'low', $displayActionLabel, 'Parça teslim alındı. Operasyon aksiyonu yok.'),
+                default => $this->actionMetaPayload('ops', 'normal', $displayActionLabel, 'Parça talebi operasyon takibinde.'),
+            };
+        }
+
+        if ($activeAction instanceof TechnicalServicePartnerJobAction) {
+            return match ($activeAction->action) {
+                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => $this->actionMetaPayload('ops', 'critical', $displayActionLabel, 'Usta işi reddetti. Operasyon yeniden atama veya iptal kararı vermeli.'),
+                TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => $this->actionMetaPayload('ops', 'critical', $displayActionLabel, 'Müşteri onay vermedi. Operasyon inceleyip yeniden aksiyon almalı.'),
+                TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => $this->actionMetaPayload('ops', 'critical', $displayActionLabel, 'Usta hakediş revize talep etti. Operasyon yanıtlamalı.'),
+                TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta tamamlamaya gönderdi. Operasyon son kontrol yapmalı.'),
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED => $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta randevu önerdi. Operasyon randevuyu onaylamalı.'),
+                TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta randevu değişikliği istiyor. Operasyon karar vermeli.'),
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED => $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta ek destek talep etti. Operasyon incelemeli.'),
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta tekrar ziyaret istedi. Operasyon karar vermeli.'),
+                default => $this->actionMetaPayload('ops', 'normal', $displayActionLabel, 'Operasyon incelemesi bekleniyor.'),
+            };
+        }
+
+        if ($isPendingFinalCheck || $opsColumn === self::OPS_COLUMN_FINAL_CHECK) {
+            return $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta tamamlamaya gönderdi. Operasyon son kontrol yapmalı.');
+        }
+
+        if ($opsColumn === self::OPS_COLUMN_NEW) {
+            return $this->actionMetaPayload('ops', 'normal', $displayActionLabel, 'Yeni talep operasyon ataması bekliyor.');
+        }
+
+        if ($opsColumn === self::OPS_COLUMN_ASSIGNMENT_PENDING) {
+            if ($this->hasTechnician($request)) {
+                return $this->actionMetaPayload('technician', 'normal', $displayActionLabel, 'Ustanın işi kabul etmesi bekleniyor.');
+            }
+
+            return $this->actionMetaPayload('ops', 'normal', $displayActionLabel, 'Talebe usta seçilmeli.');
+        }
+
+        if ($action === 'appointment_in_progress') {
+            return $this->actionMetaPayload('technician', 'normal', $displayActionLabel, 'Randevu zamanı geldi. Saha aksiyonu ustada.');
+        }
+
+        if ($isFieldDocsRequired) {
+            return $this->actionMetaPayload('technician', 'normal', 'Fotoğraf bekleniyor', 'Usta saha fotoğraflarını yüklemeli.');
+        }
+
+        if ($isCustomerApprovalRequired) {
+            return $this->actionMetaPayload('customer', 'normal', 'Müşteri onayı bekliyor', 'Müşteri onayı bekleniyor.');
+        }
+
+        if ($isAppointmentConfirmed || $opsColumn === self::OPS_COLUMN_ASSIGNED) {
+            return $this->actionMetaPayload('technician', 'normal', $displayActionLabel, 'Usta fotoğrafları ve müşteri onayını tamamlayacak.');
+        }
+
+        return $this->actionMetaPayload('none', 'low', $displayActionLabel, null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function actionMetaPayload(string $owner, string $priority, string $label, ?string $hint): array
+    {
+        return [
+            'action_owner' => $owner,
+            'action_priority' => $priority,
+            'requires_ops_action' => $owner === 'ops',
+            'requires_technician_action' => $owner === 'technician',
+            'requires_customer_action' => $owner === 'customer',
+            'action_label' => $label,
+            'action_hint' => $hint,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $attention
+     * @param array<string, mixed> $actionMeta
      * @return array<int, array<string, mixed>>
      */
     private function displayTags(
@@ -585,6 +721,7 @@ class TechnicalServiceOperationalStatePresenter
         string $displayActionLabel,
         string $opsColumn,
         array $attention,
+        array $actionMeta,
         bool $isCompleted,
     ): array {
         $tags = [];
@@ -608,37 +745,53 @@ class TechnicalServiceOperationalStatePresenter
 
         if (($attention['attention_level'] ?? 'normal') !== 'normal') {
             $level = (string) $attention['attention_level'];
+            $isOpsAction = ($actionMeta['action_owner'] ?? null) === 'ops';
             if (($attention['action'] ?? null) === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED) {
+                if ($isOpsAction) {
+                    $add('OPS aksiyonu: Usta randevu önerdi', 'amber', true);
+                    $add('Randevuyu onaylayın', 'blue');
+
+                    return $tags;
+                }
+
                 $add('Usta randevu önerdi', 'amber', true);
                 $add('Randevuyu onaylayın', 'blue');
 
                 return $tags;
             }
-            $add('Aksiyon: '.$displayActionLabel, $level === 'critical' ? 'rose' : ($level === 'info' ? 'blue' : 'amber'), true);
+            if ($isOpsAction) {
+                $add('OPS aksiyonu: '.$displayActionLabel, $level === 'critical' ? 'rose' : 'amber', true);
+            } else {
+                $add($displayActionLabel, $level === 'info' ? 'blue' : 'neutral', false);
+            }
 
             return $tags;
         }
 
         if ($opsColumn === self::OPS_COLUMN_FINAL_CHECK) {
-            $add('Aksiyon: Son kontrol bekliyor', 'purple', true);
+            $add('OPS aksiyonu: Son kontrol bekliyor', 'purple', true);
 
             return $tags;
         }
 
         if ($opsColumn === self::OPS_COLUMN_ASSIGNED) {
-            $add('Aksiyon: Randevu onaylandı', 'blue', true);
+            $add('Randevu onaylandı', 'blue');
 
             return $tags;
         }
 
         if ($opsColumn === self::OPS_COLUMN_ASSIGNMENT_PENDING) {
-            $add($this->hasTechnician($request) ? 'Usta onayı bekliyor' : 'Usta seçilmeli', 'amber', true);
+            if ($this->hasTechnician($request)) {
+                $add('Usta onayı bekliyor', 'neutral');
+            } else {
+                $add('OPS aksiyonu: Usta seçilmeli', 'amber', true);
+            }
 
             return $tags;
         }
 
         if ($opsColumn === self::OPS_COLUMN_NEW) {
-            $add('Usta seçilmeli', 'amber', true);
+            $add('OPS aksiyonu: Usta seçilmeli', 'amber', true);
         }
 
         return $tags;

@@ -42,7 +42,33 @@ const getNewestRequestTime = (request: ServiceRequest): number => Math.max(
   toSortTime(request.createdAt),
 )
 
+const requiresOpsAction = (request: ServiceRequest): boolean =>
+  Boolean(request.operationalState?.requires_ops_action)
+
+const actionOwnerSortPriority = (request: ServiceRequest): number => {
+  if (request.operationalState?.requires_ops_action) {
+    return ({
+      critical: 0,
+      high: 1,
+      normal: 2,
+      low: 3,
+    } as Record<string, number>)[String(request.operationalState.action_priority ?? 'normal')] ?? 2
+  }
+
+  if (request.operationalState?.action_owner === 'none') {
+    return 20
+  }
+
+  return 10
+}
+
 const compareRequestsNewestFirst = (a: ServiceRequest, b: ServiceRequest): number => {
+  const actionOwnerDifference = actionOwnerSortPriority(a) - actionOwnerSortPriority(b)
+
+  if (actionOwnerDifference !== 0) {
+    return actionOwnerDifference
+  }
+
   const priorityDifference = (a.attention?.sort_priority ?? 50) - (b.attention?.sort_priority ?? 50)
 
   if (priorityDifference !== 0) {
@@ -84,16 +110,26 @@ export function TechnicalServiceKanbanBoard({
   onSelectRequest,
 }: TechnicalServiceKanbanBoardProps) {
   const [showOtherColumns, setShowOtherColumns] = useState(false)
+  const [showOpsActionsOnly, setShowOpsActionsOnly] = useState(false)
+  const opsActionCount = requests.filter(requiresOpsAction).length
+  const filteredRequests = showOpsActionsOnly
+    ? requests.filter(requiresOpsAction)
+    : requests
   const groupedRequests = TECHNICAL_SERVICE_KANBAN_COLUMNS.map((column) => ({
     ...column,
-    items: requests
+    items: filteredRequests
       .filter((request) => getTechnicalServiceKanbanColumn(request) === column.id)
       .sort(compareRequestsNewestFirst),
   }))
   const primaryColumns = groupedRequests.filter((column) => primaryColumnIds.includes(column.id))
   const otherColumns = groupedRequests.filter((column) => !primaryColumnIds.includes(column.id))
   const otherCount = otherColumns.reduce((total, column) => total + column.items.length, 0)
-  const visibleColumns = showOtherColumns ? [...primaryColumns, ...otherColumns] : primaryColumns
+  const opsFilteredColumns = groupedRequests.filter((column) => column.items.length > 0)
+  const visibleColumns = showOpsActionsOnly
+    ? (opsFilteredColumns.length > 0 ? opsFilteredColumns : primaryColumns)
+    : showOtherColumns
+      ? [...primaryColumns, ...otherColumns]
+      : primaryColumns
   const columnsToRender = loading ? primaryColumns : visibleColumns
 
   if (error) {
@@ -106,19 +142,44 @@ export function TechnicalServiceKanbanBoard({
 
   return (
     <div className="space-y-4">
-      {!loading && otherColumns.length > 0 && (
+      {!loading && (otherColumns.length > 0 || opsActionCount > 0 || showOpsActionsOnly) && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-[24px] border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm">
           <div>
-            <p className="font-semibold text-slate-900">Diğer durumlar</p>
-            <p className="mt-1 text-xs text-slate-500">İnceleniyor ve İptal kolonları küçük ekranda alanı boğmasın diye kapalı gelir.</p>
+            <p className="font-semibold text-slate-900">
+              {showOpsActionsOnly ? 'OPS aksiyonu bekleyenler' : 'Kanban filtreleri'}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {showOpsActionsOnly
+                ? 'Sadece operasyonun karar vermesi gereken işler gösteriliyor.'
+                : 'İnceleniyor ve İptal kolonları küçük ekranda alanı boğmasın diye kapalı gelir.'}
+            </p>
+            {showOpsActionsOnly && opsActionCount === 0 ? (
+              <p className="mt-1 text-xs font-semibold text-emerald-700">OPS aksiyonu bekleyen iş yok.</p>
+            ) : null}
           </div>
-          <button
-            type="button"
-            onClick={() => setShowOtherColumns((current) => !current)}
-            className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-          >
-            {showOtherColumns ? 'Diğer durumları gizle' : `Diğer durumları göster (${otherCount})`}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowOpsActionsOnly((current) => !current)}
+              className={[
+                'rounded-2xl border px-3 py-2 text-sm font-semibold transition',
+                showOpsActionsOnly
+                  ? 'border-amber-300 bg-amber-100 text-amber-950 shadow-sm'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
+              ].join(' ')}
+            >
+              OPS aksiyonu bekleyenler ({opsActionCount})
+            </button>
+            {!showOpsActionsOnly && otherColumns.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowOtherColumns((current) => !current)}
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                {showOtherColumns ? 'Diğer durumları gizle' : `Diğer durumları göster (${otherCount})`}
+              </button>
+            ) : null}
+          </div>
         </div>
       )}
       <div className="w-full min-w-0 overflow-hidden pb-3">

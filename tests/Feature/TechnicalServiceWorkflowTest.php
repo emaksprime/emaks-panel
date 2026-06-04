@@ -11,6 +11,7 @@ use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
@@ -149,6 +150,144 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(1, data_get($overduePayload, 'attention.sort_priority'));
         $this->assertNotSame('Usta müşteride', data_get($completedPayload, 'attention.attention_reason'));
         $this->assertNotSame('İş kapanışı için usta ile iletişime geçin', data_get($completedPayload, 'attention.attention_reason'));
+    }
+
+    public function test_ops_presenter_marks_part_request_as_ops_action(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+        ]);
+        TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Test parça',
+            'quantity' => 1,
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+        $tagLabels = collect($state['display_tags'])->pluck('label')->all();
+
+        $this->assertSame('ops', $state['action_owner']);
+        $this->assertSame('high', $state['action_priority']);
+        $this->assertTrue($state['requires_ops_action']);
+        $this->assertFalse($state['requires_technician_action']);
+        $this->assertSame('Parça talebi incelenmeli', $state['action_label']);
+        $this->assertSame('Usta yedek parça talep etti. Operasyon karar vermeli.', $state['action_hint']);
+        $this->assertContains('OPS aksiyonu: Parça talebi incelenmeli', $tagLabels);
+        $this->assertSame('Parça talebi operasyon incelemesinde', TechnicalServicePartRequest::partnerLabelForStatus(TechnicalServicePartRequest::STATUS_OPS_REVIEW));
+    }
+
+    public function test_ops_presenter_marks_appointment_change_and_revisit_as_ops_actions(): void
+    {
+        foreach ([
+            TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED => 'Usta randevu değişikliği istiyor',
+            TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED => 'Tekrar ziyaret talebi incelenmeli',
+        ] as $action => $expectedLabel) {
+            $request = $this->technicalServiceRequest([
+                'status' => 'Randevulu',
+                'workflow_status' => 'Planlı',
+                'technician_approval_status' => 'onayladı',
+                'technician_approved_at' => CarbonImmutable::now(),
+            ]);
+            $this->partnerJobAction($request, [
+                'action' => $action,
+                'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+                'payload' => [],
+            ]);
+
+            $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+            $this->assertSame('ops', $state['action_owner']);
+            $this->assertSame('high', $state['action_priority']);
+            $this->assertTrue($state['requires_ops_action']);
+            $this->assertSame($expectedLabel, $state['action_label']);
+        }
+    }
+
+    public function test_ops_presenter_marks_appointment_confirmed_as_technician_action(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+            'scheduled_date' => CarbonImmutable::now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertSame('technician', $state['action_owner']);
+        $this->assertFalse($state['requires_ops_action']);
+        $this->assertTrue($state['requires_technician_action']);
+        $this->assertSame('Fotoğraf bekleniyor', $state['action_label']);
+    }
+
+    public function test_ops_presenter_does_not_mark_customer_waiting_as_ops_action(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+        ]);
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            TechnicalServiceRequestUpload::query()->create([
+                'technical_service_request_id' => $request->id,
+                'category' => TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+                'field_code' => $fieldCode,
+                'original_name' => $fieldCode.'.jpg',
+                'path' => 'technical-service/test/'.$fieldCode.'.jpg',
+                'mime' => 'image/jpeg',
+                'size' => 100,
+            ]);
+        }
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertSame('customer', $state['action_owner']);
+        $this->assertFalse($state['requires_ops_action']);
+        $this->assertFalse($state['requires_technician_action']);
+        $this->assertTrue($state['requires_customer_action']);
+        $this->assertSame('Müşteri onayı bekliyor', $state['action_label']);
+    }
+
+    public function test_kanban_payload_and_source_include_ops_action_filter_contract(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => ['slot' => '14:00-15:00'],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame('ops', data_get($payload, 'operational_state.action_owner'));
+        $this->assertSame('high', data_get($payload, 'operational_state.action_priority'));
+        $this->assertTrue(data_get($payload, 'operational_state.requires_ops_action'));
+        $this->assertFalse(data_get($payload, 'operational_state.requires_technician_action'));
+        $this->assertSame('Usta randevu önerdi', data_get($payload, 'operational_state.action_label'));
+
+        $boardSource = file_get_contents(resource_path('js/components/technical-service/TechnicalServiceKanbanBoard.tsx')) ?: '';
+        $cardSource = file_get_contents(resource_path('js/components/technical-service/TechnicalServiceKanbanCard.tsx')) ?: '';
+
+        $this->assertStringContainsString('showOpsActionsOnly', $boardSource);
+        $this->assertStringContainsString('requires_ops_action', $boardSource);
+        $this->assertStringContainsString('OPS aksiyonu bekleyenler', $boardSource);
+        $this->assertStringContainsString('actionOwnerSortPriority', $boardSource);
+        $this->assertStringContainsString('opsFilteredColumns', $boardSource);
+        $this->assertStringContainsString('requires_ops_action', $cardSource);
     }
 
     public function test_appointment_approved_is_not_completed_in_canonical_state(): void
