@@ -517,14 +517,17 @@ class TechnicalServiceController extends Controller
     {
         $validated = $request->validate([
             'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
-            'technician_id' => ['required', 'integer', 'exists:technical_service_technicians,id'],
+            'technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
             'selected_serial_ids' => ['nullable', 'array'],
             'selected_serial_ids.*' => ['integer'],
-            'amount' => ['required', 'numeric', 'gt:0'],
+            'amount' => ['nullable', 'numeric', 'gt:0'],
+            'service_amount' => ['nullable', 'numeric', 'min:0'],
+            'part_amount' => ['nullable', 'numeric', 'min:0'],
             'currency' => ['nullable', 'string', 'size:3'],
-            'reason' => ['nullable', 'string', 'in:route_fee,montage_difference,multi_product,manual_extra'],
-            'purpose' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,route_fee,montage_difference,multi_product,manual_extra'],
+            'reason' => ['nullable', 'string', 'in:route_fee,montage_difference,multi_product,manual_extra,service_payment,part_payment,service_and_part_payment'],
+            'purpose' => ['nullable', 'string', 'in:mount_extra,multi_product_mount,manual_mount_payment,service_payment,part_payment,service_and_part_payment,route_fee,montage_difference,multi_product,manual_extra'],
             'note' => ['nullable', 'string', 'max:2000'],
+            'message_template' => ['nullable', 'string', 'max:4000'],
         ]);
 
         if ($technicalServiceRequest->mount_session_id === null) {
@@ -546,6 +549,25 @@ class TechnicalServiceController extends Controller
             ->map(fn (mixed $id): int => (int) $id)
             ->values();
         $currency = strtoupper($validated['currency'] ?? 'TRY');
+        $purpose = (string) ($validated['purpose'] ?? $validated['reason'] ?? 'mount_extra');
+        $isCustomerCharge = in_array($purpose, ['service_payment', 'part_payment', 'service_and_part_payment'], true);
+        if (! $isCustomerCharge && ! isset($validated['technician_id'])) {
+            throw ValidationException::withMessages([
+                'technician_id' => 'Ek montaj ödeme linki için usta seçimi zorunludur.',
+            ]);
+        }
+
+        $serviceAmount = round((float) ($validated['service_amount'] ?? 0), 2);
+        $partAmount = round((float) ($validated['part_amount'] ?? 0), 2);
+        $totalAmount = $isCustomerCharge
+            ? round($serviceAmount + $partAmount, 2)
+            : round((float) ($validated['amount'] ?? 0), 2);
+
+        if ($totalAmount <= 0) {
+            throw ValidationException::withMessages([
+                'amount' => 'Ödeme tutarı 0 TL üzerinde olmalı.',
+            ]);
+        }
 
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
@@ -553,18 +575,25 @@ class TechnicalServiceController extends Controller
             'provider' => $paymentProviderManager->providerName(),
             'provider_reference' => null,
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
-            'amount' => round((float) $validated['amount'], 2),
+            'amount' => $totalAmount,
             'currency' => $currency,
             'raw_payload' => [
-                'source' => 'operation_extra_mount_fee',
+                'source' => $isCustomerCharge ? 'operation_customer_charge' : 'operation_extra_mount_fee',
                 'provider_environment' => $paymentProviderManager->environment(),
                 'technical_service_request_id' => $technicalServiceRequest->id,
+                'root_request_id' => $technicalServiceRequest->parent_request_id ?: $technicalServiceRequest->id,
                 'mrn' => $technicalServiceRequest->mrn,
+                'service_code' => $technicalServiceRequest->service_code,
                 'route_quote_id' => $validated['route_quote_id'] ?? null,
-                'technician_id' => (int) $validated['technician_id'],
+                'technician_id' => isset($validated['technician_id']) ? (int) $validated['technician_id'] : null,
                 'selected_serial_ids' => $validSerialIds->all(),
-                'reason' => $validated['reason'] ?? $validated['purpose'] ?? 'route_fee',
-                'purpose' => $validated['purpose'] ?? $validated['reason'] ?? 'mount_extra',
+                'reason' => $validated['reason'] ?? $purpose,
+                'purpose' => $purpose,
+                'charge_type' => $purpose,
+                'service_amount' => $serviceAmount,
+                'part_amount' => $partAmount,
+                'total_amount' => $totalAmount,
+                'message_template' => $validated['message_template'] ?? null,
                 'note' => $validated['note'] ?? null,
             ],
         ]);
@@ -579,12 +608,14 @@ class TechnicalServiceController extends Controller
         }
         $payment = $payment->refresh();
 
-        $technicalServiceRequest->forceFill([
+        if (! $isCustomerCharge) {
+            $technicalServiceRequest->forceFill([
             'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
             'mount_payment_label' => 'Ek ödeme bekleniyor',
             'mount_payment_provider' => $payment->provider,
             'mount_payment_reference' => $payment->provider_reference,
-        ])->save();
+            ])->save();
+        }
 
         if ($validSerialIds->isNotEmpty()) {
             TechnicalServiceRequestSerial::query()

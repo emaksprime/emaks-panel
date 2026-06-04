@@ -23,9 +23,10 @@ class TechnicalServicePaymentSettlementService
             'raw_payload' => $rawPayload,
         ])->save();
 
+        $isCustomerCharge = ($rawPayload['source'] ?? null) === 'operation_customer_charge';
         $session = $payment->session;
 
-        if ($session instanceof TechnicalServiceMountSession) {
+        if (! $isCustomerCharge && $session instanceof TechnicalServiceMountSession) {
             $session->forceFill([
                 'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
                 'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT,
@@ -41,6 +42,12 @@ class TechnicalServicePaymentSettlementService
     private function applyRequestPaymentApproval(TechnicalServiceMountPayment $payment): void
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        if (($payload['source'] ?? null) === 'operation_customer_charge') {
+            $this->applyCustomerChargeApproval($payment, $payload);
+
+            return;
+        }
+
         $requestId = $payment->technical_service_request_id ?? ($payload['technical_service_request_id'] ?? null);
 
         if (! is_numeric($requestId)) {
@@ -77,6 +84,42 @@ class TechnicalServicePaymentSettlementService
                 'amount' => (float) $payment->amount,
                 'currency' => $payment->currency,
                 'selected_serial_ids' => $payload['selected_serial_ids'] ?? [],
+            ],
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function applyCustomerChargeApproval(TechnicalServiceMountPayment $payment, array $payload): void
+    {
+        $requestId = $payment->technical_service_request_id ?? ($payload['technical_service_request_id'] ?? null);
+
+        if (! is_numeric($requestId)) {
+            return;
+        }
+
+        $request = TechnicalServiceRequest::query()->find((int) $requestId);
+
+        if (! $request instanceof TechnicalServiceRequest) {
+            return;
+        }
+
+        $request->events()->create([
+            'event_type' => 'customer_charge_paid',
+            'title' => 'Müşteri servis/parça ödemesi alındı',
+            'note' => 'Müşteri ödeme linki üzerinden servis/parça tahsilatı onaylandı.',
+            'from_status' => $request->workflow_status,
+            'to_status' => $request->workflow_status,
+            'author_user_id' => null,
+            'metadata' => [
+                'payment_id' => $payment->id,
+                'provider' => $payment->provider,
+                'charge_type' => $payload['charge_type'] ?? $payload['purpose'] ?? null,
+                'service_amount' => (float) ($payload['service_amount'] ?? 0),
+                'part_amount' => (float) ($payload['part_amount'] ?? 0),
+                'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
             ],
         ]);
     }

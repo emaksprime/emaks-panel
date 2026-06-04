@@ -191,6 +191,7 @@ type ApiTechnicalServiceRequest = {
   field_completion_documents?: ServiceRequest['fieldCompletionDocuments']
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
+  earning_breakdown?: ServiceRequest['earningBreakdown']
   partner_portal_actions?: ServiceRequest['partnerPortalActions']
   part_requests?: ServiceRequest['partRequests']
   active_part_request?: ServiceRequest['activePartRequest']
@@ -839,6 +840,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
+    earningBreakdown: request.earning_breakdown ?? null,
     partnerPortalActions: request.partner_portal_actions ?? [],
     partRequests: request.part_requests ?? [],
     activePartRequest: request.active_part_request ?? null,

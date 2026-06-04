@@ -334,6 +334,7 @@ class B2BPartnerPortalDataService
         $hasOpenPartRequest = is_array($activePartRequest);
         $assignmentOffer = $request->latestAssignmentOffer;
         $earningSummary = $this->earningSummary($request, $assignmentOffer);
+        $earningBreakdown = $this->earningBreakdown($request, $assignmentOffer);
         $photoReadiness = $this->portalPhotoReadiness($request);
         $latestCustomerConfirmation = $request->customerConfirmations->first();
         $customerConfirmationReady = $latestCustomerConfirmation instanceof TechnicalServiceCustomerConfirmation
@@ -590,6 +591,7 @@ class B2BPartnerPortalDataService
                 'job_count' => $earningSummary['job_count'],
                 'related_mrns' => $earningSummary['related_mrns'],
             ],
+            'earning_breakdown' => $earningBreakdown,
             'completion_requirements' => $completionRequirements,
             'badges' => $displayBadges,
             'card_priority' => $nextActionLabel === 'Tamamlamaya gönderilebilir'
@@ -929,6 +931,10 @@ class B2BPartnerPortalDataService
 
     private function isCompletedForPortalEarnings(TechnicalServiceRequest $request): bool
     {
+        if ($this->isActiveReopenedWork($request)) {
+            return false;
+        }
+
         if ($request->completed_at !== null || $request->installation_completed_at !== null) {
             return true;
         }
@@ -981,6 +987,57 @@ class B2BPartnerPortalDataService
                 ->filter()
                 ->values()
                 ->all(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function earningBreakdown(TechnicalServiceRequest $request, mixed $assignmentOffer): array
+    {
+        $requests = $this->earningGroupRequests($request);
+
+        if ($requests->isEmpty()) {
+            $requests = collect([$request]);
+        }
+
+        $rows = $requests
+            ->map(function (TechnicalServiceRequest $related) use ($request, $assignmentOffer): array {
+                $summary = $this->singleEarningSummary(
+                    $related,
+                    $related->id === $request->id ? $assignmentOffer : $related->latestAssignmentOffer,
+                );
+                $kindLabel = $related->parent_request_id !== null || filled($related->service_code) ? 'Servis' : 'Montaj';
+
+                return [
+                    'id' => $related->id,
+                    'mrn' => $related->mrn,
+                    'display_mrn' => $related->service_code
+                        ? trim((string) ($related->root_mrn ?: $related->mrn)).' / '.$related->service_code
+                        : $related->mrn,
+                    'service_code' => $related->service_code,
+                    'kind' => $kindLabel === 'Servis' ? 'service' : 'mount',
+                    'kind_label' => $kindLabel,
+                    'is_current' => (int) $related->id === (int) $request->id,
+                    'labor_amount' => $summary['labor_amount'],
+                    'route_fee_amount' => $summary['route_fee_amount'],
+                    'total_amount' => $summary['total_amount'],
+                    'status' => $summary['status'],
+                    'status_label' => $this->earningStatusLabel($summary['status']),
+                ];
+            })
+            ->values();
+        $current = $rows->firstWhere('id', $request->id);
+
+        return [
+            'current_visit' => $current,
+            'rows' => $rows->all(),
+            'root_total' => [
+                'labor_amount' => round((float) $rows->sum('labor_amount'), 2),
+                'route_fee_amount' => round((float) $rows->sum('route_fee_amount'), 2),
+                'total_amount' => round((float) $rows->sum('total_amount'), 2),
+                'job_count' => $rows->count(),
+            ],
         ];
     }
 
@@ -1052,6 +1109,18 @@ class B2BPartnerPortalDataService
         ];
     }
 
+    private function earningStatusLabel(?string $status): string
+    {
+        return match ($status) {
+            'sent' => 'Gönderildi',
+            'accepted' => 'Kabul edildi',
+            'revised' => 'Revize edildi',
+            'cancelled' => 'İptal edildi',
+            'draft' => 'Taslak',
+            default => 'Hakediş yok',
+        };
+    }
+
     private function isCancelledServiceJob(TechnicalServiceRequest $request): bool
     {
         return $request->cancelled_at !== null
@@ -1105,8 +1174,24 @@ class B2BPartnerPortalDataService
 
     private function isTerminalStatus(TechnicalServiceRequest $request): bool
     {
+        if ($this->isActiveReopenedWork($request)) {
+            return false;
+        }
+
         return in_array($request->workflow_status, ['Tamamlandı', 'TamamlandÄ±', 'İptal', 'Ä°ptal'], true)
             || $request->completed_at !== null;
+    }
+
+    private function isActiveReopenedWork(TechnicalServiceRequest $request): bool
+    {
+        if ($request->reopened_at === null) {
+            return false;
+        }
+
+        $terminalStatuses = ['TamamlandÄ±', 'Tamamlandi', 'TamamlandÃ„Â±', 'Ä°ptal', 'Iptal', 'Ã„Â°ptal'];
+
+        return ! in_array((string) $request->workflow_status, $terminalStatuses, true)
+            && ! in_array((string) $request->status, $terminalStatuses, true);
     }
 
     private function isTechnicianApprovalStatus(TechnicalServiceRequest $request): bool

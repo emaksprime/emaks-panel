@@ -1305,6 +1305,10 @@ export function ServiceRequestDetails({
   const [routeFeeBillableKmInput, setRouteFeeBillableKmInput] = useState('')
   const [routeFeeAmountInput, setRouteFeeAmountInput] = useState('')
   const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
+  const [customerServiceChargeInput, setCustomerServiceChargeInput] = useState('')
+  const [customerPartChargeInput, setCustomerPartChargeInput] = useState('')
+  const [customerChargeNoteInput, setCustomerChargeNoteInput] = useState('')
+  const [customerChargeMessageInput, setCustomerChargeMessageInput] = useState('')
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
   const [earningNoteInput, setEarningNoteInput] = useState('')
@@ -1440,8 +1444,20 @@ export function ServiceRequestDetails({
     : null
   const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
   const extraMountPayment = saleAndPayment?.extra_mount_payment ?? null
+  const customerChargeSummary = saleAndPayment?.customer_charges ?? null
+  const latestCustomerCharge = customerChargeSummary?.latest ?? null
   const technicianEarningMessage = saleAndPayment?.technician_earning_message ?? null
+  const earningBreakdown = request.earningBreakdown ?? null
   const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
+  const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
+  const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
+  const customerChargeTotalAmount = roundTwo(customerServiceChargeAmount + customerPartChargeAmount)
+  const canCreateCustomerCharge = Boolean(onExtraMountPaymentCreate && customerChargeTotalAmount > 0)
+  const customerChargePurpose = customerServiceChargeAmount > 0 && customerPartChargeAmount > 0
+    ? 'service_and_part_payment'
+    : customerPartChargeAmount > 0
+      ? 'part_payment'
+      : 'service_payment'
   const canCreateExtraPayment = Boolean(
     selectedTechnician
     && onExtraMountPaymentCreate
@@ -1568,9 +1584,12 @@ export function ServiceRequestDetails({
   const paidExtraCustomerAmount = extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
     ? extraMountPayment.amount
     : 0
+  const paidCustomerChargeAmount = typeof customerChargeSummary?.paid_total_amount === 'number' && Number.isFinite(customerChargeSummary.paid_total_amount)
+    ? customerChargeSummary.paid_total_amount
+    : 0
   const totalCustomerCollectedAmount = customerMountAmount !== null
-    ? roundTwo(customerMountAmount + paidExtraCustomerAmount)
-    : paidExtraCustomerAmount > 0 ? paidExtraCustomerAmount : null
+    ? roundTwo(customerMountAmount + paidExtraCustomerAmount + paidCustomerChargeAmount)
+    : paidExtraCustomerAmount + paidCustomerChargeAmount > 0 ? roundTwo(paidExtraCustomerAmount + paidCustomerChargeAmount) : null
   const fallbackTechnicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
     ? selectedTechnician.technicianAmountLabel
     : basePaymentInfo.technicianAmountLabel && basePaymentInfo.technicianAmountLabel !== 'Belirlenmedi'
@@ -1816,6 +1835,31 @@ export function ServiceRequestDetails({
 
     await onExtraMountPaymentCreate(payload)
     setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
+  }
+  const handleCustomerChargeCreate = async () => {
+    if (!onExtraMountPaymentCreate) {
+      setRouteFeeEditorMessage('Ödeme linki oluşturma servisi bağlı değil.')
+
+      return
+    }
+
+    if (customerChargeTotalAmount <= 0) {
+      setRouteFeeEditorMessage('Servis/parça ödeme tutarı 0 TL üzerinde olmalı.')
+
+      return
+    }
+
+    await onExtraMountPaymentCreate({
+      service_amount: customerServiceChargeAmount,
+      part_amount: customerPartChargeAmount,
+      amount: customerChargeTotalAmount,
+      currency: 'TRY',
+      purpose: customerChargePurpose,
+      reason: customerChargePurpose,
+      note: customerChargeNoteInput.trim() || null,
+      message_template: customerChargeMessageInput.trim() || null,
+    })
+    setRouteFeeEditorMessage('Müşteri servis/parça ödeme linki oluşturuldu.')
   }
   const handleTechnicianEarningMessageCreate = async () => {
     if (!selectedTechnician || !onTechnicianEarningMessageCreate) {
@@ -2723,6 +2767,49 @@ export function ServiceRequestDetails({
                   </div>
                 </details>
               ) : null}
+              <details className="rounded-2xl border border-blue-100 bg-white/80 p-3 text-sm text-slate-700">
+                <summary className="cursor-pointer font-semibold text-slate-800">Servis / parça müşteri ödeme linki</summary>
+                <div className="mt-3 grid gap-3">
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                      Servis ücreti
+                      <Input type="number" min="0" step="0.01" value={customerServiceChargeInput} onChange={(event) => setCustomerServiceChargeInput(event.target.value)} />
+                    </label>
+                    <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                      Parça ücreti
+                      <Input type="number" min="0" step="0.01" value={customerPartChargeInput} onChange={(event) => setCustomerPartChargeInput(event.target.value)} />
+                    </label>
+                    <MiniMetric label="Toplam" value={formatMoneyValue(customerChargeTotalAmount)} />
+                  </div>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Müşteriye gidecek mesaj
+                    <Input value={customerChargeMessageInput} onChange={(event) => setCustomerChargeMessageInput(event.target.value)} placeholder="Servis/parça ödeme açıklaması" />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Operasyon notu
+                    <Input value={customerChargeNoteInput} onChange={(event) => setCustomerChargeNoteInput(event.target.value)} placeholder="İç not" />
+                  </label>
+                  {latestCustomerCharge ? (
+                    <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
+                      <p className="font-semibold">Son link: {latestCustomerCharge.status_label ?? latestCustomerCharge.status ?? '-'}</p>
+                      <p className="mt-1">Servis: {latestCustomerCharge.service_amount_label ?? formatMoneyValue(latestCustomerCharge.service_amount ?? 0)} · Parça: {latestCustomerCharge.part_amount_label ?? formatMoneyValue(latestCustomerCharge.part_amount ?? 0)} · Toplam: {latestCustomerCharge.amount_label ?? formatMoneyValue(latestCustomerCharge.amount ?? 0)}</p>
+                      {latestCustomerCharge.payment_url ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Button asChild size="sm" variant="outline">
+                            <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
+                          </Button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(latestCustomerCharge.payment_url ?? '')}>Linki kopyala</Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className="flex justify-end">
+                    <Button type="button" variant="outline" onClick={() => void handleCustomerChargeCreate()} disabled={!canCreateCustomerCharge || extraPaymentCreateLoading}>
+                      {extraPaymentCreateLoading ? 'Link oluşturuluyor...' : 'Servis/parça ödeme linki oluştur'}
+                    </Button>
+                  </div>
+                </div>
+              </details>
               {paymentControlMissing ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">
                   Ödeme kontrol edilmedi
@@ -3478,6 +3565,24 @@ export function ServiceRequestDetails({
                   hint={technicianEarningMessage?.sent_at ? dateTimeOrEmpty(technicianEarningMessage.sent_at, '-') : activeAssignmentOffer?.sent_at ? dateTimeOrEmpty(activeAssignmentOffer.sent_at, '-') : undefined}
                 />
               </div>
+              {earningBreakdown?.root_total ? (
+                <div className="grid gap-2 rounded-2xl border border-emerald-100 bg-white p-3 text-xs text-slate-700">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold text-slate-950">MRN / SRV hakediş kırılımı</p>
+                    <p className="font-semibold text-emerald-700">Toplam: {earningBreakdown.root_total.total_amount_label ?? formatMoneyValue(earningBreakdown.root_total.total_amount)}</p>
+                  </div>
+                  <div className="grid gap-1">
+                    {earningBreakdown.rows.map((row) => (
+                      <div key={`${row.id}-${row.mrn}`} className="grid gap-2 rounded-xl bg-slate-50 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_110px_110px_110px]">
+                        <span className="min-w-0 truncate font-semibold">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}{row.is_current ? ' (açık detay)' : ''}</span>
+                        <span>İşçilik: {row.labor_amount_label ?? formatMoneyValue(row.labor_amount)}</span>
+                        <span>Yol: {row.route_fee_amount_label ?? formatMoneyValue(row.route_fee_amount)}</span>
+                        <strong>Toplam: {row.total_amount_label ?? formatMoneyValue(row.total_amount)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {technicianEarningMessageError ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
                   {technicianEarningMessageError}

@@ -50,6 +50,7 @@ export type ServiceRequest = {
   routeQuote?: ServiceRequestRouteQuote | null
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
+  earningBreakdown?: ServiceRequestEarningBreakdown | null
   partnerPortalActions?: ServiceRequestPartnerPortalAction[]
   partRequests?: ServiceRequestPartRequest[]
   activePartRequest?: ServiceRequestPartRequest | null
@@ -157,6 +158,44 @@ export type ServiceRequestAssignmentOffer = {
   dispatch_status?: string | null
 }
 
+export type ServiceRequestEarningBreakdownRow = {
+  id: number | string
+  mrn: string
+  display_mrn?: string | null
+  service_code?: string | null
+  kind?: 'mount' | 'service' | string | null
+  kind_label?: string | null
+  is_current?: boolean
+  is_parent?: boolean
+  technician_id?: number | string | null
+  technician_name?: string | null
+  labor_amount: number
+  route_fee_amount: number
+  total_amount: number
+  labor_amount_label?: string | null
+  route_fee_amount_label?: string | null
+  total_amount_label?: string | null
+  status?: string | null
+  status_label?: string | null
+  completed_at?: string | null
+}
+
+export type ServiceRequestEarningBreakdown = {
+  root_request_id?: number | string | null
+  root_mrn?: string | null
+  current_visit?: ServiceRequestEarningBreakdownRow | null
+  rows: ServiceRequestEarningBreakdownRow[]
+  root_total: {
+    labor_amount: number
+    route_fee_amount: number
+    total_amount: number
+    labor_amount_label?: string | null
+    route_fee_amount_label?: string | null
+    total_amount_label?: string | null
+    job_count?: number
+  }
+}
+
 export type ServiceRequestPartnerPortalAction = {
   id: number | string
   partner_id?: number | string | null
@@ -247,6 +286,7 @@ export type ServiceRequestSaleAndPayment = {
   ops_payment_check_label?: string | null
   payment_status?: ServiceRequestPaymentStatus | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
+  customer_charges?: ServiceRequestCustomerChargeSummary | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
 }
 
@@ -275,6 +315,42 @@ export type ServiceRequestExtraMountPayment = {
   purpose?: string | null
   note?: string | null
   selected_serial_ids?: Array<number | string>
+}
+
+export type ServiceRequestCustomerCharge = {
+  id?: number | string | null
+  request_id?: number | string | null
+  mrn?: string | null
+  service_code?: string | null
+  status?: string | null
+  status_label?: string | null
+  amount?: number | null
+  amount_label?: string | null
+  service_amount?: number | null
+  service_amount_label?: string | null
+  part_amount?: number | null
+  part_amount_label?: string | null
+  currency?: string | null
+  payment_url?: string | null
+  provider?: string | null
+  provider_reference?: string | null
+  paid_at?: string | null
+  purpose?: string | null
+  purpose_label?: string | null
+  note?: string | null
+  message_template?: string | null
+}
+
+export type ServiceRequestCustomerChargeSummary = {
+  rows: ServiceRequestCustomerCharge[]
+  latest?: ServiceRequestCustomerCharge | null
+  total_service_amount?: number
+  total_part_amount?: number
+  total_amount?: number
+  paid_service_amount?: number
+  paid_part_amount?: number
+  paid_total_amount?: number
+  pending_total_amount?: number
 }
 
 export type ServiceRequestTechnicianEarningMessage = {
@@ -466,12 +542,16 @@ export type ServiceRequestRouteQuoteManualPayload = {
 
 export type ServiceRequestExtraMountPaymentPayload = {
   route_quote_id?: number | string | null
-  technician_id: number | string
+  technician_id?: number | string | null
   selected_serial_ids?: Array<number | string>
-  amount: number
+  amount?: number | null
+  service_amount?: number | null
+  part_amount?: number | null
   currency?: string
-  reason?: 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra'
+  reason?: 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra' | 'service_payment' | 'part_payment' | 'service_and_part_payment'
+  purpose?: 'mount_extra' | 'multi_product_mount' | 'manual_mount_payment' | 'service_payment' | 'part_payment' | 'service_and_part_payment' | 'route_fee' | 'montage_difference' | 'multi_product' | 'manual_extra'
   note?: string | null
+  message_template?: string | null
 }
 
 export type ServiceRequestTechnicianEarningMessagePayload = {

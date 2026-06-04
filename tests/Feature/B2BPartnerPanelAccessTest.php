@@ -2923,6 +2923,15 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => 'Tamamlandı',
             'completed_at' => now(),
         ]);
+        $this->serviceRequestForTechnician($field, 'MRN-KANBAN-REOPENED', [
+            'workflow_status' => 'Yeni Talep',
+            'status' => 'Yeni',
+            'completed_at' => now()->subDay(),
+            'installation_completed_at' => now()->subDay(),
+            'reopened_at' => now(),
+            'reopen_count' => 1,
+            'reopen_reason' => 'Operasyon dÃ¼zeltmesi',
+        ]);
         $this->serviceRequestForTechnician($contracted, 'MRN-KANBAN-CONTRACTED', [
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
@@ -2940,7 +2949,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson('/api/partner/service-jobs')
             ->assertOk()
             ->assertJsonPath('columns.0.key', 'new_jobs')
-            ->assertJsonPath('columns.0.count', 1)
+            ->assertJsonPath('columns.0.count', 2)
             ->assertJsonPath('columns.1.key', 'appointment_confirmed')
             ->assertJsonPath('columns.1.count', 1)
             ->assertJsonPath('columns.2.key', 'ops_review')
@@ -2953,6 +2962,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('columns.5.count', 1)
             ->assertJsonPath('appointment_slot_options.0.value', '10:00-11:00')
             ->assertJsonPath('appointment_slot_options.6.value', '16:00-17:00')
+            ->assertJsonFragment(['mrn' => 'MRN-KANBAN-REOPENED', 'kanban_column' => 'new_jobs'])
             ->assertJsonMissing(['mrn' => 'MRN-KANBAN-CONTRACTED']);
 
         $this->actingAs($portalUser)
@@ -5814,7 +5824,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.assignment_offer.total_amount', 3000)
             ->assertJsonPath('job.earning_summary.labor_amount', 2000)
             ->assertJsonPath('job.earning_summary.route_fee_amount', 1000)
-            ->assertJsonPath('job.earning_summary.total_amount', 3000);
+            ->assertJsonPath('job.earning_summary.total_amount', 3000)
+            ->assertJsonPath('job.earning_breakdown.current_visit.kind_label', 'Montaj')
+            ->assertJsonPath('job.earning_breakdown.current_visit.total_amount', 3000)
+            ->assertJsonPath('job.earning_breakdown.root_total.total_amount', 3000);
 
         $this->actingAs($portalUser)
             ->getJson('/api/partner/earnings')

@@ -155,6 +155,35 @@ type ServiceJob = {
     total_amount: number
     status: string | null
   }
+  earning_breakdown?: {
+    current_visit?: {
+      id: number
+      mrn: string
+      display_mrn?: string | null
+      kind_label?: string | null
+      labor_amount: number
+      route_fee_amount: number
+      total_amount: number
+      status_label?: string | null
+    } | null
+    rows?: Array<{
+      id: number
+      mrn: string
+      display_mrn?: string | null
+      kind_label?: string | null
+      is_current?: boolean
+      labor_amount: number
+      route_fee_amount: number
+      total_amount: number
+      status_label?: string | null
+    }>
+    root_total?: {
+      labor_amount: number
+      route_fee_amount: number
+      total_amount: number
+      job_count?: number
+    }
+  } | null
   completion_requirements: {
     door_photos_required: number
     door_photos_uploaded: number
@@ -1573,10 +1602,29 @@ function ServiceJobDetail({
           <PartnerDetailPanel key={`${job.id}-earnings`} title="Hakediş özeti" summary="İşçilik, usta yol hakedişi ve toplam" tone="emerald" defaultOpen={defaultOpenPartnerSections.has('earnings')} panelKey={`${job.id}-earnings`}>
             {job.assignment_offer || jobEarningTotal(job) > 0 ? (
               <div className="mt-3 grid gap-2">
-                <div className="flex justify-between gap-3"><span>İşçilik / montaj</span><strong>{money.format(jobEarningLabor(job))}</strong></div>
-                <div className="flex justify-between gap-3"><span>Usta yol hakedişi</span><strong>{money.format(jobEarningRoute(job))}</strong></div>
-                <div className="flex justify-between gap-3 border-t border-emerald-200 pt-2"><span>Toplam</span><strong>{money.format(jobEarningTotal(job))}</strong></div>
-                <p className="text-xs text-emerald-700">Durum: {jobEarningStatus(job)}</p>
+                  <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-emerald-100 bg-white/80 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Bu ziyaret</p>
+                    <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-3"><span className="min-w-0 break-words">{job.earning_breakdown?.current_visit?.kind_label ?? 'İş'} işçilik</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown?.current_visit?.labor_amount ?? jobEarningLabor(job))}</strong></div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3"><span className="min-w-0 break-words">Yol hakedişi</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown?.current_visit?.route_fee_amount ?? jobEarningRoute(job))}</strong></div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-t border-emerald-100 pt-2"><span className="min-w-0 break-words">Bu ziyaret toplamı</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown?.current_visit?.total_amount ?? jobEarningTotal(job))}</strong></div>
+                    <p className="mt-2 text-xs text-emerald-700">Durum: {jobEarningStatus(job)}</p>
+                  </div>
+                {job.earning_breakdown?.root_total && (job.earning_breakdown.root_total.job_count ?? 0) > 1 ? (
+                  <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3"><span className="min-w-0 break-words">Ana MRN toplam hakedişi</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown.root_total.total_amount)}</strong></div>
+                    <p className="mt-1 text-xs text-emerald-700">{job.earning_breakdown.root_total.job_count} bağlı iş toplamı. İptal edilen işler toplamdan düşer.</p>
+                  </div>
+                ) : null}
+                {(job.earning_breakdown?.rows ?? []).length > 1 ? (
+                  <div className="grid min-w-0 max-w-full gap-1 overflow-hidden rounded-xl border border-slate-200 bg-white/80 p-2 text-xs text-slate-700">
+                    {(job.earning_breakdown?.rows ?? []).map((row) => (
+                      <div key={`${row.id}-${row.mrn}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
+                        <span className="min-w-0 break-words leading-5">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}{row.is_current ? ' (bu ziyaret)' : ''}</span>
+                        <strong className="shrink-0 whitespace-nowrap">{money.format(row.total_amount)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {job.assignment_offer?.note && <p className="text-xs text-emerald-800">{job.assignment_offer.note}</p>}
                 {job.price_revision_request?.status === 'ops_review' && (
                   <p className="rounded-lg bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-800">Hakediş revize talebi operasyon incelemesinde.</p>

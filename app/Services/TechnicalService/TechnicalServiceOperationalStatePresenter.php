@@ -331,6 +331,10 @@ class TechnicalServiceOperationalStatePresenter
 
     private function isCompleted(TechnicalServiceRequest $request): bool
     {
+        if ($this->isActiveReopenedWork($request)) {
+            return false;
+        }
+
         if ($request->completed_at !== null || $request->installation_completed_at !== null) {
             return true;
         }
@@ -353,9 +357,25 @@ class TechnicalServiceOperationalStatePresenter
 
     private function isCancelled(TechnicalServiceRequest $request): bool
     {
+        if ($this->isActiveReopenedWork($request)) {
+            return false;
+        }
+
         return $request->cancelled_at !== null
             || $this->statusIn($request->workflow_status, self::CANCELLED_STATUSES)
             || $this->statusIn($request->status, self::CANCELLED_STATUSES);
+    }
+
+    private function isActiveReopenedWork(TechnicalServiceRequest $request): bool
+    {
+        if ($request->reopened_at === null) {
+            return false;
+        }
+
+        return ! $this->statusIn($request->workflow_status, self::COMPLETED_STATUSES)
+            && ! $this->statusIn($request->status, self::COMPLETED_STATUSES)
+            && ! $this->statusIn($request->workflow_status, self::CANCELLED_STATUSES)
+            && ! $this->statusIn($request->status, self::CANCELLED_STATUSES);
     }
 
     private function doorIncompatible(TechnicalServiceRequest $request): bool

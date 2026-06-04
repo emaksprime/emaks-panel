@@ -707,6 +707,107 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame([], $payload['assignment_blockers']['messages']);
     }
 
+    public function test_customer_service_part_charge_payment_stays_separate_from_mount_payment(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'mount_payment_label' => 'Montaj ödemesi bekleniyor',
+        ]);
+        $session = $this->mountSessionForRequest($request);
+
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-service-part-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1250,
+            'currency' => 'TRY',
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'service_and_part_payment',
+                'service_amount' => 1000,
+                'part_amount' => 250,
+                'total_amount' => 1250,
+                'message_template' => 'Servis ve parça ödeme linki.',
+            ],
+        ]);
+
+        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)->markPaid($payment);
+
+        $request->refresh();
+        $session->refresh();
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $request->mount_payment_status);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $session->mount_payment_status);
+        $this->assertSame(1250.0, $payload['sale_and_payment']['customer_charges']['paid_total_amount']);
+        $this->assertSame(1000.0, $payload['sale_and_payment']['customer_charges']['paid_service_amount']);
+        $this->assertSame(250.0, $payload['sale_and_payment']['customer_charges']['paid_part_amount']);
+        $this->assertSame('Ödendi', $payload['sale_and_payment']['customer_charges']['latest']['status_label']);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'customer_charge_paid',
+        ]);
+    }
+
+    public function test_ops_payload_groups_parent_and_srv_earning_breakdown(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'SRV Hakediş Ustası',
+            'phone' => '+905551111118',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-WORKFLOW-EARNING-PARENT',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-WORKFLOW-EARNING-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-WORKFLOW-EARNING-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Montaj',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 2000,
+            'route_fee_amount' => 100,
+            'total_amount' => 2100,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $child->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1500,
+            'route_fee_amount' => 300,
+            'total_amount' => 1800,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+
+        $this->assertSame(2, $payload['earning_breakdown']['root_total']['job_count']);
+        $this->assertSame(3500.0, $payload['earning_breakdown']['root_total']['labor_amount']);
+        $this->assertSame(400.0, $payload['earning_breakdown']['root_total']['route_fee_amount']);
+        $this->assertSame(3900.0, $payload['earning_breakdown']['root_total']['total_amount']);
+        $this->assertSame('Servis', $payload['earning_breakdown']['current_visit']['kind_label']);
+        $this->assertSame(1800.0, $payload['earning_breakdown']['current_visit']['total_amount']);
+        $this->assertSame(['Montaj', 'Servis'], collect($payload['earning_breakdown']['rows'])->pluck('kind_label')->all());
+    }
+
     public function test_payment_block_shows_paid_amount(): void
     {
         $request = $this->technicalServiceRequest([

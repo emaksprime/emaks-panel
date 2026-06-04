@@ -218,6 +218,9 @@ class TechnicalServiceWarrantyTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('request.status', 'Yeni')
+            ->assertJsonPath('request.operational_state.is_completed', false)
+            ->assertJsonPath('request.operational_state.ops_column', 'new')
+            ->assertJsonPath('request.operational_state.partner_column', 'new_jobs')
             ->assertJsonPath('request.reopen_reason', 'Operasyon düzeltmesi')
             ->assertJsonPath('request.reopen_count', 1);
 

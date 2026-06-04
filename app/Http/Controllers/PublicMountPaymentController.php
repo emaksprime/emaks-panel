@@ -26,8 +26,14 @@ class PublicMountPaymentController extends Controller
                 'status' => $payment->status,
                 'amount' => (float) $payment->amount,
                 'currency' => $payment->currency,
+                'source' => $payload['source'] ?? null,
                 'purpose' => $payload['purpose'] ?? $payload['reason'] ?? 'mount_extra',
+                'purpose_label' => $this->purposeLabel((string) ($payload['purpose'] ?? $payload['reason'] ?? 'mount_extra')),
+                'service_amount' => (float) ($payload['service_amount'] ?? 0),
+                'part_amount' => (float) ($payload['part_amount'] ?? 0),
+                'total_amount' => (float) ($payload['total_amount'] ?? $payment->amount),
                 'note' => $payload['note'] ?? null,
+                'message_template' => $payload['message_template'] ?? null,
                 'payment_url' => $payment->payment_url,
                 'mount_form_url' => $mountFormUrl,
                 'fake_approve_url' => $this->canShowFakeApprove($payment)
@@ -36,6 +42,7 @@ class PublicMountPaymentController extends Controller
             ],
             'requestSummary' => [
                 'mrn' => $serviceRequest?->mrn,
+                'service_code' => $serviceRequest?->service_code,
                 'customer' => $this->maskName($serviceRequest?->customer_name),
                 'phone' => $this->maskPhone($serviceRequest?->customer_phone),
                 'product_name' => $serviceRequest?->product_name ?? $payment->session?->qrLink?->product_name,
@@ -104,6 +111,19 @@ class PublicMountPaymentController extends Controller
         return ! app()->environment('production')
             && strtolower((string) config('payments.provider', 'fake')) === 'fake'
             && filter_var(config('payments.enable_fake_approve', false), FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function purposeLabel(string $purpose): string
+    {
+        return match ($purpose) {
+            'service_payment' => 'Servis ücreti',
+            'part_payment' => 'Parça ücreti',
+            'service_and_part_payment' => 'Servis + parça ücreti',
+            'route_fee' => 'Yol ücreti',
+            'multi_product', 'multi_product_mount' => 'Çoklu ürün montaj ödemesi',
+            'manual_mount_payment', 'mount_extra' => 'Montaj ek ödemesi',
+            default => 'Ek ödeme',
+        };
     }
 
     private function maskName(?string $name): string
