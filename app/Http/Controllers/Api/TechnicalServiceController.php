@@ -1251,6 +1251,7 @@ class TechnicalServiceController extends Controller
     private function operationsDashboardQuery(array $filters)
     {
         return TechnicalServiceRequest::query()
+            ->whereDoesntHave('childRequests', fn ($query) => $this->nonCancelledChildServiceVisitQuery($query))
             ->when(! empty($filters['date_from']), fn ($query) => $query->whereDate('scheduled_at', '>=', $filters['date_from']))
             ->when(! empty($filters['date_to']), fn ($query) => $query->whereDate('scheduled_at', '<=', $filters['date_to']))
             ->when(! empty($filters['status']), fn ($query) => $query->where('status', $filters['status']))

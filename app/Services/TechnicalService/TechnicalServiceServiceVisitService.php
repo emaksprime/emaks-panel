@@ -265,24 +265,49 @@ class TechnicalServiceServiceVisitService
 
     private function markParentDelegatedToServiceVisit(TechnicalServiceRequest $parent, TechnicalServiceRequest $child, ?User $user): void
     {
+        $delegationPayload = [
+            'request_id' => $child->id,
+            'mrn' => $child->mrn,
+            'service_code' => $child->service_code,
+            'reason' => $child->service_visit_reason,
+            'delegated_at' => now()->toISOString(),
+            'delegated_by_user_id' => $user?->id,
+        ];
+
         $parent->forceFill([
             'field_status' => 'srv_delegated',
             'requires_second_visit' => false,
+            'second_visit_reason' => null,
+            'pending_reason' => null,
+            'requires_reschedule' => false,
+            'reschedule_reason' => null,
             'completion_block_reason' => null,
             'next_action' => 'SRV ile takip ediliyor',
             'updated_by_user_id' => $user?->id,
             'operation_control_payload' => [
                 ...(is_array($parent->operation_control_payload) ? $parent->operation_control_payload : []),
-                'service_visit_delegation' => [
-                    'request_id' => $child->id,
-                    'mrn' => $child->mrn,
-                    'service_code' => $child->service_code,
-                    'reason' => $child->service_visit_reason,
-                    'delegated_at' => now()->toISOString(),
-                    'delegated_by_user_id' => $user?->id,
-                ],
+                'service_visit_delegation' => $delegationPayload,
             ],
         ])->save();
+
+        $parent->partnerJobActions()
+            ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->whereIn('action', [
+                TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+                TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            ])
+            ->get()
+            ->each(function (TechnicalServicePartnerJobAction $action) use ($delegationPayload): void {
+                $payload = is_array($action->payload) ? $action->payload : [];
+
+                $action->forceFill([
+                    'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                    'payload' => [
+                        ...$payload,
+                        'service_visit_created' => $delegationPayload,
+                    ],
+                ])->save();
+            });
     }
 
     /**

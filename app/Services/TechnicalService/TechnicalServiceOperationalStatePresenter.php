@@ -54,11 +54,13 @@ class TechnicalServiceOperationalStatePresenter
             'uploads',
             'customerConfirmations' => fn ($query) => $query->latest(),
             'partRequests' => fn ($query) => $query->latest(),
+            'childRequests',
         ]);
 
-        $activeAction = $this->activeOpsReviewAction($request);
-        $activePartRequest = $this->activePartRequest($request);
-        $doorIncompatible = $this->doorIncompatible($request);
+        $hasDelegatedServiceVisit = $this->hasNonCancelledServiceVisitChild($request);
+        $activeAction = $hasDelegatedServiceVisit ? null : $this->activeOpsReviewAction($request);
+        $activePartRequest = $hasDelegatedServiceVisit ? null : $this->activePartRequest($request);
+        $doorIncompatible = ! $hasDelegatedServiceVisit && $this->doorIncompatible($request);
         $isCancelled = $this->isCancelled($request);
         $isCompleted = $this->isCompleted($request);
         $isPendingFinalCheck = ! $isCompleted && $this->hasCompletionSubmitted($request);
@@ -236,12 +238,15 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         if (
-            (
-                $activeAction?->action === TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED
-                && $activeAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+            ! $this->hasNonCancelledServiceVisitChild($request)
+            && (
+                (
+                    $activeAction?->action === TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED
+                    && $activeAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+                )
+                || (bool) $request->requires_second_visit
+                || $this->statusIn($request->workflow_status, self::REVISIT_STATUSES)
             )
-            || (bool) $request->requires_second_visit
-            || $this->statusIn($request->workflow_status, self::REVISIT_STATUSES)
         ) {
             return self::PARTNER_COLUMN_REVISIT;
         }
@@ -255,6 +260,10 @@ class TechnicalServiceOperationalStatePresenter
 
     private function activeOpsReviewAction(TechnicalServiceRequest $request): ?TechnicalServicePartnerJobAction
     {
+        if ($this->hasNonCancelledServiceVisitChild($request)) {
+            return null;
+        }
+
         $opsReview = $request->partnerJobActions
             ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
 
@@ -280,8 +289,24 @@ class TechnicalServiceOperationalStatePresenter
 
     private function activePartRequest(TechnicalServiceRequest $request): ?TechnicalServicePartRequest
     {
+        if ($this->hasNonCancelledServiceVisitChild($request)) {
+            return null;
+        }
+
         return $request->partRequests
             ->first(fn (TechnicalServicePartRequest $partRequest): bool => $partRequest->isActive());
+    }
+
+    private function hasNonCancelledServiceVisitChild(TechnicalServiceRequest $request): bool
+    {
+        if ($request->parent_request_id !== null) {
+            return false;
+        }
+
+        $request->loadMissing('childRequests');
+
+        return $request->childRequests
+            ->contains(fn (TechnicalServiceRequest $child): bool => ! $this->isCancelled($child));
     }
 
     private function hasCompletionSubmitted(TechnicalServiceRequest $request): bool

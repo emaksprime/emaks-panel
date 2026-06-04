@@ -1005,6 +1005,13 @@ export function TechnicalServiceOperationCenter() {
         if (selected) {
           setSelectedListRequest(selected)
           setSelectedDetailRequest((current) => (current?.id === selected.id ? { ...selected, ...current } : current))
+        } else {
+          selectedIdRef.current = null
+          setSelectedId(null)
+          setSelectedListRequest(null)
+          setSelectedDetailRequest(null)
+          setSelectedEvents([])
+          setIsDetailDialogOpen(false)
         }
       }
     } catch (caught) {
@@ -2935,20 +2942,29 @@ export function TechnicalServiceOperationCenter() {
 
     preserveDetailScroll(() => {
       setRequests((current) => {
-        const updated = updatedRequest
-          ? current.map((request) => (request.id === updatedRequest.id ? updatedRequest : request))
+        const parentId = updatedRequest?.id ?? selectedId
+        const withoutParent = parentId
+          ? current.filter((request) => request.id !== parentId)
           : current
+        const withoutChild = childRequest
+          ? withoutParent.filter((request) => request.id !== childRequest.id)
+          : withoutParent
 
-        return childRequest && !updated.some((request) => request.id === childRequest.id)
-          ? [childRequest, ...updated]
-          : updated
+        return childRequest
+          ? [childRequest, ...withoutChild]
+          : withoutParent
       })
 
-      if (updatedRequest) {
-        setSelectedListRequest((current) => (
-          current?.id === updatedRequest.id ? updatedRequest : current
-        ))
-        setSelectedDetailRequest(updatedRequest)
+      if (childRequest) {
+        selectedIdRef.current = childRequest.id
+        setSelectedId(childRequest.id)
+        setSelectedListRequest(childRequest)
+        setSelectedDetailRequest(childRequest)
+        setSelectedEvents(Array.isArray(response.child_request?.events) ? response.child_request.events : [])
+      } else if (updatedRequest) {
+        setSelectedListRequest(null)
+        setSelectedDetailRequest(null)
+        setSelectedEvents([])
       }
     })
     await loadRequests({ silent: true, preserveSelection: true })
@@ -2971,20 +2987,29 @@ export function TechnicalServiceOperationCenter() {
 
     preserveDetailScroll(() => {
       setRequests((current) => {
-        const updated = updatedRequest
-          ? current.map((request) => (request.id === updatedRequest.id ? updatedRequest : request))
+        const parentId = updatedRequest?.id ?? selectedId
+        const withoutParent = parentId
+          ? current.filter((request) => request.id !== parentId)
           : current
+        const withoutChild = childRequest
+          ? withoutParent.filter((request) => request.id !== childRequest.id)
+          : withoutParent
 
-        return childRequest && !updated.some((request) => request.id === childRequest.id)
-          ? [childRequest, ...updated]
-          : updated
+        return childRequest
+          ? [childRequest, ...withoutChild]
+          : withoutParent
       })
 
-      if (updatedRequest) {
-        setSelectedListRequest((current) => (
-          current?.id === updatedRequest.id ? updatedRequest : current
-        ))
-        setSelectedDetailRequest(updatedRequest)
+      if (childRequest) {
+        selectedIdRef.current = childRequest.id
+        setSelectedId(childRequest.id)
+        setSelectedListRequest(childRequest)
+        setSelectedDetailRequest(childRequest)
+        setSelectedEvents(Array.isArray(response.child_request?.events) ? response.child_request.events : [])
+      } else if (updatedRequest) {
+        setSelectedListRequest(null)
+        setSelectedDetailRequest(null)
+        setSelectedEvents([])
       }
     })
     await loadRequests({ silent: true, preserveSelection: true })

@@ -3937,10 +3937,22 @@ class B2BPartnerPanelAccessTest extends TestCase
             'id' => $revisitAction->id,
             'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
         ]);
+        $this->assertDatabaseMissing('technical_service_partner_job_actions', [
+            'technical_service_request_id' => $job->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]);
+        $revisitAction->refresh();
+        $this->assertSame($child->id, $revisitAction->payload['service_visit_created']['request_id'] ?? null);
 
         $job->refresh();
         $this->assertSame('srv_delegated', $job->field_status);
         $this->assertSame('SRV ile takip ediliyor', $job->next_action);
+        $this->assertFalse((bool) $job->requires_second_visit);
+        $delegatedParentState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
+        $this->assertNotSame('review', $delegatedParentState['ops_column']);
+        $this->assertNotSame('revisit', $delegatedParentState['partner_column']);
+        $this->assertFalse($delegatedParentState['requires_ops_action']);
 
         $opsList = $this->actingAs($admin)
             ->getJson('/api/technical-service/requests?limit=200')
@@ -3994,6 +4006,19 @@ class B2BPartnerPanelAccessTest extends TestCase
             'scheduled_at' => now()->addDay(),
             'scheduled_date' => now()->addDay()->toDateString(),
             'scheduled_time' => '14:00',
+            'requires_second_visit' => true,
+            'field_status' => 'beklemede',
+            'next_action' => 'Tekrar ziyaret planlanmalı',
+        ]);
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'partner_id' => $partner->id,
+            'user_id' => $admin->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_REVISIT_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'note' => 'Legacy aktif tekrar ziyaret talebi',
+            'payload' => ['reason' => 'Legacy parent state'],
         ]);
         $child = $this->serviceRequestForTechnician($technician, 'SRV-ACTION-SRV-DUP-001', [
             'parent_request_id' => $parent->id,
@@ -4010,6 +4035,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             'scheduled_date' => now()->addDays(2)->toDateString(),
             'scheduled_time' => '15:00',
         ]);
+        $parentState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($parent->fresh());
+        $this->assertNotSame('review', $parentState['ops_column']);
+        $this->assertNotSame('revisit', $parentState['partner_column']);
+        $this->assertFalse($parentState['requires_ops_action']);
 
         $this->actingAs($admin)
             ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
@@ -4034,6 +4063,16 @@ class B2BPartnerPanelAccessTest extends TestCase
         $opsItems = collect($opsList->json('items'));
         $this->assertFalse($opsItems->contains(fn (array $item): bool => $item['mrn'] === $parent->mrn));
         $this->assertTrue($opsItems->contains(fn (array $item): bool => $item['mrn'] === $child->mrn && $item['service_type'] === 'Servis'));
+
+        $operationsDashboard = $this->actingAs($admin)
+            ->getJson('/api/technical-service/operations-dashboard')
+            ->assertOk();
+        $dashboardMrns = collect($operationsDashboard->json('today_appointments') ?? [])
+            ->concat($operationsDashboard->json('overdue_requests') ?? [])
+            ->concat($operationsDashboard->json('past_scheduled_not_completed') ?? [])
+            ->pluck('mrn')
+            ->all();
+        $this->assertNotContains($parent->mrn, $dashboardMrns);
 
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$parent->id}?partner_id={$partner->id}")
