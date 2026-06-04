@@ -1414,6 +1414,7 @@ class TechnicalServiceWorkflowService
         $customerCharges = $this->customerChargeSummaryPayload($request);
         $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
         $paidAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment);
+        $paymentSummary = $this->paymentSummaryPayload($request, $paymentStatus, $extraPayment, $customerCharges, $paidAmount);
 
         return [
             'sale_mount_status' => $request->sale_mount_status,
@@ -1433,7 +1434,66 @@ class TechnicalServiceWorkflowService
             'payment_status' => $paymentStatus,
             'extra_mount_payment' => $extraPayment,
             'customer_charges' => $customerCharges,
+            'payment_summary' => $paymentSummary,
             'technician_earning_message' => $this->technicianEarningMessagePayload($request),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $paymentStatus
+     * @param array<string, mixed>|null $extraPayment
+     * @param array<string, mixed> $customerCharges
+     * @return array<string, mixed>
+     */
+    private function paymentSummaryPayload(
+        TechnicalServiceRequest $request,
+        array $paymentStatus,
+        ?array $extraPayment,
+        array $customerCharges,
+        ?float $paidMountAmount
+    ): array {
+        $paidExtraAmount = ($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
+            ? round((float) ($extraPayment['amount'] ?? 0), 2)
+            : 0.0;
+        $paidServiceAmount = round((float) ($customerCharges['paid_service_amount'] ?? 0), 2);
+        $paidPartAmount = round((float) ($customerCharges['paid_part_amount'] ?? 0), 2);
+        $hasMountCollection = $paidMountAmount !== null;
+        $hasAnyCollection = $hasMountCollection || $paidExtraAmount > 0 || $paidServiceAmount > 0 || $paidPartAmount > 0;
+        $totalCustomerCollection = $hasAnyCollection
+            ? round((float) ($paidMountAmount ?? 0) + $paidExtraAmount + $paidServiceAmount + $paidPartAmount, 2)
+            : null;
+
+        return [
+            'mount' => [
+                'status' => $request->mount_payment_status,
+                'status_label' => $this->paymentStatusLabel($request->mount_payment_status, $paymentStatus),
+                'amount' => $paidMountAmount,
+                'amount_label' => $this->moneyLabel($paidMountAmount),
+                'source' => 'mount_payment',
+            ],
+            'service' => [
+                'status' => $paidServiceAmount > 0 ? TechnicalServiceMountPayment::STATUS_PAID : null,
+                'status_label' => $paidServiceAmount > 0 ? 'Ödendi' : 'Ödeme bilgisi yok',
+                'amount' => $paidServiceAmount,
+                'amount_label' => $this->moneyLabel($paidServiceAmount),
+                'source' => $paidServiceAmount > 0 ? 'customer_charge' : null,
+            ],
+            'part' => [
+                'status' => $paidPartAmount > 0 ? TechnicalServiceMountPayment::STATUS_PAID : null,
+                'status_label' => $paidPartAmount > 0 ? 'Ödendi' : 'Ödeme bilgisi yok',
+                'amount' => $paidPartAmount,
+                'amount_label' => $this->moneyLabel($paidPartAmount),
+                'source' => $paidPartAmount > 0 ? 'customer_charge' : null,
+            ],
+            'extra' => [
+                'status' => $paidExtraAmount > 0 ? TechnicalServiceMountPayment::STATUS_PAID : null,
+                'status_label' => $paidExtraAmount > 0 ? 'Ödendi' : 'Ödeme bilgisi yok',
+                'amount' => $paidExtraAmount,
+                'amount_label' => $this->moneyLabel($paidExtraAmount),
+                'source' => $paidExtraAmount > 0 ? 'extra_mount_payment' : null,
+            ],
+            'total_customer_collection' => $totalCustomerCollection,
+            'total_customer_collection_label' => $this->moneyLabel($totalCustomerCollection),
         ];
     }
 
@@ -2727,14 +2787,14 @@ class TechnicalServiceWorkflowService
         $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $customerCharges = $this->customerChargeSummaryPayload($request);
-        $customerAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment)
-            ?? $this->customerAmountForService($request->service_type);
+        $paidMountCustomerAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment);
+        $customerAmount = $paidMountCustomerAmount ?? $this->customerAmountForService($request->service_type);
         $paidExtraCustomerAmount = ($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
             ? (float) ($extraPayment['amount'] ?? 0)
             : 0.0;
         $paidCustomerChargeAmount = (float) ($customerCharges['paid_total_amount'] ?? 0);
-        $totalCustomerCollected = $customerAmount !== null
-            ? $customerAmount + $paidExtraCustomerAmount + $paidCustomerChargeAmount
+        $totalCustomerCollected = $paidMountCustomerAmount !== null
+            ? $paidMountCustomerAmount + $paidExtraCustomerAmount + $paidCustomerChargeAmount
             : ($paidExtraCustomerAmount + $paidCustomerChargeAmount > 0 ? $paidExtraCustomerAmount + $paidCustomerChargeAmount : null);
         $travelRoundTripKm = $request->travel_round_trip_km !== null ? (float) $request->travel_round_trip_km : null;
         $travelBillableKm = $request->travel_billable_km !== null

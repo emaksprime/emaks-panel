@@ -30,9 +30,11 @@ type MountPaymentPageProps = {
   } | null
 }
 
-const formatMoney = (amount: number, currency: string): string => (
-  `${amount.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`
-)
+const formatMoney = (amount: number, currency: string): string => {
+  const displayCurrency = currency === 'TRY' ? 'TL' : currency
+
+  return `${amount.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} ${displayCurrency}`
+}
 
 function InfoRow({ label, value, strong = true }: { label: string; value: ReactNode; strong?: boolean }) {
   return (

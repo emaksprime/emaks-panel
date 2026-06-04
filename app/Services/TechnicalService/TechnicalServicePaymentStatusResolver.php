@@ -138,7 +138,10 @@ class TechnicalServicePaymentStatusResolver
             $directQuery->where('status', $status);
         }
 
-        $direct = $directQuery->latest('id')->first();
+        $direct = $directQuery
+            ->latest('id')
+            ->get()
+            ->first(fn (TechnicalServiceMountPayment $payment): bool => ! $this->isCustomerChargePayment($payment));
 
         if ($direct instanceof TechnicalServiceMountPayment) {
             return $direct;
@@ -156,7 +159,10 @@ class TechnicalServicePaymentStatusResolver
             $sessionQuery->where('status', $status);
         }
 
-        $sessionPayments = $sessionQuery->get();
+        $sessionPayments = $sessionQuery
+            ->get()
+            ->filter(fn (TechnicalServiceMountPayment $payment): bool => ! $this->isCustomerChargePayment($payment))
+            ->values();
 
         return $sessionPayments
             ->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
@@ -173,6 +179,13 @@ class TechnicalServicePaymentStatusResolver
                         && $payment->technical_service_request_id === null
                         && in_array(($payload['source'] ?? null), ['public_mount_payment', 'public_form_payment'], true);
                 });
+    }
+
+    private function isCustomerChargePayment(TechnicalServiceMountPayment $payment): bool
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+        return ($payload['source'] ?? null) === 'operation_customer_charge';
     }
 
     private function serialPayloadHasPaidMount(TechnicalServiceRequest $request): bool

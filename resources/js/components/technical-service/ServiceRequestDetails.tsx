@@ -1447,6 +1447,11 @@ export function ServiceRequestDetails({
   const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
   const extraMountPayment = saleAndPayment?.extra_mount_payment ?? null
   const customerChargeSummary = saleAndPayment?.customer_charges ?? null
+  const paymentSummary = saleAndPayment?.payment_summary ?? null
+  const paymentSummaryMount = paymentSummary?.mount ?? null
+  const paymentSummaryService = paymentSummary?.service ?? null
+  const paymentSummaryPart = paymentSummary?.part ?? null
+  const paymentSummaryExtra = paymentSummary?.extra ?? null
   const latestCustomerCharge = customerChargeSummary?.latest ?? null
   const technicianEarningMessage = saleAndPayment?.technician_earning_message ?? null
   const earningBreakdown = request.earningBreakdown ?? null
@@ -1515,7 +1520,8 @@ export function ServiceRequestDetails({
     canonicalPaymentStatus?.stage_label ?? saleAndPayment?.payment_stage_label,
     mountPaymentReceived ? 'Ödeme onaylandı' : canonicalPaymentRequiresPayment ? 'Montaj ödemesi henüz alınmadı' : 'Montaj ödemesi gerekmiyor',
   )
-  const mountPaymentAmountLabel = saleAndPayment?.paid_amount_label
+  const mountPaymentAmountLabel = paymentSummaryMount?.amount_label
+    ?? saleAndPayment?.paid_amount_label
     ?? (typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
       ? formatMoneyValue(saleAndPayment.paid_amount)
       : typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
@@ -1525,13 +1531,16 @@ export function ServiceRequestDetails({
           : '-')
   const paymentCollectionStatusLabel = saleAndPayment?.payment_status_label
     ?? paymentStatusLabel(saleAndPayment?.mount_payment_status, mountPaymentReceived)
-  const paidAmountDisplayLabel = saleAndPayment?.paid_amount_label
+  const paidAmountDisplayLabel = paymentSummaryMount?.amount_label
+    ?? saleAndPayment?.paid_amount_label
     ?? mountPaymentAmountLabel
   const paymentPaidAtLabel = dateTimeOrEmpty(saleAndPayment?.payment_paid_at ?? saleAndPayment?.paid_at, '-')
   const opsPaymentCheckLabel = saleAndPayment?.ops_payment_check_label
     ?? operationPaymentCheckLabel(operationControl.payment_checked)
   const paidMountPaymentAmount = mountPaymentReceived
-    ? typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
+    ? typeof paymentSummaryMount?.amount === 'number' && Number.isFinite(paymentSummaryMount.amount)
+      ? paymentSummaryMount.amount
+      : typeof saleAndPayment?.paid_amount === 'number' && Number.isFinite(saleAndPayment.paid_amount)
       ? saleAndPayment.paid_amount
       : typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
         ? canonicalPaymentStatus.amount
@@ -1583,15 +1592,37 @@ export function ServiceRequestDetails({
     : canonicalPaymentRequiresPayment
       ? saleAndPayment?.mount_payment_label ?? mountPaymentStageLabel
       : mountPaymentStageLabel
-  const paidExtraCustomerAmount = extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
-    ? extraMountPayment.amount
-    : 0
+  const paidExtraCustomerAmount = typeof paymentSummaryExtra?.amount === 'number' && Number.isFinite(paymentSummaryExtra.amount)
+    ? paymentSummaryExtra.amount
+    : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
+      ? extraMountPayment.amount
+      : 0
+  const paidServiceCustomerAmount = typeof paymentSummaryService?.amount === 'number' && Number.isFinite(paymentSummaryService.amount)
+    ? paymentSummaryService.amount
+    : typeof customerChargeSummary?.paid_service_amount === 'number' && Number.isFinite(customerChargeSummary.paid_service_amount)
+      ? customerChargeSummary.paid_service_amount
+      : 0
+  const paidPartCustomerAmount = typeof paymentSummaryPart?.amount === 'number' && Number.isFinite(paymentSummaryPart.amount)
+    ? paymentSummaryPart.amount
+    : typeof customerChargeSummary?.paid_part_amount === 'number' && Number.isFinite(customerChargeSummary.paid_part_amount)
+      ? customerChargeSummary.paid_part_amount
+      : 0
   const paidCustomerChargeAmount = typeof customerChargeSummary?.paid_total_amount === 'number' && Number.isFinite(customerChargeSummary.paid_total_amount)
     ? customerChargeSummary.paid_total_amount
-    : 0
-  const totalCustomerCollectedAmount = customerMountAmount !== null
+    : roundTwo(paidServiceCustomerAmount + paidPartCustomerAmount)
+  const totalCustomerCollectedAmount = typeof paymentSummary?.total_customer_collection === 'number' && Number.isFinite(paymentSummary.total_customer_collection)
+    ? paymentSummary.total_customer_collection
+    : customerMountAmount !== null
     ? roundTwo(customerMountAmount + paidExtraCustomerAmount + paidCustomerChargeAmount)
     : paidExtraCustomerAmount + paidCustomerChargeAmount > 0 ? roundTwo(paidExtraCustomerAmount + paidCustomerChargeAmount) : null
+  const serviceCustomerPaymentLabel = paidServiceCustomerAmount > 0
+    ? `${paymentSummaryService?.status_label ?? 'Ödendi'} - ${paymentSummaryService?.amount_label ?? formatMoneyValue(paidServiceCustomerAmount)}`
+    : 'Yok'
+  const partCustomerPaymentLabel = paidPartCustomerAmount > 0
+    ? `${paymentSummaryPart?.status_label ?? 'Ödendi'} - ${paymentSummaryPart?.amount_label ?? formatMoneyValue(paidPartCustomerAmount)}`
+    : 'Yok'
+  const totalCustomerCollectionLabel = paymentSummary?.total_customer_collection_label
+    ?? (totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : null)
   const fallbackTechnicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
     ? selectedTechnician.technicianAmountLabel
     : basePaymentInfo.technicianAmountLabel && basePaymentInfo.technicianAmountLabel !== 'Belirlenmedi'
@@ -2917,6 +2948,9 @@ export function ServiceRequestDetails({
                 />
                 <MiniMetric label="Tahsilat durumu" value={paymentCollectionStatusLabel} />
                 <MiniMetric label="Alınan ödeme tutarı" value={paidAmountDisplayLabel} />
+                <MiniMetric label="Servis ödemesi" value={serviceCustomerPaymentLabel} />
+                <MiniMetric label="Parça ödemesi" value={partCustomerPaymentLabel} />
+                <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel ?? 'Belirlenmedi'} />
                 <MiniMetric label="Operasyon ödeme kontrolü" value={opsPaymentCheckLabel} />
               </div>
               {(saleAndPayment?.payment_reference || paymentPaidAtLabel !== '-' || saleAndPayment?.payment_provider) ? (
@@ -3695,8 +3729,10 @@ export function ServiceRequestDetails({
               </div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 <MiniMetric label="Müşteriden alınan montaj ücreti" value={mountPaymentLabel} />
+                <MiniMetric label="Müşteriden alınan servis ücreti" value={paidServiceCustomerAmount > 0 ? formatMoneyValue(paidServiceCustomerAmount) : 'Yok'} />
+                <MiniMetric label="Müşteriden alınan parça ücreti" value={paidPartCustomerAmount > 0 ? formatMoneyValue(paidPartCustomerAmount) : 'Yok'} />
                 <MiniMetric label="Müşteriden alınan ek ödeme" value={paidExtraCustomerAmount > 0 ? formatMoneyValue(paidExtraCustomerAmount) : 'Yok'} />
-                <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : 'Belirlenmedi'} />
+                <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel ?? 'Belirlenmedi'} />
                 <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
                 <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} />
                 <MiniMetric label="Usta yol hakedişi" value={travelCostLabel} />

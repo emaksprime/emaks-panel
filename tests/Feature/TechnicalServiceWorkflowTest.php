@@ -925,6 +925,74 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_service_part_charge_paid_does_not_override_paid_mount_payment_summary(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_label' => 'Form üzerinden ödeme alındı',
+            'mount_payment_provider' => 'fake',
+            'mount_payment_reference' => 'fake-paid-3500',
+            'mount_payment_paid_at' => now(),
+            'technician_payment_amount' => 3000,
+            'travel_fee_amount' => 500,
+        ]);
+        $session = $this->mountSessionForRequest($request);
+
+        $mountPayment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-3500',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'public_form_payment'],
+        ]);
+
+        $customerCharge = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-service-part-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1750,
+            'currency' => 'TRY',
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'service_and_part_payment',
+                'service_amount' => 1000,
+                'part_amount' => 750,
+                'total_amount' => 1750,
+                'message_template' => 'Servis ve parça ödeme linki.',
+            ],
+        ]);
+
+        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)->markPaid($customerCharge);
+
+        $resolved = app(TechnicalServicePaymentStatusResolver::class)->resolve($request->fresh());
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame($mountPayment->id, $resolved['latest_payment_id']);
+        $this->assertSame(3500.0, $resolved['amount']);
+        $this->assertSame('public_form_payment', $resolved['source']);
+        $this->assertSame(3500.0, $payload['sale_and_payment']['paid_amount']);
+        $this->assertSame('3.500 TL', $payload['sale_and_payment']['paid_amount_label']);
+        $this->assertSame(3500.0, $payload['sale_and_payment']['payment_summary']['mount']['amount']);
+        $this->assertSame(1000.0, $payload['sale_and_payment']['payment_summary']['service']['amount']);
+        $this->assertSame(750.0, $payload['sale_and_payment']['payment_summary']['part']['amount']);
+        $this->assertSame(5250.0, $payload['sale_and_payment']['payment_summary']['total_customer_collection']);
+        $this->assertSame('5.250 TL', $payload['sale_and_payment']['payment_summary']['total_customer_collection_label']);
+        $this->assertSame(1750.0, $payload['sale_and_payment']['customer_charges']['paid_total_amount']);
+        $this->assertSame(1000.0, $payload['service_customer_payment']);
+        $this->assertSame(750.0, $payload['part_customer_payment']);
+        $this->assertSame(5250.0, $payload['total_customer_collected']);
+        $this->assertSame(1750.0, $payload['cost_delta']);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $request->fresh()->mount_payment_status);
+        $this->assertSame('Form üzerinden ödeme alındı', $request->fresh()->mount_payment_label);
+    }
+
     public function test_presenter_normalizes_legacy_mojibake_system_messages(): void
     {
         $legacy = 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.';
@@ -948,6 +1016,10 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('{customerChargeModal}', $source);
         $this->assertStringContainsString('Mesaj metnini kopyala', $source);
         $this->assertStringContainsString('WhatsApp mesajını aç', $source);
+        $this->assertStringContainsString('Servis ödemesi', $source);
+        $this->assertStringContainsString('Parça ödemesi', $source);
+        $this->assertStringContainsString('Müşteriden alınan servis ücreti', $source);
+        $this->assertStringContainsString('Müşteriden alınan parça ücreti', $source);
         $this->assertSame(1, substr_count($source, 'aria-label="Servis/parça ödeme linki oluştur"'));
 
         $actionPosition = strpos($source, 'data-testid="service-part-payment-action"');
@@ -956,6 +1028,17 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertNotFalse($actionPosition);
         $this->assertNotFalse($operationPanelPosition);
         $this->assertLessThan($operationPanelPosition, $actionPosition);
+    }
+
+    public function test_service_part_payment_page_uses_tl_label_not_try(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-payment.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString("currency === 'TRY' ? 'TL' : currency", $source);
+        $this->assertStringContainsString('Servis ücreti', $source);
+        $this->assertStringContainsString('Parça ücreti', $source);
+        $this->assertStringNotContainsString('} ${currency}`', $source);
     }
 
     public function test_ops_payload_groups_parent_and_srv_earning_breakdown(): void

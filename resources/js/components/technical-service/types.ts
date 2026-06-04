@@ -287,7 +287,25 @@ export type ServiceRequestSaleAndPayment = {
   payment_status?: ServiceRequestPaymentStatus | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
   customer_charges?: ServiceRequestCustomerChargeSummary | null
+  payment_summary?: ServiceRequestPaymentSummary | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
+}
+
+export type ServiceRequestPaymentSummaryLine = {
+  status?: string | null
+  status_label?: string | null
+  amount?: number | null
+  amount_label?: string | null
+  source?: string | null
+}
+
+export type ServiceRequestPaymentSummary = {
+  mount?: ServiceRequestPaymentSummaryLine | null
+  service?: ServiceRequestPaymentSummaryLine | null
+  part?: ServiceRequestPaymentSummaryLine | null
+  extra?: ServiceRequestPaymentSummaryLine | null
+  total_customer_collection?: number | null
+  total_customer_collection_label?: string | null
 }
 
 export type ServiceRequestPaymentStatus = {
