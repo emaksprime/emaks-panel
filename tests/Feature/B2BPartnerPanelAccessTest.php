@@ -6067,6 +6067,64 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Tamamlandı');
     }
 
+    public function test_reopening_completed_request_creates_unassigned_srv_hidden_from_old_partner_until_assignment(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $admin = $this->userWithRole('admin', true);
+        $parent = $scope['completedJobB'];
+        $reason = 'Operasyon d'.hex2bin('c3bc').'zeltmesi';
+
+        $response = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$parent->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => $reason,
+                'reopen_note' => 'Yeni SRV ile takip edilecek.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('reopened_as_service_visit', true)
+            ->assertJsonPath('request.parent_request_id', $parent->id)
+            ->assertJsonPath('request.technical_service_technician_id', null)
+            ->assertJsonPath('request.scheduled_at', null);
+
+        $child = TechnicalServiceRequest::query()->findOrFail($response->json('request.id'));
+        $this->assertSame('Servis', $child->service_type);
+        $this->assertSame('reopen', $child->service_visit_reason);
+        $this->assertNull($child->technical_service_technician_id);
+
+        $opsList = $this->actingAs($admin)
+            ->getJson('/api/technical-service/requests?limit=200')
+            ->assertOk();
+        $opsMrns = collect($opsList->json('items'))->pluck('mrn')->all();
+        $this->assertNotContains($parent->mrn, $opsMrns);
+        $this->assertContains($child->mrn, $opsMrns);
+
+        $this->actingAs($scope['userB'])
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$scope['partnerB']->id}")
+            ->assertForbidden();
+
+        $child->forceFill([
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ])->save();
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$child->id}/technician", [
+                'technical_service_technician_id' => $scope['technicianB']->id,
+                'labor_amount' => 1500,
+                'travel_amount' => 250,
+                'confirm_assignment' => true,
+                'note' => 'Yeni SRV ataması.',
+            ])
+            ->assertOk();
+
+        $this->actingAs($scope['userB'])
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$scope['partnerB']->id}")
+            ->assertOk()
+            ->assertJsonPath('job.service_visit_context.root_mrn', $parent->mrn);
+    }
+
     public function test_partner_portal_users_stay_out_of_internal_panel_routes(): void
     {
         (new B2BPartnerPermissionSeeder)->run();

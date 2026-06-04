@@ -3,7 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceRequest;
+use App\Models\TechnicalServiceRequestUpload;
 use App\Models\WarrantyCard;
 use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\WarrantyService;
@@ -246,6 +248,105 @@ class TechnicalServiceWarrantyTest extends TestCase
             'event_type' => 'technical_service_request_reopened',
             'from_status' => 'Tamamlandı',
             'to_status' => 'Yeni',
+        ]);
+    }
+
+    public function test_completed_request_reopen_creates_clean_unassigned_srv_child(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REOPEN-CLEAN',
+            'serial_number' => 'SN-REOPEN-CLEAN',
+            'service_type' => 'Montaj',
+            'status' => 'TamamlandÄ±',
+            'workflow_status' => 'TamamlandÄ±',
+            'completed_at' => '2026-05-05 10:00:00',
+            'installation_completed_at' => '2026-05-02 10:00:00',
+            'field_status' => 'tamamlandÄ±',
+            'field_completed_at' => '2026-05-05 10:00:00',
+            'technician_completed_at' => '2026-05-05 10:00:00',
+            'scheduled_at' => '2026-05-04 10:00:00',
+            'scheduled_date' => '2026-05-04',
+            'scheduled_time' => '10:00',
+            'technician_name' => 'Eski Usta',
+            'technician_approved_at' => '2026-05-04 09:00:00',
+            'customer_closure_approval_status' => 'onaylandÄ±',
+            'customer_closure_approved_at' => '2026-05-05 09:30:00',
+            'operation_control_payload' => [
+                'field_docs_review' => ['status' => 'accepted'],
+                'technician_earning_message' => ['total_amount' => 3500],
+            ],
+        ]);
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            TechnicalServiceRequestUpload::query()->create([
+                'technical_service_request_id' => $request->id,
+                'field_code' => $fieldCode,
+                'category' => TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+                'original_name' => $fieldCode.'.jpg',
+                'path' => 'technical-service/old/'.$fieldCode.'.jpg',
+                'mime' => 'image/jpeg',
+                'size' => 1024,
+                'review_status' => 'accepted',
+            ]);
+        }
+
+        TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $request->id,
+            'token' => 'old-clean-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+            'approved_at' => '2026-05-05 09:30:00',
+        ]);
+
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $reason = 'Operasyon d'.hex2bin('c3bc').'zeltmesi';
+        $response = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => $reason,
+                'reopen_note' => 'Yeni servis gerekiyor.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('reopened_as_service_visit', true)
+            ->assertJsonPath('request.status', 'Yeni')
+            ->assertJsonPath('request.service_type', 'Servis')
+            ->assertJsonPath('request.parent_request_id', $request->id)
+            ->assertJsonPath('request.root_mrn', $request->mrn)
+            ->assertJsonPath('request.technical_service_technician_id', null)
+            ->assertJsonPath('request.scheduled_at', null)
+            ->assertJsonPath('request.completed_at', null)
+            ->assertJsonPath('request.customer_closure_approval_status', null);
+
+        $child = TechnicalServiceRequest::query()->findOrFail($response->json('request.id'));
+
+        $this->assertSame('reopen', $child->service_visit_reason);
+        $this->assertNull($child->technical_service_technician_id);
+        $this->assertNull($child->technician_name);
+        $this->assertNull($child->scheduled_at);
+        $this->assertNull($child->scheduled_date);
+        $this->assertNull($child->scheduled_time);
+        $this->assertNull($child->technician_approved_at);
+        $this->assertNull($child->completed_at);
+        $this->assertNull($child->field_completed_at);
+        $this->assertNull($child->technician_completed_at);
+        $this->assertNull($child->customer_closure_approval_status);
+        $this->assertNull($child->customer_closure_approved_at);
+        $this->assertNull($child->operation_control_payload);
+        $this->assertSame(0, TechnicalServiceRequestUpload::query()->where('technical_service_request_id', $child->id)->count());
+        $this->assertSame(0, TechnicalServiceCustomerConfirmation::query()->where('technical_service_request_id', $child->id)->count());
+
+        $request->refresh();
+        $this->assertSame('TamamlandÄ±', $request->status);
+        $this->assertSame('TamamlandÄ±', $request->workflow_status);
+        $this->assertNotNull($request->completed_at);
+        $this->assertNotNull($request->installation_completed_at);
+        $this->assertSame(1, $request->reopen_count);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'technical_service_request_reopened',
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $child->id,
+            'event_type' => 'srv_child_created',
         ]);
     }
 

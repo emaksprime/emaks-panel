@@ -2212,7 +2212,7 @@ export function TechnicalServiceOperationCenter() {
     setReopenError(null)
 
     try {
-      await apiRequest(`/api/technical-service/requests/${selectedId}/status`, {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/status`, {
         method: 'POST',
         body: JSON.stringify({
           status: 'Yeni',
@@ -2221,12 +2221,38 @@ export function TechnicalServiceOperationCenter() {
           note: reopenNote || reopenReason,
         }),
       })
+      const childRequest = response.child_request ? mapApiRequest(response.child_request) : null
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
       setReopenDialogOpen(false)
       handleReopenReset()
-      await loadRequests()
+
+      if (childRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => {
+            const withoutOldSelected = current.filter((request) => request.id !== selectedId)
+            const withoutChild = withoutOldSelected.filter((request) => request.id !== childRequest.id)
+
+            return [childRequest, ...withoutChild]
+          })
+          selectedIdRef.current = childRequest.id
+          setSelectedId(childRequest.id)
+          setSelectedListRequest(childRequest)
+          setSelectedDetailRequest(childRequest)
+          setSelectedEvents(Array.isArray(response.child_request?.events) ? response.child_request.events : [])
+          setAssignTechnicianOption('')
+        })
+      } else if (updatedRequest) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => (request.id === updatedRequest.id ? updatedRequest : request)))
+          setSelectedListRequest(updatedRequest)
+          setSelectedDetailRequest(updatedRequest)
+        })
+      }
+
+      await loadRequests({ silent: true, preserveSelection: true })
       await loadSummary()
-      await loadRequestDetail(selectedId)
+      await loadRequestDetail(childRequest?.id ?? updatedRequest?.id ?? selectedId)
     } catch (caught) {
       setReopenError(caught instanceof Error ? caught.message : 'Talep yeniden açma işlemi başarısız oldu.')
     } finally {

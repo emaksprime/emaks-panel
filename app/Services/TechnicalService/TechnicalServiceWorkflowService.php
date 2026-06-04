@@ -282,6 +282,14 @@ class TechnicalServiceWorkflowService
 
     public function currentWorkflowStatus(TechnicalServiceRequest $request): string
     {
+        if ($this->requestLooksCancelled($request)) {
+            return $this->cancelledWorkflowStatus();
+        }
+
+        if ($this->requestShouldStayCompleted($request)) {
+            return $this->completedWorkflowStatus();
+        }
+
         return $this->normalizeWorkflowStatus(
             $request->workflow_status,
             $request->status,
@@ -290,9 +298,59 @@ class TechnicalServiceWorkflowService
         );
     }
 
+    private function requestLooksCancelled(TechnicalServiceRequest $request): bool
+    {
+        return $request->cancelled_at !== null
+            || str_ends_with($this->normalizeToken($request->workflow_status), 'ptal')
+            || str_ends_with($this->normalizeToken($request->status), 'ptal');
+    }
+
+    private function requestShouldStayCompleted(TechnicalServiceRequest $request): bool
+    {
+        $completedTokens = ['tamamlandi', 'tamamlanda', 'tamamland'];
+        $statusIsCompleted = in_array($this->normalizeToken($request->workflow_status), $completedTokens, true)
+            || in_array($this->normalizeToken($request->status), $completedTokens, true);
+
+        if (! $statusIsCompleted) {
+            return false;
+        }
+
+        if ($request->completed_at === null && $request->installation_completed_at === null) {
+            return false;
+        }
+
+        if ($request->reopened_at === null) {
+            return true;
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        if (isset($operationControl['service_visit_delegation'])) {
+            return true;
+        }
+
+        if ($request->relationLoaded('childRequests')) {
+            return $request->childRequests
+                ->contains(fn (TechnicalServiceRequest $child): bool => filled($child->service_code) && $child->cancelled_at === null);
+        }
+
+        return TechnicalServiceRequest::query()
+            ->where('parent_request_id', $request->id)
+            ->whereNotNull('service_code')
+            ->whereNull('cancelled_at')
+            ->exists();
+    }
+
     public function normalizeWorkflowStatus(?string $workflowStatus, ?string $legacyStatus = null, bool $hasTechnician = false, bool $hasSchedule = false): string
     {
         $normalized = $this->normalizeToken($workflowStatus);
+
+        if (in_array($normalized, ['tamamlandi', 'tamamlanda', 'tamamland'], true)) {
+            return $this->completedWorkflowStatus();
+        }
+
+        if (str_ends_with($normalized, 'ptal')) {
+            return $this->cancelledWorkflowStatus();
+        }
 
         $workflowAliases = [
             'yenitalep' => 'Yeni Talep',
@@ -335,7 +393,17 @@ class TechnicalServiceWorkflowService
 
     public function normalizeLegacyStatus(?string $status): string
     {
-        return match ($this->normalizeToken($status)) {
+        $normalized = $this->normalizeToken($status);
+
+        if (in_array($normalized, ['tamamlandi', 'tamamlanda', 'tamamland'], true)) {
+            return $this->completedWorkflowStatus();
+        }
+
+        if (str_ends_with($normalized, 'ptal')) {
+            return $this->cancelledWorkflowStatus();
+        }
+
+        return match ($normalized) {
             'tamamlandi' => 'Tamamlandı',
             'iptal' => 'İptal',
             'devamediyor' => 'Devam Ediyor',
@@ -347,6 +415,17 @@ class TechnicalServiceWorkflowService
 
     public function legacyStatusForWorkflow(string $workflowStatus): string
     {
+        $workflowStatus = $this->normalizeWorkflowStatus($workflowStatus, $workflowStatus);
+        $workflowToken = $this->normalizeToken($workflowStatus);
+
+        if (in_array($workflowToken, ['tamamlandi', 'tamamlanda', 'tamamland'], true)) {
+            return $workflowStatus;
+        }
+
+        if (str_ends_with($workflowToken, 'ptal')) {
+            return $workflowStatus;
+        }
+
         return match ($workflowStatus) {
             'Tamamlandı' => 'Tamamlandı',
             'İptal' => 'İptal',
@@ -1013,12 +1092,31 @@ class TechnicalServiceWorkflowService
 
     public function assertTransitionAllowed(string $from, string $to): void
     {
+        $from = $this->normalizeWorkflowStatus($from, $from);
+        $to = $this->normalizeWorkflowStatus($to, $to);
+
         if ($from === $to) {
             return;
         }
 
-        $allowedTargets = self::transitionMap()[$from] ?? [];
-        if (! in_array($to, $allowedTargets, true)) {
+        $transitionMap = self::transitionMap();
+        $allowedTargets = $transitionMap[$from] ?? null;
+        if ($allowedTargets === null) {
+            $fromToken = $this->normalizeToken($from);
+            foreach ($transitionMap as $source => $targets) {
+                if ($this->normalizeToken($this->normalizeWorkflowStatus($source, $source)) === $fromToken) {
+                    $allowedTargets = $targets;
+                    break;
+                }
+            }
+        }
+
+        $allowedTargets = $allowedTargets ?? [];
+        $toToken = $this->normalizeToken($to);
+        $isAllowed = collect($allowedTargets)
+            ->contains(fn (string $target): bool => $this->normalizeToken($this->normalizeWorkflowStatus($target, $target)) === $toToken);
+
+        if (! $isAllowed) {
             throw ValidationException::withMessages([
                 'workflow_status' => "Geçersiz statü geçişi: {$from} -> {$to}",
             ]);
@@ -3138,6 +3236,16 @@ class TechnicalServiceWorkflowService
             'iptal_talebi' => 'İptal nedeni onaylanmalı',
             default => 'Revize randevu planlanmalı',
         };
+    }
+
+    private function completedWorkflowStatus(): string
+    {
+        return "Tamamland\u{0131}";
+    }
+
+    private function cancelledWorkflowStatus(): string
+    {
+        return "\u{0130}ptal";
     }
 
     private function normalizeToken(?string $value): string

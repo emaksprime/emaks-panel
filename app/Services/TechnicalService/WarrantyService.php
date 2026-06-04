@@ -303,6 +303,22 @@ class WarrantyService
             })
             ->exists();
 
+        if (! $hasReopenedInstallation) {
+            $hasReopenedInstallation = TechnicalServiceRequest::query()
+                ->where('serial_number', $card->serial_no)
+                ->where('service_type', 'Montaj')
+                ->whereNotNull('reopened_at')
+                ->whereNotNull('completed_at')
+                ->where(function ($query) use ($card) {
+                    $query->whereDate('installation_completed_at', $card->installation_completed_at->toDateString())
+                        ->orWhere(function ($query) use ($card) {
+                            $query->whereNull('installation_completed_at')
+                                ->whereDate('completed_at', $card->installation_completed_at->toDateString());
+                        });
+                })
+                ->exists();
+        }
+
         if ($hasReopenedInstallation) {
             $warnings[] = 'Montaj daha önce tamamlandığı için garanti başlangıcı korunuyor; talep sonradan yeniden açılmış.';
         }

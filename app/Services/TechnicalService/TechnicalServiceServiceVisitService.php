@@ -15,6 +15,91 @@ class TechnicalServiceServiceVisitService
 
     public function __construct(private readonly TechnicalServiceCodeGenerator $codeGenerator) {}
 
+    public function createCleanServiceVisitFromCompletedRequest(
+        TechnicalServiceRequest $completedRequest,
+        ?User $user,
+        string $reopenReason,
+        ?string $reopenNote = null,
+    ): TechnicalServiceRequest {
+        return DB::transaction(function () use ($completedRequest, $user, $reopenReason, $reopenNote): TechnicalServiceRequest {
+            $child = $this->createServiceVisitFromRequest(
+                $completedRequest,
+                $user,
+                'reopen',
+                [
+                    'description' => $reopenNote ?: 'Tamamlanan talep için yeni servis ziyareti',
+                    'copy_operation_control' => false,
+                    'parent_event_type' => 'technical_service_request_reopened_as_srv',
+                    'parent_event_title' => 'Tamamlanan talep için yeni SRV açıldı',
+                    'reopen_reason' => $reopenReason,
+                    'reopen_note' => $reopenNote,
+                ],
+            );
+
+            $child->forceFill([
+                'reopened_at' => now(),
+                'reopened_by_user_id' => $user?->id,
+                'reopen_reason' => $reopenReason,
+                'reopen_note' => $reopenNote,
+                'reopen_count' => 1,
+                'updated_by_user_id' => $user?->id,
+            ])->save();
+
+            $parent = TechnicalServiceRequest::query()
+                ->lockForUpdate()
+                ->findOrFail($completedRequest->id);
+            $reopenCount = ((int) $parent->reopen_count) + 1;
+
+            $parent->forceFill([
+                'reopened_at' => now(),
+                'reopened_by_user_id' => $user?->id,
+                'reopen_reason' => $reopenReason,
+                'reopen_note' => $reopenNote,
+                'reopen_count' => $reopenCount,
+                'updated_by_user_id' => $user?->id,
+            ])->save();
+
+            $parent->events()->create([
+                'event_type' => 'technical_service_request_reopened',
+                'title' => 'Talep yeni SRV ile tekrar açıldı',
+                'note' => $reopenNote ?: $child->mrn,
+                'from_status' => $parent->workflow_status ?: $parent->status,
+                'to_status' => TechnicalServiceRequest::STATUS_NEW,
+                'author_user_id' => $user?->id,
+                'metadata' => [
+                    'reason' => $reopenReason,
+                    'note' => $reopenNote,
+                    'user_id' => $user?->id,
+                    'service_visit_request_id' => $child->id,
+                    'service_code' => $child->service_code,
+                    'child_mrn' => $child->mrn,
+                    'reopen_count' => $reopenCount,
+                    'parent_remains_completed' => true,
+                ],
+            ]);
+
+            $this->recordEvent(
+                $parent,
+                'technical_service_request_reopened_history',
+                'Talep yeni SRV ile tekrar açıldı',
+                $reopenNote ?: $child->mrn,
+                $user,
+                [
+                    'reason' => $reopenReason,
+                    'note' => $reopenNote,
+                    'user_id' => $user?->id,
+                    'service_visit_request_id' => $child->id,
+                    'service_code' => $child->service_code,
+                    'child_mrn' => $child->mrn,
+                    'reopen_count' => $reopenCount,
+                    'parent_remains_completed' => true,
+                ],
+            );
+
+            return $child->refresh();
+        });
+    }
+
     /**
      * @param array<string, mixed> $options
      */
@@ -67,9 +152,9 @@ class TechnicalServiceServiceVisitService
                 'priority' => $parent->priority ?: TechnicalServiceRequest::PRIORITY_MEDIUM,
                 'risk_level' => $parent->risk_level ?: TechnicalServiceRequest::RISK_MEDIUM,
                 'source_channel' => 'srv_child_request',
-                'operation_control_payload' => is_array($parent->operation_control_payload) ? $parent->operation_control_payload : null,
-                'operation_control_checked_by_user_id' => $parent->operation_control_checked_by_user_id,
-                'operation_control_checked_at' => $parent->operation_control_checked_at,
+                'operation_control_payload' => ($options['copy_operation_control'] ?? true) && is_array($parent->operation_control_payload) ? $parent->operation_control_payload : null,
+                'operation_control_checked_by_user_id' => ($options['copy_operation_control'] ?? true) ? $parent->operation_control_checked_by_user_id : null,
+                'operation_control_checked_at' => ($options['copy_operation_control'] ?? true) ? $parent->operation_control_checked_at : null,
                 'location_latitude' => $parent->location_latitude,
                 'location_longitude' => $parent->location_longitude,
                 'location_place_id' => $parent->location_place_id,
@@ -97,6 +182,8 @@ class TechnicalServiceServiceVisitService
                 'reason' => $reason,
                 'source_partner_action_id' => $child->source_partner_action_id,
                 'source_part_request_id' => $child->source_part_request_id,
+                'reopen_reason' => $options['reopen_reason'] ?? null,
+                'reopen_note' => $options['reopen_note'] ?? null,
             ];
 
             $this->recordEvent(

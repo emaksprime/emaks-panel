@@ -30,6 +30,7 @@ use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
+use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
 use App\Services\Payments\PaymentProviderManager;
@@ -39,6 +40,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -48,6 +50,7 @@ class TechnicalServiceController extends Controller
         private readonly TechnicalServiceWorkflowService $workflowService,
         private readonly EvolutionWhatsAppMessageService $messages,
         private readonly TechnicalServiceCodeGenerator $codeGenerator,
+        private readonly TechnicalServiceServiceVisitService $serviceVisitService,
     ) {
     }
 
@@ -209,8 +212,30 @@ class TechnicalServiceController extends Controller
     {
         $payload = $request->validated();
         $previousLegacyStatus = $technicalServiceRequest->status;
-        $isReopen = $payload['status'] === 'Yeni' && in_array($previousLegacyStatus, ['Tamamlandı', 'İptal'], true);
+        $requestedStatusToken = $this->statusToken($payload['status'] ?? null);
+        $isNewStatus = $requestedStatusToken === 'yeni';
+        $isCompletedReopen = $isNewStatus
+            && $this->isCompletedRequestForCleanServiceVisit($technicalServiceRequest, $previousLegacyStatus);
+        $isReopen = $isNewStatus
+            && ($this->isCompletedStatusValue($previousLegacyStatus) || $this->isCancelledStatusValue($previousLegacyStatus));
         $this->validateInstallationAfterLatestSale($technicalServiceRequest, $payload);
+
+        if ($isCompletedReopen) {
+            $child = $this->serviceVisitService->createCleanServiceVisitFromCompletedRequest(
+                $technicalServiceRequest,
+                $request->user(),
+                (string) ($payload['reopen_reason'] ?? 'Operasyon düzeltmesi'),
+                $payload['reopen_note'] ?? ($payload['note'] ?? null),
+            );
+            $parent = $technicalServiceRequest->fresh();
+
+            return response()->json([
+                'request' => $this->workflowService->serialize($child, true),
+                'child_request' => $this->workflowService->serialize($child, true),
+                'parent_request' => $parent ? $this->workflowService->serialize($parent, true) : null,
+                'reopened_as_service_visit' => true,
+            ]);
+        }
 
         if ($isReopen) {
             $technicalServiceRequest->reopened_at = now();
@@ -218,7 +243,7 @@ class TechnicalServiceController extends Controller
             $technicalServiceRequest->reopen_reason = $payload['reopen_reason'] ?? null;
             $technicalServiceRequest->reopen_note = $payload['reopen_note'] ?? ($payload['note'] ?? null);
             $technicalServiceRequest->reopen_count = ((int) $technicalServiceRequest->reopen_count) + 1;
-        } elseif ($payload['status'] === 'Yeni') {
+        } elseif ($isNewStatus) {
             $technicalServiceRequest->completed_at = null;
             $technicalServiceRequest->cancelled_at = null;
         }
@@ -235,6 +260,13 @@ class TechnicalServiceController extends Controller
                 : 'Usta Ataması Bekleyen',
             default => 'Yeni Talep',
         };
+        if ($this->isCompletedStatusValue($payload['status'])) {
+            $targetWorkflowStatus = $this->workflowService->normalizeWorkflowStatus($payload['status'], $payload['status']);
+        } elseif ($this->isCancelledStatusValue($payload['status'])) {
+            $targetWorkflowStatus = $this->workflowService->normalizeWorkflowStatus($payload['status'], $payload['status']);
+        }
+        $targetIsCompleted = $this->isCompletedStatusValue($targetWorkflowStatus);
+        $targetIsCancelled = $this->isCancelledStatusValue($targetWorkflowStatus);
 
         $workflowPayload = [
             'note' => $payload['reopen_note'] ?? $payload['note'] ?? ($payload['resolution_notes'] ?? null),
@@ -270,6 +302,46 @@ class TechnicalServiceController extends Controller
         }
 
         return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
+    }
+
+    private function isCompletedRequestForCleanServiceVisit(TechnicalServiceRequest $request, ?string $legacyStatus = null): bool
+    {
+        $completedStatuses = ['TamamlandÄ±', 'Tamamlandı', 'Tamamlandi', 'TamamlandÃ„Â±'];
+
+        return $request->completed_at !== null
+            || $request->installation_completed_at !== null
+            || in_array((string) $legacyStatus, $completedStatuses, true)
+            || in_array((string) $request->status, $completedStatuses, true)
+            || in_array((string) $request->workflow_status, $completedStatuses, true);
+    }
+
+    private function isTerminalOperationRequest(TechnicalServiceRequest $request): bool
+    {
+        return $request->cancelled_at !== null
+            || $request->completed_at !== null
+            || $this->isCancelledStatusValue($request->status)
+            || $this->isCancelledStatusValue($request->workflow_status)
+            || $this->isCompletedStatusValue($request->status)
+            || $this->isCompletedStatusValue($request->workflow_status);
+    }
+
+    private function isCompletedStatusValue(?string $status): bool
+    {
+        return in_array($this->statusToken($status), ['tamamlandi', 'tamamlanda', 'tamamland'], true);
+    }
+
+    private function isCancelledStatusValue(?string $status): bool
+    {
+        return str_ends_with($this->statusToken($status), 'ptal');
+    }
+
+    private function statusToken(?string $status): string
+    {
+        return Str::of((string) $status)
+            ->ascii()
+            ->lower()
+            ->replaceMatches('/[^a-z0-9]+/', '')
+            ->value();
     }
 
     public function updateWorkflow(UpdateTechnicalServiceWorkflowRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
@@ -1204,13 +1276,18 @@ class TechnicalServiceController extends Controller
             ->each(fn (TechnicalServiceRequest $request) => $this->workflowService->initializeRequest($request));
 
         $todayAppointments = $requests
-            ->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)
+            ->filter(fn (TechnicalServiceRequest $request) => ($request->scheduled_at?->isToday() ?? false)
+                && ! $this->isTerminalOperationRequest($request))
             ->values();
         $overdue = $requests
             ->filter(fn (TechnicalServiceRequest $request) => $this->isOverdueRequest($request))
             ->values();
         $warrantyStarted = $requests
-            ->filter(fn (TechnicalServiceRequest $request) => $request->service_type === 'Montaj' && $request->installation_completed_at !== null)
+            ->filter(fn (TechnicalServiceRequest $request) => $request->service_type === 'Montaj'
+                && $request->installation_completed_at !== null
+                && ($request->completed_at !== null
+                    || $this->isCompletedStatusValue($request->status)
+                    || $this->isCompletedStatusValue($request->workflow_status)))
             ->values();
         $pastScheduledNotCompleted = $requests
             ->filter(fn (TechnicalServiceRequest $request) => $this->isPastScheduledNotCompleted($request))
@@ -1351,7 +1428,7 @@ class TechnicalServiceController extends Controller
     {
         return $request->scheduled_at !== null
             && $request->scheduled_at->isPast()
-            && ! in_array($request->workflow_status, ['Tamamlandı', 'İptal'], true);
+            && ! $this->isTerminalOperationRequest($request);
     }
 
     private function isPastScheduledNotCompleted(TechnicalServiceRequest $request): bool
@@ -1359,7 +1436,7 @@ class TechnicalServiceController extends Controller
         return $request->scheduled_at !== null
             && $request->scheduled_at->isPast()
             && $request->installation_completed_at === null
-            && ! in_array($request->workflow_status, ['Tamamlandı', 'İptal'], true);
+            && ! $this->isTerminalOperationRequest($request);
     }
 
     private function overdueLabel(TechnicalServiceRequest $request): ?string
@@ -1781,7 +1858,7 @@ class TechnicalServiceController extends Controller
     private function validateInstallationAfterLatestSale(TechnicalServiceRequest $request, array $payload): void
     {
         if (
-            ($payload['status'] ?? null) !== 'Tamamlandı'
+            ! $this->isCompletedStatusValue($payload['status'] ?? null)
             || $request->service_type !== 'Montaj'
             || empty($payload['installation_completed_at'])
             || empty($request->serial_number)
