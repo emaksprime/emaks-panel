@@ -307,21 +307,25 @@ class B2BPartnerPortalDataService
         if ($viewerPartner instanceof B2BPartner) {
             $request->setRelation('partnerJobActions', $partnerActions);
         }
+        $currentPartnerActions = $partnerActions
+            ->reject(fn (TechnicalServicePartnerJobAction $action): bool => $this->actionResolvedForNewWork($action)
+                || $this->actionPredatesActiveReopen($request, $action))
+            ->values();
         $latestAction = $this->latestVisiblePartnerAction($request, $partnerActions);
-        $latestAppointmentProposal = $partnerActions
+        $latestAppointmentProposal = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED);
-        $latestRejection = $partnerActions
+        $latestRejection = $currentPartnerActions
             ->first(fn (TechnicalServicePartnerJobAction $action): bool => $action->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED
                 && $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
-        $latestCompletionSubmission = $partnerActions
+        $latestCompletionSubmission = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED);
-        $latestSupportRequest = $partnerActions
+        $latestSupportRequest = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED);
-        $latestOtpRequest = $partnerActions
+        $latestOtpRequest = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
-        $latestPriceRevisionRequest = $partnerActions
+        $latestPriceRevisionRequest = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED);
-        $latestCustomerApprovalRejection = $partnerActions
+        $latestCustomerApprovalRejection = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request, $partnerActions);
         $canonicalState = $this->operationalState->present($request);
@@ -336,10 +340,15 @@ class B2BPartnerPortalDataService
         $earningSummary = $this->earningSummary($request, $assignmentOffer);
         $earningBreakdown = $this->earningBreakdown($request, $assignmentOffer);
         $photoReadiness = $this->portalPhotoReadiness($request);
-        $latestCustomerConfirmation = $request->customerConfirmations->first();
+        $latestCustomerConfirmation = $request->customerConfirmations
+            ->first(fn (TechnicalServiceCustomerConfirmation $confirmation): bool => ! $this->recordPredatesActiveReopen($request, $confirmation->created_at ?? $confirmation->updated_at));
+        $customerClosureStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $request->customer_closure_approval_status);
+        $customerClosureApprovalIsCurrent = $request->reopened_at === null
+            || ($request->customer_closure_approved_at instanceof \Carbon\CarbonInterface
+                && $request->customer_closure_approved_at->greaterThan($request->reopened_at));
         $customerConfirmationReady = $latestCustomerConfirmation instanceof TechnicalServiceCustomerConfirmation
             ? $latestCustomerConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_APPROVED
-            : in_array($request->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±'], true);
+            : ($customerClosureApprovalIsCurrent && in_array($customerClosureStatus, ['onaylandı', 'onaylandi', 'onaylandÄ±'], true));
         $completionRequirements = [
             'door_photos_required' => $photoReadiness['required'],
             'door_photos_uploaded' => $photoReadiness['count'],
@@ -361,6 +370,15 @@ class B2BPartnerPortalDataService
                 ->all(),
         ];
         $hasOpsAppointment = $this->hasOpsAppointment($request);
+        $portalPhotos = $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
+            ->values();
+        $currentPortalPhotos = $portalPhotos
+            ->reject(fn (TechnicalServiceRequestUpload $upload): bool => $this->recordPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
+            ->values();
+        $previousPortalPhotos = $portalPhotos
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->recordPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
+            ->values();
         $isTerminal = (bool) ($canonicalState['is_completed'] ?? false)
             || ($canonicalState['ops_column'] ?? null) === 'cancelled';
         $isAppointmentConfirmed = (bool) ($canonicalState['is_appointment_confirmed'] ?? false);
@@ -497,8 +515,7 @@ class B2BPartnerPortalDataService
                 'after' => in_array('after_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
                 'general' => in_array('warranty_document_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
             ],
-            'photos' => $request->uploads
-                ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
+            'photos' => $currentPortalPhotos
                 ->map(fn (TechnicalServiceRequestUpload $upload): array => [
                     'id' => $upload->id,
                     'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
@@ -510,6 +527,23 @@ class B2BPartnerPortalDataService
                     ]),
                     'review_status' => $upload->review_status,
                     'review_note' => $upload->review_note,
+                    'created_at' => $upload->created_at?->toIso8601String(),
+                ])
+                ->values()
+                ->all(),
+            'previous_photos' => $previousPortalPhotos
+                ->map(fn (TechnicalServiceRequestUpload $upload): array => [
+                    'id' => $upload->id,
+                    'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
+                    'category' => $upload->category,
+                    'field_code' => $upload->field_code,
+                    'preview_url' => route('api.technical-service.requests.uploads.show', [
+                        'technicalServiceRequest' => $request->id,
+                        'upload' => $upload->id,
+                    ]),
+                    'review_status' => $upload->review_status,
+                    'review_note' => $upload->review_note,
+                    'created_at' => $upload->created_at?->toIso8601String(),
                 ])
                 ->values()
                 ->all(),
@@ -1214,10 +1248,12 @@ class B2BPartnerPortalDataService
             return false;
         }
 
-        $terminalStatuses = ['TamamlandÄ±', 'Tamamlandi', 'TamamlandÃ„Â±', 'Ä°ptal', 'Iptal', 'Ã„Â°ptal'];
+        $terminalStatuses = ['Tamamlandı', 'TamamlandÄ±', 'Tamamlandi', 'İptal', 'Ä°ptal', 'Iptal'];
+        $workflowStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $request->workflow_status);
+        $status = TechnicalServiceUiLabelService::cleanDisplayText((string) $request->status);
 
-        return ! in_array((string) $request->workflow_status, $terminalStatuses, true)
-            && ! in_array((string) $request->status, $terminalStatuses, true);
+        return ! in_array((string) $workflowStatus, $terminalStatuses, true)
+            && ! in_array((string) $status, $terminalStatuses, true);
     }
 
     private function isTechnicianApprovalStatus(TechnicalServiceRequest $request): bool
@@ -1255,7 +1291,9 @@ class B2BPartnerPortalDataService
     private function stateAction(TechnicalServiceRequest $request, ?Collection $actions = null): ?TechnicalServicePartnerJobAction
     {
         $opsReview = ($actions ?? $request->partnerJobActions)
-            ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+            ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+                && ! $this->actionResolvedForNewWork($action)
+                && ! $this->actionPredatesActiveReopen($request, $action));
 
         foreach ([
             TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
@@ -1277,9 +1315,40 @@ class B2BPartnerPortalDataService
         return null;
     }
 
+    private function actionResolvedForNewWork(TechnicalServicePartnerJobAction $action): bool
+    {
+        $payload = is_array($action->payload) ? $action->payload : [];
+
+        return (bool) ($payload['resolved_by_reassignment'] ?? false)
+            || isset($payload['service_visit_created']);
+    }
+
+    private function actionPredatesActiveReopen(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
+    {
+        if ($request->reopened_at === null) {
+            return false;
+        }
+
+        $actionAt = $action->created_at ?? $action->updated_at;
+
+        return $actionAt instanceof \Carbon\CarbonInterface
+            && $actionAt->lessThanOrEqualTo($request->reopened_at);
+    }
+
+    private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
+    {
+        return $request->reopened_at instanceof \Carbon\CarbonInterface
+            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt->lessThanOrEqualTo($request->reopened_at);
+    }
+
     private function latestVisiblePartnerAction(TechnicalServiceRequest $request, \Illuminate\Support\Collection $partnerActions): ?TechnicalServicePartnerJobAction
     {
         return $partnerActions->first(function (TechnicalServicePartnerJobAction $action) use ($request): bool {
+            if ($this->actionResolvedForNewWork($action) || $this->actionPredatesActiveReopen($request, $action)) {
+                return false;
+            }
+
             if ($action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
                 return true;
             }
@@ -1599,7 +1668,8 @@ class B2BPartnerPortalDataService
     {
         $request->loadMissing('uploads');
         $uploadedFields = $request->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload)
+                && ! $this->recordPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
             ->map(fn (TechnicalServiceRequestUpload $upload): ?string => $this->canonicalPortalPhotoField($upload->field_code))
             ->filter(fn (?string $field): bool => $field !== null && array_key_exists($field, self::REQUIRED_PORTAL_PHOTO_FIELDS))
             ->unique()

@@ -19,6 +19,7 @@ use App\Services\PanelAccessService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
 use Closure;
@@ -1085,20 +1086,33 @@ class PartnerServiceJobController extends Controller
 
     private function canUseFieldActions(TechnicalServiceRequest $job): bool
     {
-        if ($job->completed_at !== null) {
+        if ($job->completed_at !== null && ! $this->isActiveReopenedWork($job)) {
             return false;
         }
 
-        return in_array($job->workflow_status, [
+        $workflowStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $job->workflow_status);
+
+        return in_array($workflowStatus, [
             'Planlı',
-            'PlanlÄ±',
             'Yolda',
             'Sahada',
             'Belge / Fotoğraf Bekleyen',
-            'Belge / FotoÄŸraf Bekleyen',
             'Müşteri Kapanış Onayı Bekleyen',
-            'MÃ¼ÅŸteri KapanÄ±ÅŸ OnayÄ± Bekleyen',
         ], true);
+    }
+
+    private function isActiveReopenedWork(TechnicalServiceRequest $job): bool
+    {
+        if ($job->reopened_at === null) {
+            return false;
+        }
+
+        $workflowStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $job->workflow_status);
+        $status = TechnicalServiceUiLabelService::cleanDisplayText((string) $job->status);
+        $terminalStatuses = ['Tamamlandı', 'Tamamlandi', 'İptal', 'Iptal'];
+
+        return ! in_array($workflowStatus, $terminalStatuses, true)
+            && ! in_array($status, $terminalStatuses, true);
     }
 
     private function ensureSupportRequestStage(TechnicalServiceRequest $job, string $message): void
@@ -1202,7 +1216,8 @@ class PartnerServiceJobController extends Controller
     {
         $job->loadMissing('uploads');
         $uploadedFields = $job->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload)
+                && ! $this->recordPredatesActiveReopen($job, $upload->created_at ?? $upload->updated_at))
             ->map(fn (TechnicalServiceRequestUpload $upload): ?string => $this->canonicalPortalPhotoField($upload->field_code))
             ->filter(fn (?string $field): bool => $field !== null && array_key_exists($field, self::REQUIRED_PORTAL_PHOTO_FIELDS))
             ->unique()
@@ -1242,15 +1257,27 @@ class PartnerServiceJobController extends Controller
      */
     private function hasCustomerConfirmation(TechnicalServiceRequest $job, array $data): bool
     {
-        $latestConfirmation = $job->customerConfirmations()
-            ->latest('id')
-            ->first();
+        $latestConfirmationQuery = $job->customerConfirmations()
+            ->latest('id');
+
+        if ($job->reopened_at !== null) {
+            $latestConfirmationQuery->where(function ($query) use ($job): void {
+                $query->where('created_at', '>', $job->reopened_at)
+                    ->orWhere('updated_at', '>', $job->reopened_at);
+            });
+        }
+
+        $latestConfirmation = $latestConfirmationQuery->first();
 
         if ($latestConfirmation instanceof TechnicalServiceCustomerConfirmation) {
             return $latestConfirmation->status === TechnicalServiceCustomerConfirmation::STATUS_APPROVED;
         }
 
-        return in_array($job->customer_closure_approval_status, ['onaylandı', 'onaylandi', 'onaylandÄ±', 'onaylandÃ„Â±'], true);
+        $status = TechnicalServiceUiLabelService::cleanDisplayText((string) $job->customer_closure_approval_status);
+        $approvalIsCurrent = $job->reopened_at === null
+            || ($job->customer_closure_approved_at !== null && $job->customer_closure_approved_at->greaterThan($job->reopened_at));
+
+        return $approvalIsCurrent && in_array($status, ['onaylandı', 'onaylandi', 'onaylandÄ±'], true);
     }
 
     private function isPortalFieldDocument(TechnicalServiceRequestUpload $upload): bool
@@ -1409,10 +1436,21 @@ class PartnerServiceJobController extends Controller
 
     private function canCompleteDirectly(TechnicalServiceRequest $job): bool
     {
-        return in_array($job->workflow_status, ['Sahada', 'Belge / FotoÄŸraf Bekleyen', 'MÃ¼ÅŸteri KapanÄ±ÅŸ OnayÄ± Bekleyen'], true)
-            && $job->checklist_status === 'tamamlandÄ±'
+        $workflowStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $job->workflow_status);
+        $checklistStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $job->checklist_status);
+        $documentStatus = TechnicalServiceUiLabelService::cleanDisplayText((string) $job->document_status);
+
+        return in_array($workflowStatus, ['Sahada', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'], true)
+            && $checklistStatus === 'tamamlandı'
             && $this->portalPhotoReadiness($job)['ready']
-            && in_array($job->document_status, ['tamamlandÄ±', 'tamam', 'gerekli_degil'], true)
-            && $job->customer_closure_approval_status === 'onaylandÄ±';
+            && in_array($documentStatus, ['tamamlandı', 'tamam', 'gerekli_degil'], true)
+            && $this->hasCustomerConfirmation($job, []);
+    }
+
+    private function recordPredatesActiveReopen(TechnicalServiceRequest $job, mixed $recordAt): bool
+    {
+        return $job->reopened_at !== null
+            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt->lessThanOrEqualTo($job->reopened_at);
     }
 }

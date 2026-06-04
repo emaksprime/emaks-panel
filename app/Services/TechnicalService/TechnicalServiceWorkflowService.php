@@ -2462,7 +2462,9 @@ class TechnicalServiceWorkflowService
             'workflow_status' => $request->workflow_status,
             'completed_at' => $this->dateTimeString($request->completed_at),
             'created_at' => $this->dateTimeString($request->created_at),
-            'latest_event' => $request->relationLoaded('events') ? $request->events->first()?->title : null,
+            'latest_event' => $request->relationLoaded('events')
+                ? TechnicalServiceUiLabelService::cleanDisplayText($request->events->first()?->title)
+                : null,
         ];
     }
 

@@ -101,7 +101,8 @@ type ServiceJob = {
   checklist_status: string | null
   checklist_payload: Record<string, boolean>
   photo_counts: { before: number, after: number, general: number }
-  photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null, preview_url?: string | null, review_status?: string | null, review_note?: string | null }>
+  photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null, preview_url?: string | null, review_status?: string | null, review_note?: string | null, created_at?: string | null }>
+  previous_photos?: Array<{ id: number, label: string | null, category: string | null, field_code: string | null, preview_url?: string | null, review_status?: string | null, review_note?: string | null, created_at?: string | null }>
   latest_partner_action: { action: string, action_label?: string | null, status: string, status_label?: string | null, note: string | null, payload?: Record<string, unknown>, created_at: string | null } | null
   portal_actions: Array<{ id?: number, action: string, action_label?: string | null, status: string, status_label?: string | null, note: string | null, payload?: Record<string, unknown>, created_at: string | null }>
   appointment_proposal: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
@@ -1773,6 +1774,26 @@ function ServiceJobDetail({
               </button>
             ) : null}
             </div>
+            {(job.previous_photos?.length ?? 0) > 0 ? (
+              <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                <summary className="cursor-pointer font-semibold text-slate-800">Önceki ziyaret görselleri</summary>
+                <div className="mt-3 grid min-w-0 max-w-full gap-3 sm:grid-cols-3">
+                  {job.previous_photos?.map((photo) => (
+                    <div key={photo.id} className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white p-2">
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <p className="min-w-0 truncate font-semibold text-slate-800">{photo.label ?? 'Belge'}</p>
+                        {photo.created_at ? <span className="shrink-0 text-[11px] text-slate-400">{dateTimeOrEmpty(photo.created_at, '-')}</span> : null}
+                      </div>
+                      {photo.preview_url ? (
+                        <a href={photo.preview_url} target="_blank" rel="noreferrer" className="mt-2 block overflow-hidden rounded-lg border border-slate-200 bg-white">
+                          <img src={photo.preview_url} alt={photo.label ?? 'Önceki ziyaret belgesi'} className="h-28 w-full object-cover" />
+                        </a>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
           </PartnerDetailPanel>
         )}
         {job.portal_actions.length > 0 && (

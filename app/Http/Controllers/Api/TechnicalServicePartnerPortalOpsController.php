@@ -258,7 +258,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         if ($partnerJobAction->action !== TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED) {
             throw ValidationException::withMessages([
-                'partner_job_action' => 'Bu kayÃ„Â±t tamamlama gÃƒÂ¶nderimi deÃ„Å¸ildir.',
+                'partner_job_action' => 'Bu kayıt tamamlama gönderimi değildir.',
             ]);
         }
 
@@ -291,8 +291,21 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             }
 
             $job = $this->workflow->updateFieldWorkflow($readyRequest->refresh(), 'complete', [
-                'note' => $validated['note'] ?? 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.',
+                'note' => $validated['note'] ?? 'Partner portal tamamlama gönderimi operasyon tarafından onaylandı.',
             ], $request->user());
+            $job->forceFill([
+                'status' => 'Tamamlandı',
+                'workflow_status' => 'Tamamlandı',
+                'field_status' => 'tamamlandı',
+                'completed_at' => $job->completed_at ?? now(),
+                'field_completed_at' => $job->field_completed_at ?? now(),
+                'technician_completed_at' => $job->technician_completed_at ?? now(),
+                'photo_status' => 'tamamlandı',
+                'document_status' => 'tamamlandı',
+                'customer_closure_approval_status' => 'onaylandı',
+                'customer_closure_approved_at' => $job->customer_closure_approved_at ?? now(),
+                'completion_block_reason' => null,
+            ])->save();
             $closedParent = $this->serviceVisits->closeParentIfChildCompleted($job->refresh(), $request->user());
             $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
             $payload['ops_final_check'] = [
@@ -308,7 +321,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
             $job->events()->create([
                 'event_type' => 'partner_completion_approved',
-                'title' => 'Partner portal tamamlama gÃƒÂ¶nderimi onaylandÃ„Â±',
+                'title' => 'Partner portal tamamlama gönderimi onaylandı',
                 'note' => $validated['note'] ?? null,
                 'from_status' => $from,
                 'to_status' => $job->workflow_status,
@@ -677,7 +690,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         if (! isset($slots[$index]) || ! is_array($slots[$index])) {
             throw ValidationException::withMessages([
-                'selected_slot_index' => 'Onaylanacak randevu saati bulunamadÃ„Â±.',
+                'selected_slot_index' => 'Onaylanacak randevu saati bulunamadı.',
             ]);
         }
 

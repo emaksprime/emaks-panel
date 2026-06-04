@@ -265,7 +265,9 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         $opsReview = $request->partnerJobActions
-            ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+            ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
+                && ! $this->actionResolvedForNewWork($action)
+                && ! $this->actionPredatesActiveReopen($request, $action));
 
         foreach ([
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
@@ -312,13 +314,30 @@ class TechnicalServiceOperationalStatePresenter
     private function hasCompletionSubmitted(TechnicalServiceRequest $request): bool
     {
         return $request->partnerJobActions
-            ->contains(fn (TechnicalServicePartnerJobAction $action): bool => $action->action === TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED
-                && ! $this->actionResolvedForNewWork($action)
-                && in_array($action->status, [
+            ->contains(function (TechnicalServicePartnerJobAction $action) use ($request): bool {
+                if ($action->action !== TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED
+                    || $this->actionResolvedForNewWork($action)
+                    || $this->actionPredatesActiveReopen($request, $action)
+                ) {
+                    return false;
+                }
+
+                if (in_array($action->status, [
                     TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
                     TechnicalServicePartnerJobAction::STATUS_SUBMITTED,
-                    TechnicalServicePartnerJobAction::STATUS_APPLIED,
-                ], true));
+                ], true)) {
+                    return true;
+                }
+
+                if ($action->status !== TechnicalServicePartnerJobAction::STATUS_APPLIED) {
+                    return false;
+                }
+
+                $payload = is_array($action->payload) ? $action->payload : [];
+
+                return (bool) ($payload['ops_final_check_required'] ?? false)
+                    && ! isset($payload['ops_final_check']);
+            });
     }
 
     private function actionResolvedForNewWork(TechnicalServicePartnerJobAction $action): bool
@@ -327,6 +346,18 @@ class TechnicalServiceOperationalStatePresenter
 
         return (bool) ($payload['resolved_by_reassignment'] ?? false)
             || isset($payload['service_visit_created']);
+    }
+
+    private function actionPredatesActiveReopen(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
+    {
+        if ($request->reopened_at === null) {
+            return false;
+        }
+
+        $actionAt = $action->created_at ?? $action->updated_at;
+
+        return $actionAt instanceof CarbonInterface
+            && $actionAt->lessThanOrEqualTo($request->reopened_at);
     }
 
     private function isCompleted(TechnicalServiceRequest $request): bool

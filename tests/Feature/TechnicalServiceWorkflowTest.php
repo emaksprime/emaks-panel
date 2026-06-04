@@ -21,6 +21,7 @@ use App\Models\TechnicalServiceMountSession;
 use App\Models\User;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MountRequestSubmitService;
+use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
@@ -414,6 +415,176 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertFalse($state['is_pending_final_check']);
         $this->assertSame('assigned', $state['ops_column']);
         $this->assertSame('appointment_confirmed', $state['partner_column']);
+    }
+
+    public function test_reopened_job_ignores_previous_completion_submission_for_final_check(): void
+    {
+        $completedAt = CarbonImmutable::now()->subHour();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now()->subDay(),
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+            'scheduled_date' => CarbonImmutable::now()->addDay()->toDateString(),
+            'scheduled_time' => '10:00',
+            'completed_at' => $completedAt,
+            'field_completed_at' => $completedAt,
+            'technician_completed_at' => $completedAt,
+            'reopened_at' => CarbonImmutable::now(),
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => $completedAt,
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => [
+                'ops_final_check_required' => true,
+                'ops_final_check' => [
+                    'approved_at' => $completedAt->toIso8601String(),
+                    'approved_by_user_id' => 1,
+                ],
+            ],
+            'note' => 'Eski ziyaret tamamlaması.',
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertFalse($state['is_completed']);
+        $this->assertFalse($state['is_pending_final_check']);
+        $this->assertSame('assigned', $state['ops_column']);
+        $this->assertSame('appointment_confirmed', $state['partner_column']);
+        $this->assertSame('Fotoğraf eksik', $state['display_action_label']);
+    }
+
+    public function test_reopened_partner_job_treats_old_photos_and_otp_as_history_only(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Reopen Smoke Usta',
+            'technician_type' => 'locksmith',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REOPEN-HISTORY-'.uniqid(),
+            'display_name' => 'Reopen History Partner',
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'is_primary' => true,
+            'active' => true,
+        ]);
+
+        $completedAt = CarbonImmutable::now()->subHour();
+        $reopenedAt = CarbonImmutable::now();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technical_service_technician_id' => $technician->id,
+            'scheduled_at' => CarbonImmutable::now()->addDay(),
+            'scheduled_date' => CarbonImmutable::now()->addDay()->toDateString(),
+            'scheduled_time' => '10:00',
+            'completed_at' => $completedAt,
+            'field_completed_at' => $completedAt,
+            'technician_completed_at' => $completedAt,
+            'reopened_at' => $reopenedAt,
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => $completedAt,
+        ]);
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $upload = TechnicalServiceRequestUpload::query()->create([
+                'technical_service_request_id' => $request->id,
+                'field_code' => $fieldCode,
+                'category' => TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+                'original_name' => $fieldCode.'.jpg',
+                'path' => 'technical-service/old/'.$fieldCode.'.jpg',
+                'mime' => 'image/jpeg',
+                'size' => 1024,
+                'review_status' => 'accepted',
+            ]);
+            $upload->forceFill([
+                'created_at' => $completedAt,
+                'updated_at' => $completedAt,
+            ])->saveQuietly();
+        }
+
+        $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $request->id,
+            'token' => 'old-token-'.uniqid(),
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+            'approved_at' => $completedAt,
+            'expires_at' => CarbonImmutable::now()->addDays(7),
+            'payload' => [],
+        ]);
+        $confirmation->forceFill([
+            'created_at' => $completedAt,
+            'updated_at' => $completedAt,
+        ])->saveQuietly();
+
+        $oldOtpAction = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => User::factory()->create(['role_code' => 'b2b_locksmith'])->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => ['approval_url' => 'https://example.test/old-token'],
+            'note' => 'Eski ziyaret onayı.',
+        ]);
+        $oldOtpAction->forceFill([
+            'created_at' => $completedAt,
+            'updated_at' => $completedAt,
+        ])->saveQuietly();
+
+        $summary = app(B2BPartnerPortalDataService::class)->safeServiceJobSummary($request->fresh(), $partner);
+
+        $this->assertTrue($summary['can_upload_photos']);
+        $this->assertTrue($summary['can_request_customer_otp']);
+        $this->assertFalse($summary['completion_requirements']['photos_ready']);
+        $this->assertFalse($summary['completion_requirements']['customer_confirmation_ready']);
+        $this->assertSame(0, $summary['completion_requirements']['door_photos_uploaded']);
+        $this->assertCount(0, $summary['photos']);
+        $this->assertCount(3, $summary['previous_photos']);
+        $this->assertNull($summary['customer_otp_request']);
+        $this->assertNull($summary['customer_confirmation']);
+        $this->assertSame('photo_waiting', $summary['action_state']);
+    }
+
+    public function test_applied_completion_with_ops_final_check_is_not_pending_final_check(): void
+    {
+        $completedAt = CarbonImmutable::now();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => $completedAt,
+            'field_completed_at' => $completedAt,
+            'technician_completed_at' => $completedAt,
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => $completedAt,
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+            'payload' => [
+                'ops_final_check_required' => true,
+                'ops_final_check' => [
+                    'approved_at' => $completedAt->toIso8601String(),
+                    'approved_by_user_id' => 1,
+                ],
+            ],
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertTrue($state['is_completed']);
+        $this->assertFalse($state['is_pending_final_check']);
+        $this->assertSame('completed', $state['ops_column']);
+        $this->assertSame('completed', $state['partner_column']);
     }
 
     public function test_ops_final_complete_moves_ops_and_partner_to_completed_without_old_appointment_tag(): void
