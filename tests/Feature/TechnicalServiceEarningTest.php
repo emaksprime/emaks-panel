@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningsPeriod;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
@@ -186,6 +187,120 @@ class TechnicalServiceEarningTest extends TestCase
             ->assertJsonPath('summary.grand_total', 3100);
     }
 
+    public function test_srv_and_parent_earnings_are_summed_from_latest_assignment_offers(): void
+    {
+        $technician = $this->technician(['name' => 'SRV Toplam Usta']);
+        $parent = $this->request([
+            'mrn' => 'MRN-SRV-EARNING-PARENT',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => '2026-05-04 11:00:00',
+            'installation_completed_at' => '2026-05-04 11:00:00',
+            'technician_payment_amount' => 9999,
+            'travel_fee_amount' => 999,
+        ]);
+        $child = $this->request([
+            'mrn' => 'SRV-SRV-EARNING-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SRV-EARNING-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Montaj',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => '2026-05-06 11:00:00',
+            'installation_completed_at' => '2026-05-06 11:00:00',
+            'technician_payment_amount' => 8888,
+            'travel_fee_amount' => 888,
+        ]);
+        $this->assignmentOffer($parent, [
+            'labor_amount' => 2000,
+            'route_fee_amount' => 100,
+            'total_amount' => 2100,
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+        ]);
+        $this->assignmentOffer($child, [
+            'labor_amount' => 1500,
+            'route_fee_amount' => 300,
+            'total_amount' => 1800,
+            'status' => TechnicalServiceAssignmentOffer::STATUS_REVISED,
+        ]);
+
+        $period = app(TechnicalServiceEarningService::class)->calculatePeriod(2026, 5);
+        $earning = $period->earnings()->firstOrFail()->fresh();
+        $items = $earning->items()->orderBy('mrn')->get();
+
+        $this->assertSame(2, $earning->job_count);
+        $this->assertSame('3500.00', $earning->labor_total);
+        $this->assertSame('400.00', $earning->travel_fee_total);
+        $this->assertSame('3900.00', $earning->grand_total);
+        $this->assertDatabaseHas('technical_service_earning_items', [
+            'technical_service_request_id' => $parent->id,
+            'labor_amount' => '2000.00',
+            'travel_fee_amount' => '100.00',
+            'line_total' => '2100.00',
+        ]);
+        $this->assertDatabaseHas('technical_service_earning_items', [
+            'technical_service_request_id' => $child->id,
+            'service_type' => 'Servis',
+            'labor_amount' => '1500.00',
+            'travel_fee_amount' => '300.00',
+            'line_total' => '1800.00',
+        ]);
+        $this->assertEqualsCanonicalizing([$parent->mrn, $child->mrn], $items->pluck('mrn')->all());
+    }
+
+    public function test_cancelled_srv_is_dropped_from_recalculated_earnings(): void
+    {
+        $technician = $this->technician(['name' => 'SRV Iptal Usta']);
+        $parent = $this->request([
+            'mrn' => 'MRN-SRV-EARNING-CANCEL-PARENT',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => '2026-05-04 11:00:00',
+            'installation_completed_at' => '2026-05-04 11:00:00',
+        ]);
+        $child = $this->request([
+            'mrn' => 'SRV-SRV-EARNING-CANCEL-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_code' => 'SRV-SRV-EARNING-CANCEL-001',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'status' => 'İptal',
+            'workflow_status' => 'İptal',
+            'completed_at' => '2026-05-06 11:00:00',
+            'installation_completed_at' => '2026-05-06 11:00:00',
+            'cancelled_at' => '2026-05-06 12:00:00',
+        ]);
+        $this->assignmentOffer($parent, [
+            'labor_amount' => 2000,
+            'route_fee_amount' => 100,
+            'total_amount' => 2100,
+        ]);
+        $this->assignmentOffer($child, [
+            'labor_amount' => 1500,
+            'route_fee_amount' => 300,
+            'total_amount' => 1800,
+        ]);
+
+        $period = app(TechnicalServiceEarningService::class)->calculatePeriod(2026, 5);
+        $earning = $period->earnings()->firstOrFail()->fresh();
+
+        $this->assertSame(1, $earning->job_count);
+        $this->assertSame('2100.00', $earning->grand_total);
+        $this->assertDatabaseMissing('technical_service_earning_items', [
+            'technical_service_request_id' => $child->id,
+        ]);
+    }
+
     /**
      * @param array<string, mixed> $overrides
      */
@@ -221,6 +336,23 @@ class TechnicalServiceEarningTest extends TestCase
             'priority' => 'Orta',
             'risk_level' => 'Orta',
             'completed_at' => '2026-05-02 10:00:00',
+        ], $overrides));
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function assignmentOffer(TechnicalServiceRequest $request, array $overrides = []): TechnicalServiceAssignmentOffer
+    {
+        return TechnicalServiceAssignmentOffer::query()->create(array_merge([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $request->technical_service_technician_id,
+            'labor_amount' => 1000,
+            'route_fee_amount' => 0,
+            'total_amount' => 1000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
         ], $overrides));
     }
 }

@@ -66,7 +66,8 @@ class TechnicalServiceController extends Controller
             'limit' => ['nullable', 'integer', 'min:1', 'max:200'],
         ]);
 
-        $query = TechnicalServiceRequest::query();
+        $query = TechnicalServiceRequest::query()
+            ->whereDoesntHave('childRequests', fn ($query) => $this->nonCancelledChildServiceVisitQuery($query));
 
         if (! empty($filters['search'])) {
             $query->where(function ($query) use ($filters) {
@@ -114,6 +115,14 @@ class TechnicalServiceController extends Controller
         return response()->json([
             'request' => $this->workflowService->serialize($technicalServiceRequest, true),
         ]);
+    }
+
+    private function nonCancelledChildServiceVisitQuery($query)
+    {
+        return $query
+            ->whereNull('cancelled_at')
+            ->whereNotIn('status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->whereNotIn('workflow_status', ['İptal', 'Iptal', 'Ä°ptal']);
     }
 
     public function store(StoreTechnicalServiceRequest $request): JsonResponse

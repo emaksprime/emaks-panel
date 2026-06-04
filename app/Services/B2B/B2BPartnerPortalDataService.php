@@ -447,7 +447,7 @@ class B2BPartnerPortalDataService
             'product_model' => $request->product_model,
             'model' => $request->product_model,
             'serial_no' => $request->serial_number,
-            'service_type' => $request->service_type,
+            'service_type' => $this->displayServiceType($request),
             'scheduled_at' => $request->scheduled_at?->toIso8601String(),
             'scheduled_date' => $request->scheduled_date?->toDateString(),
             'appointment_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
@@ -587,6 +587,8 @@ class B2BPartnerPortalDataService
                 'route_fee_amount' => $earningSummary['route_fee_amount'],
                 'total_amount' => $earningSummary['total_amount'],
                 'status' => $earningSummary['status'],
+                'job_count' => $earningSummary['job_count'],
+                'related_mrns' => $earningSummary['related_mrns'],
             ],
             'completion_requirements' => $completionRequirements,
             'badges' => $displayBadges,
@@ -687,35 +689,17 @@ class B2BPartnerPortalDataService
         $technicianIds = $this->serviceJobScope->activeTechnicianIds($partner);
 
         $rows = TechnicalServiceEarning::query()
-            ->with(['period', 'items'])
+            ->with([
+                'period',
+                'items.request.latestAssignmentOffer',
+                'items.request.parentRequest.latestAssignmentOffer',
+                'items.request.childRequests.latestAssignmentOffer',
+            ])
             ->whereIn('technical_service_technician_id', $technicianIds)
             ->orderByDesc('updated_at')
             ->limit(24)
             ->get()
-            ->map(fn (TechnicalServiceEarning $earning): array => [
-                'id' => $earning->id,
-                'period' => $earning->period ? $earning->period->year.'-'.$earning->period->month : null,
-                'job_count' => $earning->job_count,
-                'labor_total' => (float) $earning->labor_total,
-                'travel_fee_total' => (float) $earning->travel_fee_total,
-                'grand_total' => (float) $earning->grand_total,
-                'status' => $earning->status,
-                'paid_at' => $earning->paid_at?->toIso8601String(),
-                'items' => $earning->items
-                    ->map(fn (TechnicalServiceEarningItem $item): array => [
-                        'technical_service_request_id' => $item->technical_service_request_id,
-                        'job_date' => $item->job_date?->toDateString(),
-                        'mrn' => $item->mrn,
-                        'city' => $item->customer_city,
-                        'district' => $item->customer_district,
-                        'labor_amount' => (float) $item->labor_amount,
-                        'travel_fee_amount' => (float) $item->travel_fee_amount,
-                        'line_total' => (float) $item->line_total,
-                        'status' => $earning->status,
-                    ])
-                    ->values()
-                    ->all(),
-            ])
+            ->map(fn (TechnicalServiceEarning $earning): array => $this->persistedEarningRow($earning))
             ->values();
         $earningRequestIds = $rows
             ->flatMap(fn (array $row): array => collect($row['items'] ?? [])->pluck('technical_service_request_id')->filter()->all())
@@ -744,7 +728,7 @@ class B2BPartnerPortalDataService
                 return [
                     'id' => 'completed-job-'.$request->id,
                     'period' => 'Dönem bekliyor',
-                    'job_count' => 1,
+                    'job_count' => $earningSummary['job_count'],
                     'labor_total' => $earningSummary['labor_amount'],
                     'travel_fee_total' => $earningSummary['route_fee_amount'],
                     'grand_total' => $earningSummary['total_amount'],
@@ -762,6 +746,7 @@ class B2BPartnerPortalDataService
                         'travel_fee_amount' => $earningSummary['route_fee_amount'],
                         'line_total' => $earningSummary['total_amount'],
                         'status' => 'Kesinleşti',
+                        'related_mrns' => $earningSummary['related_mrns'],
                     ]],
                 ];
             })
@@ -788,9 +773,11 @@ class B2BPartnerPortalDataService
                     'id' => $request->id,
                     'mrn' => $request->mrn,
                     'scheduled_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
+                    'job_count' => $earningSummary['job_count'],
                     'labor_amount' => $earningSummary['labor_amount'],
                     'travel_fee_amount' => $earningSummary['route_fee_amount'],
                     'line_total' => $earningSummary['total_amount'],
+                    'related_mrns' => $earningSummary['related_mrns'],
                     'status' => $this->pendingEarningStatus($request),
                     'offer_status' => $earningSummary['status'],
                     'city' => $request->customer_city,
@@ -799,7 +786,7 @@ class B2BPartnerPortalDataService
             })
             ->values();
         $pendingSummary = [
-            'job_count' => $pendingRows->count(),
+            'job_count' => $pendingRows->sum('job_count'),
             'labor_total' => $pendingRows->sum('labor_amount'),
             'travel_fee_total' => $pendingRows->sum('travel_fee_amount'),
             'grand_total' => $pendingRows->sum('line_total'),
@@ -833,6 +820,113 @@ class B2BPartnerPortalDataService
         ];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function persistedEarningRow(TechnicalServiceEarning $earning): array
+    {
+        $items = $this->persistedEarningItems($earning);
+
+        return [
+            'id' => $earning->id,
+            'period' => $earning->period ? $earning->period->year.'-'.$earning->period->month : null,
+            'job_count' => $items->sum(fn (array $item): int => (int) ($item['job_count'] ?? 1)),
+            'labor_total' => round((float) $items->sum('labor_amount'), 2),
+            'travel_fee_total' => round((float) $items->sum('travel_fee_amount'), 2),
+            'grand_total' => round((float) $items->sum('line_total'), 2),
+            'status' => $earning->status,
+            'paid_at' => $earning->paid_at?->toIso8601String(),
+            'items' => $items
+                ->map(function (array $item): array {
+                    unset($item['job_count']);
+
+                    return $item;
+                })
+                ->values()
+                ->all(),
+        ];
+    }
+
+    /**
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function persistedEarningItems(TechnicalServiceEarning $earning): Collection
+    {
+        $seenGroups = [];
+        $items = collect();
+
+        foreach ($earning->items as $item) {
+            $groupKey = $this->persistedEarningGroupKey($item);
+
+            if ($groupKey !== null && isset($seenGroups[$groupKey])) {
+                continue;
+            }
+
+            if ($groupKey !== null) {
+                $seenGroups[$groupKey] = true;
+            }
+
+            $items->push($this->persistedEarningItemRow($earning, $item));
+        }
+
+        return $items->values();
+    }
+
+    private function persistedEarningGroupKey(TechnicalServiceEarningItem $item): ?string
+    {
+        $request = $item->request;
+
+        if ($request instanceof TechnicalServiceRequest) {
+            $root = (string) ($request->root_mrn ?: $request->parentRequest?->mrn ?: $request->mrn);
+
+            return $root !== '' ? 'service-request:'.$root : 'service-request-id:'.$request->id;
+        }
+
+        return $item->id !== null ? 'earning-item:'.$item->id : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function persistedEarningItemRow(TechnicalServiceEarning $earning, TechnicalServiceEarningItem $item): array
+    {
+        $request = $item->request;
+
+        if ($request instanceof TechnicalServiceRequest) {
+            $earningSummary = $this->earningSummary($request, $request->latestAssignmentOffer);
+
+            return [
+                'technical_service_request_id' => $request->id,
+                'job_date' => $item->job_date?->toDateString()
+                    ?? $request->completed_at?->toDateString()
+                    ?? $request->installation_completed_at?->toDateString()
+                    ?? $request->scheduled_date?->toDateString(),
+                'mrn' => $request->mrn ?: $item->mrn,
+                'city' => $item->customer_city ?: $request->customer_city,
+                'district' => $item->customer_district ?: $request->customer_district,
+                'labor_amount' => $earningSummary['labor_amount'],
+                'travel_fee_amount' => $earningSummary['route_fee_amount'],
+                'line_total' => $earningSummary['total_amount'],
+                'status' => $earning->status,
+                'related_mrns' => $earningSummary['related_mrns'],
+                'job_count' => $earningSummary['job_count'],
+            ];
+        }
+
+        return [
+            'technical_service_request_id' => $item->technical_service_request_id,
+            'job_date' => $item->job_date?->toDateString(),
+            'mrn' => $item->mrn,
+            'city' => $item->customer_city,
+            'district' => $item->customer_district,
+            'labor_amount' => (float) $item->labor_amount,
+            'travel_fee_amount' => (float) $item->travel_fee_amount,
+            'line_total' => (float) $item->line_total,
+            'status' => $earning->status,
+            'job_count' => 1,
+        ];
+    }
+
     private function isCompletedForPortalEarnings(TechnicalServiceRequest $request): bool
     {
         if ($request->completed_at !== null || $request->installation_completed_at !== null) {
@@ -860,9 +954,63 @@ class B2BPartnerPortalDataService
     }
 
     /**
-     * @return array{labor_amount:float,route_fee_amount:float,total_amount:float,status:string|null}
+     * @return array{labor_amount:float,route_fee_amount:float,total_amount:float,status:string|null,job_count:int,related_mrns:array<int, string>}
      */
     private function earningSummary(TechnicalServiceRequest $request, mixed $assignmentOffer): array
+    {
+        $requests = $this->earningGroupRequests($request);
+
+        if ($requests->isEmpty()) {
+            $requests = collect([$request]);
+        }
+
+        $summaries = $requests
+            ->map(fn (TechnicalServiceRequest $related): array => $this->singleEarningSummary(
+                $related,
+                $related->id === $request->id ? $assignmentOffer : $related->latestAssignmentOffer,
+            ));
+
+        return [
+            'labor_amount' => round((float) $summaries->sum('labor_amount'), 2),
+            'route_fee_amount' => round((float) $summaries->sum('route_fee_amount'), 2),
+            'total_amount' => round((float) $summaries->sum('total_amount'), 2),
+            'status' => $summaries->pluck('status')->filter()->last(),
+            'job_count' => $requests->count(),
+            'related_mrns' => $requests
+                ->pluck('mrn')
+                ->filter()
+                ->values()
+                ->all(),
+        ];
+    }
+
+    /**
+     * @return Collection<int, TechnicalServiceRequest>
+     */
+    private function earningGroupRequests(TechnicalServiceRequest $request): Collection
+    {
+        $request->loadMissing(['latestAssignmentOffer', 'parentRequest.latestAssignmentOffer', 'childRequests.latestAssignmentOffer']);
+        $technicianId = $request->technical_service_technician_id;
+
+        $requests = collect([$request]);
+
+        if ($request->parent_request_id !== null && $request->parentRequest instanceof TechnicalServiceRequest) {
+            $requests->push($request->parentRequest);
+        } elseif ($request->parent_request_id === null && $request->relationLoaded('childRequests')) {
+            $requests = $requests->concat($request->childRequests);
+        }
+
+        return $requests
+            ->filter(fn (TechnicalServiceRequest $related): bool => (int) $related->technical_service_technician_id === (int) $technicianId)
+            ->reject(fn (TechnicalServiceRequest $related): bool => $this->isCancelledServiceJob($related))
+            ->unique('id')
+            ->values();
+    }
+
+    /**
+     * @return array{labor_amount:float,route_fee_amount:float,total_amount:float,status:string|null}
+     */
+    private function singleEarningSummary(TechnicalServiceRequest $request, mixed $assignmentOffer): array
     {
         if ($assignmentOffer !== null) {
             $laborAmount = (float) ($assignmentOffer->labor_amount ?? 0);
@@ -902,6 +1050,18 @@ class B2BPartnerPortalDataService
             'total_amount' => round($laborAmount + $routeFeeAmount, 2),
             'status' => null,
         ];
+    }
+
+    private function isCancelledServiceJob(TechnicalServiceRequest $request): bool
+    {
+        return $request->cancelled_at !== null
+            || $this->statusIncludes($request->status, 'ptal')
+            || $this->statusIncludes($request->workflow_status, 'ptal');
+    }
+
+    private function statusIncludes(?string $value, string $needle): bool
+    {
+        return str_contains(mb_strtolower((string) $value), $needle);
     }
 
     /**
@@ -1135,6 +1295,15 @@ class B2BPartnerPortalDataService
         }
 
         return 'İş sonrası 3 fotoğrafı yükleyin, ardından müşteri onayı alın.';
+    }
+
+    private function displayServiceType(TechnicalServiceRequest $request): ?string
+    {
+        if ($request->parent_request_id !== null || $request->service_code !== null) {
+            return 'Servis';
+        }
+
+        return $request->service_type;
     }
 
     /**

@@ -1292,6 +1292,7 @@ export function ServiceRequestDetails({
   const setFieldCompletionOpen = (open: boolean) => {
     setFieldCompletionOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const [customerApprovalModalOpen, setCustomerApprovalModalOpen] = useState(false)
   const [customerApprovalCopyMessage, setCustomerApprovalCopyMessage] = useState<string | null>(null)
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
@@ -3753,7 +3754,7 @@ export function ServiceRequestDetails({
                       Son istek: {formatTechnicalServiceDateTime(latestCustomerApprovalRequest.created_at, 'Bilinmiyor')}
                     </p>
                   ) : null}
-                  {latestCustomerApprovalUrl ? (
+                  {customerApprovalModalOpen && latestCustomerApprovalUrl ? (
                     <div className="mt-3 grid gap-2 rounded-xl border border-violet-100 bg-white p-3">
                       <p className="text-xs font-semibold text-violet-900">Onay linki</p>
                       <input
@@ -3780,7 +3781,7 @@ export function ServiceRequestDetails({
                       </div>
                     </div>
                   ) : null}
-                  {latestCustomerApprovalMessageText ? (
+                  {customerApprovalModalOpen && latestCustomerApprovalMessageText ? (
                     <div className="mt-3 grid gap-2 rounded-xl border border-violet-100 bg-white p-3">
                       <p className="text-xs font-semibold text-violet-900">WhatsApp mesaj metni</p>
                       <textarea
@@ -3807,11 +3808,94 @@ export function ServiceRequestDetails({
                   variant="outline"
                   size="sm"
                   disabled={customerApprovalResendLoading}
-                  onClick={() => void onCustomerApprovalResend({ note: 'Operasyon müşteri onay linkini tekrar gönderdi.' })}
+                  onClick={() => setCustomerApprovalModalOpen(true)}
                   className="border-violet-200 bg-white text-violet-800 hover:bg-violet-100"
                 >
-                  {customerApprovalResendLoading ? 'Gönderiliyor...' : 'Müşteri onayını tekrar gönder'}
+                  Müşteri onayını tekrar gönder
                 </Button>
+              </div>
+            ) : null}
+            {onCustomerApprovalResend && customerApprovalModalOpen ? (
+              <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Müşteri onayı / OTP">
+                <div className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-violet-100 bg-white p-4 shadow-2xl">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-base font-semibold text-slate-950">Müşteri onayı / OTP</p>
+                      <p className="mt-1 text-xs text-slate-600">Onay linki, WhatsApp mesajı ve tekrar gönderme aksiyonları bu pencerede tutulur.</p>
+                    </div>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setCustomerApprovalModalOpen(false)}>
+                      Kapat
+                    </Button>
+                  </div>
+                  <div className="mt-4 grid gap-3">
+                    {latestCustomerApprovalUrl ? (
+                      <div className="grid gap-2 rounded-xl border border-violet-100 bg-violet-50 p-3">
+                        <p className="text-xs font-semibold text-violet-900">Onay linki</p>
+                        <input
+                          readOnly
+                          value={latestCustomerApprovalUrl}
+                          className="w-full rounded-lg border border-violet-100 bg-white px-3 py-2 text-xs text-violet-950"
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerApprovalValue(latestCustomerApprovalUrl, 'Link kopyalandı.')}>
+                            Onay linkini kopyala
+                          </Button>
+                          <Button asChild type="button" size="sm" variant="outline">
+                            <a href={latestCustomerApprovalUrl} target="_blank" rel="noreferrer">
+                              Onay linkini aç
+                            </a>
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-sm text-amber-900">
+                        Henüz aktif onay linki yok. Onay mesajını tekrar göndererek yeni link oluşturun.
+                      </div>
+                    )}
+                    {latestCustomerApprovalMessageText ? (
+                      <div className="grid gap-2 rounded-xl border border-violet-100 bg-violet-50 p-3">
+                        <p className="text-xs font-semibold text-violet-900">WhatsApp mesaj metni</p>
+                        <textarea
+                          readOnly
+                          value={latestCustomerApprovalMessageText}
+                          className="min-h-32 w-full rounded-lg border border-violet-100 bg-white px-3 py-2 text-xs text-violet-950"
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerApprovalValue(latestCustomerApprovalMessageText, 'Mesaj metni kopyalandı.')}>
+                            Mesaj metnini kopyala
+                          </Button>
+                          {latestCustomerApprovalWhatsappUrl ? (
+                            <Button asChild type="button" size="sm" variant="outline">
+                              <a href={latestCustomerApprovalWhatsappUrl} target="_blank" rel="noreferrer">
+                                WhatsApp mesajını aç
+                              </a>
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    {customerApprovalCopyMessage ? (
+                      <p className="text-xs font-semibold text-violet-800">{customerApprovalCopyMessage}</p>
+                    ) : null}
+                    {customerApprovalResendError ? (
+                      <p className="text-xs font-semibold text-rose-700">{customerApprovalResendError}</p>
+                    ) : null}
+                    <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+                      <Button type="button" variant="outline" size="sm" onClick={() => setCustomerApprovalModalOpen(false)}>
+                        Vazgeç
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={customerApprovalResendLoading}
+                        onClick={() => void onCustomerApprovalResend({ note: 'Operasyon müşteri onay linkini tekrar gönderdi.' })}
+                        className="bg-violet-700 text-white hover:bg-violet-800"
+                      >
+                        {customerApprovalResendLoading ? 'Gönderiliyor...' : 'Onay mesajını tekrar gönder'}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : null}
             {finalCheckCompletionAction ? (

@@ -3273,6 +3273,144 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_partner_srv_job_earning_summary_sums_parent_and_srv_offers_for_same_technician(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $parent = $scope['jobA'];
+        $child = $this->serviceRequestForTechnician($scope['technicianA'], 'SRV-SCOPE-A-001', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SCOPE-A-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Montaj',
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'technical_service_technician_id' => $scope['technicianA']->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 0,
+            'total_amount' => 3000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $child->id,
+            'technical_service_technician_id' => $scope['technicianA']->id,
+            'labor_amount' => 2500,
+            'route_fee_amount' => 500,
+            'total_amount' => 3000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            'sent_at' => now(),
+        ]);
+        $period = TechnicalServiceEarningsPeriod::query()->create([
+            'year' => 2026,
+            'month' => 6,
+            'status' => 'Hazır',
+            'calculated_at' => now(),
+        ]);
+        $earning = TechnicalServiceEarning::query()->create([
+            'period_id' => $period->id,
+            'technical_service_technician_id' => $scope['technicianA']->id,
+            'technician_name_snapshot' => $scope['technicianA']->name,
+            'city_snapshot' => 'İstanbul',
+            'job_count' => 1,
+            'installation_count' => 0,
+            'service_count' => 1,
+            'labor_total' => 2500,
+            'travel_fee_total' => 500,
+            'travel_round_trip_km_total' => 0,
+            'travel_billable_km_total' => 0,
+            'grand_total' => 3000,
+            'status' => 'Hazır',
+        ]);
+        TechnicalServiceEarningItem::query()->create([
+            'earning_id' => $earning->id,
+            'technical_service_request_id' => $child->id,
+            'mrn' => $child->mrn,
+            'job_date' => now(),
+            'customer_city' => 'İstanbul',
+            'customer_district' => 'Kadıköy',
+            'service_type' => 'Servis',
+            'product_name' => 'Test Kilit',
+            'labor_amount' => 2500,
+            'travel_round_trip_km' => 0,
+            'travel_billable_km' => 0,
+            'travel_fee_amount' => 500,
+            'line_total' => 3000,
+        ]);
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs/'.$child->id.'?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonPath('job.service_type', 'Servis')
+            ->assertJsonPath('job.earning_summary.labor_amount', 5500)
+            ->assertJsonPath('job.earning_summary.route_fee_amount', 500)
+            ->assertJsonPath('job.earning_summary.total_amount', 6000)
+            ->assertJsonPath('job.earning_summary.job_count', 2);
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/earnings?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonPath('items.0.earnings.completed.summary.grand_total', 6000)
+            ->assertJsonPath('items.0.earnings.completed.rows.0.job_count', 2)
+            ->assertJsonFragment(['mrn' => 'SRV-SCOPE-A-001']);
+    }
+
+    public function test_partner_srv_grouped_earning_drops_cancelled_related_request(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $parent = $scope['jobA'];
+        $child = $this->serviceRequestForTechnician($scope['technicianA'], 'SRV-SCOPE-A-CANCELLED-001', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_code' => 'SRV-SCOPE-A-CANCELLED-001',
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+        $parent->forceFill([
+            'status' => 'İptal',
+            'workflow_status' => 'İptal',
+            'cancelled_at' => now(),
+        ])->save();
+
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'technical_service_technician_id' => $scope['technicianA']->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 0,
+            'total_amount' => 3000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $child->id,
+            'technical_service_technician_id' => $scope['technicianA']->id,
+            'labor_amount' => 2500,
+            'route_fee_amount' => 500,
+            'total_amount' => 3000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs/'.$child->id.'?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonPath('job.earning_summary.labor_amount', 2500)
+            ->assertJsonPath('job.earning_summary.route_fee_amount', 500)
+            ->assertJsonPath('job.earning_summary.total_amount', 3000)
+            ->assertJsonPath('job.earning_summary.job_count', 1);
+    }
+
     public function test_dealer_contracted_technician_does_not_open_field_technician_mrns(): void
     {
         $dealer = $this->partner([
@@ -3636,6 +3774,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame($job->mrn, $child->root_mrn);
         $this->assertSame('SRV-ACTION-PART-001', $child->service_code);
         $this->assertSame('SRV-ACTION-PART-001', $child->mrn);
+        $this->assertSame('Servis', $child->service_type);
         $this->assertSame('SN-PART-001', $child->serial_number);
         $this->assertDatabaseHas('technical_service_request_serials', [
             'technical_service_request_id' => $child->id,
@@ -3773,6 +3912,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame($job->mrn, $child->root_mrn);
         $this->assertSame('SRV-ACTION-REVISIT-SRV-001', $child->service_code);
         $this->assertSame('SRV-ACTION-REVISIT-SRV-001', $child->mrn);
+        $this->assertSame('Servis', $child->service_type);
         $this->assertSame('revisit', $child->service_visit_reason);
         $this->assertSame($revisitAction->id, $child->source_partner_action_id);
         $this->assertSame('Yeni Talep', $child->workflow_status);
@@ -3798,6 +3938,17 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
         ]);
 
+        $job->refresh();
+        $this->assertSame('srv_delegated', $job->field_status);
+        $this->assertSame('SRV ile takip ediliyor', $job->next_action);
+
+        $opsList = $this->actingAs($admin)
+            ->getJson('/api/technical-service/requests?limit=200')
+            ->assertOk();
+        $opsMrns = collect($opsList->json('items'))->pluck('mrn')->all();
+        $this->assertNotContains($job->mrn, $opsMrns);
+        $this->assertContains($child->mrn, $opsMrns);
+
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
             ->assertForbidden();
@@ -3816,6 +3967,166 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.kanban_column', 'new_jobs')
             ->assertJsonPath('job.can_propose_appointment', true)
             ->assertJsonPath('job.can_submit_completion', false);
+    }
+
+    public function test_partner_active_jobs_hides_parent_when_srv_child_is_active(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'SRV Duplicate Scope Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'SRV Duplicate Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+
+        $parent = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-SRV-DUP-PARENT', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onaylandi',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+        ]);
+        $child = $this->serviceRequestForTechnician($technician, 'SRV-ACTION-SRV-DUP-001', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-ACTION-SRV-DUP-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Montaj',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onaylandi',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDays(2),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'scheduled_time' => '15:00',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $response = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs?partner_id={$partner->id}")
+            ->assertOk();
+        $mrns = collect($response->json('jobs'))->pluck('mrn')->all();
+
+        $this->assertNotContains($parent->mrn, $mrns);
+        $this->assertContains($child->mrn, $mrns);
+        $this->assertSame('Servis', collect($response->json('jobs'))->firstWhere('mrn', $child->mrn)['service_type']);
+
+        $opsList = $this->actingAs($admin)
+            ->getJson('/api/technical-service/requests?limit=200')
+            ->assertOk();
+        $opsItems = collect($opsList->json('items'));
+        $this->assertFalse($opsItems->contains(fn (array $item): bool => $item['mrn'] === $parent->mrn));
+        $this->assertTrue($opsItems->contains(fn (array $item): bool => $item['mrn'] === $child->mrn && $item['service_type'] === 'Servis'));
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$parent->id}?partner_id={$partner->id}")
+            ->assertForbidden();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('job.service_visit_context.root_mrn', $parent->mrn);
+
+        $parent->forceFill([
+            'workflow_status' => 'TamamlandÄ±',
+            'status' => 'TamamlandÄ±',
+            'completed_at' => now(),
+        ])->save();
+        $child->forceFill([
+            'workflow_status' => 'TamamlandÄ±',
+            'status' => 'TamamlandÄ±',
+            'completed_at' => now(),
+        ])->save();
+
+        $completedResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs?partner_id={$partner->id}")
+            ->assertOk();
+        $completedMrns = collect($completedResponse->json('jobs'))->pluck('mrn')->all();
+        $this->assertNotContains($parent->mrn, $completedMrns);
+        $this->assertContains($child->mrn, $completedMrns);
+    }
+
+    public function test_completing_srv_child_closes_parent_when_parent_not_cancelled(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'SRV Parent Close Usta']);
+        $parent = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-SRV-CLOSE-PARENT', [
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $child = $this->serviceRequestForTechnician($technician, 'SRV-ACTION-SRV-CLOSE-001', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-ACTION-SRV-CLOSE-001',
+            'service_visit_reason' => 'revisit',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+
+        $closedParent = app(\App\Services\TechnicalService\TechnicalServiceServiceVisitService::class)
+            ->closeParentIfChildCompleted($child, $admin);
+
+        $this->assertNotNull($closedParent);
+        $parent->refresh();
+        $this->assertSame('Tamamlandı', $parent->workflow_status);
+        $this->assertSame('Tamamlandı', $parent->status);
+        $this->assertNotNull($parent->completed_at);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $parent->id,
+            'event_type' => 'srv_child_completed_parent_closed',
+        ]);
+    }
+
+    public function test_completing_srv_child_does_not_close_cancelled_parent(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'SRV Cancelled Parent Usta']);
+        $parent = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-SRV-CANCELLED-PARENT', [
+            'workflow_status' => 'İptal',
+            'status' => 'İptal',
+            'cancelled_at' => now(),
+        ]);
+        $child = $this->serviceRequestForTechnician($technician, 'SRV-ACTION-SRV-CANCELLED-001', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-ACTION-SRV-CANCELLED-001',
+            'service_visit_reason' => 'revisit',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+
+        $closedParent = app(\App\Services\TechnicalService\TechnicalServiceServiceVisitService::class)
+            ->closeParentIfChildCompleted($child, $admin);
+
+        $this->assertNull($closedParent);
+        $parent->refresh();
+        $this->assertSame('İptal', $parent->workflow_status);
+        $this->assertNull($parent->completed_at);
+        $this->assertDatabaseMissing('technical_service_request_events', [
+            'technical_service_request_id' => $parent->id,
+            'event_type' => 'srv_child_completed_parent_closed',
+        ]);
     }
 
     public function test_partner_part_request_review_label_is_partner_friendly(): void
@@ -4708,10 +5019,24 @@ class B2BPartnerPanelAccessTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $this->assertStringContainsString('customerApprovalModalOpen', $source);
+        $this->assertStringContainsString('role="dialog"', $source);
+        $this->assertStringContainsString('Müşteri onayı / OTP', $source);
         $this->assertStringContainsString('Onay linkini kopyala', $source);
         $this->assertStringContainsString('Mesaj metnini kopyala', $source);
         $this->assertStringContainsString('WhatsApp mesajını aç', $source);
         $this->assertStringContainsString('Kopyalama başarısız', $source);
+    }
+
+    public function test_ops_customer_approval_inline_is_compact(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('setCustomerApprovalModalOpen(true)', $source);
+        $this->assertStringContainsString('{customerApprovalModalOpen && latestCustomerApprovalUrl ? (', $source);
+        $this->assertStringContainsString('{customerApprovalModalOpen && latestCustomerApprovalMessageText ? (', $source);
+        $this->assertStringContainsString('Onay mesajını tekrar gönder', $source);
     }
 
     public function test_customer_approval_link_copy_available_when_whatsapp_suppressed(): void

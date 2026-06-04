@@ -939,6 +939,7 @@ class TechnicalServiceWorkflowService
         ]);
 
         $payload = $request->toArray();
+        $payload['service_type'] = $this->displayServiceType($request);
         $payload['events'] = $this->eventPayload($request->events);
         $payload['technician_phone'] = $request->technicianRecord?->phone;
         $payload['technical_service_technician_phone'] = $request->technicianRecord?->phone;
@@ -2110,6 +2111,15 @@ class TechnicalServiceWorkflowService
             })
             ->values()
             ->all();
+    }
+
+    private function displayServiceType(TechnicalServiceRequest $request): ?string
+    {
+        if ($request->parent_request_id !== null || $request->service_code !== null) {
+            return 'Servis';
+        }
+
+        return $request->service_type;
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningsPeriod;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceRequest;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
@@ -61,8 +62,9 @@ class TechnicalServiceEarningService
                     ]);
 
                     foreach ($group as $request) {
-                        $laborAmount = $this->money($request->technician_payment_amount);
-                        $travelFee = $this->money($request->travel_fee_amount);
+                        $amounts = $this->earningAmountsForRequest($request);
+                        $laborAmount = $amounts['labor_amount'];
+                        $travelFee = $amounts['travel_fee_amount'];
                         $note = $laborAmount <= 0 ? 'usta hizmet bedeli boş' : null;
 
                         $earning->items()->create([
@@ -71,7 +73,7 @@ class TechnicalServiceEarningService
                             'job_date' => $this->jobDate($request),
                             'customer_city' => $request->customer_city,
                             'customer_district' => $request->customer_district,
-                            'service_type' => $request->service_type,
+                            'service_type' => $this->displayServiceType($request),
                             'product_name' => $request->product_name,
                             'serial_number' => $request->serial_number,
                             'labor_amount' => $laborAmount,
@@ -235,8 +237,8 @@ class TechnicalServiceEarningService
     private function completedRequestsForPeriod(CarbonImmutable $start, CarbonImmutable $end): Collection
     {
         return TechnicalServiceRequest::query()
-            ->with('technicianRecord')
-            ->where('status', 'Tamamlandı')
+            ->with(['technicianRecord', 'latestAssignmentOffer'])
+            ->whereNull('cancelled_at')
             ->where(function ($query) use ($start, $end) {
                 $query->whereBetween('installation_completed_at', [$start, $end])
                     ->orWhere(function ($query) use ($start, $end) {
@@ -247,7 +249,57 @@ class TechnicalServiceEarningService
             ->orderBy('technical_service_technician_id')
             ->orderBy('installation_completed_at')
             ->orderBy('completed_at')
-            ->get();
+            ->get()
+            ->filter(fn (TechnicalServiceRequest $request): bool => $this->isCompletedRequest($request)
+                && ! $this->isCancelledRequest($request))
+            ->values();
+    }
+
+    /**
+     * @return array{labor_amount:float,travel_fee_amount:float}
+     */
+    private function earningAmountsForRequest(TechnicalServiceRequest $request): array
+    {
+        $offer = $request->latestAssignmentOffer;
+
+        if ($offer instanceof TechnicalServiceAssignmentOffer) {
+            return [
+                'labor_amount' => $this->money($offer->labor_amount),
+                'travel_fee_amount' => $this->money($offer->route_fee_amount),
+            ];
+        }
+
+        return [
+            'labor_amount' => $this->money($request->technician_payment_amount),
+            'travel_fee_amount' => $this->money($request->travel_fee_amount),
+        ];
+    }
+
+    private function displayServiceType(TechnicalServiceRequest $request): ?string
+    {
+        if ($request->parent_request_id !== null || $request->service_code !== null) {
+            return 'Servis';
+        }
+
+        return $request->service_type;
+    }
+
+    private function isCompletedRequest(TechnicalServiceRequest $request): bool
+    {
+        return $this->statusIncludes($request->status, 'tamamland')
+            || $this->statusIncludes($request->workflow_status, 'tamamland');
+    }
+
+    private function isCancelledRequest(TechnicalServiceRequest $request): bool
+    {
+        return $request->cancelled_at !== null
+            || $this->statusIncludes($request->status, 'ptal')
+            || $this->statusIncludes($request->workflow_status, 'ptal');
+    }
+
+    private function statusIncludes(?string $value, string $needle): bool
+    {
+        return str_contains(mb_strtolower((string) $value), $needle);
     }
 
     private function jobDate(TechnicalServiceRequest $request): CarbonImmutable

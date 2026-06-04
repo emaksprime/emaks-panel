@@ -349,15 +349,15 @@ const numericAmount = (amount: number | string | null | undefined): number => {
 }
 
 const jobEarningTotal = (job: ServiceJob): number => {
-  return numericAmount(job.assignment_offer?.total_amount ?? job.earning_summary.total_amount)
+  return numericAmount(job.earning_summary.total_amount ?? job.assignment_offer?.total_amount)
 }
 
 const jobEarningLabor = (job: ServiceJob): number => {
-  return numericAmount(job.assignment_offer?.labor_amount ?? job.earning_summary.labor_amount)
+  return numericAmount(job.earning_summary.labor_amount ?? job.assignment_offer?.labor_amount)
 }
 
 const jobEarningRoute = (job: ServiceJob): number => {
-  return numericAmount(job.assignment_offer?.route_fee_amount ?? job.earning_summary.route_fee_amount)
+  return numericAmount(job.earning_summary.route_fee_amount ?? job.assignment_offer?.route_fee_amount)
 }
 
 const hasRawCodeShape = (value: string): boolean => /^[a-z0-9_-]+$/i.test(value)

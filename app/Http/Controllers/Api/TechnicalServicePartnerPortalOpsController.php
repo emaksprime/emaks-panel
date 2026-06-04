@@ -293,11 +293,13 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $job = $this->workflow->updateFieldWorkflow($readyRequest->refresh(), 'complete', [
                 'note' => $validated['note'] ?? 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.',
             ], $request->user());
+            $closedParent = $this->serviceVisits->closeParentIfChildCompleted($job->refresh(), $request->user());
             $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
             $payload['ops_final_check'] = [
                 'approved_at' => now()->toISOString(),
                 'approved_by_user_id' => $request->user()?->id,
                 'note' => $validated['note'] ?? null,
+                'closed_parent_request_id' => $closedParent?->id,
             ];
             $partnerJobAction->forceFill([
                 'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,

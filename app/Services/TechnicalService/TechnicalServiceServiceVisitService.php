@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\DB;
 
 class TechnicalServiceServiceVisitService
 {
+    private const SERVICE_VISIT_TYPE = 'Servis';
+
     public function __construct(private readonly TechnicalServiceCodeGenerator $codeGenerator) {}
 
     /**
@@ -59,7 +61,7 @@ class TechnicalServiceServiceVisitService
                 'stock_code' => $parent->stock_code,
                 'activation_code' => $parent->activation_code,
                 'serial_number' => $parent->serial_number,
-                'service_type' => $parent->service_type,
+                'service_type' => self::SERVICE_VISIT_TYPE,
                 'status' => TechnicalServiceRequest::STATUS_NEW,
                 'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
                 'priority' => $parent->priority ?: TechnicalServiceRequest::PRIORITY_MEDIUM,
@@ -87,6 +89,7 @@ class TechnicalServiceServiceVisitService
             ]);
 
             $this->copyRequestSerials($parent, $child);
+            $this->markParentDelegatedToServiceVisit($parent, $child, $user);
 
             $eventMetadata = [
                 'service_visit_request_id' => $child->id,
@@ -117,6 +120,63 @@ class TechnicalServiceServiceVisitService
             );
 
             return $child->refresh();
+        });
+    }
+
+    public function closeParentIfChildCompleted(TechnicalServiceRequest $child, ?User $user): ?TechnicalServiceRequest
+    {
+        return DB::transaction(function () use ($child, $user): ?TechnicalServiceRequest {
+            $child = TechnicalServiceRequest::query()
+                ->with('parentRequest')
+                ->lockForUpdate()
+                ->findOrFail($child->id);
+
+            if ($child->parent_request_id === null || ! $this->isCompleted($child)) {
+                return null;
+            }
+
+            $parent = TechnicalServiceRequest::query()
+                ->lockForUpdate()
+                ->find($child->parent_request_id);
+
+            if (! $parent instanceof TechnicalServiceRequest
+                || $this->isCancelled($parent)
+                || $this->isCompleted($parent)) {
+                return null;
+            }
+
+            $completedAt = $child->completed_at
+                ?? $child->installation_completed_at
+                ?? now();
+            $serviceCode = (string) ($child->service_code ?: $child->mrn);
+
+            $parent->forceFill([
+                'status' => 'Tamamlandı',
+                'workflow_status' => 'Tamamlandı',
+                'field_status' => 'tamamlandı',
+                'completed_at' => $parent->completed_at ?? $completedAt,
+                'field_completed_at' => $parent->field_completed_at ?? $completedAt,
+                'technician_completed_at' => $parent->technician_completed_at ?? $completedAt,
+                'completion_block_reason' => null,
+                'next_action' => 'SRV ile tamamlandı',
+                'updated_by_user_id' => $user?->id,
+            ])->save();
+
+            $this->recordEvent(
+                $parent,
+                'srv_child_completed_parent_closed',
+                $serviceCode.' tamamlandı, ana talep kapatıldı',
+                $child->mrn,
+                $user,
+                [
+                    'service_visit_request_id' => $child->id,
+                    'service_code' => $child->service_code,
+                    'child_mrn' => $child->mrn,
+                    'child_completed_at' => $child->completed_at?->toIso8601String(),
+                ],
+            );
+
+            return $parent->refresh();
         });
     }
 
@@ -203,6 +263,28 @@ class TechnicalServiceServiceVisitService
         }
     }
 
+    private function markParentDelegatedToServiceVisit(TechnicalServiceRequest $parent, TechnicalServiceRequest $child, ?User $user): void
+    {
+        $parent->forceFill([
+            'field_status' => 'srv_delegated',
+            'requires_second_visit' => false,
+            'completion_block_reason' => null,
+            'next_action' => 'SRV ile takip ediliyor',
+            'updated_by_user_id' => $user?->id,
+            'operation_control_payload' => [
+                ...(is_array($parent->operation_control_payload) ? $parent->operation_control_payload : []),
+                'service_visit_delegation' => [
+                    'request_id' => $child->id,
+                    'mrn' => $child->mrn,
+                    'service_code' => $child->service_code,
+                    'reason' => $child->service_visit_reason,
+                    'delegated_at' => now()->toISOString(),
+                    'delegated_by_user_id' => $user?->id,
+                ],
+            ],
+        ])->save();
+    }
+
     /**
      * @param array<string, mixed> $metadata
      */
@@ -223,6 +305,21 @@ class TechnicalServiceServiceVisitService
             'author_user_id' => $user?->id,
             'metadata' => $metadata,
         ]);
+    }
+
+    private function isCancelled(TechnicalServiceRequest $request): bool
+    {
+        return $request->cancelled_at !== null
+            || in_array($request->status, ['İptal', 'Iptal', 'Ä°ptal'], true)
+            || in_array($request->workflow_status, ['İptal', 'Iptal', 'Ä°ptal'], true);
+    }
+
+    private function isCompleted(TechnicalServiceRequest $request): bool
+    {
+        return $request->completed_at !== null
+            || $request->installation_completed_at !== null
+            || in_array($request->status, ['Tamamlandı', 'Tamamlandi', 'TamamlandÄ±'], true)
+            || in_array($request->workflow_status, ['Tamamlandı', 'Tamamlandi', 'TamamlandÄ±'], true);
     }
 
     private function defaultDescription(string $reason): string

@@ -1,4 +1,4 @@
-export type ServiceType = 'Montaj' | 'Arıza' | 'Kontrol'
+export type ServiceType = 'Montaj' | 'Servis' | 'Arıza' | 'Kontrol'
 
 export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 'Tamamlandı' | 'İptal'
 export type ServiceStatusFilter = '' | 'unassigned' | 'today_installations' | 'scheduled' | 'Tamamlandı' | 'İptal'
