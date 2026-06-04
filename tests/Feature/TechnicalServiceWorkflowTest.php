@@ -940,11 +940,22 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
-        $this->assertStringContainsString('aria-label="Servis/parça ödeme linki"', $source);
+        $this->assertStringContainsString('data-testid="service-part-payment-action"', $source);
+        $this->assertStringContainsString('aria-label="Servis/parça ödeme linki oluştur"', $source);
         $this->assertStringContainsString('Servis/parça ödeme linki oluştur', $source);
-        $this->assertStringContainsString('setCustomerChargeModalOpen(true)', $source);
+        $this->assertStringContainsString('onClick={openCustomerChargeModal}', $source);
+        $this->assertStringContainsString('const customerChargeModal = customerChargeModalOpen', $source);
+        $this->assertStringContainsString('{customerChargeModal}', $source);
         $this->assertStringContainsString('Mesaj metnini kopyala', $source);
         $this->assertStringContainsString('WhatsApp mesajını aç', $source);
+        $this->assertSame(1, substr_count($source, 'aria-label="Servis/parça ödeme linki oluştur"'));
+
+        $actionPosition = strpos($source, 'data-testid="service-part-payment-action"');
+        $operationPanelPosition = strpos($source, 'title="Operasyon ve Montaj Kontrolü"');
+
+        $this->assertNotFalse($actionPosition);
+        $this->assertNotFalse($operationPanelPosition);
+        $this->assertLessThan($operationPanelPosition, $actionPosition);
     }
 
     public function test_ops_payload_groups_parent_and_srv_earning_breakdown(): void
