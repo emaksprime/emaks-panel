@@ -242,6 +242,33 @@ const initialFilters: FilterState = {
   onlyOpen: false,
 }
 
+const getTechnicalServiceInitialFilters = (): FilterState => {
+  if (typeof window === 'undefined') {
+    return initialFilters
+  }
+
+  const search = new URLSearchParams(window.location.search).get('search')?.trim() ?? ''
+
+  return {
+    ...initialFilters,
+    search,
+  }
+}
+
+const getTechnicalServiceRequestListUrl = (): string => {
+  const params = new URLSearchParams({ limit: '200' })
+
+  if (typeof window !== 'undefined') {
+    const search = new URLSearchParams(window.location.search).get('search')?.trim()
+
+    if (search) {
+      params.set('search', search)
+    }
+  }
+
+  return `/api/technical-service/requests?${params.toString()}`
+}
+
 const READ_REQUEST_IDS_STORAGE_KEY = 'emaks:technical-service:operation-center:read-request-ids'
 
 const readStoredRequestIds = (): Set<string> => {
@@ -862,7 +889,7 @@ function isUnassignedWorkflowRequest(request: ServiceRequest): boolean {
 }
 
 export function TechnicalServiceOperationCenter() {
-  const [filters, setFilters] = useState<FilterState>(initialFilters)
+  const [filters, setFilters] = useState<FilterState>(() => getTechnicalServiceInitialFilters())
   const [readRequestIds, setReadRequestIds] = useState<Set<string>>(() => readStoredRequestIds())
   const [selectedPlanDayKey, setSelectedPlanDayKey] = useState<string | null>(null)
   const [planSummaryFilter, setPlanSummaryFilter] = useState<PlanSummaryFilter | null>(null)
@@ -999,7 +1026,7 @@ export function TechnicalServiceOperationCenter() {
     setError(null)
 
     try {
-      const response = await apiRequest('/api/technical-service/requests?limit=200')
+      const response = await apiRequest(getTechnicalServiceRequestListUrl())
       const items = Array.isArray(response.items) ? response.items : []
       const mappedItems = items.map(mapApiRequest)
       setRequests(mappedItems)
@@ -3796,7 +3823,7 @@ export function TechnicalServiceOperationCenter() {
           <button
             type="button"
             onClick={() => {
-              setFilters(initialFilters)
+              setFilters(getTechnicalServiceInitialFilters())
               setSelectedPlanDayKey(null)
               setPlanSummaryFilter(null)
             }}
@@ -4781,7 +4808,7 @@ export function TechnicalServiceOperationCenter() {
               ) : null}
 
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm leading-6 text-rose-700">
-                Bu talep daha önce tamamlandıysa garanti başlangıcı geri alınmaz. Yeniden açma işlemi sadece operasyonel düzeltme içindir.
+                Yanlış kapanış geri alınır. Bu kapanışla başlayan garanti ve tamamlandı kayıtları geçersiz sayılır.
               </div>
 
               {modalRequest?.serviceType === 'Montaj' && modalRequest.completedAt ? (

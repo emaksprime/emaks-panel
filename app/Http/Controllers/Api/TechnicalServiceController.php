@@ -73,12 +73,12 @@ class TechnicalServiceController extends Controller
             ->whereDoesntHave('childRequests', fn ($query) => $this->nonCancelledChildServiceVisitQuery($query));
 
         if (! empty($filters['search'])) {
-            $query->where(function ($query) use ($filters) {
-                $query->where('mrn', 'ilike', "%{$filters['search']}%")
-                    ->orWhere('customer_name', 'ilike', "%{$filters['search']}%")
-                    ->orWhere('product_name', 'ilike', "%{$filters['search']}%")
-                    ->orWhere('serial_number', 'ilike', "%{$filters['search']}%")
-                    ->orWhere('technician_name', 'ilike', "%{$filters['search']}%");
+            $needle = '%'.mb_strtolower(trim((string) $filters['search'])).'%';
+
+            $query->where(function ($query) use ($needle) {
+                foreach (['mrn', 'customer_name', 'product_name', 'serial_number', 'technician_name'] as $column) {
+                    $query->orWhereRaw("LOWER({$column}) LIKE ?", [$needle]);
+                }
             });
         }
 

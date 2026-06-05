@@ -63,7 +63,8 @@ class TechnicalServiceOperationalStatePresenter
         $doorIncompatible = ! $hasDelegatedServiceVisit && $this->doorIncompatible($request);
         $isCancelled = $this->isCancelled($request);
         $isCompleted = $this->isCompleted($request);
-        $isPendingFinalCheck = ! $isCompleted && $this->hasCompletionSubmitted($request);
+        $isPendingFinalCheck = ! $isCompleted
+            && ($this->statusIn($request->workflow_status, ['Son Kontrol']) || $this->hasCompletionSubmitted($request));
         $isAppointmentConfirmed = ! $isCompleted
             && ! $isPendingFinalCheck
             && $this->isAppointmentConfirmed($request);

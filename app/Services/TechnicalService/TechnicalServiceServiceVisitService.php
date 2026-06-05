@@ -125,7 +125,7 @@ class TechnicalServiceServiceVisitService
             $reopenCount = ((int) $request->reopen_count) + 1;
 
             $request->forceFill([
-                'status' => TechnicalServiceRequest::STATUS_NEW,
+                'status' => $previousWorkflow,
                 'workflow_status' => $previousWorkflow,
                 'completed_at' => null,
                 'installation_completed_at' => null,

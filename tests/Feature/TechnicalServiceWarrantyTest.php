@@ -310,6 +310,7 @@ class TechnicalServiceWarrantyTest extends TestCase
             ->assertOk()
             ->assertJsonPath('reopened_in_place', true)
             ->assertJsonPath('request.workflow_status', 'Son Kontrol')
+            ->assertJsonPath('request.kanban_column', 'final_check')
             ->assertJsonPath('request.completed_at', null);
 
         $this->assertSame(0, TechnicalServiceRequest::query()->where('parent_request_id', $request->id)->count());
@@ -935,6 +936,57 @@ class TechnicalServiceWarrantyTest extends TestCase
             ->assertJsonPath('serial_no', 'SN-ENDPOINT')
             ->assertJsonPath('status', 'Garanti Başlamadı')
             ->assertJsonPath('last_sale.fingerprint', 'endpoint-fp');
+    }
+
+    public function test_wrong_close_modal_copy_mentions_warranty_rollback(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString(
+            'Yanlış kapanış geri alınır. Bu kapanışla başlayan garanti ve tamamlandı kayıtları geçersiz sayılır.',
+            $source,
+        );
+    }
+
+    public function test_wrong_close_modal_copy_does_not_say_warranty_is_not_reverted(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('garanti başlangıcı geri alınmaz', $source);
+    }
+
+    public function test_ops_search_exact_mrn_returns_completed_request(): void
+    {
+        $completedStatus = 'Tamamland'."\u{0131}";
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SEARCH-COMPLETED',
+            'serial_number' => 'SN-SEARCH-COMPLETED',
+            'status' => $completedStatus,
+            'workflow_status' => $completedStatus,
+            'completed_at' => '2026-05-05 10:00:00',
+            'installation_completed_at' => '2026-05-05 10:00:00',
+        ]);
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->getJson('/api/technical-service/requests?search=MRN-SEARCH-COMPLETED&limit=200')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 1)
+            ->assertJsonPath('items.0.id', $request->id)
+            ->assertJsonPath('items.0.mrn', 'MRN-SEARCH-COMPLETED')
+            ->assertJsonPath('items.0.status', $completedStatus)
+            ->assertJsonPath('items.0.workflow_status', $completedStatus);
+    }
+
+    public function test_completed_request_detail_shows_reopen_button_copy(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('Talebi yeniden aç', $source);
+        $this->assertStringContainsString('Yanlış kapanışı geri al', $source);
     }
 
     /**
