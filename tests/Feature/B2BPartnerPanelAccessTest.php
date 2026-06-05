@@ -3815,6 +3815,60 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.mrn', $child->mrn);
     }
 
+    public function test_spare_part_request_decision_supports_free_and_chargeable_amounts(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Part Decision Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-DECISION');
+        $freeRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $job->id,
+            'root_request_id' => $job->id,
+            'requested_by_user_id' => $admin->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Garanti parçası',
+            'quantity' => 1,
+        ]);
+        $chargeableRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $job->id,
+            'root_request_id' => $job->id,
+            'requested_by_user_id' => $admin->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Ücretli parça',
+            'quantity' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$freeRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'charge_decision' => 'free',
+                'note' => 'Garanti kapsamında.',
+                'partner_message' => 'Parça ücretsiz karşılanacak.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.charge_decision', 'free')
+            ->assertJsonPath('part_request.total_amount', 0);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$chargeableRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'charge_decision' => 'chargeable',
+                'service_amount' => 1000,
+                'part_amount' => 750,
+                'customer_message' => 'Servis ve parça bedeli müşteriden tahsil edilecek.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.charge_decision', 'chargeable')
+            ->assertJsonPath('part_request.service_amount', 1000)
+            ->assertJsonPath('part_request.part_amount', 750)
+            ->assertJsonPath('part_request.total_amount', 1750)
+            ->assertJsonPath('part_request.customer_message', 'Servis ve parça bedeli müşteriden tahsil edilecek.');
+
+        $this->assertSame('free', $freeRequest->refresh()->metadata['charge_decision'] ?? null);
+        $this->assertSame('chargeable', $chargeableRequest->refresh()->metadata['charge_decision'] ?? null);
+    }
+
     public function test_revisit_request_creates_isolated_srv_child_without_parent_completion_state(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -4266,6 +4320,16 @@ class B2BPartnerPanelAccessTest extends TestCase
             'completed_at' => now()->subHour(),
             'serial_number' => 'SN-SRV-HISTORY-001',
         ]);
+        TechnicalServiceRequestUpload::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'field_code' => 'before_photo',
+            'category' => TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+            'original_name' => 'before.jpg',
+            'path' => 'technical-service/history/before.jpg',
+            'mime' => 'image/jpeg',
+            'size' => 2048,
+            'review_status' => 'accepted',
+        ]);
         $parent->events()->create([
             'event_type' => 'completion_submitted',
             'title' => 'Tamamlamaya gönderildi',
@@ -4312,6 +4376,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.service_visit_history.service_code', 'SRV-ACTION-SRV-HISTORY-001')
             ->assertJsonPath('request.service_visit_history.reason_label', 'Parça sonrası servis')
             ->assertJsonPath('request.service_visit_history.parent_request.mrn', $parent->mrn)
+            ->assertJsonPath('request.service_visit_history.history_records.0.mrn', $parent->mrn)
+            ->assertJsonPath('request.service_visit_history.history_records.0.technician_name', 'SRV History Usta')
+            ->assertJsonPath('request.service_visit_history.history_records.0.documents.0.field_code', 'before_photo')
             ->assertJsonPath('request.service_visit_history.parent_part_requests.0.part_name', 'Karşılık sacı')
             ->assertJsonPath('request.service_visit_history.parent_events.0.event_type_label', 'Tamamlamaya gönderildi');
     }
@@ -6088,7 +6155,7 @@ class B2BPartnerPanelAccessTest extends TestCase
 
         $child = TechnicalServiceRequest::query()->findOrFail($response->json('request.id'));
         $this->assertSame('Servis', $child->service_type);
-        $this->assertSame('reopen', $child->service_visit_reason);
+        $this->assertSame('service_request', $child->service_visit_reason);
         $this->assertNull($child->technical_service_technician_id);
 
         $opsList = $this->actingAs($admin)

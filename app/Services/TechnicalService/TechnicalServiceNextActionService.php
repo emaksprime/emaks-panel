@@ -12,6 +12,17 @@ class TechnicalServiceNextActionService
      */
     public function forRequest(TechnicalServiceRequest $request): array
     {
+        if ($request->completed_at !== null || $this->isCompletedStatus($request->status) || $this->isCompletedStatus($request->workflow_status)) {
+            return $this->payload(
+                'completed',
+                'İş tamamlandı',
+                'Aktif operasyon aksiyonu yok. Garanti ve hakediş özetini kontrol edebilirsiniz.',
+                'success',
+                null,
+                false
+            );
+        }
+
         if ($this->isAssignedFieldProcess($request)) {
             return $this->fieldProcessPayload();
         }
@@ -162,5 +173,16 @@ class TechnicalServiceNextActionService
         return $quote instanceof TechnicalServiceRouteQuote
             && (int) $quote->technician_id === (int) $request->technical_service_technician_id
             && in_array($quote->status, [TechnicalServiceRouteQuote::STATUS_CALCULATED], true);
+    }
+
+    private function isCompletedStatus(?string $status): bool
+    {
+        $token = \Illuminate\Support\Str::of((string) $status)
+            ->ascii()
+            ->lower()
+            ->replaceMatches('/[^a-z0-9]+/', '')
+            ->value();
+
+        return in_array($token, ['tamamlandi', 'tamamlanda', 'tamamland'], true);
     }
 }

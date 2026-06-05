@@ -993,7 +993,7 @@ class TechnicalServiceWorkflowService
             'Parça Bekleniyor' => 'Parça temini ve ikinci randevu planlanmalı',
             'Belge / Fotoğraf Bekleyen' => 'Zorunlu belgeler tamamlanmalı',
             'Müşteri Kapanış Onayı Bekleyen' => 'OTP veya imza ile müşteri kapanış onayı alınmalı',
-            'Tamamlandı' => 'Garanti / hakediş / doküman süreci başlatılmalı',
+            'Tamamlandı' => 'İş tamamlandı',
             'İptal' => 'Kapanmış iptal kaydı',
             default => 'Operasyon değerlendirmesi bekleniyor',
         };
@@ -2562,6 +2562,7 @@ class TechnicalServiceWorkflowService
         $siblings = collect();
         if ($root instanceof TechnicalServiceRequest) {
             $siblings = TechnicalServiceRequest::query()
+                ->with(['technicianRecord', 'uploads', 'events' => fn ($query) => $query->latest()->limit(6)])
                 ->where(function ($query) use ($root, $rootMrn): void {
                     $query->where('parent_request_id', $root->id);
 
@@ -2573,6 +2574,7 @@ class TechnicalServiceWorkflowService
                 ->orderBy('id')
                 ->limit(12)
                 ->get();
+            $root->loadMissing(['technicianRecord', 'uploads']);
         }
 
         if (! $isServiceVisit && $siblings->isEmpty()) {
@@ -2601,6 +2603,13 @@ class TechnicalServiceWorkflowService
                 ->map(fn (TechnicalServiceRequest $sibling): array => $this->serviceVisitRequestSummary($sibling))
                 ->values()
                 ->all(),
+            'history_records' => collect([$root])
+                ->filter(fn ($record): bool => $record instanceof TechnicalServiceRequest)
+                ->merge($siblings)
+                ->unique('id')
+                ->map(fn (TechnicalServiceRequest $record): array => $this->serviceVisitHistoryRecord($record))
+                ->values()
+                ->all(),
         ];
     }
 
@@ -2623,6 +2632,29 @@ class TechnicalServiceWorkflowService
             'latest_event' => $request->relationLoaded('events')
                 ? TechnicalServiceUiLabelService::cleanDisplayText($request->events->first()?->title)
                 : null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function serviceVisitHistoryRecord(TechnicalServiceRequest $request): array
+    {
+        $request->loadMissing(['technicianRecord', 'uploads', 'events' => fn ($query) => $query->latest()->limit(6)]);
+
+        return [
+            ...$this->serviceVisitRequestSummary($request),
+            'customer_name' => $request->customer_name,
+            'technician_name' => $request->technicianRecord?->name ?? $request->technician_name,
+            'technician_phone' => $request->technicianRecord?->phone,
+            'scheduled_at' => $this->dateTimeString($request->scheduled_at),
+            'field_started_at' => $this->dateTimeString($request->field_started_at),
+            'technician_arrived_at' => $this->dateTimeString($request->technician_arrived_at),
+            'field_completed_at' => $this->dateTimeString($request->field_completed_at),
+            'technician_completed_at' => $this->dateTimeString($request->technician_completed_at),
+            'completion_note' => TechnicalServiceUiLabelService::cleanDisplayText($request->field_completion_note),
+            'documents' => $this->fieldCompletionDocumentPayload($request),
+            'events' => array_slice($this->eventPayload($request->events), 0, 6),
         ];
     }
 

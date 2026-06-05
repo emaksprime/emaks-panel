@@ -120,7 +120,7 @@ type ServiceRequestDetailsProps = {
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onRevisitServiceVisitCreate?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
-  onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null }) => void | Promise<void>
+  onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
@@ -467,6 +467,7 @@ type OpsDetailSectionContext = {
   hasSupportRequest: boolean
   hasPartRequest: boolean
   hasAssignedTechnician: boolean
+  isServiceVisitRequest: boolean
   workflowStatus?: string | null
   kanbanColumn?: string | null
 }
@@ -492,6 +493,10 @@ const getOpsActiveSection = (context: OpsDetailSectionContext): OpsDetailSection
   }
 
   if (context.hasReviewBlocker || context.hasAppointmentProposal || context.hasSupportRequest || context.hasPartRequest) {
+    return 'assignment'
+  }
+
+  if (!context.hasAssignedTechnician && context.isServiceVisitRequest) {
     return 'assignment'
   }
 
@@ -1130,6 +1135,9 @@ export function ServiceRequestDetails({
   mikroMountCheck,
   mikroMountLoading = false,
   mikroMountError = null,
+  warranty = null,
+  warrantyLoading = false,
+  warrantyError = null,
   onAssign,
   onSchedule,
   onComplete,
@@ -1212,6 +1220,12 @@ export function ServiceRequestDetails({
   const revisitRequests = partnerPortalActions.filter((action) => action.action === 'revisit_requested' && action.status === 'ops_review')
   const partRequests = request.partRequests ?? []
   const activePartRequests = partRequests.filter((partRequest) => ['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status))
+  const warrantyStatusText = String(warranty?.status ?? '')
+  const warrantyIsActive = warrantyStatusText.includes('Aktif')
+  const warrantyIsExpired = warrantyStatusText.includes('Bitti')
+  const activeChargeablePartRequests = activePartRequests.filter((partRequest) => partRequest.charge_decision === 'chargeable')
+  const canShowServicePartPaymentAction = !warrantyLoading && (!warrantyIsActive || activeChargeablePartRequests.length > 0)
+  const serviceVisitHistoryRecords = request.serviceVisitHistory?.history_records ?? []
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
   const latestCustomerApprovalRequest = [...partnerPortalActions]
     .filter((action) => action.action === 'customer_otp_requested')
@@ -1257,6 +1271,7 @@ export function ServiceRequestDetails({
     hasSupportRequest: supportRequests.length > 0,
     hasPartRequest: activePartRequests.length > 0,
     hasAssignedTechnician,
+    isServiceVisitRequest: Boolean(request.serviceVisitHistory?.service_code || request.serviceVisitHistory?.reason),
     workflowStatus: request.workflowStatus,
     kanbanColumn: request.kanbanColumn,
   }
@@ -1326,6 +1341,18 @@ export function ServiceRequestDetails({
   const [partRequestPartnerMessages, setPartRequestPartnerMessages] = useState<Record<string, string>>({})
   const [partRequestProviders, setPartRequestProviders] = useState<Record<string, string>>({})
   const [partRequestTrackings, setPartRequestTrackings] = useState<Record<string, string>>({})
+  const [partDecisionRequestId, setPartDecisionRequestId] = useState<number | string | null>(null)
+  const [partDecisionMode, setPartDecisionMode] = useState<'free' | 'chargeable'>('free')
+  const [partDecisionServiceAmount, setPartDecisionServiceAmount] = useState('')
+  const [partDecisionPartAmount, setPartDecisionPartAmount] = useState('')
+  const [partDecisionMessage, setPartDecisionMessage] = useState('')
+  const [historyRecordId, setHistoryRecordId] = useState<number | string | null>(null)
+  const selectedPartDecisionRequest = partDecisionRequestId === null
+    ? null
+    : partRequests.find((partRequest) => String(partRequest.id) === String(partDecisionRequestId)) ?? null
+  const selectedHistoryRecord = historyRecordId === null
+    ? null
+    : serviceVisitHistoryRecords.find((record) => String(record.id) === String(historyRecordId)) ?? null
   const [fieldDocumentOverallRejectNote, setFieldDocumentOverallRejectNote] = useState('')
   const [fieldDocumentOverallReviewLoading, setFieldDocumentOverallReviewLoading] = useState(false)
   const [fieldDocumentOverallReviewEditing, setFieldDocumentOverallReviewEditing] = useState(false)
@@ -1896,6 +1923,70 @@ export function ServiceRequestDetails({
     setCustomerChargeModalOpen(true)
     setRouteFeeEditorMessage('Müşteri servis/parça ödeme linki oluşturuldu.')
   }
+  const openPartDecisionModal = (partRequest: NonNullable<ServiceRequest['partRequests']>[number]) => {
+    setPartDecisionRequestId(partRequest.id)
+    setPartDecisionMode(partRequest.charge_decision === 'chargeable' ? 'chargeable' : warrantyIsActive ? 'free' : 'chargeable')
+    setPartDecisionServiceAmount(partRequest.service_amount !== null && partRequest.service_amount !== undefined ? String(partRequest.service_amount) : '')
+    setPartDecisionPartAmount(partRequest.part_amount !== null && partRequest.part_amount !== undefined ? String(partRequest.part_amount) : '')
+    setPartDecisionMessage(partRequest.customer_message ?? partRequest.partner_message ?? '')
+  }
+  const closePartDecisionModal = () => {
+    setPartDecisionRequestId(null)
+    setPartDecisionMode('free')
+    setPartDecisionServiceAmount('')
+    setPartDecisionPartAmount('')
+    setPartDecisionMessage('')
+  }
+  const handlePartDecisionSubmit = async () => {
+    if (!selectedPartDecisionRequest || !onPartRequestTransition) {
+      return
+    }
+
+    const serviceAmount = parseNumericInput(partDecisionServiceAmount) ?? 0
+    const partAmount = parseNumericInput(partDecisionPartAmount) ?? 0
+    const totalAmount = roundTwo(serviceAmount + partAmount)
+    const message = partDecisionMessage.trim()
+
+    if (partDecisionMode === 'chargeable' && totalAmount <= 0) {
+      setRouteFeeEditorMessage('Ücretli parça kararında servis veya parça bedeli girin.')
+
+      return
+    }
+
+    if (partDecisionMode === 'chargeable' && message.length < 3) {
+      setRouteFeeEditorMessage('Ücretli parça kararında müşteri mesajı zorunludur.')
+
+      return
+    }
+
+    await onPartRequestTransition(selectedPartDecisionRequest.id, {
+      status: selectedPartDecisionRequest.status === 'requested' || selectedPartDecisionRequest.status === 'ops_review'
+        ? 'approved'
+        : selectedPartDecisionRequest.status,
+      note: partRequestNotes[String(selectedPartDecisionRequest.id)] ?? null,
+      partner_message: partDecisionMode === 'free' ? 'Parça ücretsiz / garanti kapsamında karşılanacak.' : message,
+      charge_decision: partDecisionMode,
+      service_amount: serviceAmount,
+      part_amount: partAmount,
+      customer_message: partDecisionMode === 'chargeable' ? message : null,
+    })
+
+    if (partDecisionMode === 'chargeable' && onExtraMountPaymentCreate) {
+      await onExtraMountPaymentCreate({
+        service_amount: serviceAmount,
+        part_amount: partAmount,
+        amount: totalAmount,
+        currency: 'TRY',
+        purpose: serviceAmount > 0 && partAmount > 0 ? 'service_and_part_payment' : partAmount > 0 ? 'part_payment' : 'service_payment',
+        reason: serviceAmount > 0 && partAmount > 0 ? 'service_and_part_payment' : partAmount > 0 ? 'part_payment' : 'service_payment',
+        note: `Parça talebi #${selectedPartDecisionRequest.id}`,
+        message_template: message,
+      })
+    }
+
+    closePartDecisionModal()
+    setRouteFeeEditorMessage(partDecisionMode === 'chargeable' ? 'Parça ödeme linki oluşturuldu.' : 'Parça ücretsiz olarak işaretlendi.')
+  }
   const handleTechnicianEarningMessageCreate = async () => {
     if (!selectedTechnician || !onTechnicianEarningMessageCreate) {
       setRouteFeeEditorMessage('Önce usta seçin.')
@@ -2041,6 +2132,155 @@ export function ServiceRequestDetails({
             </Button>
           </div>
         </div>
+      </div>
+    </div>
+  ) : null
+  const partDecisionModal = selectedPartDecisionRequest ? (
+    <div className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Parça talebi kararı">
+      <div className="grid max-h-[92vh] w-full max-w-2xl gap-4 overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Parça talebi kararı</p>
+            <h3 className="mt-1 text-lg font-bold text-slate-950">{selectedPartDecisionRequest.part_name}</h3>
+            <p className="mt-1 text-sm text-slate-600">{selectedPartDecisionRequest.technician_note || selectedPartDecisionRequest.reason || 'Usta açıklaması yok'}</p>
+          </div>
+          <Button type="button" variant="ghost" onClick={closePartDecisionModal}>Kapat</Button>
+        </div>
+        {warrantyIsActive ? (
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3 text-sm text-emerald-900">
+            Ürün garanti kapsamında. Varsayılan karar ücretsizdir; ücretli seçilecekse müşteri mesajında sebep net yazılmalı.
+          </div>
+        ) : null}
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button type="button" onClick={() => setPartDecisionMode('free')} className={['rounded-2xl border px-4 py-3 text-left text-sm font-semibold', partDecisionMode === 'free' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-700'].join(' ')}>
+            Ücretsiz / Garanti kapsamında
+          </button>
+          <button type="button" onClick={() => setPartDecisionMode('chargeable')} className={['rounded-2xl border px-4 py-3 text-left text-sm font-semibold', partDecisionMode === 'chargeable' ? 'border-violet-300 bg-violet-50 text-violet-900' : 'border-slate-200 bg-white text-slate-700'].join(' ')}>
+            Ücretli
+          </button>
+        </div>
+        {partDecisionMode === 'chargeable' ? (
+          <div className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                Servis bedeli
+                <Input type="number" min="0" step="0.01" value={partDecisionServiceAmount} onChange={(event) => setPartDecisionServiceAmount(event.target.value)} />
+              </label>
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                Parça bedeli
+                <Input type="number" min="0" step="0.01" value={partDecisionPartAmount} onChange={(event) => setPartDecisionPartAmount(event.target.value)} />
+              </label>
+              <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partDecisionServiceAmount) ?? 0) + (parseNumericInput(partDecisionPartAmount) ?? 0)))} />
+            </div>
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Müşteri mesajı
+              <textarea value={partDecisionMessage} onChange={(event) => setPartDecisionMessage(event.target.value)} className="min-h-24 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" placeholder="Parça/servis bedeli ve ödeme linki mesajı" />
+            </label>
+          </div>
+        ) : (
+          <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            Ustaya/partnere not
+            <textarea value={partDecisionMessage} onChange={(event) => setPartDecisionMessage(event.target.value)} className="min-h-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="Parça garanti kapsamında ücretsiz karşılanacak." />
+          </label>
+        )}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={closePartDecisionModal}>Vazgeç</Button>
+          <Button type="button" onClick={() => void handlePartDecisionSubmit()}>
+            {partDecisionMode === 'chargeable' ? 'Kararı kaydet ve ödeme linki oluştur' : 'Ücretsiz olarak kaydet'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null
+  const historyRecordModal = selectedHistoryRecord ? (
+    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/55 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="SRV ve ana MRN geçmiş detayı">
+      <div className="max-h-[92dvh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-violet-100 bg-white p-5 shadow-2xl">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">SRV / Ana MRN Geçmiş Detayı</p>
+            <h3 className="mt-1 text-xl font-bold text-slate-950">{selectedHistoryRecord.service_code || selectedHistoryRecord.mrn}</h3>
+            <p className="mt-1 text-sm text-slate-600">{[selectedHistoryRecord.service_visit_reason_label, selectedHistoryRecord.workflow_status ?? selectedHistoryRecord.status].filter(Boolean).join(' · ')}</p>
+          </div>
+          <Button type="button" variant="ghost" onClick={() => setHistoryRecordId(null)}>
+            Kapat
+          </Button>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <MiniMetric label="MRN" value={selectedHistoryRecord.mrn} />
+          <MiniMetric label="Usta" value={displayOrEmpty(selectedHistoryRecord.technician_name, 'Usta bilgisi yok')} hint={displayOrEmpty(selectedHistoryRecord.technician_phone, 'Telefon yok')} />
+          <MiniMetric label="Randevu" value={dateTimeOrEmpty(selectedHistoryRecord.scheduled_at, 'Randevu yok')} />
+          <MiniMetric label="Tamamlanma" value={dateTimeOrEmpty(selectedHistoryRecord.technician_completed_at ?? selectedHistoryRecord.field_completed_at ?? selectedHistoryRecord.completed_at, 'Tamamlanmadı')} />
+        </div>
+
+        <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1.2fr]">
+          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ziyaret zaman çizelgesi</p>
+            <div className="mt-3 grid gap-2 text-sm text-slate-700">
+              <div className="flex justify-between gap-3 rounded-xl bg-white px-3 py-2">
+                <span>Usta gidiş / başlangıç</span>
+                <strong className="text-right text-slate-950">{dateTimeOrEmpty(selectedHistoryRecord.technician_arrived_at ?? selectedHistoryRecord.field_started_at, 'Kayıt yok')}</strong>
+              </div>
+              <div className="flex justify-between gap-3 rounded-xl bg-white px-3 py-2">
+                <span>İş tamamlanma</span>
+                <strong className="text-right text-slate-950">{dateTimeOrEmpty(selectedHistoryRecord.technician_completed_at ?? selectedHistoryRecord.field_completed_at ?? selectedHistoryRecord.completed_at, 'Kayıt yok')}</strong>
+              </div>
+              {selectedHistoryRecord.completion_note ? (
+                <div className="rounded-xl bg-white px-3 py-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Tamamlama notu</span>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-slate-800">{selectedHistoryRecord.completion_note}</p>
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Önceki saha belgeleri</p>
+            {(selectedHistoryRecord.documents?.length ?? 0) > 0 ? (
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                {selectedHistoryRecord.documents?.map((document) => {
+                  const documentUrl = document.preview_url ?? document.download_url ?? document.url ?? ''
+
+                  return (
+                    <div key={String(document.id ?? document.field_code ?? document.original_name)} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                      {document.preview_url ? (
+                        <img src={document.preview_url} alt={document.label ?? document.field_code ?? 'Belge'} className="h-32 w-full object-cover" />
+                      ) : (
+                        <div className="flex h-32 items-center justify-center bg-slate-100 text-xs font-semibold text-slate-500">Önizleme yok</div>
+                      )}
+                      <div className="grid gap-2 px-3 py-2 text-xs">
+                        <span className="font-semibold text-slate-800">{document.label ?? document.field_code ?? 'Belge'}</span>
+                        {documentUrl ? (
+                          <a href={documentUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">
+                            Belgeyi aç
+                          </a>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">Bu kayda ait saha belgesi bulunmuyor.</p>
+            )}
+          </section>
+        </div>
+
+        <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">İşlem geçmişi</p>
+          {(selectedHistoryRecord.events?.length ?? 0) > 0 ? (
+            <div className="mt-3 grid gap-2">
+              {selectedHistoryRecord.events?.map((event) => (
+                <div key={String(event.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
+                  <span className="font-semibold text-slate-800">{event.title_label ?? event.event_type_label ?? actionLabel(event.event_type, event.title)}</span>
+                  <span className="text-xs text-slate-500">{eventTime(event.created_at)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">İşlem geçmişi bulunmuyor.</p>
+          )}
+        </section>
       </div>
     </div>
   ) : null
@@ -2630,13 +2870,20 @@ export function ServiceRequestDetails({
                 ))}
               </div>
             ) : null}
-            {(serviceVisitHistory.sibling_service_visits?.length ?? 0) > 0 ? (
+            {serviceVisitHistoryRecords.length > 0 ? (
               <div className="grid gap-2 rounded-2xl border border-violet-100 bg-white p-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Aynı ana MRN altındaki SRV kayıtları</p>
-                {serviceVisitHistory.sibling_service_visits?.map((visit) => (
-                  <div key={String(visit.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-                    <span className="font-semibold text-slate-800">{visit.mrn}</span>
-                    <span className="text-xs text-slate-600">{[visit.service_code, visit.workflow_status ?? visit.status].filter(Boolean).join(' · ')}</span>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">MRN / SRV geçmiş kayıtları</p>
+                {serviceVisitHistoryRecords.map((record) => (
+                  <div key={String(record.id)} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-slate-800">{record.service_code || record.mrn}</p>
+                      <p className="mt-0.5 text-xs text-slate-600">
+                        {[record.service_visit_reason_label, record.workflow_status ?? record.status, record.completed_at ? `Tamamlandı: ${dateTimeOrEmpty(record.completed_at, '-')}` : null].filter(Boolean).join(' · ')}
+                      </p>
+                    </div>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setHistoryRecordId(record.id)}>
+                      Detayı aç
+                    </Button>
                   </div>
                 ))}
               </div>
@@ -2716,6 +2963,30 @@ export function ServiceRequestDetails({
           </details>
         </section>
 
+        {(warrantyLoading || warranty || warrantyError) ? (
+          <section className="order-23 grid gap-3 rounded-3xl border border-emerald-100 bg-emerald-50/80 p-4 text-sm text-emerald-950 shadow-sm lg:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Seri garanti durumu</p>
+                <h3 className="mt-1 text-base font-bold text-slate-950">
+                  {warrantyLoading ? 'Garanti bilgisi okunuyor' : warranty?.status ?? 'Garanti bilgisi okunamadı'}
+                </h3>
+                {warrantyError ? <p className="mt-1 text-sm text-rose-700">{warrantyError}</p> : null}
+              </div>
+              {warrantyIsActive ? <Badge variant="secondary">Garanti devam ediyor</Badge> : warrantyIsExpired ? <Badge variant="destructive">Garanti bitti</Badge> : null}
+            </div>
+            {warranty ? (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <MiniMetric label="Başlangıç" value={dateTimeOrEmpty(warranty.warranty_started_at, '-')} />
+                <MiniMetric label="Bitiş" value={dateTimeOrEmpty(warranty.warranty_ends_at, '-')} />
+                <MiniMetric label="Kalan süre" value={warranty.remaining_days === null || warranty.remaining_days === undefined ? '-' : `${warranty.remaining_days} gün`} />
+                <MiniMetric label="Garanti süresi" value={`${warranty.warranty_period_months} ay`} />
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {canShowServicePartPaymentAction ? (
         <section data-testid="service-part-payment-action" className="order-24 grid gap-3 rounded-3xl border border-blue-100 bg-blue-50/80 p-4 text-sm text-blue-950 shadow-sm lg:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -2751,8 +3022,17 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
         </section>
+        ) : (
+          <section className="order-24 rounded-3xl border border-emerald-100 bg-emerald-50/80 p-4 text-sm text-emerald-950 shadow-sm lg:p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Garanti kapsamı</p>
+            <h3 className="mt-1 text-base font-bold text-slate-950">Ürün garanti kapsamında</h3>
+            <p className="mt-1 leading-6">Müşteri servis ücreti istenmez. Parça bedeli gerekiyorsa parça talebi kararından ücretli olarak işaretleyin.</p>
+          </section>
+        )}
 
         {customerChargeModal}
+        {partDecisionModal}
+        {historyRecordModal}
 
         {serialQueryOpen ? (
           <section className="order-25 grid gap-3 rounded-3xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950 lg:p-5">
@@ -2968,8 +3248,12 @@ export function ServiceRequestDetails({
               <div className="rounded-2xl border border-blue-100 bg-white/80 p-3 text-sm text-slate-700">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="font-semibold text-slate-800">Servis / parça müşteri ödeme linki</p>
-                    <p className="mt-1 text-xs text-slate-500">Garanti dışı servis veya parça tahsilatı için ayrı ödeme linki oluşturulur.</p>
+                    <p className="font-semibold text-slate-800">Servis / parça müşteri ödemesi</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {canShowServicePartPaymentAction
+                        ? 'Garanti dışı servis veya ücretli parça tahsilatı ayrı ödeme linkiyle izlenir.'
+                        : 'Ürün garanti kapsamında. Müşteri servis ücreti istenmez.'}
+                    </p>
                   </div>
                 </div>
                 {latestCustomerCharge ? (
@@ -3253,6 +3537,14 @@ export function ServiceRequestDetails({
                       </div>
                       {partRequest.ops_note ? <p className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-700">Ops notu: {partRequest.ops_note}</p> : null}
                       {partRequest.partner_message ? <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">Partner mesajı: {partRequest.partner_message}</p> : null}
+                      {partRequest.charge_decision_label ? (
+                        <div className="rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-900">
+                          <p className="font-semibold">{partRequest.charge_decision_label}</p>
+                          {partRequest.charge_decision === 'chargeable' ? (
+                            <p className="mt-1">Servis: {partRequest.service_amount_label ?? formatMoneyValue(partRequest.service_amount ?? 0)} · Parça: {partRequest.part_amount_label ?? formatMoneyValue(partRequest.part_amount ?? 0)} · Toplam: {partRequest.total_amount_label ?? formatMoneyValue(partRequest.total_amount ?? 0)}</p>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status) ? (
                         <div className="grid gap-2">
                           <div className="grid gap-2 sm:grid-cols-2">
@@ -3268,7 +3560,7 @@ export function ServiceRequestDetails({
                           <div className="flex flex-wrap justify-end gap-2">
                             {partRequest.status === 'ops_review' || partRequest.status === 'requested' ? (
                               <>
-                                <Button type="button" variant="outline" onClick={() => void transition('approved')}>Onayla</Button>
+                                <Button type="button" variant="outline" onClick={() => openPartDecisionModal(partRequest)}>Karar ver</Button>
                                 <Button type="button" variant="destructive" disabled={note.trim().length < 3} onClick={() => void transition('rejected')}>Reddet</Button>
                               </>
                             ) : null}

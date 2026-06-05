@@ -24,6 +24,7 @@ class UpdateTechnicalServiceRequestStatus extends FormRequest
             'resolution_notes' => ['nullable', 'string', 'max:2000'],
             'installation_completed_at' => ['nullable', 'date'],
             'installation_completion_note' => ['nullable', 'string', 'max:2000'],
+            'reopen_type' => ['nullable', 'string', 'in:revisit,service_request'],
             'reopen_reason' => ['nullable', 'string', 'in:Yanlışlıkla tamamlandı,Eksik fotoğraf / belge,Müşteri onayı hatası,Usta yanlış kapattı,Operasyon düzeltmesi,Diğer'],
             'reopen_note' => ['nullable', 'string', 'max:2000'],
         ];

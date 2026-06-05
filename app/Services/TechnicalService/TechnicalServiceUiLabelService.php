@@ -119,6 +119,8 @@ class TechnicalServiceUiLabelService
         return match (trim((string) $reason)) {
             'spare_part' => 'Parça sonrası servis',
             'revisit' => 'Tekrar ziyaret',
+            'service_request' => 'Servis talebi',
+            'reopen' => 'Servis talebi',
             'support' => 'Ek talep sonrası servis',
             default => 'Ek servis ziyareti',
         };

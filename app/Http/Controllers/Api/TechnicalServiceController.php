@@ -216,9 +216,25 @@ class TechnicalServiceController extends Controller
         $isNewStatus = $requestedStatusToken === 'yeni';
         $isCompletedReopen = $isNewStatus
             && $this->isCompletedRequestForCleanServiceVisit($technicalServiceRequest, $previousLegacyStatus);
+        $isAccidentalCompletionReopen = $isCompletedReopen
+            && $this->isAccidentalCompletionReopenReason($payload['reopen_reason'] ?? null);
         $isReopen = $isNewStatus
             && ($this->isCompletedStatusValue($previousLegacyStatus) || $this->isCancelledStatusValue($previousLegacyStatus));
         $this->validateInstallationAfterLatestSale($technicalServiceRequest, $payload);
+
+        if ($isAccidentalCompletionReopen) {
+            $technicalServiceRequest = $this->serviceVisitService->reopenAccidentalCompletionInPlace(
+                $technicalServiceRequest,
+                $request->user(),
+                (string) ($payload['reopen_reason'] ?? 'Yanlışlıkla tamamlandı'),
+                $payload['reopen_note'] ?? ($payload['note'] ?? null),
+            );
+
+            return response()->json([
+                'request' => $this->workflowService->serialize($technicalServiceRequest, true),
+                'reopened_in_place' => true,
+            ]);
+        }
 
         if ($isCompletedReopen) {
             $child = $this->serviceVisitService->createCleanServiceVisitFromCompletedRequest(
@@ -226,6 +242,7 @@ class TechnicalServiceController extends Controller
                 $request->user(),
                 (string) ($payload['reopen_reason'] ?? 'Operasyon düzeltmesi'),
                 $payload['reopen_note'] ?? ($payload['note'] ?? null),
+                (string) ($payload['reopen_type'] ?? 'service_request'),
             );
             $parent = $technicalServiceRequest->fresh();
 
@@ -328,6 +345,16 @@ class TechnicalServiceController extends Controller
     private function isCompletedStatusValue(?string $status): bool
     {
         return in_array($this->statusToken($status), ['tamamlandi', 'tamamlanda', 'tamamland'], true);
+    }
+
+    private function isAccidentalCompletionReopenReason(?string $reason): bool
+    {
+        $token = $this->statusToken($reason);
+
+        return str_starts_with($token, 'yanlislikla')
+            || str_starts_with($token, 'yanllkla')
+            || str_contains($token, 'yanlis')
+            || str_contains($token, 'yanls');
     }
 
     private function isCancelledStatusValue(?string $status): bool

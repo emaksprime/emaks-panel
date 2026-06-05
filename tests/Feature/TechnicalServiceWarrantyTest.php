@@ -112,6 +112,33 @@ class TechnicalServiceWarrantyTest extends TestCase
         $this->assertSame('2026-05-05', $event->metadata['technical_service_completed_at']);
     }
 
+    public function test_warranty_status_uses_completed_mount_date_when_mikro_unavailable(): void
+    {
+        $this->mockLatestSale(null);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-LOCAL-WARRANTY',
+            'serial_number' => 'SN-LOCAL-WARRANTY',
+            'service_type' => 'Montaj',
+            'status' => 'TamamlandÄ±',
+            'workflow_status' => 'TamamlandÄ±',
+            'completed_at' => '2026-05-10 12:00:00',
+            'installation_completed_at' => '2026-05-09 10:00:00',
+        ]);
+
+        $result = app(WarrantyService::class)->statusForSerial('SN-LOCAL-WARRANTY');
+
+        $this->assertSame('Garanti Aktif', $result['status']);
+        $this->assertSame('2026-05-09', $result['warranty_started_at']);
+        $this->assertSame('2028-05-09', $result['warranty_ends_at']);
+        $this->assertSame('panel_completed_installation', $result['source']);
+        $this->assertTrue(collect($result['warnings'])->contains(
+            fn (string $warning): bool => str_contains($warning, 'panelde tamamlanan montaj')
+        ));
+
+        $event = WarrantyCard::query()->where('serial_no', 'SN-LOCAL-WARRANTY')->firstOrFail()->events()->firstOrFail();
+        $this->assertSame($request->mrn, $event->metadata['mrn']);
+    }
+
     public function test_old_completed_installation_record_without_actual_date_uses_completed_at_with_warning(): void
     {
         $this->mockLatestSale($this->salePayload('SN-OLD-FALLBACK', 'old-fallback-fp', '2026-03-01'));
@@ -196,7 +223,7 @@ class TechnicalServiceWarrantyTest extends TestCase
         $this->assertSame(1, $card->events()->where('event_type', 'warranty_started_from_completed_installation')->count());
     }
 
-    public function test_reopening_completed_installation_preserves_completed_at_and_active_warranty(): void
+    public function test_reopening_completed_installation_creates_srv_and_preserves_parent_warranty(): void
     {
         $this->mockLatestSale($this->salePayload('SN-REOPEN', 'reopen-fp', '2026-03-01'));
         $request = $this->technicalServiceRequest([
@@ -219,10 +246,11 @@ class TechnicalServiceWarrantyTest extends TestCase
                 'reopen_note' => 'Kontrol için yeniden açıldı.',
             ])
             ->assertOk()
-            ->assertJsonPath('request.status', 'Yeni')
-            ->assertJsonPath('request.operational_state.is_completed', false)
-            ->assertJsonPath('request.operational_state.ops_column', 'new')
-            ->assertJsonPath('request.operational_state.partner_column', 'new_jobs')
+            ->assertJsonPath('reopened_as_service_visit', true)
+            ->assertJsonPath('request.parent_request_id', $request->id)
+            ->assertJsonPath('request.technical_service_technician_id', null)
+            ->assertJsonPath('request.service_type', 'Servis')
+            ->assertJsonPath('request.service_visit_reason', 'service_request')
             ->assertJsonPath('request.reopen_reason', 'Operasyon düzeltmesi')
             ->assertJsonPath('request.reopen_count', 1);
 
@@ -249,6 +277,45 @@ class TechnicalServiceWarrantyTest extends TestCase
             'from_status' => 'Tamamlandı',
             'to_status' => 'Yeni',
         ]);
+    }
+
+    public function test_accidental_completion_reopen_restores_previous_workflow_without_srv(): void
+    {
+        $completedStatus = 'Tamamland'."\u{0131}";
+        $accidentalReason = "Yanl\u{0131}\u{015f}l\u{0131}kla tamamland\u{0131}";
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-ACCIDENTAL-REOPEN',
+            'serial_number' => 'SN-ACCIDENTAL-REOPEN',
+            'service_type' => 'Montaj',
+            'status' => $completedStatus,
+            'workflow_status' => $completedStatus,
+            'completed_at' => '2026-05-05 10:00:00',
+            'installation_completed_at' => '2026-05-05 10:00:00',
+        ]);
+        $request->events()->create([
+            'event_type' => 'completion_submitted',
+            'title' => 'Son kontrol bekliyor',
+            'from_status' => 'PlanlÄ±',
+            'to_status' => 'Son Kontrol',
+            'metadata' => [],
+        ]);
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => $accidentalReason,
+                'reopen_note' => 'Yanlis kapatildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('reopened_in_place', true)
+            ->assertJsonPath('request.workflow_status', 'Son Kontrol')
+            ->assertJsonPath('request.completed_at', null);
+
+        $this->assertSame(0, TechnicalServiceRequest::query()->where('parent_request_id', $request->id)->count());
+        $request->refresh();
+        $this->assertNull($request->completed_at);
+        $this->assertSame('Son Kontrol', $request->workflow_status);
     }
 
     public function test_completed_request_reopen_creates_clean_unassigned_srv_child(): void
@@ -318,7 +385,7 @@ class TechnicalServiceWarrantyTest extends TestCase
 
         $child = TechnicalServiceRequest::query()->findOrFail($response->json('request.id'));
 
-        $this->assertSame('reopen', $child->service_visit_reason);
+        $this->assertSame('service_request', $child->service_visit_reason);
         $this->assertNull($child->technical_service_technician_id);
         $this->assertNull($child->technician_name);
         $this->assertNull($child->scheduled_at);

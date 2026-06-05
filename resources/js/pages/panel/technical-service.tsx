@@ -953,6 +953,7 @@ export function TechnicalServiceOperationCenter() {
   const [completeLoading, setCompleteLoading] = useState(false)
   const [completeError, setCompleteError] = useState<string | null>(null)
   const [reopenDialogOpen, setReopenDialogOpen] = useState(false)
+  const [reopenType, setReopenType] = useState<'revisit' | 'service_request'>('service_request')
   const [reopenReason, setReopenReason] = useState('')
   const [reopenNote, setReopenNote] = useState('')
   const [reopenLoading, setReopenLoading] = useState(false)
@@ -2186,6 +2187,7 @@ export function TechnicalServiceOperationCenter() {
   }
 
   const handleReopenReset = () => {
+    setReopenType('service_request')
     setReopenReason('')
     setReopenNote('')
     setReopenError(null)
@@ -2216,6 +2218,7 @@ export function TechnicalServiceOperationCenter() {
         method: 'POST',
         body: JSON.stringify({
           status: 'Yeni',
+          reopen_type: reopenType,
           reopen_reason: reopenReason,
           reopen_note: reopenNote || null,
           note: reopenNote || reopenReason,
@@ -2927,7 +2930,7 @@ export function TechnicalServiceOperationCenter() {
 
   const handlePartRequestTransition = async (
     partRequestId: number | string,
-    payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null },
+    payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null },
   ) => {
     if (!selectedId) {
       return
@@ -4786,6 +4789,40 @@ export function TechnicalServiceOperationCenter() {
               ) : null}
 
               <fieldset className="grid gap-3">
+                <legend className="text-sm font-medium text-slate-700">Açılış tipi</legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {[
+                    { value: 'revisit' as const, label: 'Tekrar ziyaret', description: 'Aynı iş için yeniden gidilecek.' },
+                    { value: 'service_request' as const, label: 'Servis talebi', description: 'Garanti/servis takibi olarak açılacak.' },
+                  ].map((option) => (
+                    <label
+                      key={option.value}
+                      className="flex cursor-pointer items-start rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 transition hover:border-slate-300"
+                    >
+                      <input
+                        type="radio"
+                        name="reopenType"
+                        value={option.value}
+                        checked={reopenType === option.value}
+                        onChange={() => setReopenType(option.value)}
+                        disabled={reopenReason === 'Yanlışlıkla tamamlandı'}
+                        className="mr-3 mt-1 h-4 w-4 accent-primary disabled:opacity-40"
+                      />
+                      <span>
+                        {option.label}
+                        <span className="mt-1 block text-xs font-normal text-slate-500">{option.description}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {reopenReason === 'Yanlışlıkla tamamlandı' ? (
+                  <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+                    Bu seçimde yeni SRV açılmaz; talep yanlış kapanıştan önceki aksiyona geri alınır.
+                  </p>
+                ) : null}
+              </fieldset>
+
+              <fieldset className="grid gap-3">
                 <legend className="text-sm font-medium text-slate-700">Yeniden açma nedeni</legend>
                 <div className="grid gap-2">
                   {REOPEN_REASONS.map((reason) => (
@@ -4808,14 +4845,20 @@ export function TechnicalServiceOperationCenter() {
               </fieldset>
 
               <label className="grid gap-2 text-sm font-medium text-slate-700">
-                Açıklama
+                Servis açıklaması / ustaya not
                 <textarea
                   value={reopenNote}
                   onChange={(event) => setReopenNote(event.target.value)}
                   className="min-h-[92px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                  placeholder={reopenReason === 'Diğer' ? 'Açıklama zorunlu' : 'Opsiyonel açıklama'}
+                  placeholder={reopenReason === 'Diğer' ? 'Açıklama zorunlu' : 'Yeni atanacak ustanın servis nedenini anlayacağı kısa not'}
                 />
               </label>
+              {modalRequest?.technician ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                  <p className="font-semibold">Önerilen usta</p>
+                  <p className="mt-1">{modalRequest.technician} sadece öneri olarak tutulur; yeni SRV otomatik atanmaz.</p>
+                </div>
+              ) : null}
 
               <DialogFooter className="gap-2">
                 <DialogClose asChild>
@@ -4824,7 +4867,7 @@ export function TechnicalServiceOperationCenter() {
                   </Button>
                 </DialogClose>
                 <Button type="button" onClick={handleReopenSubmit} disabled={reopenLoading || !reopenReason || (reopenReason === 'Diğer' && !reopenNote.trim())}>
-                  {reopenLoading ? 'Kaydediliyor...' : 'Kaydet'}
+                  {reopenReason === 'Yanlışlıkla tamamlandı' ? (reopenLoading ? 'Kaydediliyor...' : 'Yanlış kapanışı geri al') : (reopenLoading ? 'Kaydediliyor...' : 'Yeni SRV oluştur')}
                 </Button>
               </DialogFooter>
             </DialogContent>

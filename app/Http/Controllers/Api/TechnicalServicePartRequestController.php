@@ -36,6 +36,10 @@ class TechnicalServicePartRequestController extends Controller
             ])],
             'note' => ['nullable', 'string', 'max:2000'],
             'partner_message' => ['nullable', 'string', 'max:2000'],
+            'charge_decision' => ['nullable', 'string', Rule::in(['free', 'chargeable'])],
+            'service_amount' => ['nullable', 'numeric', 'min:0'],
+            'part_amount' => ['nullable', 'numeric', 'min:0'],
+            'customer_message' => ['nullable', 'string', 'max:4000'],
             'shipment_provider' => ['nullable', 'string', 'max:255'],
             'tracking_no' => ['nullable', 'string', 'max:255'],
         ]);

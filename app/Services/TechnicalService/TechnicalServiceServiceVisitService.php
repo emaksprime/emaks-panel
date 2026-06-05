@@ -20,17 +20,20 @@ class TechnicalServiceServiceVisitService
         ?User $user,
         string $reopenReason,
         ?string $reopenNote = null,
+        string $reopenType = 'service_request',
     ): TechnicalServiceRequest {
-        return DB::transaction(function () use ($completedRequest, $user, $reopenReason, $reopenNote): TechnicalServiceRequest {
+        return DB::transaction(function () use ($completedRequest, $user, $reopenReason, $reopenNote, $reopenType): TechnicalServiceRequest {
+            $serviceVisitReason = $this->reopenTypeToServiceVisitReason($reopenType);
             $child = $this->createServiceVisitFromRequest(
                 $completedRequest,
                 $user,
-                'reopen',
+                $serviceVisitReason,
                 [
                     'description' => $reopenNote ?: 'Tamamlanan talep için yeni servis ziyareti',
                     'copy_operation_control' => false,
                     'parent_event_type' => 'technical_service_request_reopened_as_srv',
                     'parent_event_title' => 'Tamamlanan talep için yeni SRV açıldı',
+                    'reopen_type' => $reopenType,
                     'reopen_reason' => $reopenReason,
                     'reopen_note' => $reopenNote,
                 ],
@@ -42,6 +45,7 @@ class TechnicalServiceServiceVisitService
                 'reopen_reason' => $reopenReason,
                 'reopen_note' => $reopenNote,
                 'reopen_count' => 1,
+                'pending_reason' => $reopenNote ?: $reopenReason,
                 'updated_by_user_id' => $user?->id,
             ])->save();
 
@@ -68,6 +72,7 @@ class TechnicalServiceServiceVisitService
                 'author_user_id' => $user?->id,
                 'metadata' => [
                     'reason' => $reopenReason,
+                    'reopen_type' => $reopenType,
                     'note' => $reopenNote,
                     'user_id' => $user?->id,
                     'service_visit_request_id' => $child->id,
@@ -86,6 +91,7 @@ class TechnicalServiceServiceVisitService
                 $user,
                 [
                     'reason' => $reopenReason,
+                    'reopen_type' => $reopenType,
                     'note' => $reopenNote,
                     'user_id' => $user?->id,
                     'service_visit_request_id' => $child->id,
@@ -97,6 +103,59 @@ class TechnicalServiceServiceVisitService
             );
 
             return $child->refresh();
+        });
+    }
+
+    public function reopenAccidentalCompletionInPlace(
+        TechnicalServiceRequest $request,
+        ?User $user,
+        string $reopenReason,
+        ?string $reopenNote = null,
+    ): TechnicalServiceRequest {
+        return DB::transaction(function () use ($request, $user, $reopenReason, $reopenNote): TechnicalServiceRequest {
+            $request = TechnicalServiceRequest::query()
+                ->with(['events' => fn ($query) => $query->latest()])
+                ->lockForUpdate()
+                ->findOrFail($request->id);
+
+            $previousWorkflow = $this->previousNonCompletedWorkflowStatus($request) ?? 'Son Kontrol';
+            $reopenCount = ((int) $request->reopen_count) + 1;
+
+            $request->forceFill([
+                'status' => TechnicalServiceRequest::STATUS_NEW,
+                'workflow_status' => $previousWorkflow,
+                'completed_at' => null,
+                'installation_completed_at' => null,
+                'field_completed_at' => null,
+                'technician_completed_at' => null,
+                'checklist_completed_at' => null,
+                'customer_closure_approval_status' => null,
+                'customer_closure_approved_at' => null,
+                'field_status' => null,
+                'reopened_at' => now(),
+                'reopened_by_user_id' => $user?->id,
+                'reopen_reason' => $reopenReason,
+                'reopen_note' => $reopenNote,
+                'reopen_count' => $reopenCount,
+                'next_action' => 'Yanlış kapanış geri alındı',
+                'updated_by_user_id' => $user?->id,
+            ])->save();
+
+            $this->recordEvent(
+                $request,
+                'technical_service_accidental_completion_reopened',
+                'Yanlışlıkla tamamlanan talep geri açıldı',
+                $reopenNote ?: $reopenReason,
+                $user,
+                [
+                    'reason' => $reopenReason,
+                    'note' => $reopenNote,
+                    'restored_workflow_status' => $previousWorkflow,
+                    'reopen_count' => $reopenCount,
+                ],
+            );
+
+            return $request->refresh();
         });
     }
 
@@ -307,6 +366,60 @@ class TechnicalServiceServiceVisitService
         return $candidate;
     }
 
+    private function reopenTypeToServiceVisitReason(string $reopenType): string
+    {
+        return match ($reopenType) {
+            'revisit' => 'revisit',
+            default => 'service_request',
+        };
+    }
+
+    private function previousNonCompletedWorkflowStatus(TechnicalServiceRequest $request): ?string
+    {
+        $candidates = [];
+
+        foreach ($request->events as $event) {
+            foreach ([$event->to_status, $event->from_status] as $status) {
+                $status = trim((string) $status);
+
+                if ($status === '' || $this->isCompletedStatus($status) || $this->isCancelledStatus($status)) {
+                    continue;
+                }
+
+                $candidates[] = $status;
+            }
+        }
+
+        foreach ($candidates as $status) {
+            if (! in_array($this->statusToken($status), ['yeni', 'yenitalep'], true)) {
+                return $status;
+            }
+        }
+
+        return $candidates[0] ?? null;
+    }
+
+    private function isCompletedStatus(?string $status): bool
+    {
+        $token = $this->statusToken($status);
+
+        return in_array($token, ['tamamlandi', 'tamamlanda', 'tamamland'], true);
+    }
+
+    private function isCancelledStatus(?string $status): bool
+    {
+        return str_ends_with($this->statusToken($status), 'ptal');
+    }
+
+    private function statusToken(?string $status): string
+    {
+        return \Illuminate\Support\Str::of((string) $status)
+            ->ascii()
+            ->lower()
+            ->replaceMatches('/[^a-z0-9]+/', '')
+            ->value();
+    }
+
     private function copyRequestSerials(TechnicalServiceRequest $parent, TechnicalServiceRequest $child): void
     {
         $parent->loadMissing('requestSerials');
@@ -439,6 +552,7 @@ class TechnicalServiceServiceVisitService
         return match ($reason) {
             'spare_part' => 'Parça sonrası servis',
             'revisit' => 'Tekrar ziyaret servisi',
+            'service_request' => 'Servis talebi',
             default => 'Ek servis ziyareti',
         };
     }

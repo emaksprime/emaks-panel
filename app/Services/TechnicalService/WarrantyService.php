@@ -34,6 +34,16 @@ class WarrantyService
         $latestSale = $this->serialNumbers->latestValidSale($serialNo);
 
         if ($latestSale === null) {
+            $localCard = $this->localCompletedInstallationCard($serialNo);
+
+            if ($localCard instanceof WarrantyCard) {
+                $localCard = $this->recalculateCard($localCard);
+
+                return $this->response($serialNo, $localCard, null, [
+                    'Mikro satış bilgisi okunamadı; garanti panelde tamamlanan montaj kaydından hesaplandı.',
+                ]);
+            }
+
             return $this->response($serialNo, null, null, [
                 'Mikro’da son geçerli satış bulunamadı.',
             ]);
@@ -176,6 +186,70 @@ class WarrantyService
             'warranty_ends_at' => $endsAt?->toDateString(),
             'status' => $status,
         ])->save();
+
+        return $card->refresh();
+    }
+
+    private function localCompletedInstallationCard(string $serialNo): ?WarrantyCard
+    {
+        $request = $this->completedInstallationRequestFor($serialNo, null);
+
+        if (! $request instanceof TechnicalServiceRequest) {
+            return null;
+        }
+
+        $completedAt = $request->installation_completed_at
+            ?? $request->completed_at
+            ?? $request->updated_at;
+
+        if (! $completedAt) {
+            return null;
+        }
+
+        $card = WarrantyCard::query()
+            ->where('serial_no', $serialNo)
+            ->whereNull('last_sale_mikro_fingerprint')
+            ->latest('id')
+            ->first();
+
+        if (! $card instanceof WarrantyCard) {
+            $card = WarrantyCard::query()->create([
+                'serial_no' => $serialNo,
+                'warranty_period_months' => self::DEFAULT_PERIOD_MONTHS,
+                'status' => self::STATUS_NOT_STARTED,
+                'source' => 'panel_completed_installation',
+            ]);
+        }
+
+        if ($card->installation_completed_at === null) {
+            $card->forceFill([
+                'installation_completed_at' => $completedAt->toDateString(),
+                'source' => 'panel_completed_installation',
+            ])->save();
+
+            if (! $card->events()
+                ->where('event_type', 'warranty_started_from_completed_installation')
+                ->where('metadata->technical_service_request_id', $request->id)
+                ->exists()) {
+                $card->events()->create([
+                    'event_type' => 'warranty_started_from_completed_installation',
+                    'title' => 'Garanti montaj tamamlanma tarihiyle başlatıldı',
+                    'note' => 'Mikro satış bilgisi okunamadığı için panel tamamlanma kaydı kullanıldı.',
+                    'from_status' => self::STATUS_NOT_STARTED,
+                    'to_status' => null,
+                    'metadata' => [
+                        'technical_service_request_id' => $request->id,
+                        'mrn' => $request->mrn,
+                        'serial_no' => $request->serial_number,
+                        'completed_at' => $completedAt->toDateString(),
+                        'technical_service_completed_at' => $request->completed_at?->toDateString(),
+                        'installation_completed_at' => $completedAt->toDateString(),
+                        'mikro_unavailable_fallback' => true,
+                    ],
+                    'author_user_id' => null,
+                ]);
+            }
+        }
 
         return $card->refresh();
     }

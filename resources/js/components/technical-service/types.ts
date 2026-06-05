@@ -97,6 +97,20 @@ export type ServiceRequestServiceVisitSummary = {
   latest_event?: string | null
 }
 
+export type ServiceRequestServiceVisitHistoryRecord = ServiceRequestServiceVisitSummary & {
+  customer_name?: string | null
+  technician_name?: string | null
+  technician_phone?: string | null
+  scheduled_at?: string | null
+  field_started_at?: string | null
+  technician_arrived_at?: string | null
+  field_completed_at?: string | null
+  technician_completed_at?: string | null
+  completion_note?: string | null
+  documents?: ServiceRequestFieldCompletionDocument[]
+  events?: ServiceRequestEvent[]
+}
+
 export type ServiceRequestServiceVisitHistory = {
   root_mrn?: string | null
   service_code?: string | null
@@ -106,6 +120,7 @@ export type ServiceRequestServiceVisitHistory = {
   parent_events?: ServiceRequestEvent[]
   parent_part_requests?: ServiceRequestPartRequest[]
   sibling_service_visits?: ServiceRequestServiceVisitSummary[]
+  history_records?: ServiceRequestServiceVisitHistoryRecord[]
 }
 
 export type ServiceRequestDisplayTag = {
@@ -232,6 +247,15 @@ export type ServiceRequestPartRequest = {
   received_at?: string | null
   requires_service_visit?: boolean
   service_visit_request_id?: number | string | null
+  charge_decision?: 'free' | 'chargeable' | string | null
+  charge_decision_label?: string | null
+  service_amount?: number | null
+  service_amount_label?: string | null
+  part_amount?: number | null
+  part_amount_label?: string | null
+  total_amount?: number | null
+  total_amount_label?: string | null
+  customer_message?: string | null
   created_at?: string | null
   updated_at?: string | null
 }
