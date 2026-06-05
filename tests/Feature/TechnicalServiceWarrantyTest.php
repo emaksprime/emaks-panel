@@ -318,6 +318,179 @@ class TechnicalServiceWarrantyTest extends TestCase
         $this->assertSame('Son Kontrol', $request->workflow_status);
     }
 
+    public function test_accidental_completion_reopen_revokes_wrong_warranty_start(): void
+    {
+        $this->mockLatestSale($this->salePayload('SN-WRONG-WARRANTY', 'wrong-warranty-fp', '2026-03-01'));
+        $completedStatus = 'Tamamland'."\u{0131}";
+        $accidentalReason = "Yanl\u{0131}\u{015f}l\u{0131}kla tamamland\u{0131}";
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-WRONG-WARRANTY',
+            'serial_number' => 'SN-WRONG-WARRANTY',
+            'service_type' => 'Montaj',
+            'status' => $completedStatus,
+            'workflow_status' => $completedStatus,
+            'completed_at' => '2026-05-05 10:00:00',
+            'installation_completed_at' => '2026-05-05 10:00:00',
+        ]);
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $service = app(WarrantyService::class);
+
+        $started = $service->statusForSerial('SN-WRONG-WARRANTY');
+        $this->assertSame('Garanti Aktif', $started['status']);
+        $this->assertSame('2026-05-05', $started['warranty_started_at']);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => $accidentalReason,
+                'reopen_note' => 'Yanlis kapatildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('reopened_in_place', true)
+            ->assertJsonPath('request.completed_at', null);
+
+        $after = $service->statusForSerial('SN-WRONG-WARRANTY');
+        $this->assertSame(WarrantyService::STATUS_NOT_STARTED, $after['status']);
+        $this->assertNull($after['warranty_started_at']);
+        $this->assertNull($after['warranty_ends_at']);
+        $this->assertNull($after['installation']['completed_at']);
+
+        $card = WarrantyCard::query()->where('serial_no', 'SN-WRONG-WARRANTY')->firstOrFail();
+        $startEvent = $card->events()->where('event_type', 'warranty_started_from_completed_installation')->firstOrFail();
+        $this->assertNotEmpty($startEvent->metadata['revoked_at'] ?? null);
+        $this->assertSame('accidental_completion_reopen', $startEvent->metadata['revoked_reason'] ?? null);
+        $this->assertDatabaseHas('warranty_events', [
+            'warranty_card_id' => $card->id,
+            'event_type' => 'warranty_wrong_completion_revoked',
+        ]);
+    }
+
+    public function test_accidental_completion_reopen_preserves_previous_real_warranty_start(): void
+    {
+        $this->mockLatestSale($this->salePayload('SN-WARRANTY-PREVIOUS', 'previous-warranty-fp', '2026-01-01'));
+        $completedStatus = 'Tamamland'."\u{0131}";
+        $accidentalReason = "Yanl\u{0131}\u{015f}l\u{0131}kla tamamland\u{0131}";
+        $previous = $this->technicalServiceRequest([
+            'mrn' => 'MRN-WARRANTY-PREVIOUS',
+            'serial_number' => 'SN-WARRANTY-PREVIOUS',
+            'service_type' => 'Montaj',
+            'status' => $completedStatus,
+            'workflow_status' => $completedStatus,
+            'completed_at' => '2026-02-01 10:00:00',
+            'installation_completed_at' => '2026-02-01 10:00:00',
+        ]);
+        $wrong = $this->technicalServiceRequest([
+            'mrn' => 'MRN-WARRANTY-WRONG',
+            'serial_number' => 'SN-WARRANTY-PREVIOUS',
+            'service_type' => 'Montaj',
+            'status' => $completedStatus,
+            'workflow_status' => $completedStatus,
+            'completed_at' => '2026-05-05 10:00:00',
+            'installation_completed_at' => '2026-05-05 10:00:00',
+        ]);
+        $service = app(WarrantyService::class);
+        $service->statusForSerial('SN-WARRANTY-PREVIOUS');
+        $card = WarrantyCard::query()->where('serial_no', 'SN-WARRANTY-PREVIOUS')->firstOrFail();
+        $card->events()->create([
+            'event_type' => 'warranty_started_from_completed_installation',
+            'title' => 'Garanti montaj tamamlanma tarihiyle baÅŸlatÄ±ldÄ±',
+            'metadata' => [
+                'technical_service_request_id' => $wrong->id,
+                'mrn' => $wrong->mrn,
+                'serial_no' => $wrong->serial_number,
+                'completed_at' => '2026-05-05',
+                'installation_completed_at' => '2026-05-05',
+            ],
+        ]);
+        $card->forceFill(['installation_completed_at' => '2026-05-05'])->save();
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$wrong->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => $accidentalReason,
+                'reopen_note' => 'Yanlis kapatildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('reopened_in_place', true);
+
+        $after = $service->statusForSerial('SN-WARRANTY-PREVIOUS');
+        $this->assertSame('Garanti Aktif', $after['status']);
+        $this->assertSame('2026-02-01', $after['warranty_started_at']);
+        $this->assertSame('2026-02-01', $after['installation']['completed_at']);
+        $activeStartEvent = WarrantyCard::query()->where('serial_no', 'SN-WARRANTY-PREVIOUS')->firstOrFail()
+            ->events()
+            ->where('event_type', 'warranty_started_from_completed_installation')
+            ->get()
+            ->first(fn ($event): bool => empty($event->metadata['revoked_at'] ?? null));
+
+        $this->assertNotNull($activeStartEvent);
+        $this->assertSame($previous->mrn, $activeStartEvent->metadata['mrn']);
+    }
+
+    public function test_uncompleted_mount_hides_warranty_and_service_part_charge_sections(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'serial_number' => 'SN-VISIBLE-UNCOMPLETED',
+            'service_type' => 'Montaj',
+            'status' => 'Yeni',
+            'workflow_status' => 'Usta OnayÄ± Bekleyen',
+            'completed_at' => null,
+            'installation_completed_at' => null,
+        ]);
+
+        $payload = app(\App\Services\TechnicalService\TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertFalse($payload['visible_sections']['warranty']);
+        $this->assertSame('hidden', $payload['visible_sections']['warranty_mode']);
+        $this->assertFalse($payload['visible_sections']['service_part_charge']);
+    }
+
+    public function test_completed_mount_shows_warranty_but_not_generic_service_part_charge(): void
+    {
+        $completedStatus = 'Tamamland'."\u{0131}";
+        $request = $this->technicalServiceRequest([
+            'serial_number' => 'SN-VISIBLE-COMPLETED',
+            'service_type' => 'Montaj',
+            'status' => $completedStatus,
+            'workflow_status' => $completedStatus,
+            'completed_at' => '2026-05-05 10:00:00',
+            'installation_completed_at' => '2026-05-05 10:00:00',
+        ]);
+
+        $payload = app(\App\Services\TechnicalService\TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertTrue($payload['visible_sections']['warranty']);
+        $this->assertSame('full', $payload['visible_sections']['warranty_mode']);
+        $this->assertFalse($payload['visible_sections']['service_part_charge']);
+    }
+
+    public function test_chargeable_part_request_enables_service_part_charge_section(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'serial_number' => 'SN-VISIBLE-PART',
+            'service_type' => 'Servis',
+            'status' => 'Yeni',
+            'workflow_status' => 'ParÃ§a Bekleniyor',
+            'completed_at' => null,
+        ]);
+        \App\Models\TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'root_request_id' => $request->id,
+            'status' => \App\Models\TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Kilit dili',
+            'quantity' => 1,
+            'metadata' => ['charge_decision' => 'chargeable'],
+        ]);
+
+        $payload = app(\App\Services\TechnicalService\TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertTrue($payload['visible_sections']['warranty']);
+        $this->assertSame('compact', $payload['visible_sections']['warranty_mode']);
+        $this->assertTrue($payload['visible_sections']['service_part_charge']);
+        $this->assertTrue($payload['visible_sections']['part_request_decision']);
+    }
+
     public function test_completed_request_reopen_creates_clean_unassigned_srv_child(): void
     {
         $request = $this->technicalServiceRequest([

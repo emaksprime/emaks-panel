@@ -13,7 +13,10 @@ class TechnicalServiceServiceVisitService
 {
     private const SERVICE_VISIT_TYPE = 'Servis';
 
-    public function __construct(private readonly TechnicalServiceCodeGenerator $codeGenerator) {}
+    public function __construct(
+        private readonly TechnicalServiceCodeGenerator $codeGenerator,
+        private readonly WarrantyService $warranties,
+    ) {}
 
     public function createCleanServiceVisitFromCompletedRequest(
         TechnicalServiceRequest $completedRequest,
@@ -141,6 +144,8 @@ class TechnicalServiceServiceVisitService
                 'updated_by_user_id' => $user?->id,
             ])->save();
 
+            $warrantyCard = $this->warranties->revokeCompletedInstallationForRequest($request, $user);
+
             $this->recordEvent(
                 $request,
                 'technical_service_accidental_completion_reopened',
@@ -152,6 +157,9 @@ class TechnicalServiceServiceVisitService
                     'note' => $reopenNote,
                     'restored_workflow_status' => $previousWorkflow,
                     'reopen_count' => $reopenCount,
+                    'warranty_revoked' => $warrantyCard !== null,
+                    'warranty_card_id' => $warrantyCard?->id,
+                    'warranty_status' => $warrantyCard?->status,
                 ],
             );
 

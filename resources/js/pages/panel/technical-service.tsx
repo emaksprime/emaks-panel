@@ -199,6 +199,7 @@ type ApiTechnicalServiceRequest = {
   display_action_label?: string | null
   display_tags?: ServiceRequest['displayTags']
   operational_state?: ServiceRequest['operationalState']
+  visible_sections?: ServiceRequest['visibleSections']
   service_visit_history?: ServiceRequest['serviceVisitHistory']
   document?: unknown
   documents?: unknown
@@ -848,6 +849,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     displayActionLabel: request.display_action_label ?? request.operational_state?.display_action_label ?? null,
     displayTags: request.display_tags ?? request.operational_state?.display_tags ?? [],
     operationalState: request.operational_state ?? null,
+    visibleSections: request.visible_sections ?? null,
     serviceVisitHistory: request.service_visit_history ?? null,
     attention: request.attention ?? null,
   }

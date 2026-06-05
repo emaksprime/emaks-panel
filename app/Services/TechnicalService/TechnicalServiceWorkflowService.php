@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
@@ -1061,7 +1062,7 @@ class TechnicalServiceWorkflowService
             ->values()
             ->all();
         $payload['active_part_request'] = collect($payload['part_requests'])
-            ->first(fn (array $partRequest): bool => in_array((string) ($partRequest['status'] ?? ''), \App\Models\TechnicalServicePartRequest::ACTIVE_STATUSES, true));
+            ->first(fn (array $partRequest): bool => in_array((string) ($partRequest['status'] ?? ''), TechnicalServicePartRequest::ACTIVE_STATUSES, true));
         $payload['root_mrn'] = $request->root_mrn;
         $payload['service_code'] = $request->service_code;
         $payload['service_visit_reason'] = $request->service_visit_reason;
@@ -1075,6 +1076,7 @@ class TechnicalServiceWorkflowService
         $payload['display_action_label'] = $operationalState['display_action_label'];
         $payload['display_tags'] = $operationalState['display_tags'];
         $payload['attention'] = $operationalState['attention'];
+        $payload['visible_sections'] = $this->visibleSectionsPayload($request);
         $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request);
 
         if ($includeHistory) {
@@ -2533,6 +2535,46 @@ class TechnicalServiceWorkflowService
         }
 
         return $request->service_type;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function visibleSectionsPayload(TechnicalServiceRequest $request): array
+    {
+        $displayServiceType = $this->displayServiceType($request);
+        $isServiceVisit = $request->parent_request_id !== null || filled($request->service_code) || $displayServiceType === 'Servis';
+        $isMount = $displayServiceType === 'Montaj' && ! $isServiceVisit;
+        $isCompleted = in_array($this->normalizeToken($request->status), ['tamamlandi', 'tamamland'], true)
+            || in_array($this->normalizeToken($request->workflow_status), ['tamamlandi', 'tamamland'], true)
+            || $request->completed_at !== null
+            || $request->installation_completed_at !== null;
+        $partRequests = $request->relationLoaded('partRequests')
+            ? $request->partRequests
+            : $request->partRequests()->get();
+        $activePartRequests = $partRequests->filter(
+            fn (TechnicalServicePartRequest $partRequest): bool => in_array((string) $partRequest->status, TechnicalServicePartRequest::ACTIVE_STATUSES, true),
+        );
+        $hasChargeablePartRequest = $activePartRequests->contains(function (TechnicalServicePartRequest $partRequest): bool {
+            $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
+
+            return ($metadata['charge_decision'] ?? null) === 'chargeable'
+                || ($metadata['payment_decision'] ?? null) === 'chargeable';
+        });
+
+        return [
+            'warranty' => ($isMount && $isCompleted) || $isServiceVisit,
+            'warranty_mode' => $isServiceVisit ? 'compact' : (($isMount && $isCompleted) ? 'full' : 'hidden'),
+            'service_part_charge' => $hasChargeablePartRequest,
+            'part_request_decision' => $activePartRequests->isNotEmpty(),
+            'earnings_breakdown' => $isServiceVisit || $request->childRequests()->exists(),
+            'manual_checks' => $isServiceVisit ? [
+                [
+                    'code' => 'warranty_check',
+                    'label' => 'Garanti durumunu kontrol et',
+                ],
+            ] : [],
+        ];
     }
 
     /**

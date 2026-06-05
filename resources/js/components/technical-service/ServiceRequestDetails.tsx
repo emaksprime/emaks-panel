@@ -1220,11 +1220,20 @@ export function ServiceRequestDetails({
   const revisitRequests = partnerPortalActions.filter((action) => action.action === 'revisit_requested' && action.status === 'ops_review')
   const partRequests = request.partRequests ?? []
   const activePartRequests = partRequests.filter((partRequest) => ['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status))
+  const visibleSections = request.visibleSections ?? null
+  const warrantySectionVisible = visibleSections?.warranty === true
+  const servicePartChargeSectionVisible = visibleSections?.service_part_charge === true
   const warrantyStatusText = String(warranty?.status ?? '')
   const warrantyIsActive = warrantyStatusText.includes('Aktif')
   const warrantyIsExpired = warrantyStatusText.includes('Bitti')
   const activeChargeablePartRequests = activePartRequests.filter((partRequest) => partRequest.charge_decision === 'chargeable')
-  const canShowServicePartPaymentAction = !warrantyLoading && (!warrantyIsActive || activeChargeablePartRequests.length > 0)
+  const canShowServicePartPaymentAction = servicePartChargeSectionVisible && !warrantyLoading && (!warrantyIsActive || activeChargeablePartRequests.length > 0)
+  const shouldRenderWarrantySection = warrantySectionVisible && (warrantyLoading || warranty || warrantyError)
+  const servicePartPaymentSummaryHint = servicePartChargeSectionVisible
+    ? (canShowServicePartPaymentAction
+        ? 'Garanti d\u0131\u015f\u0131 servis veya \u00fccretli par\u00e7a tahsilat\u0131 ayr\u0131 \u00f6deme linkiyle izlenir.'
+        : 'Garanti kapsam\u0131 aktif. M\u00fc\u015fteri servis \u00fccreti istenmez.')
+    : 'Servis/par\u00e7a tahsilat\u0131 yaln\u0131zca \u00fccretli par\u00e7a veya servis karar\u0131 varsa a\u00e7\u0131l\u0131r.'
   const serviceVisitHistoryRecords = request.serviceVisitHistory?.history_records ?? []
   const completionSubmissions = partnerPortalActions.filter((action) => action.action === 'completion_submitted' && action.status === 'ops_review')
   const latestCustomerApprovalRequest = [...partnerPortalActions]
@@ -2963,7 +2972,7 @@ export function ServiceRequestDetails({
           </details>
         </section>
 
-        {(warrantyLoading || warranty || warrantyError) ? (
+        {shouldRenderWarrantySection ? (
           <section className="order-23 grid gap-3 rounded-3xl border border-emerald-100 bg-emerald-50/80 p-4 text-sm text-emerald-950 shadow-sm lg:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -3022,14 +3031,7 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
         </section>
-        ) : (
-          <section className="order-24 rounded-3xl border border-emerald-100 bg-emerald-50/80 p-4 text-sm text-emerald-950 shadow-sm lg:p-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Garanti kapsamı</p>
-            <h3 className="mt-1 text-base font-bold text-slate-950">Ürün garanti kapsamında</h3>
-            <p className="mt-1 leading-6">Müşteri servis ücreti istenmez. Parça bedeli gerekiyorsa parça talebi kararından ücretli olarak işaretleyin.</p>
-          </section>
-        )}
-
+        ) : null}
         {customerChargeModal}
         {partDecisionModal}
         {historyRecordModal}
@@ -3250,9 +3252,7 @@ export function ServiceRequestDetails({
                   <div>
                     <p className="font-semibold text-slate-800">Servis / parça müşteri ödemesi</p>
                     <p className="mt-1 text-xs text-slate-500">
-                      {canShowServicePartPaymentAction
-                        ? 'Garanti dışı servis veya ücretli parça tahsilatı ayrı ödeme linkiyle izlenir.'
-                        : 'Ürün garanti kapsamında. Müşteri servis ücreti istenmez.'}
+                      {servicePartPaymentSummaryHint}
                     </p>
                   </div>
                 </div>

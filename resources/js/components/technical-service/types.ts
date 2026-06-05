@@ -4,6 +4,18 @@ export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 
 export type ServiceStatusFilter = '' | 'unassigned' | 'today_installations' | 'scheduled' | 'Tamamlandı' | 'İptal'
 export type ServiceRequestOpsColumn = 'new' | 'assignment_pending' | 'assigned' | 'final_check' | 'completed' | 'review' | 'cancelled' | string | null
 
+export type ServiceRequestVisibleSections = {
+  warranty?: boolean
+  warranty_mode?: 'hidden' | 'compact' | 'full' | string | null
+  service_part_charge?: boolean
+  part_request_decision?: boolean
+  earnings_breakdown?: boolean
+  manual_checks?: Array<{
+    code: string
+    label: string
+  }>
+}
+
 export type ServicePriority = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
 
 export type ServiceRequest = {
@@ -58,6 +70,7 @@ export type ServiceRequest = {
   displayActionLabel?: string | null
   displayTags?: ServiceRequestDisplayTag[]
   operationalState?: ServiceRequestOperationalState | null
+  visibleSections?: ServiceRequestVisibleSections | null
   serviceVisitHistory?: ServiceRequestServiceVisitHistory | null
   auditLogs?: ServiceRequestAuditLog[] | null
   attention?: {
