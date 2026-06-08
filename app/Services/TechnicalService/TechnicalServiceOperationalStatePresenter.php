@@ -48,10 +48,10 @@ class TechnicalServiceOperationalStatePresenter
      */
     public function present(TechnicalServiceRequest $request): array
     {
+        $request->load('uploads');
         $request->loadMissing([
             'partnerJobActions' => fn ($query) => $query->latest(),
             'events' => fn ($query) => $query->latest(),
-            'uploads',
             'customerConfirmations' => fn ($query) => $query->latest(),
             'partRequests' => fn ($query) => $query->latest(),
             'childRequests',
@@ -358,7 +358,7 @@ class TechnicalServiceOperationalStatePresenter
         $actionAt = $action->created_at ?? $action->updated_at;
 
         return $actionAt instanceof CarbonInterface
-            && $actionAt->lessThanOrEqualTo($request->reopened_at);
+            && $actionAt->lessThan($request->reopened_at);
     }
 
     private function isCompleted(TechnicalServiceRequest $request): bool
@@ -668,7 +668,7 @@ class TechnicalServiceOperationalStatePresenter
         return match ($opsColumn) {
             self::OPS_COLUMN_COMPLETED => 'Tamamlandı',
             self::OPS_COLUMN_FINAL_CHECK => 'Son kontrol bekliyor',
-            self::OPS_COLUMN_ASSIGNED => 'Randevu onaylandı',
+            self::OPS_COLUMN_ASSIGNED => $this->hasAppointment($request) ? 'Randevu onaylandı' : 'Usta randevu önerecek',
             self::OPS_COLUMN_ASSIGNMENT_PENDING => $this->hasTechnician($request) ? 'Usta onayı bekliyor' : 'Usta seçilmeli',
             self::OPS_COLUMN_NEW => 'Usta seçilmeli',
             self::OPS_COLUMN_REVIEW => 'Operasyon incelemesi',
@@ -765,6 +765,10 @@ class TechnicalServiceOperationalStatePresenter
             return $this->actionMetaPayload('customer', 'normal', 'Müşteri onayı bekliyor', 'Müşteri onayı bekleniyor.');
         }
 
+        if ($opsColumn === self::OPS_COLUMN_ASSIGNED && ! $this->hasAppointment($request)) {
+            return $this->actionMetaPayload('technician', 'normal', $displayActionLabel, 'Parça teslim alındı. Usta müşteri için yeni randevu önerecek.');
+        }
+
         if ($isAppointmentConfirmed || $opsColumn === self::OPS_COLUMN_ASSIGNED) {
             return $this->actionMetaPayload('technician', 'normal', $displayActionLabel, 'Usta fotoğrafları ve müşteri onayını tamamlayacak.');
         }
@@ -852,7 +856,7 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         if ($opsColumn === self::OPS_COLUMN_ASSIGNED) {
-            $add('Randevu onaylandı', 'blue');
+            $add($this->hasAppointment($request) ? 'Randevu onaylandı' : 'Randevu bekleniyor', 'blue');
 
             return $tags;
         }
@@ -894,8 +898,15 @@ class TechnicalServiceOperationalStatePresenter
             return false;
         }
 
-        $approved = in_array($this->normalize((string) $request->customer_closure_approval_status), ['onaylandi', 'approved'], true)
-            || $request->customerConfirmations->contains(fn ($confirmation): bool => (string) $confirmation->status === 'approved');
+        if ($opsColumn === self::OPS_COLUMN_ASSIGNED && ! $this->hasAppointment($request)) {
+            return false;
+        }
+
+        $approved = $request->customer_closure_approved_at instanceof CarbonInterface
+                && ! $this->recordPredatesActiveReopen($request, $request->customer_closure_approved_at)
+                && in_array($this->normalize((string) $request->customer_closure_approval_status), ['onaylandi', 'approved'], true)
+            || $request->customerConfirmations->contains(fn ($confirmation): bool => (string) $confirmation->status === 'approved'
+                && ! $this->recordPredatesActiveReopen($request, $confirmation->created_at ?? $confirmation->updated_at));
 
         return ! $approved;
     }
@@ -906,12 +917,31 @@ class TechnicalServiceOperationalStatePresenter
             return false;
         }
 
+        if ($opsColumn === self::OPS_COLUMN_ASSIGNED && ! $this->hasAppointment($request)) {
+            return false;
+        }
+
         $presentTypes = $request->uploads
+            ->filter(fn ($upload): bool => ! $this->fieldDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
             ->map(fn ($upload): string => (string) $upload->field_code)
             ->filter(fn (string $field): bool => in_array($field, ['before_photo', 'after_photo', 'warranty_document_photo'], true))
             ->unique();
 
         return $presentTypes->count() < 3;
+    }
+
+    private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
+    {
+        return $request->reopened_at instanceof CarbonInterface
+            && $recordAt instanceof CarbonInterface
+            && $recordAt->lessThan($request->reopened_at);
+    }
+
+    private function fieldDocumentPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
+    {
+        return $request->reopened_at instanceof CarbonInterface
+            && $recordAt instanceof CarbonInterface
+            && $recordAt->lessThanOrEqualTo($request->reopened_at);
     }
 
     private function appointmentStartAt(TechnicalServiceRequest $request): ?CarbonImmutable

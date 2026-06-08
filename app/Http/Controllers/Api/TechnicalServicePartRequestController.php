@@ -45,11 +45,16 @@ class TechnicalServicePartRequestController extends Controller
         ]);
 
         $updated = $this->partRequests->transition($partRequest, $validated['status'], $request->user(), $validated);
+        $partRequestPayload = $this->partRequests->serialize($updated);
+        $requestPayload = $this->workflow->serialize($technicalServiceRequest->refresh(), true);
 
         return response()->json([
+            'ok' => true,
             'status' => $updated->status,
-            'part_request' => $this->partRequests->serialize($updated),
-            'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
+            'part_request' => $partRequestPayload,
+            'customer_charge' => $partRequestPayload['customer_charge'] ?? null,
+            'payment_summary' => $requestPayload['sale_and_payment']['payment_summary'] ?? null,
+            'request' => $requestPayload,
         ]);
     }
 

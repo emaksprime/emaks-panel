@@ -290,9 +290,9 @@ class B2BPartnerPortalDataService
      */
     public function safeServiceJobSummary(TechnicalServiceRequest $request, ?B2BPartner $viewerPartner = null): array
     {
+        $request->load('uploads');
         $request->loadMissing([
             'partnerJobActions' => fn ($query) => $query->latest(),
-            'uploads',
             'customerConfirmations' => fn ($query) => $query->latest(),
             'latestAssignmentOffer.technician',
             'technicianRecord',
@@ -373,11 +373,10 @@ class B2BPartnerPortalDataService
         $portalPhotos = $request->uploads
             ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload))
             ->values();
-        $currentPortalPhotos = $portalPhotos
-            ->reject(fn (TechnicalServiceRequestUpload $upload): bool => $this->recordPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
-            ->values();
+        $currentPortalPhotoMap = $this->currentPortalFieldDocuments($request);
+        $currentPortalPhotos = $currentPortalPhotoMap->values();
         $previousPortalPhotos = $portalPhotos
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->recordPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->portalDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
             ->values();
         $isTerminal = (bool) ($canonicalState['is_completed'] ?? false)
             || ($canonicalState['ops_column'] ?? null) === 'cancelled';
@@ -398,7 +397,7 @@ class B2BPartnerPortalDataService
             && ! $isRejectedInReview
             && ! $hasAppointmentProposalInReview;
         $canRequestAppointmentChange = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction;
-        $canFieldActions = $isAppointmentConfirmed && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction && ! $hasOpenPartRequest;
+        $canFieldActions = $isAppointmentConfirmed && $hasOpsAppointment && ! $isTerminal && ! $isFinalCheck && ! $hasOpsReviewAction && ! $hasOpenPartRequest;
         $completionReadyForSubmit = $partnerColumn === 'appointment_confirmed'
             && $canFieldActions
             && ($completionRequirements['photos_ready'] ?? false) === true
@@ -481,6 +480,9 @@ class B2BPartnerPortalDataService
         return [
             'id' => $request->id,
             'mrn' => $request->mrn,
+            'parent_request_id' => $request->parent_request_id,
+            'root_mrn' => $request->root_mrn,
+            'service_code' => $request->service_code,
             'status_label' => $request->status,
             'service_stage_label' => $request->workflow_status,
             'customer_name' => $request->customer_name,
@@ -516,35 +518,18 @@ class B2BPartnerPortalDataService
                 'general' => in_array('warranty_document_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
             ],
             'photos' => $currentPortalPhotos
-                ->map(fn (TechnicalServiceRequestUpload $upload): array => [
-                    'id' => $upload->id,
-                    'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
-                    'category' => $upload->category,
-                    'field_code' => $upload->field_code,
-                    'preview_url' => route('api.technical-service.requests.uploads.show', [
-                        'technicalServiceRequest' => $request->id,
-                        'upload' => $upload->id,
-                    ]),
-                    'review_status' => $upload->review_status,
-                    'review_note' => $upload->review_note,
-                    'created_at' => $upload->created_at?->toIso8601String(),
-                ])
+                ->map(fn (TechnicalServiceRequestUpload $upload): array => $this->portalPhotoPayload($request, $upload))
                 ->values()
                 ->all(),
-            'previous_photos' => $previousPortalPhotos
-                ->map(fn (TechnicalServiceRequestUpload $upload): array => [
-                    'id' => $upload->id,
-                    'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
-                    'category' => $upload->category,
-                    'field_code' => $upload->field_code,
-                    'preview_url' => route('api.technical-service.requests.uploads.show', [
-                        'technicalServiceRequest' => $request->id,
-                        'upload' => $upload->id,
-                    ]),
-                    'review_status' => $upload->review_status,
-                    'review_note' => $upload->review_note,
-                    'created_at' => $upload->created_at?->toIso8601String(),
+            'current_field_documents' => collect(self::requiredPortalPhotoFields())
+                ->mapWithKeys(fn (string $label, string $field): array => [
+                    $field => $currentPortalPhotoMap->has($field)
+                        ? $this->portalPhotoPayload($request, $currentPortalPhotoMap->get($field))
+                        : null,
                 ])
+                ->all(),
+            'previous_photos' => $previousPortalPhotos
+                ->map(fn (TechnicalServiceRequestUpload $upload): array => $this->portalPhotoPayload($request, $upload))
                 ->values()
                 ->all(),
             'latest_partner_action' => $latestAction ? [
@@ -730,6 +715,7 @@ class B2BPartnerPortalDataService
         }
 
         return [
+            'parent_request_id' => $request->parent_request_id,
             'root_mrn' => $rootMrn !== '' ? $rootMrn : null,
             'parent_mrn' => $request->parentRequest?->mrn,
             'service_code' => $request->service_code,
@@ -1332,10 +1318,17 @@ class B2BPartnerPortalDataService
         $actionAt = $action->created_at ?? $action->updated_at;
 
         return $actionAt instanceof \Carbon\CarbonInterface
-            && $actionAt->lessThanOrEqualTo($request->reopened_at);
+            && $actionAt->lessThan($request->reopened_at);
     }
 
     private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
+    {
+        return $request->reopened_at instanceof \Carbon\CarbonInterface
+            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt->lessThan($request->reopened_at);
+    }
+
+    private function portalDocumentPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
     {
         return $request->reopened_at instanceof \Carbon\CarbonInterface
             && $recordAt instanceof \Carbon\CarbonInterface
@@ -1666,13 +1659,8 @@ class B2BPartnerPortalDataService
      */
     private function portalPhotoReadiness(TechnicalServiceRequest $request): array
     {
-        $request->loadMissing('uploads');
-        $uploadedFields = $request->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload)
-                && ! $this->recordPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
-            ->map(fn (TechnicalServiceRequestUpload $upload): ?string => $this->canonicalPortalPhotoField($upload->field_code))
-            ->filter(fn (?string $field): bool => $field !== null && array_key_exists($field, self::REQUIRED_PORTAL_PHOTO_FIELDS))
-            ->unique()
+        $uploadedFields = $this->currentPortalFieldDocuments($request)
+            ->keys()
             ->values();
 
         $presentFields = $uploadedFields;
@@ -1702,6 +1690,55 @@ class B2BPartnerPortalDataService
         }
 
         return $field;
+    }
+
+    /**
+     * @return Collection<string, TechnicalServiceRequestUpload>
+     */
+    private function currentPortalFieldDocuments(TechnicalServiceRequest $request): Collection
+    {
+        $request->load('uploads');
+
+        return $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isPortalFieldDocument($upload)
+                && ! $this->portalDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => array_key_exists(
+                (string) $this->canonicalPortalPhotoField($upload->field_code),
+                self::REQUIRED_PORTAL_PHOTO_FIELDS
+            ))
+            ->sort(function (TechnicalServiceRequestUpload $left, TechnicalServiceRequestUpload $right): int {
+                $createdAtCompare = ($right->created_at?->getTimestamp() ?? 0) <=> ($left->created_at?->getTimestamp() ?? 0);
+
+                if ($createdAtCompare !== 0) {
+                    return $createdAtCompare;
+                }
+
+                return ((int) $right->id) <=> ((int) $left->id);
+            })
+            ->unique(fn (TechnicalServiceRequestUpload $upload): string => (string) $this->canonicalPortalPhotoField($upload->field_code))
+            ->mapWithKeys(fn (TechnicalServiceRequestUpload $upload): array => [
+                (string) $this->canonicalPortalPhotoField($upload->field_code) => $upload,
+            ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function portalPhotoPayload(TechnicalServiceRequest $request, TechnicalServiceRequestUpload $upload): array
+    {
+        return [
+            'id' => $upload->id,
+            'label' => $this->portalPhotoLabel($upload) ?? $upload->original_name,
+            'category' => $upload->category,
+            'field_code' => $upload->field_code,
+            'preview_url' => route('api.technical-service.requests.uploads.show', [
+                'technicalServiceRequest' => $request->id,
+                'upload' => $upload->id,
+            ]),
+            'review_status' => $upload->review_status,
+            'review_note' => $upload->review_note,
+            'created_at' => $upload->created_at?->toIso8601String(),
+        ];
     }
 
     private function isPortalFieldDocument(TechnicalServiceRequestUpload $upload): bool

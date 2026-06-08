@@ -79,6 +79,25 @@ class TechnicalServiceNextActionService
             );
         }
 
+        $approvalToken = \Illuminate\Support\Str::of((string) $request->technician_approval_status.' '.(string) $request->technician_confirmation_status)
+            ->ascii()
+            ->lower()
+            ->toString();
+        $technicianAlreadyApproved = $request->technician_approved_at !== null
+            || str_contains($approvalToken, 'onay')
+            || str_contains($approvalToken, 'kabul')
+            || str_contains($approvalToken, 'accept');
+
+        if ($technicianAlreadyApproved && ! filled($request->scheduled_at)) {
+            return $this->payload(
+                'appointment_waiting',
+                'Usta randevu önerecek',
+                'Usta müşteri için uygun randevu zamanı önerecek.',
+                'neutral',
+                null,
+                false
+            );
+        }
         if (! in_array($request->workflow_status, ['Usta Onayı Bekleyen', 'Planlı', 'Yolda', 'Sahada', 'Tamamlandı'], true)) {
             return $this->payload(
                 'assign_technician',

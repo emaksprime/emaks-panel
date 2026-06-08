@@ -1052,6 +1052,7 @@ class TechnicalServiceWorkflowService
         $payload['location'] = $this->locationPayload($request);
         $payload['door_photos'] = $this->doorPhotoPayload($request);
         $payload['field_completion_documents'] = $this->fieldCompletionDocumentPayload($request);
+        $payload['previous_field_completion_documents'] = $this->fieldCompletionDocumentPayload($request, onlyPrevious: true);
         $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
@@ -2242,6 +2243,7 @@ class TechnicalServiceWorkflowService
                     'download_url' => $authenticatedUrl,
                     'review_status' => $upload->review_status,
                     'review_note' => $upload->review_note,
+                    'created_at' => $this->dateTimeString($upload->created_at),
                     'reviewed_at' => $this->dateTimeString($upload->reviewed_at),
                 ];
             })
@@ -2252,10 +2254,29 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<int, array<string, mixed>>
      */
-    private function fieldCompletionDocumentPayload(TechnicalServiceRequest $request): array
+    private function fieldCompletionDocumentPayload(
+        TechnicalServiceRequest $request,
+        bool $onlyPrevious = false,
+        bool $includePrevious = false,
+    ): array
     {
-        return $request->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isFieldCompletionDocument($upload))
+        $request->load('uploads');
+        $documents = $request->uploads
+            ->filter(function (TechnicalServiceRequestUpload $upload) use ($request, $onlyPrevious, $includePrevious): bool {
+                if (! $this->isFieldCompletionDocument($upload)) {
+                    return false;
+                }
+
+                $isPrevious = $this->fieldDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at);
+
+                return $onlyPrevious ? $isPrevious : ($includePrevious || ! $isPrevious);
+            });
+
+        if (! $onlyPrevious && ! $includePrevious) {
+            $documents = $this->currentFieldCompletionDocuments($request)->values();
+        }
+
+        return $documents
             ->map(function (TechnicalServiceRequestUpload $upload) use ($request): array {
                 $authenticatedUrl = route('api.technical-service.requests.uploads.show', [
                     'technicalServiceRequest' => $request->id,
@@ -2282,6 +2303,32 @@ class TechnicalServiceWorkflowService
             })
             ->values()
             ->all();
+    }
+
+    /**
+     * @return Collection<string, TechnicalServiceRequestUpload>
+     */
+    private function currentFieldCompletionDocuments(TechnicalServiceRequest $request): Collection
+    {
+        $request->load('uploads');
+
+        return $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isFieldCompletionDocument($upload)
+                && ! $this->fieldDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => array_key_exists((string) $upload->field_code, self::FIELD_COMPLETION_DOCUMENT_TYPES))
+            ->sort(function (TechnicalServiceRequestUpload $left, TechnicalServiceRequestUpload $right): int {
+                $createdAtCompare = ($right->created_at?->getTimestamp() ?? 0) <=> ($left->created_at?->getTimestamp() ?? 0);
+
+                if ($createdAtCompare !== 0) {
+                    return $createdAtCompare;
+                }
+
+                return ((int) $right->id) <=> ((int) $left->id);
+            })
+            ->unique(fn (TechnicalServiceRequestUpload $upload): string => (string) $upload->field_code)
+            ->mapWithKeys(fn (TechnicalServiceRequestUpload $upload): array => [
+                (string) $upload->field_code => $upload,
+            ]);
     }
 
     private function isFieldCompletionDocument(TechnicalServiceRequestUpload $upload): bool
@@ -2695,7 +2742,7 @@ class TechnicalServiceWorkflowService
             'field_completed_at' => $this->dateTimeString($request->field_completed_at),
             'technician_completed_at' => $this->dateTimeString($request->technician_completed_at),
             'completion_note' => TechnicalServiceUiLabelService::cleanDisplayText($request->field_completion_note),
-            'documents' => $this->fieldCompletionDocumentPayload($request),
+            'documents' => $this->fieldCompletionDocumentPayload($request, includePrevious: true),
             'events' => array_slice($this->eventPayload($request->events), 0, 6),
         ];
     }
@@ -3202,15 +3249,30 @@ class TechnicalServiceWorkflowService
 
     private function fieldCompletionDocumentsComplete(TechnicalServiceRequest $request): bool
     {
-        $request->loadMissing('uploads');
+        $request->load('uploads');
 
         $presentTypes = $request->uploads
             ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isFieldCompletionDocument($upload))
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => ! $this->fieldDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
             ->map(fn (TechnicalServiceRequestUpload $upload): string => (string) $upload->field_code)
             ->filter(fn (string $field): bool => array_key_exists($field, self::FIELD_COMPLETION_DOCUMENT_TYPES))
             ->unique();
 
         return $presentTypes->count() === count(self::FIELD_COMPLETION_DOCUMENT_TYPES);
+    }
+
+    private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
+    {
+        return $request->reopened_at instanceof \Carbon\CarbonInterface
+            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt->lessThan($request->reopened_at);
+    }
+
+    private function fieldDocumentPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
+    {
+        return $request->reopened_at instanceof \Carbon\CarbonInterface
+            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt->lessThanOrEqualTo($request->reopened_at);
     }
 
     /**

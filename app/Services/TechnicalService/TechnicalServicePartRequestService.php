@@ -2,17 +2,22 @@
 
 namespace App\Services\TechnicalService;
 
+use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\User;
+use App\Services\Payments\PaymentProviderManager;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class TechnicalServicePartRequestService
 {
     public function __construct(
         private readonly TechnicalServiceServiceVisitService $serviceVisits,
+        private readonly PaymentProviderManager $paymentProviderManager,
     ) {}
 
     /**
@@ -108,9 +113,9 @@ class TechnicalServicePartRequestService
         $partAmount = array_key_exists('part_amount', $payload) ? round((float) ($payload['part_amount'] ?? 0), 2) : null;
         $customerMessage = trim((string) ($payload['customer_message'] ?? ''));
 
-        if ($chargeDecision === 'chargeable' && (($serviceAmount ?? 0) + ($partAmount ?? 0)) <= 0) {
+        if ($chargeDecision === 'chargeable' && ($partAmount ?? 0) <= 0) {
             throw ValidationException::withMessages([
-                'amount' => 'Ücretli parça kararında servis veya parça bedeli girilmelidir.',
+                'part_amount' => 'Ücretli parça kararında parça bedeli 0 TL üzerinde olmalıdır.',
             ]);
         }
 
@@ -131,6 +136,18 @@ class TechnicalServicePartRequestService
             $metadata['customer_message'] = $customerMessage !== '' ? $customerMessage : null;
             $metadata['charge_decided_at'] = now()->toISOString();
             $metadata['charge_decided_by_user_id'] = $user?->id;
+            $metadata['charge_status'] = $chargeDecision === 'chargeable'
+                ? ($metadata['charge_status'] ?? TechnicalServiceMountPayment::STATUS_PENDING)
+                : 'none';
+
+            if ($chargeDecision === 'free') {
+                unset(
+                    $metadata['customer_charge_payment_id'],
+                    $metadata['payment_id'],
+                    $metadata['payment_url'],
+                    $metadata['customer_charge']
+                );
+            }
         }
 
         $partRequest->forceFill([
@@ -149,6 +166,25 @@ class TechnicalServicePartRequestService
             ],
         ])->save();
 
+        $customerCharge = null;
+        if ($chargeDecision === 'chargeable') {
+            $customerCharge = $this->createCustomerChargePayment(
+                $partRequest->refresh(),
+                $serviceAmount ?? 0.0,
+                $partAmount ?? 0.0,
+                $customerMessage,
+                $user,
+            );
+
+            $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
+            $metadata['charge_status'] = $customerCharge->status;
+            $metadata['customer_charge_payment_id'] = $customerCharge->id;
+            $metadata['payment_id'] = $customerCharge->id;
+            $metadata['payment_url'] = $customerCharge->payment_url;
+            $metadata['customer_charge'] = $this->customerChargePayload($customerCharge);
+            $partRequest->forceFill(['metadata' => $metadata])->save();
+        }
+
         if ($partRequest->sourcePartnerAction instanceof TechnicalServicePartnerJobAction
             && in_array($targetStatus, [TechnicalServicePartRequest::STATUS_REJECTED, TechnicalServicePartRequest::STATUS_CLOSED], true)
         ) {
@@ -162,6 +198,7 @@ class TechnicalServicePartRequestService
         $this->recordEvent($partRequest->request, 'part_request_'.$targetStatus, TechnicalServicePartRequest::labelForStatus($targetStatus), $note !== '' ? $note : null, $user, [
             'part_request_id' => $partRequest->id,
             'status' => $targetStatus,
+            'customer_charge_payment_id' => $customerCharge?->id,
         ]);
 
         return $partRequest->refresh();
@@ -178,8 +215,53 @@ class TechnicalServicePartRequestService
         return $this->transition($partRequest, TechnicalServicePartRequest::STATUS_RECEIVED, $user);
     }
 
+    /**
+     * @return array{part_request: TechnicalServicePartRequest, service_visit: TechnicalServiceRequest}
+     */
+    public function receiveAndPrepareServiceVisit(TechnicalServicePartRequest $partRequest, User $user): array
+    {
+        return DB::transaction(function () use ($partRequest, $user): array {
+            $partRequest = TechnicalServicePartRequest::query()
+                ->with(['request.technicianRecord'])
+                ->lockForUpdate()
+                ->findOrFail($partRequest->id);
+
+            $serviceVisit = $this->existingServiceVisitForPartRequest($partRequest);
+            if (! $serviceVisit instanceof TechnicalServiceRequest) {
+                $receivedPartRequest = $partRequest->status === TechnicalServicePartRequest::STATUS_SENT
+                    ? $this->transition($partRequest, TechnicalServicePartRequest::STATUS_RECEIVED, $user)
+                    : $partRequest;
+
+                if (! in_array($receivedPartRequest->status, [
+                    TechnicalServicePartRequest::STATUS_RECEIVED,
+                    TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
+                ], true)) {
+                    throw ValidationException::withMessages([
+                        'part_request' => 'Parca teslim alindiktan sonra SRV hazirlanabilir.',
+                    ]);
+                }
+
+                $serviceVisit = $this->createServiceVisit($receivedPartRequest, $user, 'spare_part');
+                $partRequest = $receivedPartRequest->refresh();
+            }
+
+            $serviceVisit = $this->assignServiceVisitToCurrentTechnician($partRequest, $serviceVisit, $user);
+            $partRequest = $partRequest->refresh();
+
+            return [
+                'part_request' => $partRequest,
+                'service_visit' => $serviceVisit,
+            ];
+        });
+    }
+
     public function createServiceVisit(TechnicalServicePartRequest $partRequest, ?User $user, string $reason = 'spare_part'): TechnicalServiceRequest
     {
+        $existing = $this->existingServiceVisitForPartRequest($partRequest);
+        if ($existing instanceof TechnicalServiceRequest) {
+            return $existing;
+        }
+
         if (! in_array($partRequest->status, [
             TechnicalServicePartRequest::STATUS_RECEIVED,
             TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
@@ -227,6 +309,88 @@ class TechnicalServicePartRequestService
         return $child->refresh();
     }
 
+    private function existingServiceVisitForPartRequest(TechnicalServicePartRequest $partRequest): ?TechnicalServiceRequest
+    {
+        $serviceVisitId = $partRequest->service_visit_request_id
+            ?? (is_array($partRequest->metadata) ? ($partRequest->metadata['service_visit_created']['request_id'] ?? null) : null);
+
+        if ($serviceVisitId !== null) {
+            $serviceVisit = TechnicalServiceRequest::query()
+                ->whereKey((int) $serviceVisitId)
+                ->whereNull('cancelled_at')
+                ->first();
+
+            if ($serviceVisit instanceof TechnicalServiceRequest) {
+                return $serviceVisit;
+            }
+        }
+
+        return TechnicalServiceRequest::query()
+            ->where('source_part_request_id', $partRequest->id)
+            ->whereNull('cancelled_at')
+            ->whereNotIn('status', ['Ä°ptal', 'Iptal', 'Ã„Â°ptal'])
+            ->whereNotIn('workflow_status', ['Ä°ptal', 'Iptal', 'Ã„Â°ptal'])
+            ->latest('id')
+            ->first();
+    }
+
+    private function assignServiceVisitToCurrentTechnician(
+        TechnicalServicePartRequest $partRequest,
+        TechnicalServiceRequest $serviceVisit,
+        User $user,
+    ): TechnicalServiceRequest {
+        $parent = $partRequest->request()->with('technicianRecord')->first();
+        if (! $parent instanceof TechnicalServiceRequest || $parent->technical_service_technician_id === null) {
+            return $serviceVisit->refresh();
+        }
+
+        $metadata = is_array($serviceVisit->operation_control_payload) ? $serviceVisit->operation_control_payload : [];
+        $metadata['part_received_service_visit_assignment'] = [
+            'source_part_request_id' => $partRequest->id,
+            'parent_request_id' => $parent->id,
+            'assigned_from_parent_technician_id' => $parent->technical_service_technician_id,
+            'assigned_at' => now()->toISOString(),
+            'assigned_by_user_id' => $user->id,
+        ];
+
+        $serviceVisit->forceFill([
+            'technical_service_technician_id' => $parent->technical_service_technician_id,
+            'technician_name' => $parent->technicianRecord?->name ?: $parent->technician_name,
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => $serviceVisit->technician_approved_at ?? now(),
+            'scheduled_at' => null,
+            'scheduled_date' => null,
+            'scheduled_time' => null,
+            'field_status' => null,
+            'next_action' => 'Usta yeni randevu önerecek',
+            'status' => 'Atandı',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'operation_control_payload' => $metadata,
+            'updated_by_user_id' => $user->id,
+        ])->save();
+
+        if (! $serviceVisit->events()
+            ->where('event_type', 'part_received_service_visit_assigned')
+            ->exists()
+        ) {
+            $serviceVisit->events()->create([
+                'event_type' => 'part_received_service_visit_assigned',
+                'title' => 'Parça sonrası SRV ustaya açıldı',
+                'note' => 'Usta yeni randevu önerecek.',
+                'from_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+                'to_status' => 'Usta Onayı Bekleyen',
+                'author_user_id' => $user->id,
+                'metadata' => [
+                    'source_part_request_id' => $partRequest->id,
+                    'parent_request_id' => $parent->id,
+                    'technical_service_technician_id' => $parent->technical_service_technician_id,
+                ],
+            ]);
+        }
+
+        return $serviceVisit->refresh();
+    }
+
     public function hasOpenBlockingPartRequest(TechnicalServiceRequest $request): bool
     {
         return $request->partRequests()
@@ -240,6 +404,14 @@ class TechnicalServicePartRequestService
     public function serialize(TechnicalServicePartRequest $partRequest, bool $forPartner = false): array
     {
         $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
+        $paymentId = $metadata['payment_id'] ?? $metadata['customer_charge_payment_id'] ?? null;
+        $customerCharge = null;
+        if (! $forPartner && $paymentId !== null) {
+            $payment = TechnicalServiceMountPayment::query()->find((int) $paymentId);
+            if ($payment instanceof TechnicalServiceMountPayment) {
+                $customerCharge = $this->customerChargePayload($payment);
+            }
+        }
 
         return [
             'id' => $partRequest->id,
@@ -271,10 +443,121 @@ class TechnicalServicePartRequestService
             'total_amount' => $metadata['total_amount'] ?? null,
             'total_amount_label' => isset($metadata['total_amount']) ? $this->moneyLabel((float) $metadata['total_amount']) : null,
             'customer_message' => $forPartner ? null : ($metadata['customer_message'] ?? null),
+            'charge_status' => $customerCharge['status'] ?? $metadata['charge_status'] ?? null,
+            'payment_id' => $paymentId,
+            'payment_url' => $forPartner ? null : ($customerCharge['payment_url'] ?? $metadata['payment_url'] ?? null),
+            'customer_charge' => $customerCharge,
             'metadata' => $forPartner ? [] : $metadata,
             'created_at' => $partRequest->created_at?->toIso8601String(),
             'updated_at' => $partRequest->updated_at?->toIso8601String(),
         ];
+    }
+
+    private function createCustomerChargePayment(
+        TechnicalServicePartRequest $partRequest,
+        float $serviceAmount,
+        float $partAmount,
+        string $customerMessage,
+        ?User $user,
+    ): TechnicalServiceMountPayment {
+        $request = $partRequest->request()->with('parentRequest')->firstOrFail();
+        $sessionId = $this->mountSessionIdForRequest($request);
+        if ($sessionId === null) {
+            throw ValidationException::withMessages([
+                'payment' => 'Parça ödeme linki oluşturmak için talebe bağlı ödeme oturumu bulunamadı.',
+            ]);
+        }
+
+        $totalAmount = round($serviceAmount + $partAmount, 2);
+        $purpose = $serviceAmount > 0 && $partAmount > 0
+            ? 'service_and_part_payment'
+            : 'part_payment';
+
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $sessionId,
+            'technical_service_request_id' => $request->id,
+            'provider' => $this->paymentProviderManager->providerName(),
+            'provider_reference' => null,
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => $totalAmount,
+            'currency' => 'TRY',
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'provider_environment' => $this->paymentProviderManager->environment(),
+                'technical_service_request_id' => $request->id,
+                'root_request_id' => $request->parent_request_id ?: $request->id,
+                'mrn' => $request->mrn,
+                'service_code' => $request->service_code,
+                'purpose' => $purpose,
+                'charge_type' => $purpose,
+                'service_amount' => $serviceAmount,
+                'part_amount' => $partAmount,
+                'total_amount' => $totalAmount,
+                'part_request_id' => $partRequest->id,
+                'message_template' => $customerMessage,
+                'note' => 'Parça talebi #'.$partRequest->id,
+                'created_by_user_id' => $user?->id,
+            ],
+        ]);
+
+        try {
+            $this->paymentProviderManager->createPayment($payment);
+        } catch (Throwable $exception) {
+            $payment->delete();
+
+            throw ValidationException::withMessages([
+                'payment' => $exception->getMessage(),
+            ]);
+        }
+
+        return $payment->refresh();
+    }
+
+    private function mountSessionIdForRequest(TechnicalServiceRequest $request): ?int
+    {
+        if ($request->mount_session_id !== null) {
+            return (int) $request->mount_session_id;
+        }
+
+        $root = $this->rootRequest($request);
+
+        return $root->mount_session_id !== null ? (int) $root->mount_session_id : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function customerChargePayload(TechnicalServiceMountPayment $payment): array
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $serviceAmount = round((float) ($payload['service_amount'] ?? 0), 2);
+        $partAmount = round((float) ($payload['part_amount'] ?? 0), 2);
+        $totalAmount = round((float) $payment->amount, 2);
+
+        return [
+            'id' => $payment->id,
+            'status' => $payment->status,
+            'status_label' => $this->paymentStatusLabel($payment->status),
+            'service_amount' => $serviceAmount,
+            'service_amount_label' => $this->moneyLabel($serviceAmount),
+            'part_amount' => $partAmount,
+            'part_amount_label' => $this->moneyLabel($partAmount),
+            'total_amount' => $totalAmount,
+            'total_amount_label' => $this->moneyLabel($totalAmount),
+            'payment_url' => $payment->payment_url,
+        ];
+    }
+
+    private function paymentStatusLabel(?string $status): string
+    {
+        return match ($status) {
+            TechnicalServiceMountPayment::STATUS_PAID => 'Ödendi',
+            TechnicalServiceMountPayment::STATUS_FAILED => 'Ödeme başarısız',
+            TechnicalServiceMountPayment::STATUS_CANCELLED => 'İptal edildi',
+            TechnicalServiceMountPayment::STATUS_EXPIRED => 'Süresi doldu',
+            TechnicalServiceMountPayment::STATUS_PENDING => 'Ödeme bekliyor',
+            default => 'Ödeme bilgisi yok',
+        };
     }
 
     private function moneyLabel(float $amount): string

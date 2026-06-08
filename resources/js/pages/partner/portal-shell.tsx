@@ -70,9 +70,23 @@ type PartnerOrder = {
   items: OrderItem[]
 }
 
+type ServiceJobPhoto = {
+  id: number
+  label: string | null
+  category: string | null
+  field_code: string | null
+  preview_url?: string | null
+  review_status?: string | null
+  review_note?: string | null
+  created_at?: string | null
+}
+
 type ServiceJob = {
   id: number
   mrn: string
+  parent_request_id?: number | null
+  root_mrn?: string | null
+  service_code?: string | null
   status_label: string | null
   service_stage_label: string | null
   customer_name: string | null
@@ -101,8 +115,9 @@ type ServiceJob = {
   checklist_status: string | null
   checklist_payload: Record<string, boolean>
   photo_counts: { before: number, after: number, general: number }
-  photos: Array<{ id: number, label: string | null, category: string | null, field_code: string | null, preview_url?: string | null, review_status?: string | null, review_note?: string | null, created_at?: string | null }>
-  previous_photos?: Array<{ id: number, label: string | null, category: string | null, field_code: string | null, preview_url?: string | null, review_status?: string | null, review_note?: string | null, created_at?: string | null }>
+  photos: ServiceJobPhoto[]
+  current_field_documents?: Record<string, ServiceJobPhoto | null>
+  previous_photos?: ServiceJobPhoto[]
   latest_partner_action: { action: string, action_label?: string | null, status: string, status_label?: string | null, note: string | null, payload?: Record<string, unknown>, created_at: string | null } | null
   portal_actions: Array<{ id?: number, action: string, action_label?: string | null, status: string, status_label?: string | null, note: string | null, payload?: Record<string, unknown>, created_at: string | null }>
   appointment_proposal: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
@@ -201,6 +216,7 @@ type ServiceJob = {
   card_tone: 'blue' | 'green' | 'amber' | 'slate' | 'violet' | 'rose'
   kanban_column: 'new_jobs' | 'appointment_confirmed' | 'ops_review' | 'revisit' | 'final_check' | 'completed'
   service_visit_context?: {
+    parent_request_id?: number | null
     root_mrn?: string | null
     parent_mrn?: string | null
     service_code?: string | null
@@ -378,16 +394,20 @@ const numericAmount = (amount: number | string | null | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+const currentVisitEarning = (job: ServiceJob): NonNullable<ServiceJob['earning_breakdown']>['current_visit'] => {
+  return job.earning_breakdown?.current_visit ?? null
+}
+
 const jobEarningTotal = (job: ServiceJob): number => {
-  return numericAmount(job.earning_summary.total_amount ?? job.assignment_offer?.total_amount)
+  return numericAmount(currentVisitEarning(job)?.total_amount ?? job.assignment_offer?.total_amount ?? job.earning_summary.total_amount)
 }
 
 const jobEarningLabor = (job: ServiceJob): number => {
-  return numericAmount(job.earning_summary.labor_amount ?? job.assignment_offer?.labor_amount)
+  return numericAmount(currentVisitEarning(job)?.labor_amount ?? job.assignment_offer?.labor_amount ?? job.earning_summary.labor_amount)
 }
 
 const jobEarningRoute = (job: ServiceJob): number => {
-  return numericAmount(job.earning_summary.route_fee_amount ?? job.assignment_offer?.route_fee_amount)
+  return numericAmount(currentVisitEarning(job)?.route_fee_amount ?? job.assignment_offer?.route_fee_amount ?? job.earning_summary.route_fee_amount)
 }
 
 const hasRawCodeShape = (value: string): boolean => /^[a-z0-9_-]+$/i.test(value)
@@ -422,6 +442,12 @@ const statusLabel = (status: string | null | undefined, provided?: string | null
 }
 
 const jobEarningStatus = (job: ServiceJob): string => {
+  const currentVisit = currentVisitEarning(job)
+
+  if (currentVisit?.status_label) {
+    return currentVisit.status_label
+  }
+
   if (job.assignment_offer?.status) {
     return statusLabel(job.assignment_offer.status)
   }
@@ -1045,7 +1071,12 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
   })
 
   const updateJob = (job: ServiceJob) => {
-    setJobs((current) => current.map((item) => (item.id === job.id ? job : item)))
+    const parentRequestId = job.parent_request_id ?? job.service_visit_context?.parent_request_id ?? null
+    setJobs((current) => {
+      const withoutReplaced = current.filter((item) => item.id !== job.id && (parentRequestId === null || item.id !== parentRequestId))
+
+      return [...withoutReplaced, job]
+    })
     setSelectedJobId(job.id)
   }
 
@@ -1122,7 +1153,7 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                   <p className="mt-1 font-mono text-[11px] text-slate-500">{job.mrn}</p>
                   <div className="mt-2 rounded-lg border border-emerald-100 bg-white/80 px-2.5 py-2 text-xs text-emerald-900">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold">Hakediş</span>
+                      <span className="font-semibold">Bu ziyaret hakedişi</span>
                       <strong>{jobEarningTotal(job) > 0 ? money.format(jobEarningTotal(job)) : 'Gönderilmedi'}</strong>
                     </div>
                     <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-emerald-700">
@@ -1284,7 +1315,7 @@ function ServiceJobDetail({
       || (field === 'warranty_document_photo' && job.photo_counts.general > 0),
   }))
   const hasSelectedPhoto = Object.values(photoFiles).some((file) => file instanceof File)
-  const photoByField = (field: string) => job.photos.find((photo) => photo.field_code === field)
+  const photoByField = (field: string) => job.current_field_documents?.[field] ?? job.photos.find((photo) => photo.field_code === field)
   const appointmentSlotError = slotValidationMessage(appointmentSlots)
   const canAcceptAppointment = Boolean(job.can_accept)
   const canProposeAppointment = Boolean(job.can_propose_appointment ?? true)
@@ -1364,6 +1395,10 @@ function ServiceJobDetail({
 
       if (response.job) {
         onJobUpdated(response.job)
+
+        if (action.startsWith('part-requests/') && action.endsWith('/received') && response.job.can_propose_appointment) {
+          setActiveActionDialog('appointment')
+        }
       }
 
       onMessage(response.message ?? successMessage)
@@ -1435,24 +1470,12 @@ function ServiceJobDetail({
     setAppointmentSlots((current) => current.length <= 1 ? current : current.filter((_, slotIndex) => slotIndex !== index))
   }
 
-  const updatePhotoFile = (field: string, file: File | null) => {
-    setPhotoFiles((current) => ({ ...current, [field]: file }))
-    setPhotoPreviewUrls((current) => ({
-      ...current,
-      [field]: file && canPreviewPortalPhoto(file) ? URL.createObjectURL(file) : '',
-    }))
-    setPhotoPreviewErrors((current) => ({ ...current, [field]: false }))
-    setPhotoPickerField(field)
-  }
-
-  const submitPhotoUpload = async () => {
+  const uploadPhotoEntries = async (entries: Array<[string, File]>) => {
     if (readOnly) {
       onMessage('Önizleme modunda işlem yapılamaz.')
 
       return
     }
-
-    const entries = Object.entries(photoFiles).filter(([, file]) => file instanceof File)
 
     if (entries.length === 0) {
       onMessage('Yüklenecek fotoğraf seçin.')
@@ -1462,9 +1485,7 @@ function ServiceJobDetail({
 
     const formData = new FormData()
     entries.forEach(([field, file]) => {
-      if (file) {
-        formData.append(field, file)
-      }
+      formData.append(field, file)
     })
 
     setActionLoading('photos')
@@ -1477,13 +1498,24 @@ function ServiceJobDetail({
         credentials: 'same-origin',
         headers: {
           Accept: 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
           ...(token ? { 'X-CSRF-TOKEN': token } : {}),
         },
         body: formData,
       })
 
       if (!response.ok) {
-        throw new Error('Fotoğraf yüklenemedi.')
+        let message = 'Fotoğraf yüklenemedi.'
+
+        try {
+          const payload = await response.json() as { message?: string, errors?: Record<string, string[]> }
+          const firstError = payload.errors ? Object.values(payload.errors).flat()[0] : null
+          message = firstError || payload.message || message
+        } catch {
+          // Keep non-JSON error responses out of the portal UI.
+        }
+
+        throw new Error(message)
       }
 
       const payload = await response.json() as { job?: ServiceJob }
@@ -1495,12 +1527,32 @@ function ServiceJobDetail({
       setPhotoFiles({})
       setPhotoPreviewUrls({})
       setPhotoPickerField(null)
-      onMessage('Fotoğraflar yüklendi.')
+      onMessage(entries.length === 1 ? 'Fotoğraf yüklendi.' : 'Fotoğraflar yüklendi.')
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'Fotoğraf yüklenemedi.')
     } finally {
       setActionLoading(null)
     }
+  }
+
+  const updatePhotoFile = (field: string, file: File | null) => {
+    setPhotoFiles((current) => ({ ...current, [field]: file }))
+    setPhotoPreviewUrls((current) => ({
+      ...current,
+      [field]: file && canPreviewPortalPhoto(file) ? URL.createObjectURL(file) : '',
+    }))
+    setPhotoPreviewErrors((current) => ({ ...current, [field]: false }))
+    setPhotoPickerField(field)
+
+    if (file) {
+      void uploadPhotoEntries([[field, file]])
+    }
+  }
+
+  const submitPhotoUpload = async () => {
+    const entries = Object.entries(photoFiles).filter((entry): entry is [string, File] => entry[1] instanceof File)
+
+    await uploadPhotoEntries(entries)
   }
 
   return (
@@ -1733,6 +1785,7 @@ function ServiceJobDetail({
                     {showPicker && job.can_upload_photos ? (
                       <div className="grid min-w-0 max-w-full gap-2 text-xs font-semibold text-slate-600">
                         <span className="min-w-0 truncate">{uploadedPhoto ? 'Yeni belge seç' : 'Belge ekle'}</span>
+                        <p className="text-[11px] font-normal text-slate-500">Dosya seçildiğinde otomatik yüklenir.</p>
                         <div className="grid min-w-0 max-w-full grid-cols-2 gap-2">
                           <label className="inline-flex min-w-0 max-w-full cursor-pointer items-center justify-center rounded-xl border border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-800">
                             Fotoğraf çek
@@ -1770,7 +1823,7 @@ function ServiceJobDetail({
                   onClick={() => void submitPhotoUpload()}
                   className="w-full min-w-0 max-w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-3"
                 >
-                Fotoğrafları yükle
+                {actionLoading === 'photos' ? 'Fotoğraflar yükleniyor...' : 'Fotoğrafları yükle'}
               </button>
             ) : null}
             </div>

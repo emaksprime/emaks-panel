@@ -189,6 +189,7 @@ type ApiTechnicalServiceRequest = {
   location?: ServiceRequest['location']
   door_photos?: ServiceRequest['doorPhotos']
   field_completion_documents?: ServiceRequest['fieldCompletionDocuments']
+  previous_field_completion_documents?: ServiceRequest['previousFieldCompletionDocuments']
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
   earning_breakdown?: ServiceRequest['earningBreakdown']
@@ -865,6 +866,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     location: request.location ?? null,
     doorPhotos: request.door_photos ?? [],
     fieldCompletionDocuments: request.field_completion_documents ?? [],
+    previousFieldCompletionDocuments: request.previous_field_completion_documents ?? [],
     routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,

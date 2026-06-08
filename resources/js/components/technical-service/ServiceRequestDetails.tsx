@@ -1046,6 +1046,36 @@ const technicianApprovalState = (request: ServiceRequest, events: ServiceRequest
     }
   }
 
+  const approvalHaystack = JSON.stringify([
+    request.technicianApprovalStatus,
+    request.technicianConfirmationStatus,
+    request.operationalState?.action_label,
+    request.operationalState?.display_action_label,
+  ]).toLocaleLowerCase('tr-TR')
+  const technicianApproved = Boolean(request.technicianApprovedAt)
+    || approvalHaystack.includes('onay')
+    || approvalHaystack.includes('kabul')
+    || approvalHaystack.includes('accept')
+  const technicianRejected = approvalHaystack.includes('redd')
+    || approvalHaystack.includes('reject')
+    || approvalHaystack.includes('declin')
+
+  if (technicianRejected) {
+    return {
+      tone: 'border-rose-200 bg-rose-50 text-rose-950',
+      title: 'Usta işi reddetti',
+      detail: null,
+    }
+  }
+
+  if (technicianApproved) {
+    return {
+      tone: 'border-green-200 bg-green-50 text-green-950',
+      title: 'Usta işi kabul etti',
+      detail: null,
+    }
+  }
+
   const matchingEvent = [...events].reverse().find((event) => {
     const haystack = JSON.stringify([
       event.event_type,
@@ -1222,13 +1252,18 @@ export function ServiceRequestDetails({
   const activePartRequests = partRequests.filter((partRequest) => ['requested', 'ops_review', 'approved', 'ordered', 'sent', 'received', 'service_visit_required'].includes(partRequest.status))
   const visibleSections = request.visibleSections ?? null
   const warrantySectionVisible = visibleSections?.warranty === true
+  const warrantySectionMode = visibleSections?.warranty_mode ?? null
   const servicePartChargeSectionVisible = visibleSections?.service_part_charge === true
   const warrantyStatusText = String(warranty?.status ?? '')
   const warrantyIsActive = warrantyStatusText.includes('Aktif')
   const warrantyIsExpired = warrantyStatusText.includes('Bitti')
   const activeChargeablePartRequests = activePartRequests.filter((partRequest) => partRequest.charge_decision === 'chargeable')
   const canShowServicePartPaymentAction = servicePartChargeSectionVisible && !warrantyLoading && (!warrantyIsActive || activeChargeablePartRequests.length > 0)
-  const shouldRenderWarrantySection = warrantySectionVisible && (warrantyLoading || warranty || warrantyError)
+  const shouldRenderWarrantySection = warrantySectionVisible && (
+    warrantySectionMode === 'full'
+      ? (warrantyLoading || Boolean(warranty) || Boolean(warrantyError))
+      : (Boolean(warrantyError) || warrantyIsActive || warrantyIsExpired)
+  )
   const servicePartPaymentSummaryHint = servicePartChargeSectionVisible
     ? (canShowServicePartPaymentAction
         ? 'Garanti d\u0131\u015f\u0131 servis veya \u00fccretli par\u00e7a tahsilat\u0131 ayr\u0131 \u00f6deme linkiyle izlenir.'
@@ -1593,6 +1628,12 @@ export function ServiceRequestDetails({
     : canonicalPaymentRequiresPayment
       ? 'Montaj ödeme: Alınmadı'
       : `Montaj ödeme: ${mountPaymentStageLabel}`
+  const shouldRenderHeaderPaymentSummary = mountPaymentReceived
+    || canonicalPaymentRequiresPayment
+    || hasMultiProductRequest
+    || Boolean(saleAndPayment?.payment_reference)
+    || Boolean(saleAndPayment?.payment_provider)
+    || paymentPaidAtLabel !== '-'
   const mountPaymentDetailLabel = mountPaymentReceived
     ? 'Montaj ödemesi alındı'
     : canonicalPaymentRequiresPayment
@@ -1953,11 +1994,10 @@ export function ServiceRequestDetails({
 
     const serviceAmount = parseNumericInput(partDecisionServiceAmount) ?? 0
     const partAmount = parseNumericInput(partDecisionPartAmount) ?? 0
-    const totalAmount = roundTwo(serviceAmount + partAmount)
     const message = partDecisionMessage.trim()
 
-    if (partDecisionMode === 'chargeable' && totalAmount <= 0) {
-      setRouteFeeEditorMessage('Ücretli parça kararında servis veya parça bedeli girin.')
+    if (partDecisionMode === 'chargeable' && partAmount <= 0) {
+      setRouteFeeEditorMessage('Ücretli parça kararında parça bedeli 0 TL üzerinde olmalı.')
 
       return
     }
@@ -1968,33 +2008,24 @@ export function ServiceRequestDetails({
       return
     }
 
-    await onPartRequestTransition(selectedPartDecisionRequest.id, {
-      status: selectedPartDecisionRequest.status === 'requested' || selectedPartDecisionRequest.status === 'ops_review'
-        ? 'approved'
-        : selectedPartDecisionRequest.status,
-      note: partRequestNotes[String(selectedPartDecisionRequest.id)] ?? null,
-      partner_message: partDecisionMode === 'free' ? 'Parça ücretsiz / garanti kapsamında karşılanacak.' : message,
-      charge_decision: partDecisionMode,
-      service_amount: serviceAmount,
-      part_amount: partAmount,
-      customer_message: partDecisionMode === 'chargeable' ? message : null,
-    })
-
-    if (partDecisionMode === 'chargeable' && onExtraMountPaymentCreate) {
-      await onExtraMountPaymentCreate({
+    try {
+      await onPartRequestTransition(selectedPartDecisionRequest.id, {
+        status: selectedPartDecisionRequest.status === 'requested' || selectedPartDecisionRequest.status === 'ops_review'
+          ? 'approved'
+          : selectedPartDecisionRequest.status,
+        note: partRequestNotes[String(selectedPartDecisionRequest.id)] ?? null,
+        partner_message: partDecisionMode === 'free' ? 'Parça ücretsiz / garanti kapsamında karşılanacak.' : message,
+        charge_decision: partDecisionMode,
         service_amount: serviceAmount,
         part_amount: partAmount,
-        amount: totalAmount,
-        currency: 'TRY',
-        purpose: serviceAmount > 0 && partAmount > 0 ? 'service_and_part_payment' : partAmount > 0 ? 'part_payment' : 'service_payment',
-        reason: serviceAmount > 0 && partAmount > 0 ? 'service_and_part_payment' : partAmount > 0 ? 'part_payment' : 'service_payment',
-        note: `Parça talebi #${selectedPartDecisionRequest.id}`,
-        message_template: message,
+        customer_message: partDecisionMode === 'chargeable' ? message : null,
       })
-    }
 
-    closePartDecisionModal()
-    setRouteFeeEditorMessage(partDecisionMode === 'chargeable' ? 'Parça ödeme linki oluşturuldu.' : 'Parça ücretsiz olarak işaretlendi.')
+      closePartDecisionModal()
+      setRouteFeeEditorMessage(partDecisionMode === 'chargeable' ? 'Parça ödeme linki oluşturuldu.' : 'Parça ücretsiz olarak işaretlendi.')
+    } catch (caught) {
+      setRouteFeeEditorMessage(caught instanceof Error ? caught.message : 'Parça talebi kararı kaydedilemedi.')
+    }
   }
   const handleTechnicianEarningMessageCreate = async () => {
     if (!selectedTechnician || !onTechnicianEarningMessageCreate) {
@@ -2192,6 +2223,9 @@ export function ServiceRequestDetails({
             <textarea value={partDecisionMessage} onChange={(event) => setPartDecisionMessage(event.target.value)} className="min-h-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100" placeholder="Parça garanti kapsamında ücretsiz karşılanacak." />
           </label>
         )}
+        {routeFeeEditorMessage ? (
+          <p className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">{routeFeeEditorMessage}</p>
+        ) : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" variant="secondary" onClick={closePartDecisionModal}>Vazgeç</Button>
           <Button type="button" onClick={() => void handlePartDecisionSubmit()}>
@@ -2402,6 +2436,7 @@ export function ServiceRequestDetails({
     { field: 'warranty_document_photo', label: 'Garanti Belgesi' },
   ]
   const fieldCompletionDocuments = request.fieldCompletionDocuments ?? []
+  const previousFieldCompletionDocuments = request.previousFieldCompletionDocuments ?? []
   const fieldCompletionDocumentStatuses = fieldCompletionDocumentTypes.map((type) => {
     const document = fieldCompletionDocuments.find((item) => item.field_code === type.field)
 
@@ -2490,16 +2525,29 @@ export function ServiceRequestDetails({
 
   const scheduledDateLabel = request.scheduledDate
     ? formatTechnicalServiceDate(request.scheduledDate)
-    : dateTimeOrEmpty(request.scheduledAt, 'Randevu planlanmadı')
+    : dateTimeOrEmpty(request.scheduledAt, 'Randevu bekliyor')
   const scheduledTimeLabel = displayOrEmpty(request.scheduledTime || request.appointment, 'Saat planlanmadı')
   const closureApprovalLabel = displayOrEmpty(request.customerClosureApprovalStatus, 'Kapanış onayı yok')
-  const nextActionLabel = displayOrEmpty(request.nextAction, 'Sıradaki aksiyon tanımlı değil')
+  const canonicalActionLabel = request.operationalState?.action_label
+    ?? request.operationalState?.display_action_label
+    ?? request.displayActionLabel
+    ?? request.nextAction
+  const nextActionLabel = displayOrEmpty(canonicalActionLabel, 'Sıradaki aksiyon tanımlı değil')
   const nextActionPayload = request.nextActionPayload
-  const nextActionTitle = displayOrEmpty(nextActionPayload?.title, nextActionLabel)
-  const nextActionDescription = displayOrEmpty(nextActionPayload?.description, 'Operasyon akışı için sıradaki adım bekleniyor.')
+  const nextActionTitle = displayOrEmpty(canonicalActionLabel ?? nextActionPayload?.title, nextActionLabel)
+  const nextActionDescription = displayOrEmpty(
+    request.operationalState?.action_hint ?? nextActionPayload?.description,
+    'Operasyon akışı için sıradaki adım bekleniyor.',
+  )
   const isAssignedPartnerActionStage = isAssignedTechnicianStage(opsSectionContext)
-  const displayedNextActionTitle = isAssignedPartnerActionStage ? 'İş ustada' : nextActionTitle
-  const displayedNextActionDescription = isAssignedPartnerActionStage
+  const hasScheduledAppointment = Boolean(request.scheduledAt || request.scheduledDate)
+  const assignedStageNeedsAppointment = isAssignedPartnerActionStage && !hasScheduledAppointment
+  const displayedNextActionTitle = assignedStageNeedsAppointment
+    ? 'Usta randevu önerecek'
+    : isAssignedPartnerActionStage ? 'İş ustada' : nextActionTitle
+  const displayedNextActionDescription = assignedStageNeedsAppointment
+    ? 'Usta müşteriye uygun randevu zamanı önerecek.'
+    : isAssignedPartnerActionStage
     ? 'Usta fotoğrafları ve müşteri onayını tamamlayacak.'
     : nextActionDescription
   const displayedNextActionSeverity = isAssignedPartnerActionStage ? 'neutral' : nextActionPayload?.severity
@@ -2685,6 +2733,9 @@ export function ServiceRequestDetails({
       tone: request.scheduledAt || request.scheduledDate ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-700',
     },
   ]
+  const visibleCompactControlChips = assignedStageNeedsAppointment
+    ? compactControlChips.filter((chip) => ['Usta', 'Randevu'].includes(chip.label))
+    : compactControlChips
   const notesLabel = displayOrEmpty(request.notes, 'Talep notu girilmedi')
   const currentStatusLabel = statusDisplayLabel(request)
   const currentPriorityLabel = priorityDisplayLabel(request.priority)
@@ -2819,22 +2870,24 @@ export function ServiceRequestDetails({
             {hasMultiProductRequest ? <Badge variant="warning">Çoklu ürün talebi</Badge> : null}
             {routeFeeNeedsApproval ? <Badge variant="warning">Usta yol hakedişi gönderilmeli</Badge> : null}
           </div>
-          <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-3 text-sm sm:grid-cols-3">
-            <div>
-              <p className="text-[13px] font-medium text-slate-500">Montaj ödeme durumu</p>
-              <p className="mt-1 font-semibold text-slate-950">{mountPaymentHeaderLabel}</p>
+          {shouldRenderHeaderPaymentSummary ? (
+            <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-3 text-sm sm:grid-cols-3">
+              <div>
+                <p className="text-[13px] font-medium text-slate-500">Montaj ödeme durumu</p>
+                <p className="mt-1 font-semibold text-slate-950">{mountPaymentHeaderLabel}</p>
+              </div>
+              <div>
+                <p className="text-[13px] font-medium text-slate-500">Ödeme tutarı</p>
+                <p className="mt-1 font-semibold text-slate-950">{mountPaymentAmountLabel}</p>
+              </div>
+              <div>
+                <p className="text-[13px] font-medium text-slate-500">Çoklu ürün</p>
+                <p className="mt-1 font-semibold text-slate-950">
+                  {hasMultiProductRequest ? mountPaymentReceived ? 'Çoklu ürün ödemesi takipte' : canonicalPaymentRequiresPayment ? 'Ödeme operasyon tarafından netleştirilecek' : mountPaymentStageLabel : 'Yok'}
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="text-[13px] font-medium text-slate-500">Ödeme tutarı</p>
-              <p className="mt-1 font-semibold text-slate-950">{mountPaymentAmountLabel}</p>
-            </div>
-            <div>
-              <p className="text-[13px] font-medium text-slate-500">Çoklu ürün</p>
-              <p className="mt-1 font-semibold text-slate-950">
-                {hasMultiProductRequest ? mountPaymentReceived ? 'Çoklu ürün ödemesi takipte' : canonicalPaymentRequiresPayment ? 'Ödeme operasyon tarafından netleştirilecek' : mountPaymentStageLabel : 'Yok'}
-              </p>
-            </div>
-          </div>
+          ) : null}
           {priorityUpdateError ? (
             <p className="mt-2 text-xs font-medium text-rose-700">{priorityUpdateError}</p>
           ) : null}
@@ -2949,7 +3002,7 @@ export function ServiceRequestDetails({
             </p>
           ) : null}
           <div className="mt-4 flex flex-wrap gap-2">
-            {compactControlChips.map((chip) => (
+            {visibleCompactControlChips.map((chip) => (
               <span key={chip.label} className={['inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold', chip.tone].join(' ')}>
                 <span className="opacity-70">{chip.label}:</span>
                 <span>{chip.value}</span>
@@ -3541,7 +3594,18 @@ export function ServiceRequestDetails({
                         <div className="rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-900">
                           <p className="font-semibold">{partRequest.charge_decision_label}</p>
                           {partRequest.charge_decision === 'chargeable' ? (
-                            <p className="mt-1">Servis: {partRequest.service_amount_label ?? formatMoneyValue(partRequest.service_amount ?? 0)} · Parça: {partRequest.part_amount_label ?? formatMoneyValue(partRequest.part_amount ?? 0)} · Toplam: {partRequest.total_amount_label ?? formatMoneyValue(partRequest.total_amount ?? 0)}</p>
+                            <div className="mt-1 grid gap-1">
+                              <p>Servis: {partRequest.service_amount_label ?? formatMoneyValue(partRequest.service_amount ?? 0)} · Parça: {partRequest.part_amount_label ?? formatMoneyValue(partRequest.part_amount ?? 0)} · Toplam: {partRequest.total_amount_label ?? formatMoneyValue(partRequest.total_amount ?? 0)}</p>
+                              {partRequest.customer_charge?.status_label ? (
+                                <p>Ödeme: {partRequest.customer_charge.status_label}</p>
+                              ) : null}
+                              {partRequest.payment_url ? (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <a href={partRequest.payment_url} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
+                                  <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(partRequest.payment_url ?? '')}>Linki kopyala</Button>
+                                </div>
+                              ) : null}
+                            </div>
                           ) : null}
                         </div>
                       ) : null}
@@ -4584,6 +4648,36 @@ export function ServiceRequestDetails({
                 </div>
               ))}
             </div>
+            {previousFieldCompletionDocuments.length > 0 ? (
+              <details className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+                  Önceki ziyaret belgeleri ({previousFieldCompletionDocuments.length})
+                </summary>
+                <div className="mt-3 grid gap-2 md:grid-cols-3">
+                  {previousFieldCompletionDocuments.map((document) => (
+                    <div key={String(document.id ?? `${document.field_code}-${document.created_at ?? document.original_name}`)} className="rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{displayOrEmpty(document.label, 'Belge')}</p>
+                          <p className="mt-1 text-[11px] font-semibold text-slate-500">{dateTimeOrEmpty(document.created_at, 'Tarih yok')}</p>
+                        </div>
+                        <Badge variant="outline">Eski</Badge>
+                      </div>
+                      {document.preview_url ? (
+                        <a href={document.preview_url} target="_blank" rel="noreferrer" className="mt-3 block overflow-hidden rounded-lg border border-slate-200">
+                          <img src={document.preview_url} alt={displayOrEmpty(document.label, 'Belge')} className="h-28 w-full object-cover" />
+                          <span className="block px-3 py-2 text-xs font-semibold text-blue-700">Belgeyi aç</span>
+                        </a>
+                      ) : document.url ? (
+                        <a href={document.url} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900">
+                          Belgeyi aç
+                        </a>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
             {fieldDocumentReviewError ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
                 {fieldDocumentReviewError}

@@ -54,7 +54,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
             if (! is_string($scheduledDate) || $scheduledDate === '' || ! is_string($scheduledTime) || $scheduledTime === '') {
                 throw ValidationException::withMessages([
-                    'scheduled_date' => 'Onay iÃ§in randevu tarihi ve saati gereklidir.',
+                    'scheduled_date' => 'Onay için randevu tarihi ve saati gereklidir.',
                 ]);
             }
 
@@ -168,8 +168,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ? 'partner_appointment_rejected'
                 : 'partner_appointment_revision_requested',
             'title' => $status === TechnicalServicePartnerJobAction::STATUS_REJECTED
-                ? 'Partner portal randevu Ã¶nerisi reddedildi'
-                : 'Partner portal randevu Ã¶nerisi revize istendi',
+                ? 'Partner portal randevu önerisi reddedildi'
+                : 'Partner portal randevu önerisi revize istendi',
             'note' => $validated['note'],
             'from_status' => $technicalServiceRequest->workflow_status,
             'to_status' => $technicalServiceRequest->workflow_status,
@@ -433,7 +433,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         $technicalServiceRequest->events()->create([
             'event_type' => 'assignment_offer_revised',
-            'title' => 'Usta hakediÅŸ bilgisi revize edildi',
+            'title' => 'Usta hakediş bilgisi revize edildi',
             'note' => $validated['note'] ?? null,
             'from_status' => $technicalServiceRequest->workflow_status,
             'to_status' => $technicalServiceRequest->workflow_status,
@@ -590,14 +590,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
      */
     private function completionApprovalBlockers(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $completionAction = null): array
     {
-        $documents = $request->uploads()
-            ->whereIn('category', [
-                TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
-                TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
-            ])
-            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
-            ->get()
-            ->groupBy('field_code');
+        $documents = $this->currentFieldCompletionDocuments($request);
         $labels = [
             'before_photo' => 'Öncesi fotoğrafı',
             'after_photo' => 'Sonrası fotoğrafı',
@@ -606,20 +599,20 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         $blockers = [];
 
         foreach ($labels as $field => $label) {
-            $fieldDocuments = $documents->get($field, collect());
-            if ($fieldDocuments->isEmpty()) {
+            $fieldDocument = $documents->get($field);
+            if (! $fieldDocument instanceof TechnicalServiceRequestUpload) {
                 $blockers[] = $label.' eksik.';
 
                 continue;
             }
 
-            if ($fieldDocuments->contains(fn (TechnicalServiceRequestUpload $upload): bool => $upload->review_status === 'rejected')) {
+            if ($fieldDocument->review_status === 'rejected') {
                 $blockers[] = $label.' uygun değil.';
 
                 continue;
             }
 
-            if (! $fieldDocuments->contains(fn (TechnicalServiceRequestUpload $upload): bool => $upload->review_status === 'accepted')) {
+            if ($fieldDocument->review_status !== 'accepted') {
                 $blockers[] = $label.' uygunluk kararı bekliyor.';
             }
         }
@@ -633,6 +626,41 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         }
 
         return $blockers;
+    }
+
+    /**
+     * @return \Illuminate\Support\Collection<string, TechnicalServiceRequestUpload>
+     */
+    private function currentFieldCompletionDocuments(TechnicalServiceRequest $request): \Illuminate\Support\Collection
+    {
+        return $request->uploads()
+            ->whereIn('category', [
+                TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT,
+                TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO,
+            ])
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->get()
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => ! $this->recordPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
+            ->sort(function (TechnicalServiceRequestUpload $left, TechnicalServiceRequestUpload $right): int {
+                $createdAtCompare = ($right->created_at?->getTimestamp() ?? 0) <=> ($left->created_at?->getTimestamp() ?? 0);
+
+                if ($createdAtCompare !== 0) {
+                    return $createdAtCompare;
+                }
+
+                return ((int) $right->id) <=> ((int) $left->id);
+            })
+            ->unique(fn (TechnicalServiceRequestUpload $upload): string => (string) $upload->field_code)
+            ->mapWithKeys(fn (TechnicalServiceRequestUpload $upload): array => [
+                (string) $upload->field_code => $upload,
+            ]);
+    }
+
+    private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
+    {
+        return $request->reopened_at instanceof \Carbon\CarbonInterface
+            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt->lessThanOrEqualTo($request->reopened_at);
     }
 
     private function hasBackendCompletionChecklist(TechnicalServiceRequest $request, ?TechnicalServicePartnerJobAction $completionAction): bool
@@ -665,7 +693,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
         ], true)) {
             throw ValidationException::withMessages([
-                'partner_job_action' => 'Bu kayÄ±t randevu Ã¶nerisi deÄŸildir.',
+                'partner_job_action' => 'Bu kayıt randevu önerisi değildir.',
             ]);
         }
     }
@@ -777,11 +805,11 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     private function slotText(string $slot, array $proposal): string
     {
         return match ($slot) {
-            'morning' => 'Ã¶ÄŸleden Ã¶nce',
-            'afternoon' => 'Ã¶ÄŸleden sonra',
-            'full_day' => 'gÃ¼n iÃ§inde',
-            'custom' => trim(($proposal['proposed_time_start'] ?? '').' - '.($proposal['proposed_time_end'] ?? '')) ?: 'Ã¶zel saat',
-            default => 'gÃ¼n iÃ§inde',
+            'morning' => 'öğleden önce',
+            'afternoon' => 'öğleden sonra',
+            'full_day' => 'gün içinde',
+            'custom' => trim(($proposal['proposed_time_start'] ?? '').' - '.($proposal['proposed_time_end'] ?? '')) ?: 'özel saat',
+            default => 'gün içinde',
         };
     }
 

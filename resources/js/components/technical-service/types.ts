@@ -32,6 +32,11 @@ export type ServiceRequest = {
   technician: string
   technicianId?: string | null
   technicianPhone?: string | null
+  technicianApprovalStatus?: string | null
+  technicianApprovedAt?: string | null
+  technicianRevisionRequestedAt?: string | null
+  technicianRevisionNote?: string | null
+  technicianConfirmationStatus?: string | null
   appointment: string
   status: ServiceStatus
   workflowStatus?: string | null
@@ -58,6 +63,7 @@ export type ServiceRequest = {
   location?: ServiceRequestLocation | null
   doorPhotos?: ServiceRequestDoorPhoto[]
   fieldCompletionDocuments?: ServiceRequestFieldCompletionDocument[]
+  previousFieldCompletionDocuments?: ServiceRequestFieldCompletionDocument[]
   routeFeeConfig?: ServiceRequestRouteFeeConfig | null
   routeQuote?: ServiceRequestRouteQuote | null
   nextActionPayload?: ServiceRequestNextAction | null
@@ -269,6 +275,21 @@ export type ServiceRequestPartRequest = {
   total_amount?: number | null
   total_amount_label?: string | null
   customer_message?: string | null
+  charge_status?: string | null
+  payment_id?: number | string | null
+  payment_url?: string | null
+  customer_charge?: {
+    id?: number | string | null
+    status?: string | null
+    status_label?: string | null
+    service_amount?: number | null
+    service_amount_label?: string | null
+    part_amount?: number | null
+    part_amount_label?: string | null
+    total_amount?: number | null
+    total_amount_label?: string | null
+    payment_url?: string | null
+  } | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -548,6 +569,7 @@ export type ServiceRequestFieldCompletionDocument = ServiceRequestDoorPhoto & {
   label?: string | null
   review_status?: string | null
   review_note?: string | null
+  created_at?: string | null
   reviewed_at?: string | null
 }
 

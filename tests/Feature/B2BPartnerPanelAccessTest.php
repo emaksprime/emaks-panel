@@ -23,8 +23,11 @@ use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
@@ -2912,6 +2915,9 @@ class B2BPartnerPanelAccessTest extends TestCase
         $plannedJob = $this->serviceRequestForTechnician($field, 'MRN-KANBAN-PLANLI', [
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
         ]);
         $this->serviceRequestForTechnician($field, 'MRN-KANBAN-REVISIT', [
             'workflow_status' => 'Beklemede',
@@ -3757,34 +3763,30 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('job.can_receive_part', true);
 
-        $this->actingAs($portalUser)
+        $receiveResponse = $this->actingAs($portalUser)
             ->postJson("/api/partner/service-jobs/{$job->id}/part-requests/{$partRequest->id}/received")
             ->assertOk()
-            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_RECEIVED)
-            ->assertJsonPath('job.can_receive_part', false);
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED)
+            ->assertJsonPath('parent_job.can_receive_part', false)
+            ->assertJsonPath('job.can_receive_part', false)
+            ->assertJsonPath('job.can_propose_appointment', true)
+            ->assertJsonPath('job.parent_request_id', $job->id)
+            ->assertJsonPath('job.kanban_column', 'new_jobs');
 
-        $this->actingAs($admin)
-            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
-                'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
-                'note' => 'Parça sonrası servis gerekiyor.',
-            ])
-            ->assertOk()
-            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED);
-
-        $createSrvResponse = $this->actingAs($admin)
-            ->postJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}/service-visit", [
-                'reason' => 'spare_part',
-            ])
-            ->assertCreated()
-            ->assertJsonPath('request.active_part_request.status', null);
-
-        $childId = $createSrvResponse->json('child_request.id');
+        $childId = $receiveResponse->json('job.id');
         $child = TechnicalServiceRequest::query()->findOrFail($childId);
         $this->assertSame($job->id, $child->parent_request_id);
         $this->assertSame($job->mrn, $child->root_mrn);
         $this->assertSame('SRV-ACTION-PART-001', $child->service_code);
         $this->assertSame('SRV-ACTION-PART-001', $child->mrn);
         $this->assertSame('Servis', $child->service_type);
+        $this->assertSame($technician->id, (int) $child->technical_service_technician_id);
+        $this->assertNotNull($child->technician_approved_at);
+        $this->assertNull($child->scheduled_at);
+        $this->assertNull($child->scheduled_date);
+        $this->assertNull($child->scheduled_time);
+        $this->assertSame(0, $child->uploads()->count());
+        $this->assertSame(0, $child->customerConfirmations()->count());
         $this->assertSame('SN-PART-001', $child->serial_number);
         $this->assertDatabaseHas('technical_service_request_serials', [
             'technical_service_request_id' => $child->id,
@@ -3798,35 +3800,409 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
 
         $this->actingAs($portalUser)
-            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->getJson("/api/partner/service-jobs/{$job->id}?partner_id={$partner->id}")
             ->assertForbidden();
 
-        $this->actingAs($admin)
-            ->patchJson("/api/technical-service/requests/{$child->id}/technician", [
-                'technical_service_technician_id' => $technician->id,
-                'note' => 'SRV aynı ustaya atandı.',
-            ])
+        $childResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}");
+        $this->assertSame(200, $childResponse->status(), $childResponse->content());
+        $childResponse
+            ->assertJsonPath('job.mrn', $child->mrn)
+            ->assertJsonPath('job.next_action', 'Usta randevu önerecek')
+            ->assertJsonPath('job.can_propose_appointment', true)
+            ->assertJsonPath('job.can_upload_photos', false)
+            ->assertJsonPath('job.can_submit_completion', false);
+        $this->assertNotContains('Fotoğraf bekliyor', $childResponse->json('job.badges'));
+        $this->assertNotContains('Fotoğraf eksik', $childResponse->json('job.badges'));
+
+        $duplicateReceiveResponse = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/part-requests/{$partRequest->id}/received")
             ->assertOk()
-            ->assertJsonPath('request.kanban_column', 'assignment_pending');
+            ->assertJsonPath('job.id', $child->id);
+
+        $this->assertSame($child->id, $duplicateReceiveResponse->json('job.id'));
+        $this->assertSame(1, TechnicalServiceRequest::query()
+            ->where('source_part_request_id', $partRequest->id)
+            ->count());
+
+        $opsPayload = $this->actingAs($admin)
+            ->getJson('/api/technical-service/requests?limit=200')
+            ->assertOk()
+            ->json('items');
+        $this->assertNotContains($job->id, collect($opsPayload)->pluck('id')->all());
+        $this->assertContains($child->id, collect($opsPayload)->pluck('id')->all());
+
+        $childState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
+        $this->assertSame('assigned', $childState['ops_column']);
+        $this->assertSame('Usta randevu önerecek', $childState['display_action_label']);
+        $this->assertFalse($childState['is_field_docs_required']);
+        $this->assertFalse($childState['is_customer_approval_required']);
+        $this->assertTrue($childState['requires_technician_action']);
+
+        $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$child->id}")
+            ->assertOk()
+            ->assertJsonPath('request.display_action_label', 'Usta randevu önerecek')
+            ->assertJsonPath('request.operational_state.action_label', 'Usta randevu önerecek')
+            ->assertJsonPath('request.next_action_payload.title', 'Usta randevu önerecek');
+    }
+
+    public function test_technical_service_full_locksmith_part_return_journey(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        Storage::fake('public');
+        config([
+            'services.evolution.real_send_enabled' => false,
+            'services.evolution.test_mode' => true,
+            'services.evolution.test_phone' => '905467647428',
+        ]);
+        Http::fake();
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'E2E Flow Locksmith',
+        ]);
+        $otherPartner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'E2E Flow Other Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'E2E Flow Usta']);
+        $otherTechnician = $this->technician(['name' => 'E2E Other Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-E2E-FLOW-PART-RETURN', [
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+            'technician_approval_status' => null,
+            'technician_approved_at' => null,
+            'scheduled_at' => null,
+            'scheduled_date' => null,
+            'scheduled_time' => null,
+            'customer_name' => 'E2E Flow Müşteri',
+            'customer_phone' => '+905550010101',
+            'service_address' => 'E2E Flow test adresi',
+            'product_name' => 'E2E Test Kilit',
+            'product_model' => 'E2E-LOCK',
+            'brand' => 'Emaks Prime',
+            'serial_number' => 'E2E-FLOW-SERIAL-001',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+            'operation_control_checked_at' => now(),
+            'operation_control_checked_by_user_id' => $admin->id,
+        ]);
+        $job->requestSerials()->create([
+            'mrn' => $job->mrn,
+            'serial_number' => 'E2E-FLOW-SERIAL-001',
+            'product_name' => 'E2E Test Kilit',
+            'product_model' => 'E2E-LOCK',
+            'brand' => 'Emaks Prime',
+            'customer_selected' => true,
+            'customer_visible' => true,
+            'customer_selectable' => true,
+            'is_primary' => true,
+        ]);
+        $session = $this->mountSessionForServiceRequest($job);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $job->id,
+            'provider' => 'fake',
+            'provider_reference' => 'E2E-FLOW-MOUNT',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'payment_url' => 'http://127.0.0.1:8000/mount-payment/e2e-flow-mount',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'mount_payment'],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$otherPartner->id}/provision-admin-user")
+            ->assertCreated();
+        $otherPortalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $otherPartner->id))
+            ->firstOrFail();
 
         $this->actingAs($portalUser)
-            ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$partner->id}")
+            ->postJson("/api/partner/service-jobs/{$job->id}/accept-appointment", ['note' => 'İş kabul edildi.'])
             ->assertOk()
-            ->assertJsonPath('job.mrn', $child->mrn);
+            ->assertJsonPath('job.next_action', 'Usta randevu önerecek')
+            ->assertJsonPath('job.can_propose_appointment', true)
+            ->assertJsonPath('job.can_upload_photos', false);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']],
+                'note' => 'Müşteri yarın uygundur.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->assertJsonPath('job.next_action', 'Randevu önerildi');
+        $firstAppointmentAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED)
+            ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-appointment-proposals/{$firstAppointmentAction->id}/approve", [
+                'note' => 'İlk randevu onaylandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('request.kanban_column', 'assigned');
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/support-request", [
+                'type' => 'spare_part',
+                'description' => 'Montaj sırasında panel parçası eksik çıktı.',
+                'product_name' => 'Panel',
+                'quantity' => 1,
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'ops_review')
+            ->assertJsonPath('job.next_action', 'Parça talebi operasyon incelemesinde');
+        $partRequest = TechnicalServicePartRequest::query()
+            ->where('technical_service_request_id', $job->id)
+            ->firstOrFail();
+
+        $chargeableResponse = $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'charge_decision' => 'chargeable',
+                'service_amount' => 1000,
+                'part_amount' => 750,
+                'customer_message' => 'Parça ve servis bedeli için ödeme linki.',
+                'partner_message' => 'Parça talebiniz onaylandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('part_request.charge_decision', 'chargeable')
+            ->assertJsonPath('customer_charge.total_amount', 1750)
+            ->assertJsonPath('payment_summary.mount.amount', 3500);
+        $customerCharge = TechnicalServiceMountPayment::query()
+            ->where('raw_payload->part_request_id', $partRequest->id)
+            ->firstOrFail();
+        $this->assertNotEmpty($chargeableResponse->json('customer_charge.payment_url'));
+        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)
+            ->markPaid($customerCharge, ['fake_approved' => true]);
+
+        $paidSummary = app(\App\Services\TechnicalService\TechnicalServiceWorkflowService::class)
+            ->serialize($job->refresh(), true)['sale_and_payment']['payment_summary'];
+        $this->assertSame(3500.0, (float) $paidSummary['mount']['amount']);
+        $this->assertSame(1000.0, (float) $paidSummary['service']['amount']);
+        $this->assertSame(750.0, (float) $paidSummary['part']['amount']);
+        $this->assertSame(5250.0, (float) $paidSummary['total_customer_collection']);
+
+        foreach ([TechnicalServicePartRequest::STATUS_ORDERED, TechnicalServicePartRequest::STATUS_SENT] as $status) {
+            $payload = ['status' => $status, 'note' => 'Parça akışı güncellendi.'];
+            if ($status === TechnicalServicePartRequest::STATUS_SENT) {
+                $payload['tracking_no'] = 'E2E-TRACK-001';
+                $payload['shipment_provider'] = 'Test Kargo';
+            }
+
+            $this->actingAs($admin)
+                ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", $payload)
+                ->assertOk()
+                ->assertJsonPath('part_request.status', $status);
+        }
+
+        $receiveResponse = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/part-requests/{$partRequest->id}/received")
+            ->assertOk()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED)
+            ->assertJsonPath('job.next_action', 'Usta randevu önerecek')
+            ->assertJsonPath('job.can_propose_appointment', true)
+            ->assertJsonPath('job.can_upload_photos', false)
+            ->assertJsonPath('job.can_submit_completion', false);
+        $childId = (int) $receiveResponse->json('job.id');
+        $child = TechnicalServiceRequest::query()->findOrFail($childId);
+        $this->assertSame($job->id, (int) $child->parent_request_id);
+        $this->assertSame($technician->id, (int) $child->technical_service_technician_id);
+        $this->assertNull($child->scheduled_at);
+        $this->assertNull($child->customer_closure_approval_status);
+        $this->assertSame(0, $child->uploads()->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])->count());
+
+        $childOpsState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
+        $this->assertSame('assigned', $childOpsState['ops_column']);
+        $this->assertSame('Usta randevu önerecek', $childOpsState['display_action_label']);
+        $this->assertFalse($childOpsState['is_field_docs_required']);
+        $this->assertFalse($childOpsState['is_customer_approval_required']);
+
+        $board = app(\App\Services\B2B\B2BPartnerPortalDataService::class)->serviceJobBoardFor($partner);
+        $activeMrns = collect($board['columns'])
+            ->flatMap(fn (array $column): array => $column['jobs'] ?? [])
+            ->pluck('mrn')
+            ->all();
+        $this->assertContains($child->mrn, $activeMrns);
+        $this->assertNotContains($job->mrn, $activeMrns);
+        $this->actingAs($otherPortalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}")
+            ->assertForbidden();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$child->id}/appointment-proposal", [
+                'slots' => [['date' => now()->addDays(2)->toDateString(), 'slot' => '14:00-15:00']],
+                'note' => 'Parça sonrası randevu önerildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+        $childAppointmentAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $child->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED)
+            ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$child->id}/partner-appointment-proposals/{$childAppointmentAction->id}/approve", [
+                'note' => 'Parça sonrası randevu onaylandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('request.kanban_column', 'assigned');
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$child->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 1)
+            ->assertJsonPath('job.completion_requirements.photos_ready', false);
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$child->id}/photos", [
+                'after_photo' => UploadedFile::fake()->create('after.png', 256, 'image/png'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 2)
+            ->assertJsonPath('job.completion_requirements.photos_ready', false);
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$child->id}/photos", [
+                'warranty_document_photo' => UploadedFile::fake()->create('warranty.HEIC', 256, 'image/heic'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$child->id}/customer-otp-request", [
+                'note' => 'Müşteri onayı istendi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false);
+        $confirmation = TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $child->id)
+            ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
+            ->latest('id')
+            ->firstOrFail();
+        $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
+            'customer_note' => 'Servis onaylandı.',
+        ])->assertOk();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}")
+            ->assertOk()
+            ->assertJsonPath('job.next_action', 'Tamamlamaya gönderilebilir')
+            ->assertJsonPath('job.can_submit_completion', true)
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', true);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$child->id}/submit-completion", [
+                'result' => 'completed',
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'final_check')
+            ->assertJsonPath('job.next_action', 'Son kontrol bekliyor');
+        $completionAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $child->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
+            ->firstOrFail();
+
+        foreach ($child->uploads()->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])->get() as $upload) {
+            $this->actingAs($admin)
+                ->patchJson("/api/technical-service/requests/{$child->id}/field-documents/{$upload->id}/review", [
+                    'status' => 'accepted',
+                    'note' => 'Belge uygun.',
+                ])
+                ->assertOk();
+        }
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$child->id}/partner-completions/{$completionAction->id}/approve", [
+                'note' => 'SRV son kontrol tamamlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı')
+            ->assertJsonPath('request.kanban_column', 'completed');
+
+        $child->refresh();
+        $job->refresh();
+        $this->assertNotNull($child->completed_at);
+        $this->assertSame('Tamamlandı', $child->workflow_status);
+        $this->assertSame('Tamamlandı', $job->workflow_status);
+        $this->assertSame('SRV ile tamamlandı', $job->next_action);
+        $this->assertSame(0, TechnicalServiceEarning::query()
+            ->where('technical_service_request_id', $job->id)
+            ->count());
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}")
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'completed');
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertForbidden();
+
+        $this->actingAs($otherPortalUser)
+            ->getJson("/api/partner/service-jobs/{$child->id}")
+            ->assertForbidden();
     }
 
     public function test_spare_part_request_decision_supports_free_and_chargeable_amounts(): void
     {
         $admin = $this->userWithRole('admin', true);
         $technician = $this->technician(['name' => 'Part Decision Usta']);
-        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-DECISION');
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-DECISION', [
+            'serial_number' => 'SN-PART-DECISION',
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_label' => 'Form payment paid',
+        ]);
+        $session = $this->mountSessionForServiceRequest($job);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $job->id,
+            'provider' => 'fake',
+            'provider_reference' => 'MOUNT-PART-DECISION',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'payment_url' => 'http://127.0.0.1:8000/mount-payment/mount-part-decision',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'mount_payment',
+                'technical_service_request_id' => $job->id,
+            ],
+        ]);
+
         $freeRequest = TechnicalServicePartRequest::query()->create([
             'technical_service_request_id' => $job->id,
             'root_request_id' => $job->id,
             'requested_by_user_id' => $admin->id,
             'requested_by_technician_id' => $technician->id,
             'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
-            'part_name' => 'Garanti parçası',
+            'part_name' => 'Warranty part',
             'quantity' => 1,
         ]);
         $chargeableRequest = TechnicalServicePartRequest::query()->create([
@@ -3835,7 +4211,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'requested_by_user_id' => $admin->id,
             'requested_by_technician_id' => $technician->id,
             'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
-            'part_name' => 'Ücretli parça',
+            'part_name' => 'Chargeable part',
             'quantity' => 1,
         ]);
 
@@ -3843,30 +4219,105 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$freeRequest->id}", [
                 'status' => TechnicalServicePartRequest::STATUS_APPROVED,
                 'charge_decision' => 'free',
-                'note' => 'Garanti kapsamında.',
-                'partner_message' => 'Parça ücretsiz karşılanacak.',
+                'note' => 'Covered by warranty.',
+                'partner_message' => 'Part will be covered free of charge.',
             ])
             ->assertOk()
             ->assertJsonPath('part_request.charge_decision', 'free')
-            ->assertJsonPath('part_request.total_amount', 0);
+            ->assertJsonPath('part_request.total_amount', 0)
+            ->assertJsonPath('part_request.payment_url', null)
+            ->assertJsonPath('customer_charge', null)
+            ->assertJsonPath('payment_summary.mount.amount', 3500)
+            ->assertJsonPath('payment_summary.total_customer_collection', 3500);
 
-        $this->actingAs($admin)
+        $this->assertSame(0, TechnicalServiceMountPayment::query()
+            ->where('raw_payload->source', 'operation_customer_charge')
+            ->count());
+
+        $chargeableResponse = $this->actingAs($admin)
             ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$chargeableRequest->id}", [
                 'status' => TechnicalServicePartRequest::STATUS_APPROVED,
                 'charge_decision' => 'chargeable',
                 'service_amount' => 1000,
                 'part_amount' => 750,
-                'customer_message' => 'Servis ve parça bedeli müşteriden tahsil edilecek.',
+                'customer_message' => 'Service and part fee will be collected from the customer.',
             ])
             ->assertOk()
             ->assertJsonPath('part_request.charge_decision', 'chargeable')
             ->assertJsonPath('part_request.service_amount', 1000)
             ->assertJsonPath('part_request.part_amount', 750)
             ->assertJsonPath('part_request.total_amount', 1750)
-            ->assertJsonPath('part_request.customer_message', 'Servis ve parça bedeli müşteriden tahsil edilecek.');
+            ->assertJsonPath('part_request.customer_message', 'Service and part fee will be collected from the customer.')
+            ->assertJsonPath('customer_charge.status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->assertJsonPath('customer_charge.service_amount', 1000)
+            ->assertJsonPath('customer_charge.part_amount', 750)
+            ->assertJsonPath('customer_charge.total_amount', 1750);
+
+        $paymentUrl = $chargeableResponse->json('customer_charge.payment_url');
+        $this->assertNotEmpty($paymentUrl);
+        $this->assertSame(1, TechnicalServiceMountPayment::query()
+            ->where('raw_payload->source', 'operation_customer_charge')
+            ->count());
+        $this->assertSame(2, TechnicalServiceMountPayment::query()->count());
 
         $this->assertSame('free', $freeRequest->refresh()->metadata['charge_decision'] ?? null);
         $this->assertSame('chargeable', $chargeableRequest->refresh()->metadata['charge_decision'] ?? null);
+        $customerCharge = TechnicalServiceMountPayment::query()
+            ->where('raw_payload->source', 'operation_customer_charge')
+            ->firstOrFail();
+        $this->assertSame($chargeableRequest->id, (int) ($customerCharge->raw_payload['part_request_id'] ?? 0));
+        $this->assertSame(1000.0, (float) ($customerCharge->raw_payload['service_amount'] ?? 0));
+        $this->assertSame(750.0, (float) ($customerCharge->raw_payload['part_amount'] ?? 0));
+
+        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)
+            ->markPaid($customerCharge, ['fake_approved' => true]);
+
+        $summary = app(\App\Services\TechnicalService\TechnicalServiceWorkflowService::class)
+            ->serialize($job->refresh(), true)['sale_and_payment']['payment_summary'];
+
+        $this->assertSame(3500.0, (float) $summary['mount']['amount']);
+        $this->assertSame(1000.0, (float) $summary['service']['amount']);
+        $this->assertSame(750.0, (float) $summary['part']['amount']);
+        $this->assertSame(5250.0, (float) $summary['total_customer_collection']);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $job->refresh()->mount_payment_status);
+    }
+
+    public function test_chargeable_part_request_requires_amount_and_customer_message(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Part Validation Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-ACTION-PART-VALIDATION');
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $job->id,
+            'root_request_id' => $job->id,
+            'requested_by_user_id' => $admin->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Validation part',
+            'quantity' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'charge_decision' => 'chargeable',
+                'service_amount' => 1000,
+                'part_amount' => 0,
+                'customer_message' => 'Customer payment message',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('part_amount');
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'charge_decision' => 'chargeable',
+                'service_amount' => 1000,
+                'part_amount' => 750,
+                'customer_message' => '',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('customer_message');
     }
 
     public function test_revisit_request_creates_isolated_srv_child_without_parent_completion_state(): void
@@ -4570,6 +5021,9 @@ class B2BPartnerPanelAccessTest extends TestCase
         $job = $this->serviceRequestForTechnician($technician, 'MRN-HEIC-COMPLETE', [
             'workflow_status' => 'Planlı',
             'status' => 'Randevulu',
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
             'customer_closure_approval_status' => 'onaylandi',
         ]);
         $this->createPortalFieldDocument($job, 'after_photo');
@@ -4849,6 +5303,526 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $job->id,
             'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED,
         ]);
+    }
+
+    public function test_partner_can_upload_required_documents_after_appointment_approval_with_reopened_stale_workflow(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        Storage::fake('public');
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Photo Upload Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Photo Upload Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+
+        $reopenedAt = now();
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-PHOTO-UPLOAD-REOPENED', [
+            'workflow_status' => TechnicalServiceRequest::WORKFLOW_NEW_REQUEST,
+            'status' => TechnicalServiceRequest::STATUS_NEW,
+            'field_status' => 'tamamlandı',
+            'photo_status' => 'tamamlandı',
+            'document_status' => 'tamamlandı',
+            'checklist_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'completed_at' => now()->subHour(),
+            'reopened_at' => $reopenedAt,
+            'reopen_reason' => 'Operasyon düzeltmesi',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+        ]);
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($job, $fieldCode)
+                ->forceFill([
+                    'created_at' => $reopenedAt->copy()->subMinute(),
+                    'updated_at' => $reopenedAt->copy()->subMinute(),
+                ])
+                ->save();
+        }
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}?partner_id={$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('job.can_upload_photos', true)
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 0)
+            ->assertJsonPath('job.completion_requirements.photos_ready', false);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 1)
+            ->assertJsonPath('job.completion_requirements.photos_ready', false);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'after_photo' => UploadedFile::fake()->create('after.png', 256, 'image/png'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 2)
+            ->assertJsonPath('job.completion_requirements.photos_ready', false);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'warranty_document_photo' => UploadedFile::fake()->create('warranty.HEIC', 256, 'image/heic'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true);
+
+        $freshJob = $job->refresh();
+        $this->assertSame(6, $freshJob->uploads()->count());
+        $currentUploadIds = $freshJob->uploads()
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->where('created_at', '>=', $reopenedAt)
+            ->pluck('id')
+            ->sort()
+            ->values()
+            ->all();
+        $previousUploadIds = $freshJob->uploads()
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->where('created_at', '<', $reopenedAt)
+            ->pluck('id')
+            ->sort()
+            ->values()
+            ->all();
+        $this->assertCount(3, $currentUploadIds);
+        $this->assertCount(3, $previousUploadIds);
+
+        $opsDetail = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk();
+        $this->assertCount(3, $opsDetail->json('request.field_completion_documents'));
+        $this->assertCount(3, $opsDetail->json('request.previous_field_completion_documents'));
+        $this->assertSame(
+            $currentUploadIds,
+            collect($opsDetail->json('request.field_completion_documents'))->pluck('id')->sort()->values()->all()
+        );
+        $this->assertSame(
+            $previousUploadIds,
+            collect($opsDetail->json('request.previous_field_completion_documents'))->pluck('id')->sort()->values()->all()
+        );
+        $this->assertSame(
+            ['after_photo', 'before_photo', 'warranty_document_photo'],
+            collect($opsDetail->json('request.field_completion_documents'))->pluck('field_code')->sort()->values()->all()
+        );
+        $this->assertSame(
+            ['after_photo', 'before_photo', 'warranty_document_photo'],
+            collect($opsDetail->json('request.previous_field_completion_documents'))->pluck('field_code')->sort()->values()->all()
+        );
+    }
+
+    public function test_partner_reupload_returns_latest_current_documents_without_duplicate_current_payload(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-REUPLOAD-CURRENT-DOCS');
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $initial = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before.jpg', 256, 'image/jpeg'),
+                'after_photo' => UploadedFile::fake()->create('after.jpg', 256, 'image/jpeg'),
+                'warranty_document_photo' => UploadedFile::fake()->create('warranty.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true);
+        $oldBeforeId = $initial->json('job.current_field_documents.before_photo.id');
+        $this->assertCount(3, $initial->json('job.photos'));
+
+        $replacement = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before-new.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true);
+
+        $photos = collect($replacement->json('job.photos'));
+        $newBeforeId = $replacement->json('job.current_field_documents.before_photo.id');
+        $this->assertNotSame($oldBeforeId, $newBeforeId);
+        $this->assertCount(3, $photos);
+        $this->assertSame($newBeforeId, $photos->firstWhere('field_code', 'before_photo')['id'] ?? null);
+        $this->assertNotContains($oldBeforeId, $photos->pluck('id')->all());
+        $this->assertSame(
+            collect($replacement->json('job.current_field_documents'))
+                ->filter(fn ($document): bool => is_array($document))
+                ->pluck('id')
+                ->sort()
+                ->values()
+                ->all(),
+            $photos->pluck('id')->sort()->values()->all()
+        );
+        $this->assertSame(4, $job->refresh()->uploads()
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->count());
+    }
+
+    public function test_current_field_documents_use_latest_id_when_created_at_matches(): void
+    {
+        $fixture = $this->locksmithPortalJobFixture('MRN-SAME-CREATED-LATEST-ID');
+        $admin = $fixture['admin'];
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+        $sameCreatedAt = now()->setMicrosecond(0);
+
+        $olderBeforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
+        $newerBeforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
+        foreach ([$olderBeforeDocument, $newerBeforeDocument] as $document) {
+            $document->forceFill([
+                'created_at' => $sameCreatedAt,
+                'updated_at' => $sameCreatedAt,
+            ])->save();
+        }
+        $this->createPortalFieldDocument($job, 'after_photo')
+            ->forceFill(['created_at' => $sameCreatedAt, 'updated_at' => $sameCreatedAt])
+            ->save();
+        $this->createPortalFieldDocument($job, 'warranty_document_photo')
+            ->forceFill(['created_at' => $sameCreatedAt, 'updated_at' => $sameCreatedAt])
+            ->save();
+
+        $portalResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.current_field_documents.before_photo.id', $newerBeforeDocument->id)
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true);
+        $this->assertCount(3, $portalResponse->json('job.photos'));
+        $this->assertNotContains($olderBeforeDocument->id, collect($portalResponse->json('job.photos'))->pluck('id')->all());
+
+        $opsResponse = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk();
+        $opsDocuments = collect($opsResponse->json('request.field_completion_documents'));
+        $this->assertCount(3, $opsDocuments);
+        $this->assertSame($newerBeforeDocument->id, $opsDocuments->firstWhere('field_code', 'before_photo')['id'] ?? null);
+    }
+
+    public function test_reopened_boundary_documents_are_previous_not_current(): void
+    {
+        $reopenedAt = now()->setMicrosecond(0);
+        $fixture = $this->locksmithPortalJobFixture('MRN-REOPENED-BOUNDARY-DOCS', [
+            'reopened_at' => $reopenedAt,
+            'reopen_reason' => 'Boundary regression',
+        ]);
+        $admin = $fixture['admin'];
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($job, $fieldCode)
+                ->forceFill([
+                    'created_at' => $reopenedAt,
+                    'updated_at' => $reopenedAt,
+                ])
+                ->save();
+        }
+
+        $portalResponse = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.current_field_documents.before_photo', null)
+            ->assertJsonPath('job.current_field_documents.after_photo', null)
+            ->assertJsonPath('job.current_field_documents.warranty_document_photo', null)
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 0)
+            ->assertJsonPath('job.completion_requirements.photos_ready', false);
+        $this->assertCount(0, $portalResponse->json('job.photos'));
+        $this->assertCount(3, $portalResponse->json('job.previous_photos'));
+
+        $opsResponse = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('request.operational_state.is_field_docs_required', true);
+        $this->assertCount(0, $opsResponse->json('request.field_completion_documents'));
+        $this->assertCount(3, $opsResponse->json('request.previous_field_completion_documents'));
+    }
+
+    public function test_partner_photo_upload_requires_confirmed_appointment_schedule(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-UPLOAD-NO-APPOINTMENT', [
+            'scheduled_at' => null,
+            'scheduled_date' => null,
+            'scheduled_time' => null,
+        ]);
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.can_upload_photos', false);
+
+        $response = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('workflow_status');
+
+        $this->assertSame(
+            'Fotoğraf yükleme sadece randevu onaylandıktan sonra yapılabilir.',
+            $response->json('errors.workflow_status.0'),
+        );
+        $this->assertSame(0, $job->refresh()->uploads()
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->count());
+    }
+
+    public function test_failed_reupload_does_not_replace_current_documents_or_counts(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-FAILED-REUPLOAD-STABLE');
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $initial = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before.jpg', 256, 'image/jpeg'),
+                'after_photo' => UploadedFile::fake()->create('after.jpg', 256, 'image/jpeg'),
+                'warranty_document_photo' => UploadedFile::fake()->create('warranty.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true);
+        $beforeId = $initial->json('job.current_field_documents.before_photo.id');
+        $confirmation = $this->approveCustomerForJob($job, $fixture['partner']->id, 'failed-reupload-keeps-approval-token');
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', true)
+            ->assertJsonPath('job.can_submit_completion', true);
+
+        $invalidTypeResponse = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before.txt', 1, 'text/plain'),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('before_photo');
+        $this->assertSame(
+            'Fotoğraf JPG, PNG, WEBP, GIF, HEIC veya HEIF formatında olmalıdır.',
+            $invalidTypeResponse->json('errors.before_photo.0'),
+        );
+        $this->assertStringNotContainsString('validation.', (string) json_encode($invalidTypeResponse->json(), JSON_UNESCAPED_UNICODE));
+
+        $oversizedResponse = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before-large.jpg', 11264, 'image/jpeg'),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('before_photo');
+        $this->assertSame(
+            'Öncesi fotoğrafı en fazla 10240 kilobayt olmalıdır.',
+            $oversizedResponse->json('errors.before_photo.0'),
+        );
+        $this->assertStringNotContainsString('validation.', (string) json_encode($oversizedResponse->json(), JSON_UNESCAPED_UNICODE));
+
+        $current = $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.current_field_documents.before_photo.id', $beforeId)
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true)
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', true)
+            ->assertJsonPath('job.can_submit_completion', true);
+
+        $this->assertCount(3, $current->json('job.photos'));
+        $this->assertDatabaseHas('technical_service_customer_confirmations', [
+            'id' => $confirmation->id,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+        ]);
+        $this->assertSame(3, $job->refresh()->uploads()
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->count());
+    }
+
+    public function test_reupload_after_customer_approval_resets_customer_confirmation_gate(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-REUPLOAD-RESETS-CUSTOMER');
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $this->createPortalFieldDocument($job, 'before_photo');
+        $this->createPortalFieldDocument($job, 'after_photo');
+        $this->createPortalFieldDocument($job, 'warranty_document_photo');
+        $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $job->id,
+            'token' => 'reupload-resets-customer-token',
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+            'approved_at' => now(),
+            'payload' => ['partner_id' => $fixture['partner']->id],
+        ]);
+        $job->forceFill([
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approval_method' => 'customer_link',
+            'customer_closure_approval_code' => 'approved-code',
+            'customer_closure_approved_at' => now(),
+        ])->save();
+
+        $this->actingAs($portalUser)
+            ->getJson("/api/partner/service-jobs/{$job->id}")
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', true)
+            ->assertJsonPath('job.can_submit_completion', true);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before-new.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false)
+            ->assertJsonPath('job.can_submit_completion', false);
+
+        $this->assertDatabaseHas('technical_service_customer_confirmations', [
+            'id' => $confirmation->id,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
+        ]);
+        $job->refresh();
+        $this->assertNull($job->customer_closure_approval_status);
+        $this->assertNull($job->customer_closure_approval_method);
+        $this->assertNull($job->customer_closure_approval_code);
+        $this->assertNull($job->customer_closure_approved_at);
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('customer_confirmation');
+    }
+
+    public function test_reupload_after_ops_document_acceptance_requires_latest_document_review_again(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-REUPLOAD-RESETS-OPS-REVIEW');
+        $admin = $fixture['admin'];
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $beforeDocument = $this->createPortalFieldDocument($job, 'before_photo');
+        $afterDocument = $this->createPortalFieldDocument($job, 'after_photo');
+        $warrantyDocument = $this->createPortalFieldDocument($job, 'warranty_document_photo');
+        $beforeDocument->forceFill(['review_status' => 'accepted'])->save();
+        $afterDocument->forceFill(['review_status' => 'accepted'])->save();
+        $warrantyDocument->forceFill(['review_status' => 'accepted'])->save();
+        $this->approveCustomerForJob($job, $fixture['partner']->id, 'ops-review-before-reupload-token');
+
+        $replacement = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before-new.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 3)
+            ->assertJsonPath('job.current_field_documents.before_photo.review_status', null);
+        $newBeforeId = $replacement->json('job.current_field_documents.before_photo.id');
+
+        $opsDetail = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk();
+        $currentOpsDocuments = collect($opsDetail->json('request.field_completion_documents'));
+        $this->assertCount(3, $currentOpsDocuments);
+        $this->assertSame($newBeforeId, $currentOpsDocuments->firstWhere('field_code', 'before_photo')['id'] ?? null);
+        $this->assertNull($currentOpsDocuments->firstWhere('field_code', 'before_photo')['review_status'] ?? null);
+
+        $this->approveCustomerForJob($job->refresh(), $fixture['partner']->id, 'ops-review-after-reupload-token');
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'final_check');
+        $completionAction = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
+            ->latest('id')
+            ->firstOrFail();
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-completions/{$completionAction->id}/approve", [
+                'note' => 'Yeni belge incelenmeden son kontrol kapanmamalı.',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('completion');
+
+        TechnicalServiceRequestUpload::query()->findOrFail($newBeforeId)
+            ->forceFill(['review_status' => 'accepted'])
+            ->save();
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/partner-completions/{$completionAction->id}/approve", [
+                'note' => 'Yeni belge uygun, son kontrol tamamlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.kanban_column', 'completed');
+    }
+
+    public function test_reupload_is_blocked_after_completion_submit_and_completed_job(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-REUPLOAD-BLOCKED-FINAL-COMPLETED');
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $this->createPortalFieldDocument($job, 'before_photo')->forceFill(['review_status' => 'accepted'])->save();
+        $this->createPortalFieldDocument($job, 'after_photo')->forceFill(['review_status' => 'accepted'])->save();
+        $this->createPortalFieldDocument($job, 'warranty_document_photo')->forceFill(['review_status' => 'accepted'])->save();
+        $this->approveCustomerForJob($job, $fixture['partner']->id, 'reupload-blocked-final-token');
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/submit-completion", [
+                'result' => 'completed',
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'final_check');
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('blocked-final.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertUnprocessable();
+        $this->assertSame(3, $job->refresh()->uploads()
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->count());
+
+        $job->forceFill([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ])->save();
+
+        $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('blocked-completed.jpg', 256, 'image/jpeg'),
+            ])
+            ->assertUnprocessable();
+        $this->assertSame(3, $job->refresh()->uploads()
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->count());
     }
 
     public function test_mrn_like_sebrsovsl3_flow_docs_approval_completion_submit_reaches_final_review(): void
@@ -6168,6 +7142,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($scope['userB'])
             ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$scope['partnerB']->id}")
             ->assertForbidden();
+        $oldPartnerJobs = $this->actingAs($scope['userB'])
+            ->getJson("/api/partner/service-jobs?partner_id={$scope['partnerB']->id}")
+            ->assertOk();
+        $this->assertNotContains($child->mrn, collect($oldPartnerJobs->json('jobs'))->pluck('mrn')->all());
 
         $child->forceFill([
             'operation_control_payload' => [
@@ -6519,6 +7497,101 @@ class B2BPartnerPanelAccessTest extends TestCase
             'mime' => 'image/jpeg',
             'size' => 128,
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $jobAttributes
+     * @return array{admin: User, partner: B2BPartner, technician: TechnicalServiceTechnician, job: TechnicalServiceRequest, portalUser: User}
+     */
+    private function locksmithPortalJobFixture(string $mrn, array $jobAttributes = []): array
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => $mrn.' Locksmith',
+        ]);
+        $technician = $this->technician(['name' => $mrn.' Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $job = $this->serviceRequestForTechnician($technician, $mrn, array_merge([
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'field_status' => 'planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '14:00',
+        ], $jobAttributes));
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        return [
+            'admin' => $admin,
+            'partner' => $partner,
+            'technician' => $technician,
+            'job' => $job,
+            'portalUser' => $portalUser,
+        ];
+    }
+
+    private function approveCustomerForJob(TechnicalServiceRequest $job, int $partnerId, string $token): TechnicalServiceCustomerConfirmation
+    {
+        $confirmation = TechnicalServiceCustomerConfirmation::query()->create([
+            'technical_service_request_id' => $job->id,
+            'token' => $token,
+            'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
+            'approved_at' => now(),
+            'payload' => ['partner_id' => $partnerId],
+        ]);
+
+        $job->forceFill([
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approval_method' => 'customer_link',
+            'customer_closure_approved_at' => now(),
+        ])->save();
+
+        return $confirmation;
+    }
+
+    private function mountSessionForServiceRequest(TechnicalServiceRequest $request): TechnicalServiceMountSession
+    {
+        ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => $request->serial_number ?: 'SN-PART-'.uniqid(),
+            'product_name' => $request->product_name ?: 'Test Kilit',
+            'product_model' => $request->product_model,
+            'brand' => $request->brand,
+        ]);
+
+        $session = TechnicalServiceMountSession::query()->create([
+            'technical_service_qr_link_id' => $link->id,
+            'session_token_hash' => TechnicalServiceMountSession::hashSessionToken('part-session-'.$request->id.'-'.uniqid()),
+            'serial_number' => $request->serial_number ?: $link->serial_number,
+            'sale_mount_status' => $request->sale_mount_status ?? TechnicalServiceMountSession::SALE_UNKNOWN,
+            'mount_payment_status' => $request->mount_payment_status,
+            'decision_status' => TechnicalServiceMountSession::DECISION_SUBMITTED,
+            'context_payload' => [],
+        ]);
+
+        $request->forceFill([
+            'qr_link_id' => $link->id,
+            'mount_session_id' => $session->id,
+        ])->save();
+
+        return $session;
     }
 
     /**
