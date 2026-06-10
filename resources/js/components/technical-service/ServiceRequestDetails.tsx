@@ -135,8 +135,36 @@ const eventTime = (timestamp: string): string => {
   return formatTechnicalServiceDateTime(timestamp, 'Bilinmiyor')
 }
 
+const cleanDisplayText = (value: string | null | undefined): string => {
+  if (value === null || value === undefined) {
+    return ''
+  }
+
+  return String(value)
+    .replaceAll('M??teri', 'Müşteri')
+    .replaceAll('Planl?', 'Planlı')
+    .replaceAll('Tamamland?', 'Tamamlandı')
+    .replaceAll('Atamas?', 'Ataması')
+    .replaceAll('Onay?', 'Onayı')
+    .replaceAll('onaylad?', 'onayladı')
+    .replaceAll('onayland?', 'onaylandı')
+    .replaceAll('Ã‡', 'Ç')
+    .replaceAll('Ã–', 'Ö')
+    .replaceAll('Ãœ', 'Ü')
+    .replaceAll('Ã§', 'ç')
+    .replaceAll('Ã¶', 'ö')
+    .replaceAll('Ã¼', 'ü')
+    .replaceAll('Ä°', 'İ')
+    .replaceAll('Ä±', 'ı')
+    .replaceAll('ÄŸ', 'ğ')
+    .replaceAll('ÅŸ', 'ş')
+    .replaceAll('Åž', 'Ş')
+    .replaceAll('Â', '')
+    .replaceAll('ï¿½', '')
+}
+
 const formatDisplayValue = (value: string | null | undefined): string => {
-  const normalized = String(value ?? '').trim()
+  const normalized = cleanDisplayText(value).trim()
 
   return normalized !== '' ? normalized : '-'
 }
@@ -144,7 +172,7 @@ const formatDisplayValue = (value: string | null | undefined): string => {
 const hasText = (value: string | null | undefined): boolean => String(value ?? '').trim() !== ''
 
 const displayOrEmpty = (value: string | null | undefined, fallback: string): string => {
-  const normalized = String(value ?? '').trim()
+  const normalized = cleanDisplayText(value).trim()
 
   return normalized !== '' ? normalized : fallback
 }
@@ -236,7 +264,7 @@ const safeActionLabelFallback = (value: string): string => {
 }
 
 const actionLabel = (code: string | null | undefined, provided?: string | null): string => {
-  const normalizedProvided = String(provided ?? '').trim()
+  const normalizedProvided = cleanDisplayText(provided).trim()
 
   if (actionCodeLabels[normalizedProvided]) {
     return actionCodeLabels[normalizedProvided]
@@ -246,7 +274,7 @@ const actionLabel = (code: string | null | undefined, provided?: string | null):
     return normalizedProvided
   }
 
-  const normalized = String(code ?? '').trim()
+  const normalized = cleanDisplayText(code).trim()
 
   return actionCodeLabels[normalized] ?? safeActionLabelFallback(normalized)
 }
@@ -976,10 +1004,10 @@ const priorityDisplayLabel = (priority: ServicePriority | string | null | undefi
 
 const statusDisplayLabel = (request: ServiceRequest): string => {
   if (hasText(request.workflowStatus)) {
-    return String(request.workflowStatus)
+    return cleanDisplayText(request.workflowStatus)
   }
 
-  return request.status === 'Yeni' ? 'Yeni Talep' : request.status
+  return request.status === 'Yeni' ? 'Yeni Talep' : cleanDisplayText(request.status)
 }
 
 const assignmentOfferStatusLabel = (status: string | null | undefined): string => {
@@ -1315,7 +1343,7 @@ export function ServiceRequestDetails({
     hasSupportRequest: supportRequests.length > 0,
     hasPartRequest: activePartRequests.length > 0,
     hasAssignedTechnician,
-    isServiceVisitRequest: Boolean(request.serviceVisitHistory?.service_code || request.serviceVisitHistory?.reason),
+    isServiceVisitRequest: visibleSections?.is_service_visit === true || Boolean(request.serviceVisitHistory?.service_code || request.serviceVisitHistory?.reason),
     workflowStatus: request.workflowStatus,
     kanbanColumn: request.kanbanColumn,
   }
@@ -1472,20 +1500,48 @@ export function ServiceRequestDetails({
   )
   const activeRouteQuote = routeQuoteActiveForSelectedTechnician ? routeQuote : null
   const hasActiveRouteQuote = Boolean(activeRouteQuote)
-  const routeFeeNeedsApproval = Boolean(activeRouteQuote?.travel_fee_required)
+  const storedRouteRoundTripKm = typeof request.travelRoundTripKm === 'number' && Number.isFinite(request.travelRoundTripKm)
+    ? request.travelRoundTripKm
+    : null
+  const storedRouteBillableKm = typeof request.travelBillableKm === 'number' && Number.isFinite(request.travelBillableKm)
+    ? request.travelBillableKm
+    : null
+  const storedRouteFeeAmount = assignmentOfferRouteAmount !== null
+    ? assignmentOfferRouteAmount
+    : typeof request.travelFeeAmount === 'number' && Number.isFinite(request.travelFeeAmount)
+      ? request.travelFeeAmount
+      : null
+  const hasStoredRouteFeeAmount = storedRouteFeeAmount !== null && storedRouteFeeAmount > 0
+  const hasStoredRouteCost = Boolean(
+    selectedTechnician && (
+      storedRouteRoundTripKm !== null
+      || storedRouteBillableKm !== null
+      || storedRouteFeeAmount !== null
+    ),
+  )
+  const hasRouteCostEvidence = hasActiveRouteQuote || hasStoredRouteCost
+  const routeFeeNeedsApproval = Boolean(activeRouteQuote?.travel_fee_required && !hasStoredRouteFeeAmount)
   const selectedTechnicianName = selectedTechnician?.name ?? request.technician ?? 'Seçili usta'
   const routeFeeNotCalculatedMessage = `${selectedTechnicianName} için usta yol hakedişi henüz hesaplanmadı.`
   const routeFeeNotCalculatedHint = 'Usta yol hakedişini hesaplamak için seçili usta ve müşteri konumu kullanılacak.'
+  const routeFeeSavedHint = assignmentOfferRouteAmount !== null
+    ? 'Atama hakedişi üzerinden kaydedildi.'
+    : 'Kaydedilmiş yol hakedişi üzerinden gösteriliyor.'
   const shouldShowRouteFeeNotCalculatedMessage = Boolean(
-    selectedTechnician && !routeQuoteLoading && !hasActiveRouteQuote,
+    selectedTechnician && !routeQuoteLoading && !hasRouteCostEvidence,
   )
-  const routeFeeCalculateButtonText = routeQuoteLoading
+  const shouldShowRouteQuoteLoading = routeQuoteLoading && !hasRouteCostEvidence
+  const routeFeeCalculateButtonText = shouldShowRouteQuoteLoading
     ? 'Hesaplanıyor...'
     : 'Yeniden hesapla'
-  const routeFeeStatusText = routeQuoteStaleForSelectedTechnician
-    ? routeQuoteLoading ? 'Usta yol hakedişi hesaplanıyor' : 'Usta yol hakedişi hesaplanmadı'
+  const routeFeeStatusText = hasStoredRouteFeeAmount
+    ? 'Usta yol hakedişi kaydedildi'
+    : routeQuoteStaleForSelectedTechnician
+    ? shouldShowRouteQuoteLoading ? 'Usta yol hakedişi hesaplanıyor' : hasStoredRouteCost ? 'Usta yol hakedişi kaydedildi' : 'Usta yol hakedişi hesaplanmadı'
     : hasActiveRouteQuote && activeRouteQuote
       ? activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi gönderilmeli' : 'Usta yol hakedişi yok'
+      : hasStoredRouteCost
+        ? 'Usta yol hakedişi kaydedildi'
       : selectedTechnician ? 'Usta yol hakedişi hesaplanmadı' : routeQuote ? 'Usta yol hakedişi hesaplanamadı' : 'Usta yol hakedişi hesaplanmadı'
   const routeRoundTripKm = hasActiveRouteQuote
     ? typeof activeRouteQuote?.round_trip_distance_km === 'number' && Number.isFinite(activeRouteQuote.round_trip_distance_km)
@@ -1493,25 +1549,25 @@ export function ServiceRequestDetails({
       : typeof activeRouteQuote?.distance_km === 'number' && Number.isFinite(activeRouteQuote.distance_km)
         ? activeRouteQuote.distance_km
         : null
-    : null
+    : storedRouteRoundTripKm
   const routeOneWayKm = hasActiveRouteQuote
     ? typeof activeRouteQuote?.one_way_distance_km === 'number' && Number.isFinite(activeRouteQuote.one_way_distance_km)
       ? activeRouteQuote.one_way_distance_km
       : routeRoundTripKm !== null
         ? roundTwo(routeRoundTripKm / 2)
         : null
-    : null
+    : routeRoundTripKm !== null ? roundTwo(routeRoundTripKm / 2) : null
   const routeBillableKm = hasActiveRouteQuote
     ? typeof activeRouteQuote?.billable_km === 'number' && Number.isFinite(activeRouteQuote.billable_km)
       ? activeRouteQuote.billable_km
       : typeof activeRouteQuote?.extra_km === 'number' && Number.isFinite(activeRouteQuote.extra_km)
         ? activeRouteQuote.extra_km
         : null
-    : null
+    : storedRouteBillableKm
   const routeFeePerKm = routeFeeConfigPerKm
   const routeFeeAmount = hasActiveRouteQuote && typeof activeRouteQuote?.fee_amount === 'number' && Number.isFinite(activeRouteQuote.fee_amount)
     ? activeRouteQuote.fee_amount
-    : null
+    : storedRouteFeeAmount
   const routeStraightLineKm = hasActiveRouteQuote && typeof activeRouteQuote?.straight_line_distance_km === 'number' && Number.isFinite(activeRouteQuote.straight_line_distance_km)
     ? activeRouteQuote.straight_line_distance_km
     : null
@@ -1566,8 +1622,19 @@ export function ServiceRequestDetails({
   })
   const routeFeeEditorHasChanges = routeFeeEditorInitialSnapshot !== '' && routeFeeEditorCurrentSnapshot !== routeFeeEditorInitialSnapshot
   const operationControl = request.operationControl ?? {}
-  const paymentControlMissing = operationControl.payment_checked !== 'yes'
-  const doorPhotoControlMissing = !operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed'
+  const isServiceVisitDetail = visibleSections?.is_service_visit === true
+    || operationControl.is_service_visit === true
+    || Boolean(serviceVisitHistory?.service_code || serviceVisitHistory?.reason)
+  const showMountOperationControls = (visibleSections?.operation_mount_controls ?? operationControl.show_mount_controls ?? !isServiceVisitDetail) === true
+  const showPaymentControl = showMountOperationControls
+    && (visibleSections?.payment_control ?? operationControl.show_payment_control ?? true) === true
+  const showDoorPhotoControl = showMountOperationControls
+    && (visibleSections?.door_photo_control ?? operationControl.show_door_photo_control ?? true) === true
+  const showAddressControl = showMountOperationControls
+    && (visibleSections?.address_control ?? operationControl.show_address_control ?? false) === true
+  const showScheduleControl = (visibleSections?.schedule_control ?? operationControl.show_schedule_control ?? showMountOperationControls) === true
+  const paymentControlMissing = showPaymentControl && operationControl.payment_checked !== 'yes'
+  const doorPhotoControlMissing = showDoorPhotoControl && (!operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed')
   const [operationInfoOpenByRequest, setOperationInfoOpenByRequest] = useState<Record<string, boolean>>({})
   const operationInfoOpen = operationInfoOpenByRequest[request.id] ?? defaultOpenOpsSections.has('operation')
   const setOperationInfoOpen = (open: boolean) => {
@@ -1617,10 +1684,10 @@ export function ServiceRequestDetails({
         ? canonicalPaymentStatus.amount
         : null
     : null
-  const customerMountAmount = paidMountPaymentAmount ?? basePaymentInfo.customerAmount
+  const customerMountAmount = paidMountPaymentAmount ?? (showPaymentControl ? basePaymentInfo.customerAmount : null)
   const mountPaymentLabel = paidMountPaymentAmount !== null
     ? `${formatMoneyValue(paidMountPaymentAmount)} KDV dahil`
-    : basePaymentInfo.customerAmountLabel && basePaymentInfo.customerAmountLabel !== 'Belirlenmedi'
+    : showPaymentControl && basePaymentInfo.customerAmountLabel && basePaymentInfo.customerAmountLabel !== 'Belirlenmedi'
       ? basePaymentInfo.customerAmountLabel
       : '-'
   const mountPaymentHeaderLabel = mountPaymentReceived
@@ -1628,12 +1695,14 @@ export function ServiceRequestDetails({
     : canonicalPaymentRequiresPayment
       ? 'Montaj ödeme: Alınmadı'
       : `Montaj ödeme: ${mountPaymentStageLabel}`
-  const shouldRenderHeaderPaymentSummary = mountPaymentReceived
+  const shouldRenderHeaderPaymentSummary = showPaymentControl && (
+    mountPaymentReceived
     || canonicalPaymentRequiresPayment
     || hasMultiProductRequest
     || Boolean(saleAndPayment?.payment_reference)
     || Boolean(saleAndPayment?.payment_provider)
     || paymentPaidAtLabel !== '-'
+  )
   const mountPaymentDetailLabel = mountPaymentReceived
     ? 'Montaj ödemesi alındı'
     : canonicalPaymentRequiresPayment
@@ -1651,10 +1720,11 @@ export function ServiceRequestDetails({
   const mountExclusionAckComplete = !mountExclusionAckRequired
     || (mountExclusionAcknowledged && mountExclusionNote.trim().length >= 5)
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
-  const assignmentUiBlockerMessages = [
-    operationControl.payment_checked === 'yes' ? null : 'Önce ödeme kontrolünü tamamlayın.',
-    operationControl.door_photos_checked === 'compatible' ? null : 'Önce kapı görsellerini uygun olarak işaretleyin.',
-  ].filter((message): message is string => Boolean(message))
+  const assignmentRequiresOperationControls = (request.assignmentBlockers?.applies_to_assignment ?? operationControl.applies_to_assignment ?? !isServiceVisitDetail) !== false
+  const assignmentUiBlockerMessages = assignmentRequiresOperationControls ? [
+    showPaymentControl && operationControl.payment_checked !== 'yes' ? 'Önce ödeme kontrolünü tamamlayın.' : null,
+    showDoorPhotoControl && operationControl.door_photos_checked !== 'compatible' ? 'Önce kapı görsellerini uygun olarak işaretleyin.' : null,
+  ].filter((message): message is string => Boolean(message)) : []
   const combinedAssignmentBlockerMessages = Array.from(new Set([...assignmentUiBlockerMessages, ...assignmentBlockerMessages]))
   const isAssignmentBlocked = combinedAssignmentBlockerMessages.length > 0
   const assignmentSubmitDisabled = assignLoading
@@ -1692,14 +1762,23 @@ export function ServiceRequestDetails({
     : customerMountAmount !== null
     ? roundTwo(customerMountAmount + paidExtraCustomerAmount + paidCustomerChargeAmount)
     : paidExtraCustomerAmount + paidCustomerChargeAmount > 0 ? roundTwo(paidExtraCustomerAmount + paidCustomerChargeAmount) : null
-  const serviceCustomerPaymentLabel = paidServiceCustomerAmount > 0
+  const hasServiceCustomerPayment = paidServiceCustomerAmount > 0 || paymentSummary?.has_service_charge === true
+  const hasPartCustomerPayment = paidPartCustomerAmount > 0 || paymentSummary?.has_part_charge === true
+  const hasExtraCustomerPayment = paidExtraCustomerAmount > 0 || paymentSummary?.has_extra_charge === true
+  const hasMountCustomerPayment = paidMountPaymentAmount !== null || paymentSummary?.has_mount_collection === true
+  const serviceCustomerPaymentLabel = hasServiceCustomerPayment
     ? `${paymentSummaryService?.status_label ?? 'Ödendi'} - ${paymentSummaryService?.amount_label ?? formatMoneyValue(paidServiceCustomerAmount)}`
-    : 'Yok'
-  const partCustomerPaymentLabel = paidPartCustomerAmount > 0
+    : null
+  const partCustomerPaymentLabel = hasPartCustomerPayment
     ? `${paymentSummaryPart?.status_label ?? 'Ödendi'} - ${paymentSummaryPart?.amount_label ?? formatMoneyValue(paidPartCustomerAmount)}`
-    : 'Yok'
+    : null
   const totalCustomerCollectionLabel = paymentSummary?.total_customer_collection_label
     ?? (totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : null)
+  const showServicePartPaymentSummary = servicePartChargeSectionVisible
+    || Boolean(latestCustomerCharge)
+    || hasServiceCustomerPayment
+    || hasPartCustomerPayment
+  const showPaymentTechnicalDetails = Boolean(saleAndPayment?.payment_reference || paymentPaidAtLabel !== '-' || saleAndPayment?.payment_provider)
   const fallbackTechnicianLaborCostLabel = selectedTechnician?.technicianAmountLabel && selectedTechnician.technicianAmountLabel !== 'Belirlenmedi'
     ? selectedTechnician.technicianAmountLabel
     : basePaymentInfo.technicianAmountLabel && basePaymentInfo.technicianAmountLabel !== 'Belirlenmedi'
@@ -1712,7 +1791,7 @@ export function ServiceRequestDetails({
   const technicianLaborCostLabel = assignmentOfferLaborAmount !== null
     ? formatMoneyValue(assignmentOfferLaborAmount)
     : fallbackTechnicianLaborCostLabel
-  const fallbackTravelCostLabel = hasActiveRouteQuote
+  const fallbackTravelCostLabel = hasRouteCostEvidence
     ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required
       ? 'Km başı ücret ayarı eksik'
       : formatMoneyValue(routeFeeAmount)
@@ -1723,12 +1802,13 @@ export function ServiceRequestDetails({
   const totalTechnicianCostAmount = assignmentOfferTotalAmount !== null
     ? assignmentOfferTotalAmount
     : technicianLaborCostAmount !== null
-      ? roundTwo(technicianLaborCostAmount + (hasActiveRouteQuote && routeFeeAmount !== null ? routeFeeAmount : 0))
+      ? roundTwo(technicianLaborCostAmount + (hasRouteCostEvidence && routeFeeAmount !== null ? routeFeeAmount : 0))
       : null
   const earningTotalAmount = totalTechnicianCostAmount
   const totalTechnicianCostLabel = totalTechnicianCostAmount !== null
     ? formatMoneyValue(totalTechnicianCostAmount)
     : 'Hakediş ayarı eksik'
+  const earningSummaryTechnicianName = cleanDisplayText(selectedTechnician?.name || request.technicianName || 'Usta seçilmedi')
   const netProfitLabel = totalCustomerCollectedAmount !== null && earningTotalAmount !== null
     ? formatMoneyValue(totalCustomerCollectedAmount - earningTotalAmount)
     : 'Hesaplanamadı'
@@ -1747,7 +1827,7 @@ export function ServiceRequestDetails({
       `Bölge: ${[request.city, request.district].filter(Boolean).join(' / ') || '-'}`,
       `Ürün / Seri: ${[request.product || '-', request.serialNumber || '-'].join(' / ')}`,
       `Montaj işçilik: ${formatMoneyValue(technicianLaborCostAmount ?? 0)}`,
-      `Usta yol hakedişi: ${formatMoneyValue(assignmentOfferRouteAmount ?? (hasActiveRouteQuote ? routeFeeAmount ?? 0 : 0))}`,
+      `Usta yol hakedişi: ${formatMoneyValue(assignmentOfferRouteAmount ?? (hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0))}`,
       `Toplam hakediş: ${formatMoneyValue(earningTotalAmount)}`,
       `Randevu: ${request.scheduledAt ? dateTimeOrEmpty(request.scheduledAt, '-') : request.scheduledDate ? [request.scheduledDate, request.scheduledTime].filter(Boolean).join(' ') : '-'}`,
       earningNoteInput.trim() ? `Not: ${earningNoteInput.trim()}` : null,
@@ -1787,7 +1867,7 @@ export function ServiceRequestDetails({
     || assignmentOffer,
   )
   const assignedTechnicianCityLabel = displayOrEmpty(selectedTechnician?.location ?? request.city, '-')
-  const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || routeQuoteLoading
+  const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || shouldShowRouteQuoteLoading
   const routeFeeEditorSnapshot = (
     oneWay: string,
     roundTrip: string,
@@ -1829,13 +1909,13 @@ export function ServiceRequestDetails({
       return
     }
 
-    const oneWay = hasActiveRouteQuote ? numericInputValue(routeOneWayKm) : ''
-    const roundTrip = hasActiveRouteQuote ? numericInputValue(routeRoundTripKm) : ''
+    const oneWay = hasRouteCostEvidence ? numericInputValue(routeOneWayKm) : ''
+    const roundTrip = hasRouteCostEvidence ? numericInputValue(routeRoundTripKm) : ''
     const threshold = numericInputValue(activeRouteQuote?.threshold_km ?? routeFeeConfigThresholdKm)
     const feePerKm = numericInputValue(routeFeePerKm)
-    const billable = hasActiveRouteQuote ? numericInputValue(routeBillableKm) : '0'
-    const amount = hasActiveRouteQuote ? numericInputValue(routeFeeAmount) : '0'
-    const extraPayment = hasActiveRouteQuote ? numericInputValue(routeFeeAmount) : '0'
+    const billable = hasRouteCostEvidence ? numericInputValue(routeBillableKm) : '0'
+    const amount = hasRouteCostEvidence ? numericInputValue(routeFeeAmount) : '0'
+    const extraPayment = hasRouteCostEvidence ? numericInputValue(routeFeeAmount) : '0'
     const manualTouched = Boolean(activeRouteQuote?.manual_override)
     const note = activeRouteQuote?.manual_note ?? ''
 
@@ -2049,7 +2129,7 @@ export function ServiceRequestDetails({
     const response = await onTechnicianEarningMessageCreate({
       technician_id: selectedTechnician.id,
       labor_amount: technicianLaborCostAmount,
-      route_fee_amount: hasActiveRouteQuote ? routeFeeAmount : 0,
+      route_fee_amount: hasRouteCostEvidence ? routeFeeAmount ?? 0 : 0,
       total_amount: earningTotalAmount,
       note: earningNoteInput.trim() || null,
       message_text: earningMessageText.trim() || null,
@@ -2343,7 +2423,7 @@ export function ServiceRequestDetails({
     selectedTechnician
       ? { title: 'Usta seçimi', status: 'Tamamlandı', message: `${selectedTechnician.name} seçildi.` }
       : { title: 'Usta seçimi', status: 'Bekliyor', message: 'Usta seçimi bekliyor.' },
-    hasActiveRouteQuote
+    hasRouteCostEvidence
       ? { title: 'Usta yol hakedişi hesaplandı', status: 'Tamamlandı', message: 'Usta seçildi, yol hakedişi hesaplandı.' }
       : selectedTechnician
         ? { title: 'Usta yol hakedişi gönderilmeli', status: 'İşlem gerekli', message: 'Seçili usta için yol hakedişi bekliyor.' }
@@ -2743,6 +2823,7 @@ export function ServiceRequestDetails({
   const currentSlaLabel = slaStatusLabel(request.slaStatus)
   const slaDueLabel = dateTimeOrEmpty(request.slaDueAt, 'SLA hedefi yok')
   const slaTitle = `${slaStatusDescription(request.slaStatus)}. SLA hedefi: ${slaDueLabel}`
+  const showSlaStatusChip = hasText(request.slaDueAt) || ['geciken', 'yaklaşan'].includes(String(request.slaStatus ?? ''))
   const handleWorkflowAction = (action: string) => {
     if (action === 'assign_technician' || action === 'select_technician') {
       if (isAssignmentBlocked) {
@@ -2826,7 +2907,7 @@ export function ServiceRequestDetails({
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Sıradaki Aksiyon</p>
               <p className="mt-1 line-clamp-2 text-sm font-semibold">{nextActionLabel}</p>
-              <p className="mt-1 text-xs text-slate-300">SLA: {currentSlaLabel} / {slaDueLabel}</p>
+              {showSlaStatusChip ? <p className="mt-1 text-xs text-slate-300">SLA: {currentSlaLabel} / {slaDueLabel}</p> : null}
             </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-200/80 pt-3">
@@ -2859,13 +2940,15 @@ export function ServiceRequestDetails({
             ) : (
               <Badge variant="outline">Öncelik: {currentPriorityLabel}</Badge>
             )}
-            <span
-              className={['inline-flex h-7 items-center rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')}
-              title={slaTitle}
-              aria-label={`SLA: ${currentSlaLabel}. ${slaTitle}`}
-            >
-              SLA: {currentSlaLabel}
-            </span>
+            {showSlaStatusChip ? (
+              <span
+                className={['inline-flex h-7 items-center rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')}
+                title={slaTitle}
+                aria-label={`SLA: ${currentSlaLabel}. ${slaTitle}`}
+              >
+                SLA: {currentSlaLabel}
+              </span>
+            ) : null}
             {(request.qrSource?.source_channel ?? request.channel) === 'qr_mount_form' ? <Badge variant="outline">QR Montaj Formu</Badge> : null}
             {hasMultiProductRequest ? <Badge variant="warning">Çoklu ürün talebi</Badge> : null}
             {routeFeeNeedsApproval ? <Badge variant="warning">Usta yol hakedişi gönderilmeli</Badge> : null}
@@ -2876,16 +2959,20 @@ export function ServiceRequestDetails({
                 <p className="text-[13px] font-medium text-slate-500">Montaj ödeme durumu</p>
                 <p className="mt-1 font-semibold text-slate-950">{mountPaymentHeaderLabel}</p>
               </div>
+              {mountPaymentAmountLabel !== '-' ? (
               <div>
                 <p className="text-[13px] font-medium text-slate-500">Ödeme tutarı</p>
                 <p className="mt-1 font-semibold text-slate-950">{mountPaymentAmountLabel}</p>
               </div>
+              ) : null}
+              {hasMultiProductRequest ? (
               <div>
                 <p className="text-[13px] font-medium text-slate-500">Çoklu ürün</p>
                 <p className="mt-1 font-semibold text-slate-950">
-                  {hasMultiProductRequest ? mountPaymentReceived ? 'Çoklu ürün ödemesi takipte' : canonicalPaymentRequiresPayment ? 'Ödeme operasyon tarafından netleştirilecek' : mountPaymentStageLabel : 'Yok'}
+                  {mountPaymentReceived ? 'Çoklu ürün ödemesi takipte' : canonicalPaymentRequiresPayment ? 'Ödeme operasyon tarafından netleştirilecek' : mountPaymentStageLabel}
                 </p>
               </div>
+              ) : null}
             </div>
           ) : null}
           {priorityUpdateError ? (
@@ -3180,8 +3267,8 @@ export function ServiceRequestDetails({
         </DetailPanel>
 
         <DetailPanel
-          title="Operasyon ve Montaj Kontrolü"
-          summary="Kapı fotoğrafları, ödeme, adres, randevu ve montaj durumu tek yerde"
+          title={showMountOperationControls ? 'Operasyon ve Montaj Kontrolü' : 'SRV Bağlamı'}
+          summary={showMountOperationControls ? 'Kapı fotoğrafları, ödeme, adres, randevu ve montaj durumu tek yerde' : 'Parent montaj bilgileri kapalı bağlamdır; current SRV atama ve saha belgeleri ayrıdır'}
           tone={doorPhotoControlMissing || paymentControlMissing ? 'warning' : 'slate'}
           open={operationInfoOpen}
           onOpenChange={setOperationInfoOpen}
@@ -3191,13 +3278,20 @@ export function ServiceRequestDetails({
           className={opsSectionClass('operation', activeOpsSection)}
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
-            {routeQuote ? (
-              <Badge variant={routeFeeNeedsApproval ? 'warning' : hasActiveRouteQuote ? 'positive' : 'outline'}>
+            {routeQuote || hasStoredRouteCost ? (
+              <Badge variant={routeFeeNeedsApproval ? 'warning' : hasRouteCostEvidence ? 'positive' : 'outline'}>
                 {routeFeeStatusText}
               </Badge>
             ) : null}
           </div>
 
+          {!showMountOperationControls ? (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700">
+              SRV kaydı parent montaj kapı/ödeme kontrolünü devralmaz. Parent görselleri ve montaj geçmişi servis geçmişi alanında kapalı bağlam olarak tutulur.
+            </div>
+          ) : null}
+
+          {showDoorPhotoControl ? (
           <div className="grid gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
@@ -3262,6 +3356,7 @@ export function ServiceRequestDetails({
               onChange={(value) => operationControlChange('door_photos_checked', value as 'compatible' | 'incompatible' | 'unreviewed')}
             />
           </div>
+          ) : null}
 
           {operationControlUpdateError ? (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
@@ -3269,7 +3364,9 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
 
+          {(showPaymentControl || showAddressControl || showScheduleControl) ? (
           <div className="grid gap-4 xl:grid-cols-2">
+            {showPaymentControl ? (
             <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ödeme / Montaj Bloğu</p>
@@ -3283,12 +3380,12 @@ export function ServiceRequestDetails({
                 />
                 <MiniMetric label="Tahsilat durumu" value={paymentCollectionStatusLabel} />
                 <MiniMetric label="Alınan ödeme tutarı" value={paidAmountDisplayLabel} />
-                <MiniMetric label="Servis ödemesi" value={serviceCustomerPaymentLabel} />
-                <MiniMetric label="Parça ödemesi" value={partCustomerPaymentLabel} />
-                <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel ?? 'Belirlenmedi'} />
+                {serviceCustomerPaymentLabel ? <MiniMetric label="Servis ödemesi" value={serviceCustomerPaymentLabel} /> : null}
+                {partCustomerPaymentLabel ? <MiniMetric label="Parça ödemesi" value={partCustomerPaymentLabel} /> : null}
+                {totalCustomerCollectionLabel ? <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel} /> : null}
                 <MiniMetric label="Operasyon ödeme kontrolü" value={opsPaymentCheckLabel} />
               </div>
-              {(saleAndPayment?.payment_reference || paymentPaidAtLabel !== '-' || saleAndPayment?.payment_provider) ? (
+              {showPaymentTechnicalDetails ? (
                 <details className="rounded-2xl border border-slate-200 bg-white/80 p-3 text-sm text-slate-700">
                   <summary className="cursor-pointer font-semibold text-slate-800">Ödeme teknik detayları</summary>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -3300,6 +3397,7 @@ export function ServiceRequestDetails({
                   </div>
                 </details>
               ) : null}
+              {showServicePartPaymentSummary ? (
               <div className="rounded-2xl border border-blue-100 bg-white/80 p-3 text-sm text-slate-700">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -3324,6 +3422,7 @@ export function ServiceRequestDetails({
                   </div>
                 ) : null}
               </div>
+              ) : null}
               {paymentControlMissing ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">
                   Ödeme kontrol edilmedi
@@ -3341,7 +3440,9 @@ export function ServiceRequestDetails({
                 onChange={(value) => operationControlChange('payment_checked', value as 'yes' | 'no' | 'unreviewed')}
               />
             </section>
+            ) : null}
 
+            {showAddressControl ? (
             <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Adres Kontrol Bloğu</p>
@@ -3374,7 +3475,9 @@ export function ServiceRequestDetails({
                 onChange={(value) => operationControlChange('address_checked', value as 'yes' | 'no' | 'unreviewed')}
               />
             </section>
+            ) : null}
 
+            {showScheduleControl ? (
             <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -3401,18 +3504,22 @@ export function ServiceRequestDetails({
                 onChange={(value) => operationControlChange('schedule_update_required', value as 'yes' | 'no' | 'unreviewed')}
               />
             </section>
+            ) : null}
 
           </div>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
             <Badge variant={statusVariant(request.status)}>Durum: {currentStatusLabel}</Badge>
             <Badge variant="outline">Öncelik: {currentPriorityLabel}</Badge>
-            <span className={['inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')} title={slaTitle}>
-              SLA: {currentSlaLabel}
-            </span>
-            {hasActiveRouteQuote && activeRouteQuote ? (
-              <Badge variant={activeRouteQuote.travel_fee_required ? 'warning' : 'positive'}>
-                {activeRouteQuote.travel_fee_required ? 'Usta yol hakedişi gönderilmeli' : 'Usta yol hakedişi yok'}
+            {showSlaStatusChip ? (
+              <span className={['inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', slaTone(request.slaStatus)].join(' ')} title={slaTitle}>
+                SLA: {currentSlaLabel}
+              </span>
+            ) : null}
+            {hasRouteCostEvidence ? (
+              <Badge variant={routeFeeNeedsApproval ? 'warning' : 'positive'}>
+                {routeFeeStatusText}
               </Badge>
             ) : routeQuote ? (
               <Badge variant="warning">{routeQuoteStaleForSelectedTechnician ? 'Usta yol hakedişi hesaplanmadı' : 'Usta yol hakedişi hesaplanamadı'}</Badge>
@@ -3420,9 +3527,11 @@ export function ServiceRequestDetails({
             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
               Mevcut etiketler: {currentPriorityLabel} / {currentSlaLabel}
             </span>
-            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
-              Kapı uygunluk durumu: {operationControl.door_photos_checked === 'compatible' ? 'Uyumlu' : operationControl.door_photos_checked === 'incompatible' ? 'Uyumsuz' : 'Kontrol edilmedi'}
-            </span>
+            {showDoorPhotoControl ? (
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
+                Kapı uygunluk durumu: {operationControl.door_photos_checked === 'compatible' ? 'Uyumlu' : operationControl.door_photos_checked === 'incompatible' ? 'Uyumsuz' : 'Kontrol edilmedi'}
+              </span>
+            ) : null}
           </div>
 
           {combinedAssignmentBlockerMessages.length > 0 ? (
@@ -3885,13 +3994,13 @@ export function ServiceRequestDetails({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-semibold">Usta yol hakedişi</p>
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant={routeFeeNeedsApproval ? 'warning' : hasActiveRouteQuote ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
+                    <Badge variant={routeFeeNeedsApproval ? 'warning' : hasRouteCostEvidence ? 'positive' : 'outline'}>{routeFeeStatusText}</Badge>
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
                       onClick={() => void onRouteQuoteCalculate?.()}
-                      disabled={routeQuoteLoading || !selectedTechnicianId || !onRouteQuoteCalculate}
+                      disabled={shouldShowRouteQuoteLoading || !selectedTechnicianId || !onRouteQuoteCalculate}
                       className="border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
                     >
                       {routeFeeCalculateButtonText}
@@ -3927,7 +4036,7 @@ export function ServiceRequestDetails({
                     {extraPaymentCreateError}
                   </div>
                 ) : null}
-                {routeQuoteLoading ? (
+                {shouldShowRouteQuoteLoading ? (
                   <div className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-900">
                     Usta yol hakedişi hesaplanıyor...
                   </div>
@@ -3946,12 +4055,12 @@ export function ServiceRequestDetails({
                 <div className="grid gap-2 sm:grid-cols-2">
                   <MiniMetric label="Usta adı" value={selectedTechnician?.name ?? '-'} />
                   <MiniMetric label="Usta ↔ müşteri düz çizgi mesafesi" value={formatKmValue(routeStraightLineKm)} hint="Bu değer rota ücreti hesabında kullanılmaz." />
-                  <MiniMetric label="Google Routes tek yön mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasActiveRouteQuote && activeRouteQuote?.duration_text ? `Tahmini süre: ${activeRouteQuote.duration_text}` : 'Yol hesabı yapılınca gösterilir.'} />
-                  <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasActiveRouteQuote ? undefined : 'Yol hesabı sonucu yok.'} />
+                  <MiniMetric label="Google Routes tek yön mesafesi" value={formatKmValue(routeOneWayKm)} hint={hasActiveRouteQuote && activeRouteQuote?.duration_text ? `Tahmini süre: ${activeRouteQuote.duration_text}` : hasStoredRouteCost ? routeFeeSavedHint : 'Yol hesabı yapılınca gösterilir.'} />
+                  <MiniMetric label="Gidiş-geliş mesafe" value={formatKmValue(routeRoundTripKm)} hint={hasRouteCostEvidence ? undefined : 'Yol hesabı sonucu yok.'} />
                   <MiniMetric
                     label="Tahmini usta yol hakedişi"
-                    value={hasActiveRouteQuote ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
-                    hint={hasActiveRouteQuote && activeRouteQuote ? routeQuoteMessage(activeRouteQuote.message) : routeFeeNotCalculatedHint}
+                    value={hasRouteCostEvidence ? routeFeeAmount === null && activeRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeeAmount) : '-'}
+                    hint={hasActiveRouteQuote && activeRouteQuote ? routeQuoteMessage(activeRouteQuote.message) : hasStoredRouteCost ? routeFeeSavedHint : routeFeeNotCalculatedHint}
                   />
                   <MiniMetric label="Km başı ücret" value={routeFeePerKm === null ? 'Km başı ücret ayarı eksik' : formatMoneyValue(routeFeePerKm)} />
                   <MiniMetric label="Ücretsiz sınır" value={formatKmValue(activeRouteQuote?.threshold_km ?? routeFeeConfigThresholdKm)} />
@@ -4080,16 +4189,28 @@ export function ServiceRequestDetails({
             </details>
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3">
               <div>
-                <p className="text-sm font-semibold text-slate-950">Hakediş / Maliyet Özeti</p>
+                <p className="text-sm font-semibold text-slate-950">Hakediş / Maliyet Özeti — {earningSummaryTechnicianName}</p>
                 <p className="mt-1 text-xs text-slate-500">Müşteri tahsilatı ve ustaya gönderilecek hakediş ayrı izlenir.</p>
               </div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                <MiniMetric label="Müşteriden alınan montaj ücreti" value={mountPaymentLabel} />
-                <MiniMetric label="Müşteriden alınan servis ücreti" value={paidServiceCustomerAmount > 0 ? formatMoneyValue(paidServiceCustomerAmount) : 'Yok'} />
-                <MiniMetric label="Müşteriden alınan parça ücreti" value={paidPartCustomerAmount > 0 ? formatMoneyValue(paidPartCustomerAmount) : 'Yok'} />
-                <MiniMetric label="Müşteriden alınan ek ödeme" value={paidExtraCustomerAmount > 0 ? formatMoneyValue(paidExtraCustomerAmount) : 'Yok'} />
-                <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel ?? 'Belirlenmedi'} />
-                <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
+                {(hasMountCustomerPayment || showPaymentControl) ? (
+                  <MiniMetric label="Müşteriden alınan montaj ücreti" value={mountPaymentLabel} />
+                ) : null}
+                {hasServiceCustomerPayment ? (
+                  <MiniMetric label="Müşteriden alınan servis ücreti" value={formatMoneyValue(paidServiceCustomerAmount)} />
+                ) : null}
+                {hasPartCustomerPayment ? (
+                  <MiniMetric label="Müşteriden alınan parça ücreti" value={formatMoneyValue(paidPartCustomerAmount)} />
+                ) : null}
+                {hasExtraCustomerPayment ? (
+                  <MiniMetric label="Müşteriden alınan ek ödeme" value={formatMoneyValue(paidExtraCustomerAmount)} />
+                ) : null}
+                {totalCustomerCollectionLabel ? (
+                  <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel} />
+                ) : null}
+                {showPaymentControl ? (
+                  <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
+                ) : null}
                 <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} />
                 <MiniMetric label="Usta yol hakedişi" value={travelCostLabel} />
                 <MiniMetric label="Ustaya gönderilecek toplam hakediş" value={earningTotalAmount !== null ? formatMoneyValue(earningTotalAmount) : totalTechnicianCostLabel} />

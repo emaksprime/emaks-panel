@@ -330,6 +330,37 @@ class TechnicalServiceRouteCostService
      */
     private function requestCoordinates(TechnicalServiceRequest $request): ?array
     {
+        $coordinates = app(TechnicalServiceGeocodingService::class)->validCoordinatePair(
+            $request->location_latitude,
+            $request->location_longitude,
+        );
+
+        if ($coordinates !== null) {
+            return [
+                'latitude' => $coordinates['latitude'],
+                'longitude' => $coordinates['longitude'],
+            ];
+        }
+
+        if ($request->parent_request_id !== null) {
+            $request->loadMissing('parentRequest');
+            $parent = $request->parentRequest;
+
+            if ($parent instanceof TechnicalServiceRequest) {
+                $parentCoordinates = app(TechnicalServiceGeocodingService::class)->validCoordinatePair(
+                    $parent->location_latitude,
+                    $parent->location_longitude,
+                );
+
+                if ($parentCoordinates !== null) {
+                    return [
+                        'latitude' => $parentCoordinates['latitude'],
+                        'longitude' => $parentCoordinates['longitude'],
+                    ];
+                }
+            }
+        }
+
         if ($request->location_latitude === null || $request->location_longitude === null) {
             return null;
         }

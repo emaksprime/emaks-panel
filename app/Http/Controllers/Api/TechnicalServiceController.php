@@ -31,6 +31,7 @@ use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
 use App\Services\Payments\PaymentProviderManager;
@@ -1411,24 +1412,27 @@ class TechnicalServiceController extends Controller
      */
     private function operationRequestPayload(TechnicalServiceRequest $request, bool $includeOverdue = false): array
     {
+        $displayCity = TechnicalServiceUiLabelService::cityLabel($request->customer_city);
+        $displayDistrict = TechnicalServiceUiLabelService::districtLabel($request->customer_district, $displayCity);
+
         return [
             'id' => $request->id,
             'mrn' => $request->mrn,
-            'customer_name' => $request->customer_name,
+            'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->customer_name),
             'customer_phone' => $request->customer_phone,
-            'customer_city' => $request->customer_city,
-            'customer_district' => $request->customer_district,
-            'service_address' => $request->service_address,
+            'customer_city' => $displayCity,
+            'customer_district' => $displayDistrict,
+            'service_address' => TechnicalServiceUiLabelService::addressLabel($request->service_address),
             'product_name' => $request->product_name,
             'product_model' => $request->product_model,
             'serial_number' => $request->serial_number,
             'service_type' => $request->service_type,
-            'technician_name' => $request->technician_name,
+            'technician_name' => TechnicalServiceUiLabelService::displayName($request->technician_name),
             'scheduled_at' => $request->scheduled_at?->toISOString(),
             'scheduled_time' => $request->scheduled_time,
-            'status' => $request->status,
-            'workflow_status' => $request->workflow_status,
-            'next_action' => $request->next_action,
+            'status' => TechnicalServiceUiLabelService::cleanDisplayText($request->status),
+            'workflow_status' => TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status),
+            'next_action' => TechnicalServiceUiLabelService::cleanDisplayText($request->next_action),
             'sla_status' => $request->sla_status,
             'customer_contact_status' => $request->customer_contact_status,
             'customer_callback_at' => $request->customer_callback_at?->toISOString(),

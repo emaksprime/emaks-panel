@@ -412,14 +412,42 @@ const jobEarningRoute = (job: ServiceJob): number => {
 
 const hasRawCodeShape = (value: string): boolean => /^[a-z0-9_-]+$/i.test(value)
 
+const cleanDisplayText = (value: string | null | undefined): string => {
+  if (value === null || value === undefined) {
+    return ''
+  }
+
+  return String(value)
+    .replaceAll('M??teri', 'Müşteri')
+    .replaceAll('Planl?', 'Planlı')
+    .replaceAll('Tamamland?', 'Tamamlandı')
+    .replaceAll('Atamas?', 'Ataması')
+    .replaceAll('Onay?', 'Onayı')
+    .replaceAll('onaylad?', 'onayladı')
+    .replaceAll('onayland?', 'onaylandı')
+    .replaceAll('Ã‡', 'Ç')
+    .replaceAll('Ã–', 'Ö')
+    .replaceAll('Ãœ', 'Ü')
+    .replaceAll('Ã§', 'ç')
+    .replaceAll('Ã¶', 'ö')
+    .replaceAll('Ã¼', 'ü')
+    .replaceAll('Ä°', 'İ')
+    .replaceAll('Ä±', 'ı')
+    .replaceAll('ÄŸ', 'ğ')
+    .replaceAll('ÅŸ', 'ş')
+    .replaceAll('Åž', 'Ş')
+    .replaceAll('Â', '')
+    .replaceAll('ï¿½', '')
+}
+
 const statusLabel = (status: string | null | undefined, provided?: string | null): string => {
-  const normalizedProvided = String(provided ?? '').trim()
+  const normalizedProvided = cleanDisplayText(provided).trim()
 
   if (normalizedProvided !== '' && !hasRawCodeShape(normalizedProvided)) {
     return normalizedProvided
   }
 
-  const normalized = String(status ?? '').trim()
+  const normalized = cleanDisplayText(status).trim()
 
   return ({
   ops_review: 'Operasyon incelemesinde',
@@ -445,7 +473,7 @@ const jobEarningStatus = (job: ServiceJob): string => {
   const currentVisit = currentVisitEarning(job)
 
   if (currentVisit?.status_label) {
-    return currentVisit.status_label
+    return cleanDisplayText(currentVisit.status_label)
   }
 
   if (job.assignment_offer?.status) {
@@ -808,7 +836,7 @@ const cardToneClass = (tone: ServiceJob['card_tone']) => ({
 }[tone])
 
 const actionLabel = (action: string, status?: string | null, provided?: string | null) => {
-  const normalizedProvided = String(provided ?? '').trim()
+  const normalizedProvided = cleanDisplayText(provided).trim()
   const labels: Record<string, string> = {
     accepted: 'Randevu onaylandı',
     appointment_accepted_by_technician: 'Randevu onaylandı',
@@ -861,7 +889,9 @@ const actionLabel = (action: string, status?: string | null, provided?: string |
     return 'Randevu onaylandı'
   }
 
-  return labels[action] ?? (hasRawCodeShape(action) ? 'İşlem kaydı' : action)
+  const cleanAction = cleanDisplayText(action)
+
+  return labels[action] ?? (hasRawCodeShape(cleanAction) ? 'İşlem kaydı' : cleanAction)
 }
 
 const todayDateValue = () => new Date().toISOString().slice(0, 10)
@@ -1032,12 +1062,12 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
   const [refreshing, setRefreshing] = useState(false)
   const [detailActionOpen, setDetailActionOpen] = useState(false)
   const selectedJob = selectedJobId === null ? null : jobs.find((job) => job.id === selectedJobId) ?? null
-  const refreshJobs = useCallback(async (silent = true) => {
+  const refreshJobs = useCallback(async (silent = true, force = false) => {
     if (readOnly) {
       return
     }
 
-    if (silent && detailActionOpen) {
+    if (silent && detailActionOpen && !force) {
       return
     }
 
@@ -1145,11 +1175,11 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                     <p className="mt-1 text-base font-semibold text-slate-950">{job.appointment_label ?? job.appointment_at ?? 'Randevu bekleniyor'}</p>
                   </div>
                   <div className="mt-3 flex items-start justify-between gap-2">
-                    <span className="font-semibold text-slate-950">{job.customer_name ?? 'Müşteri'}</span>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{job.service_stage_label ?? job.status_label ?? '-'}</span>
+                    <span className="font-semibold text-slate-950">{cleanDisplayText(job.customer_name) || 'Müşteri'}</span>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{cleanDisplayText(job.service_stage_label ?? job.status_label) || '-'}</span>
                   </div>
                   {job.customer_phone ? <p className="mt-1 text-xs font-semibold text-blue-700">{job.customer_phone}</p> : null}
-                  <p className="mt-1 text-xs text-slate-500">{[job.city, job.district].filter(Boolean).join(' / ') || '-'}</p>
+                  <p className="mt-1 text-xs text-slate-500">{[job.city, job.district].map((value) => cleanDisplayText(value)).filter(Boolean).join(' / ') || '-'}</p>
                   <p className="mt-1 font-mono text-[11px] text-slate-500">{job.mrn}</p>
                   <div className="mt-2 rounded-lg border border-emerald-100 bg-white/80 px-2.5 py-2 text-xs text-emerald-900">
                     <div className="flex items-center justify-between gap-2">
@@ -1212,6 +1242,7 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                 job={selectedJob}
                 readOnly={readOnly}
                 onJobUpdated={updateJob}
+                onJobsRefresh={() => refreshJobs(true, true)}
                 onMessage={setMessage}
                 onActionDialogOpenChange={setDetailActionOpen}
               />
@@ -1227,12 +1258,14 @@ function ServiceJobDetail({
   job,
   readOnly,
   onJobUpdated,
+  onJobsRefresh,
   onMessage,
   onActionDialogOpenChange,
 }: {
   job: ServiceJob
   readOnly: boolean
   onJobUpdated: (job: ServiceJob) => void
+  onJobsRefresh?: () => Promise<void>
   onMessage: (message: string | null) => void
   onActionDialogOpenChange: (open: boolean) => void
 }) {
@@ -1401,6 +1434,8 @@ function ServiceJobDetail({
         }
       }
 
+      await onJobsRefresh?.()
+
       onMessage(response.message ?? successMessage)
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'İşlem tamamlanamadı.')
@@ -1523,6 +1558,8 @@ function ServiceJobDetail({
       if (payload.job) {
         onJobUpdated(payload.job)
       }
+
+      await onJobsRefresh?.()
 
       setPhotoFiles({})
       setPhotoPreviewUrls({})

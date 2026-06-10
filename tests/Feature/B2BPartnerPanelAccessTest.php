@@ -3157,6 +3157,74 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonMissing(['mrn' => 'MRN-SCOPE-B']);
     }
 
+    public function test_partner_service_jobs_normalizes_legacy_turkish_address_for_display(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $scope['jobA']->forceFill([
+            'customer_name' => 'M??teri Smoke',
+            'customer_city' => '?stanbul',
+            'customer_district' => 'Kad?k?y',
+            'service_address' => '?stanbul · Kad?k?y',
+            'status' => 'Planl?',
+            'workflow_status' => 'Tamamland?',
+        ])->save();
+
+        $response = $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonPath('jobs.0.customer_name', 'Müşteri Smoke')
+            ->assertJsonPath('jobs.0.city', 'İstanbul')
+            ->assertJsonPath('jobs.0.district', 'Kadıköy')
+            ->assertJsonPath('jobs.0.address_summary', 'İstanbul · Kadıköy')
+            ->assertJsonPath('jobs.0.status_label', 'Planlı')
+            ->assertJsonPath('jobs.0.service_stage_label', 'Tamamlandı');
+
+        $encoded = json_encode($response->json('jobs.0'), JSON_UNESCAPED_UNICODE);
+        $this->assertIsString($encoded);
+        $this->assertStringNotContainsString('?stanbul', $encoded);
+        $this->assertStringNotContainsString('Kad?k?y', $encoded);
+        $this->assertStringNotContainsString('M??teri', $encoded);
+        $this->assertStringNotContainsString('Planl?', $encoded);
+        $this->assertStringNotContainsString('Tamamland?', $encoded);
+        $this->assertStringNotContainsString('�', $encoded);
+    }
+
+    public function test_ops_detail_does_not_render_mojibake_user_facing_labels(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician([
+            'name' => 'SMOKE-SCOPE-20260606021857 Other Usta',
+            'city' => '?stanbul',
+            'district' => 'Kad?k?y',
+        ]);
+        $request = $this->serviceRequestForTechnician($technician, 'MRN-LEGACY-TR', [
+            'customer_name' => 'M??teri Smoke',
+            'customer_city' => '?stanbul',
+            'customer_district' => 'Kad?k?y',
+            'service_address' => '?stanbul · Kad?k?y',
+            'status' => 'Planl?',
+            'workflow_status' => 'Tamamland?',
+            'technician_name' => $technician->name,
+        ]);
+
+        $response = $this->actingAs($admin)
+            ->getJson('/api/technical-service/requests/'.$request->id)
+            ->assertOk()
+            ->assertJsonPath('request.customer_name', 'Müşteri Smoke')
+            ->assertJsonPath('request.customer_city', 'İstanbul')
+            ->assertJsonPath('request.customer_district', 'Kadıköy')
+            ->assertJsonPath('request.service_address', 'İstanbul · Kadıköy')
+            ->assertJsonPath('request.status', 'Tamamlandı')
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı')
+            ->assertJsonPath('request.technical_service_technician.name', 'SMOKE-SCOPE-20260606021857 Diğer Usta');
+
+        $encoded = json_encode($response->json('request'), JSON_UNESCAPED_UNICODE);
+        $this->assertIsString($encoded);
+        foreach (['?stanbul', 'Kad?k?y', 'M??teri', 'Planl?', 'Tamamland?', 'Other Usta', '�'] as $badFragment) {
+            $this->assertStringNotContainsString($badFragment, $encoded);
+        }
+    }
+
     public function test_partner_user_cannot_see_completed_jobs_from_other_technician(): void
     {
         $scope = $this->partnerPortalScopeFixture();
@@ -5167,7 +5235,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => TechnicalServiceCustomerConfirmation::STATUS_CANCELLED,
         ]);
         $this->post("/service-job-confirmation/{$oldConfirmation->token}/approve")
-            ->assertStatus(410);
+            ->assertStatus(410)
+            ->assertSee('Bu onay bağlantısı artık geçerli değil', false)
+            ->assertDontSee('Laravel', false);
         $this->assertDatabaseMissing('technical_service_partner_job_actions', [
             'technical_service_request_id' => $job->id,
             'action' => TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_CONFIRMED,
@@ -5223,6 +5293,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             'id' => $confirmation->id,
             'status' => TechnicalServiceCustomerConfirmation::STATUS_APPROVED,
         ]);
+        $this->post("/service-job-confirmation/{$confirmation->token}/approve", [
+            'customer_note' => 'Tekrar onay denemesi.',
+        ])
+            ->assertOk()
+            ->assertSee('Teşekkür ederiz', false)
+            ->assertDontSee('Laravel', false);
         $job->refresh();
         $this->assertNull($job->completed_at);
         $this->assertNotSame('Tamamlandı', $job->workflow_status);

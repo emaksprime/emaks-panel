@@ -11,6 +11,7 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -344,6 +345,58 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         Http::assertSentCount(0);
     }
 
+    public function test_srv_travel_earning_calculates_on_first_locksmith_selection(): void
+    {
+        config([
+            'services.google.routes_api_key' => 'test-google-routes-key',
+            'services.google.routes_fee_per_km' => 10,
+        ]);
+        Http::fake([
+            'https://routes.googleapis.com/*' => Http::response($this->googleRoutesResponseForRoundTripKm(60), 200),
+        ]);
+
+        $parent = $this->technicalServiceRequestWithLocation();
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-ROUTE-FIRST-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-ROUTE-FIRST-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'location_latitude' => null,
+            'location_longitude' => null,
+        ]);
+        $technician = $this->technicianWithLocation();
+
+        $payload = app(TechnicalServiceRouteCostService::class)->quote($child->fresh(), $technician, true);
+
+        $this->assertSame(TechnicalServiceRouteQuote::STATUS_CALCULATED, $payload['status']);
+        $this->assertSame(60.0, $payload['round_trip_distance_km']);
+        $this->assertSame(30.0, $payload['billable_km']);
+        $this->assertSame(300.0, $payload['fee_amount']);
+        $this->assertSame((float) $parent->location_latitude, $payload['destination_latitude']);
+        $this->assertSame((float) $parent->location_longitude, $payload['destination_longitude']);
+        $this->assertSame('60.00', $child->fresh()->travel_round_trip_km);
+        $this->assertSame('300.00', $child->fresh()->travel_fee_amount);
+        Http::assertSentCount(1);
+    }
+
+    public function test_locksmith_travel_earning_calculates_on_initial_selection_without_reselect(): void
+    {
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+
+        $this->assertIsString($pageSource);
+        $this->assertStringContainsString('routeQuoteLatestSelection.current = {', $pageSource);
+        $this->assertStringContainsString('const autoKey = [', $pageSource);
+        $this->assertStringContainsString('window.setTimeout(() =>', $pageSource);
+        $this->assertStringContainsString('routeQuoteLastAutoKey.current = autoKey', $pageSource);
+        $this->assertStringContainsString('routeQuoteAutoRequestSeq.current', $pageSource);
+        $this->assertStringContainsString('technicianCoordinates.latitude', $pageSource);
+        $this->assertStringContainsString('requestCoordinates.latitude', $pageSource);
+        $this->assertStringContainsString('/route-quote', $pageSource);
+    }
+
     public function test_dirty_zero_distance_quote_is_not_displayed_as_calculated_fee(): void
     {
         config([
@@ -652,6 +705,49 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertNull($byName['Plus Code Usta']['longitude']);
     }
 
+    public function test_route_suggestion_card_uses_display_safe_city_district(): void
+    {
+        $user = $this->adminUser();
+        TechnicalServiceTechnician::query()->create([
+            'name' => 'SMOKE-SCOPE-20260606021857 Other Usta',
+            'phone' => '+905550005620',
+            'city' => '?stanbul',
+            'district' => 'Kad?k?y',
+            'address' => '?stanbul · Kad?k?y',
+            'active' => true,
+        ]);
+
+        $item = collect($this->actingAs($user)
+            ->getJson('/api/technical-service/technicians?active=1')
+            ->assertOk()
+            ->json('items'))
+            ->firstWhere('phone', '+905550005620');
+
+        $this->assertIsArray($item);
+        $this->assertSame('SMOKE-SCOPE-20260606021857 Diğer Usta', $item['name']);
+        $this->assertSame('İstanbul', $item['city']);
+        $this->assertSame('Kadıköy', $item['district']);
+        $this->assertSame('İstanbul · Kadıköy', $item['address']);
+
+        $encoded = json_encode($item, JSON_UNESCAPED_UNICODE);
+        $this->assertIsString($encoded);
+        $this->assertStringNotContainsString('?stanbul', $encoded);
+        $this->assertStringNotContainsString('Kad?k?y', $encoded);
+        $this->assertStringNotContainsString('Other Usta', $encoded);
+        $this->assertStringNotContainsString('�', $encoded);
+    }
+
+    public function test_legacy_turkish_normalizer_is_idempotent_for_valid_turkish_and_fixes_mojibake_labels(): void
+    {
+        $valid = 'İstanbul / Kadıköy / Müşteri / Fotoğraf / Çilingir';
+
+        $this->assertSame($valid, TechnicalServiceUiLabelService::cleanDisplayText($valid));
+        $this->assertSame('İstanbul / Kadıköy', TechnicalServiceUiLabelService::cleanDisplayText('?stanbul / Kad?k?y'));
+        $this->assertSame('Müşteri Planlı Tamamlandı', TechnicalServiceUiLabelService::cleanDisplayText('M??teri Planl? Tamamland?'));
+        $this->assertSame('Usta işi kabul etti', TechnicalServiceUiLabelService::cleanDisplayText('Usta iÅŸi kabul etti'));
+        $this->assertSame('Fotoğraf / Müşteri / Çilingir', TechnicalServiceUiLabelService::cleanDisplayText('FotoÄŸraf / MÃ¼ÅŸteri / Ã‡ilingir'));
+    }
+
     public function test_frontend_contains_route_quote_and_travel_fee_labels(): void
     {
         $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
@@ -681,8 +777,14 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Montaj durumu',
             'Km başı ücret',
             'Hesaplanmadı',
-            "hasActiveRouteQuote ? numericInputValue(routeOneWayKm) : ''",
-            "hasActiveRouteQuote ? numericInputValue(routeBillableKm) : '0'",
+            'storedRouteRoundTripKm',
+            'storedRouteBillableKm',
+            'storedRouteFeeAmount',
+            'hasRouteCostEvidence',
+            'shouldShowRouteQuoteLoading',
+            "hasRouteCostEvidence ? numericInputValue(routeOneWayKm) : ''",
+            "hasRouteCostEvidence ? numericInputValue(routeBillableKm) : '0'",
+            'Usta yol hakedişi kaydedildi',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $detailsSource);
         }

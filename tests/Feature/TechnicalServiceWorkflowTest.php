@@ -1023,7 +1023,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(1, substr_count($source, 'aria-label="Servis/parça ödeme linki oluştur"'));
 
         $actionPosition = strpos($source, 'data-testid="service-part-payment-action"');
-        $operationPanelPosition = strpos($source, 'title="Operasyon ve Montaj Kontrolü"');
+        $operationPanelPosition = strpos($source, "title={showMountOperationControls ? 'Operasyon ve Montaj Kontrolü' : 'SRV Bağlamı'}");
 
         $this->assertNotFalse($actionPosition);
         $this->assertNotFalse($operationPanelPosition);
@@ -1095,6 +1095,154 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('Servis', $payload['earning_breakdown']['current_visit']['kind_label']);
         $this->assertSame(1800.0, $payload['earning_breakdown']['current_visit']['total_amount']);
         $this->assertSame(['Montaj', 'Servis'], collect($payload['earning_breakdown']['rows'])->pluck('kind_label')->all());
+    }
+
+    public function test_srv_assignment_does_not_require_parent_mount_or_door_checks(): void
+    {
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-GATE-PARENT',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+                'door_photos_checked' => 'unreviewed',
+            ],
+        ]);
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-SRV-GATE-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SRV-GATE-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+                'door_photos_checked' => 'unreviewed',
+            ],
+        ]);
+
+        $service = app(TechnicalServiceWorkflowService::class);
+        $service->assertOperationControlsAllowAssignment($child->fresh());
+        $payload = $service->serialize($child->fresh(), true);
+
+        $this->assertTrue($payload['visible_sections']['is_service_visit']);
+        $this->assertFalse($payload['visible_sections']['operation_mount_controls']);
+        $this->assertFalse($payload['visible_sections']['payment_control']);
+        $this->assertFalse($payload['visible_sections']['door_photo_control']);
+        $this->assertFalse($payload['operation_control']['applies_to_assignment']);
+        $this->assertFalse($payload['operation_control']['show_mount_controls']);
+        $this->assertFalse($payload['operation_control']['show_payment_control']);
+        $this->assertFalse($payload['operation_control']['show_door_photo_control']);
+        $this->assertFalse($payload['assignment_blockers']['applies_to_assignment']);
+        $this->assertSame([], $payload['assignment_blockers']['messages']);
+    }
+
+    public function test_srv_finance_summary_keeps_current_visit_and_root_totals_separate(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'SRV Finans Ustası',
+            'phone' => '+905551111119',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-FINANCE-PARENT',
+            'service_type' => 'Montaj',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_provider' => 'fake',
+            'mount_payment_reference' => 'parent-mount-paid',
+            'mount_payment_paid_at' => now(),
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $parentSession = $this->mountSessionForRequest($parent);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $parentSession->id,
+            'technical_service_request_id' => $parent->id,
+            'provider' => 'fake',
+            'provider_reference' => 'parent-mount-paid',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3000,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'public_form_payment'],
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1000,
+            'route_fee_amount' => 100,
+            'total_amount' => 1100,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-SRV-FINANCE-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SRV-FINANCE-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $childSession = $this->mountSessionForRequest($child);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $childSession->id,
+            'technical_service_request_id' => $child->id,
+            'provider' => 'fake',
+            'provider_reference' => 'srv-service-part-paid',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 750,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'service_and_part_payment',
+                'service_amount' => 500,
+                'part_amount' => 250,
+                'total_amount' => 750,
+            ],
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $child->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 600,
+            'route_fee_amount' => 80,
+            'total_amount' => 680,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+
+        $this->assertNull($payload['sale_and_payment']['payment_summary']['mount']['amount']);
+        $this->assertFalse($payload['sale_and_payment']['payment_summary']['has_mount_collection']);
+        $this->assertTrue($payload['sale_and_payment']['payment_summary']['has_service_charge']);
+        $this->assertTrue($payload['sale_and_payment']['payment_summary']['has_part_charge']);
+        $this->assertSame(750.0, $payload['sale_and_payment']['payment_summary']['total_customer_collection']);
+        $this->assertSame(500.0, $payload['service_customer_payment']);
+        $this->assertSame(250.0, $payload['part_customer_payment']);
+        $this->assertSame(750.0, $payload['total_customer_collected']);
+        $this->assertSame(680.0, $payload['earning_breakdown']['current_visit']['total_amount']);
+        $this->assertSame(1780.0, $payload['earning_breakdown']['root_total']['total_amount']);
+    }
+
+    public function test_user_facing_status_labels_have_no_mojibake(): void
+    {
+        $dirty = 'M??teri Planl? Tamamland? iÅŸ FotoÄŸraf Ã‡ilingir';
+
+        $clean = \App\Services\TechnicalService\TechnicalServiceUiLabelService::cleanDisplayText($dirty);
+
+        $this->assertSame('Müşteri Planlı Tamamlandı iş Fotoğraf Çilingir', $clean);
+        foreach (['M??teri', 'Planl?', 'Tamamland?', 'iÅŸ', 'FotoÄŸ', 'Ã‡'] as $brokenToken) {
+            $this->assertStringNotContainsString($brokenToken, $clean);
+        }
     }
 
     public function test_payment_block_shows_paid_amount(): void

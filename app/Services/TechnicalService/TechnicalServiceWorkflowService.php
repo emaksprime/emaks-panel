@@ -1020,6 +1020,20 @@ class TechnicalServiceWorkflowService
         ]);
 
         $payload = $request->toArray();
+        $displayCity = TechnicalServiceUiLabelService::cityLabel($request->customer_city);
+        $displayDistrict = TechnicalServiceUiLabelService::districtLabel($request->customer_district, $displayCity);
+        $payload['customer_name'] = TechnicalServiceUiLabelService::cleanDisplayText($request->customer_name);
+        $payload['customer_city'] = $displayCity;
+        $payload['customer_district'] = $displayDistrict;
+        $payload['service_address'] = TechnicalServiceUiLabelService::addressLabel($request->service_address);
+        $payload['location_formatted_address'] = TechnicalServiceUiLabelService::addressLabel($request->location_formatted_address);
+        $payload['technician_name'] = TechnicalServiceUiLabelService::displayName($request->technician_name);
+        $payload['status'] = TechnicalServiceUiLabelService::cleanDisplayText($request->status);
+        $payload['workflow_status'] = TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status);
+        $payload['next_action'] = TechnicalServiceUiLabelService::cleanDisplayText($request->next_action);
+        $payload['technician_record'] = $request->technicianRecord
+            ? $this->technicianRecordDisplayPayload($request->technicianRecord)
+            : null;
         $payload['service_type'] = $this->displayServiceType($request);
         $payload['events'] = $this->eventPayload($request->events);
         $payload['technician_phone'] = $request->technicianRecord?->phone;
@@ -1027,20 +1041,17 @@ class TechnicalServiceWorkflowService
         $payload['technical_service_technician'] = $request->technicianRecord
             ? [
                 'id' => $request->technicianRecord->id,
-                'name' => $request->technicianRecord->name,
+                'name' => TechnicalServiceUiLabelService::displayName($request->technicianRecord->name),
                 'phone' => $request->technicianRecord->phone,
             ]
             : null;
         $payload['technicalServiceTechnician'] = $payload['technical_service_technician'];
-        $payload['status'] = $request->status;
-        $payload['workflow_status'] = $request->workflow_status;
-        $payload['next_action'] = $request->next_action;
         $payload['field_completion_note'] = TechnicalServiceUiLabelService::cleanDisplayText($request->field_completion_note);
         $payload['completion_block_reason'] = TechnicalServiceUiLabelService::cleanDisplayText($request->completion_block_reason);
         $payload['sla_status'] = $request->sla_status ?? self::SLA_NORMAL;
         $payload['allowed_workflow_actions'] = $this->allowedActionsFor($request);
         $payload['allowed_workflow_transitions'] = self::transitionMap()[$this->currentWorkflowStatus($request)] ?? [];
-        $payload['latest_event'] = $request->events->last()?->title;
+        $payload['latest_event'] = TechnicalServiceUiLabelService::cleanDisplayText($request->events->last()?->title);
         $payload = array_merge($payload, $this->financialAliases($request));
         $payload['qr_source'] = $this->qrSourcePayload($request);
         $payload['product'] = $this->qrProductPayload($request);
@@ -1128,6 +1139,10 @@ class TechnicalServiceWorkflowService
 
     public function assertOperationControlsAllowAssignment(TechnicalServiceRequest $request): void
     {
+        if ($this->isServiceVisitRequest($request)) {
+            return;
+        }
+
         $operationControl = $this->operationControlPayload($request);
         $errors = [];
 
@@ -1595,6 +1610,10 @@ class TechnicalServiceWorkflowService
             ],
             'total_customer_collection' => $totalCustomerCollection,
             'total_customer_collection_label' => $this->moneyLabel($totalCustomerCollection),
+            'has_mount_collection' => $hasMountCollection,
+            'has_service_charge' => $paidServiceAmount > 0,
+            'has_part_charge' => $paidPartAmount > 0,
+            'has_extra_charge' => $paidExtraAmount > 0,
         ];
     }
 
@@ -1801,7 +1820,7 @@ class TechnicalServiceWorkflowService
             'is_current' => (int) $request->id === (int) $currentRequest->id,
             'is_parent' => $request->parent_request_id === null,
             'technician_id' => $request->technical_service_technician_id,
-            'technician_name' => $request->technician_name,
+            'technician_name' => TechnicalServiceUiLabelService::displayName($request->technician_name),
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
             'total_amount' => $totalAmount,
@@ -2160,6 +2179,14 @@ class TechnicalServiceWorkflowService
     private function operationControlPayload(TechnicalServiceRequest $request): array
     {
         $payload = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $isServiceVisit = $this->isServiceVisitRequest($request);
+        $showMountControls = ! $isServiceVisit;
+        $addressControlActionable = $showMountControls
+            && (
+                ($payload['address_checked'] ?? 'unreviewed') !== 'unreviewed'
+                || filled($request->location_note)
+                || blank($request->service_address)
+            );
 
         $result = array_replace([
             'payment_checked' => 'unreviewed',
@@ -2190,6 +2217,15 @@ class TechnicalServiceWorkflowService
             'required' => $this->requiresMountExclusionAcknowledgement($request),
             'payment_received' => $this->mountPaymentReceived($request),
         ]);
+        $result['is_service_visit'] = $isServiceVisit;
+        $result['applies_to_assignment'] = ! $isServiceVisit;
+        $result['show_mount_controls'] = $showMountControls;
+        $result['show_payment_control'] = $showMountControls;
+        $result['show_door_photo_control'] = $showMountControls;
+        $result['show_address_control'] = $addressControlActionable;
+        $result['show_schedule_control'] = $showMountControls
+            || ($payload['schedule_update_required'] ?? 'unreviewed') !== 'unreviewed';
+        $result['context_mode'] = $isServiceVisit ? 'service_visit_context' : 'mount_operation';
 
         return $result;
     }
@@ -2203,16 +2239,16 @@ class TechnicalServiceWorkflowService
             'latitude' => $request->location_latitude !== null ? (float) $request->location_latitude : null,
             'longitude' => $request->location_longitude !== null ? (float) $request->location_longitude : null,
             'place_id' => $request->location_place_id,
-            'formatted_address' => $request->location_formatted_address,
+            'formatted_address' => TechnicalServiceUiLabelService::addressLabel($request->location_formatted_address),
             'map_url' => $request->location_map_url,
             'source' => $request->location_source,
             'accuracy' => $request->location_accuracy,
-            'note' => $request->location_note,
+            'note' => TechnicalServiceUiLabelService::addressLabel($request->location_note),
             'building_no' => $request->building_no,
             'apartment_no' => $request->apartment_no,
             'door_no' => $request->door_no,
             'floor_no' => $request->floor_no,
-            'site_name' => $request->site_name,
+            'site_name' => TechnicalServiceUiLabelService::addressLabel($request->site_name),
             'shared' => filled($request->location_latitude) && filled($request->location_longitude),
         ];
     }
@@ -2346,6 +2382,17 @@ class TechnicalServiceWorkflowService
      */
     private function assignmentBlockers(TechnicalServiceRequest $request): array
     {
+        if ($this->isServiceVisitRequest($request)) {
+            return [
+                'payment_check_required' => false,
+                'door_photo_check_required' => false,
+                'mount_exclusion_ack_required' => false,
+                'mount_payment_received' => false,
+                'applies_to_assignment' => false,
+                'messages' => [],
+            ];
+        }
+
         $operationControl = $this->operationControlPayload($request);
         $messages = [];
         $paymentRequired = ($operationControl['payment_checked'] ?? 'unreviewed') !== 'yes';
@@ -2365,6 +2412,7 @@ class TechnicalServiceWorkflowService
             'door_photo_check_required' => $doorPhotoRequired,
             'mount_exclusion_ack_required' => $mountExclusionAckRequired,
             'mount_payment_received' => $this->mountPaymentReceived($request),
+            'applies_to_assignment' => true,
             'messages' => $messages,
         ];
     }
@@ -2414,14 +2462,14 @@ class TechnicalServiceWorkflowService
             'id' => $offer->id,
             'technical_service_request_id' => $offer->technical_service_request_id,
             'technical_service_technician_id' => $offer->technical_service_technician_id,
-            'technician_name' => $offer->technician?->name,
+            'technician_name' => TechnicalServiceUiLabelService::displayName($offer->technician?->name),
             'route_quote_id' => $offer->route_quote_id,
             'labor_amount' => (float) $offer->labor_amount,
             'route_fee_amount' => (float) $offer->route_fee_amount,
             'total_amount' => (float) $offer->total_amount,
             'currency' => $offer->currency,
             'status' => $offer->status,
-            'note' => $offer->note,
+            'note' => TechnicalServiceUiLabelService::cleanDisplayText($offer->note),
             'sent_at' => $this->dateTimeString($offer->sent_at),
             'metadata' => $metadata,
             'message_payload' => $messagePayload,
@@ -2431,6 +2479,38 @@ class TechnicalServiceWorkflowService
             'created_at' => $this->dateTimeString($offer->created_at),
             'updated_at' => $this->dateTimeString($offer->updated_at),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function technicianRecordDisplayPayload(TechnicalServiceTechnician $technician): array
+    {
+        $payload = $technician->toArray();
+        $city = TechnicalServiceUiLabelService::cityLabel($technician->city);
+
+        $payload['name'] = TechnicalServiceUiLabelService::displayName($technician->name);
+        $payload['first_name'] = TechnicalServiceUiLabelService::displayName($technician->first_name);
+        $payload['last_name'] = TechnicalServiceUiLabelService::displayName($technician->last_name);
+        $payload['display_name'] = TechnicalServiceUiLabelService::displayName($technician->display_name);
+        $payload['city'] = $city;
+        $payload['district'] = TechnicalServiceUiLabelService::districtLabel($technician->district, $city);
+
+        foreach ([
+            'address',
+            'google_formatted_address',
+            'default_start_address',
+            'mikro_cari_adi',
+            'cari_title',
+            'cari_address',
+            'cari_city_district_country',
+            'note',
+            'route_note',
+        ] as $field) {
+            $payload[$field] = TechnicalServiceUiLabelService::addressLabel($technician->{$field});
+        }
+
+        return $payload;
     }
 
     /**
@@ -2577,11 +2657,16 @@ class TechnicalServiceWorkflowService
 
     private function displayServiceType(TechnicalServiceRequest $request): ?string
     {
-        if ($request->parent_request_id !== null || $request->service_code !== null) {
+        if ($this->isServiceVisitRequest($request)) {
             return 'Servis';
         }
 
         return $request->service_type;
+    }
+
+    private function isServiceVisitRequest(TechnicalServiceRequest $request): bool
+    {
+        return $request->parent_request_id !== null || filled($request->service_code);
     }
 
     /**
@@ -2590,7 +2675,7 @@ class TechnicalServiceWorkflowService
     private function visibleSectionsPayload(TechnicalServiceRequest $request): array
     {
         $displayServiceType = $this->displayServiceType($request);
-        $isServiceVisit = $request->parent_request_id !== null || filled($request->service_code) || $displayServiceType === 'Servis';
+        $isServiceVisit = $this->isServiceVisitRequest($request) || $displayServiceType === 'Servis';
         $isMount = $displayServiceType === 'Montaj' && ! $isServiceVisit;
         $isCompleted = in_array($this->normalizeToken($request->status), ['tamamlandi', 'tamamland'], true)
             || in_array($this->normalizeToken($request->workflow_status), ['tamamlandi', 'tamamland'], true)
@@ -2599,6 +2684,9 @@ class TechnicalServiceWorkflowService
         $partRequests = $request->relationLoaded('partRequests')
             ? $request->partRequests
             : $request->partRequests()->get();
+        $operationControlPayload = is_array($request->operation_control_payload)
+            ? $request->operation_control_payload
+            : [];
         $activePartRequests = $partRequests->filter(
             fn (TechnicalServicePartRequest $partRequest): bool => in_array((string) $partRequest->status, TechnicalServicePartRequest::ACTIVE_STATUSES, true),
         );
@@ -2615,6 +2703,18 @@ class TechnicalServiceWorkflowService
             'service_part_charge' => $hasChargeablePartRequest,
             'part_request_decision' => $activePartRequests->isNotEmpty(),
             'earnings_breakdown' => $isServiceVisit || $request->childRequests()->exists(),
+            'is_service_visit' => $isServiceVisit,
+            'operation_mount_controls' => ! $isServiceVisit,
+            'payment_control' => ! $isServiceVisit,
+            'door_photo_control' => ! $isServiceVisit,
+            'address_control' => ! $isServiceVisit
+                && (
+                    ($operationControlPayload['address_checked'] ?? 'unreviewed') !== 'unreviewed'
+                    || filled($request->location_note)
+                    || blank($request->service_address)
+                ),
+            'schedule_control' => ! $isServiceVisit
+                || (($operationControlPayload['schedule_update_required'] ?? 'unreviewed') !== 'unreviewed'),
             'manual_checks' => $isServiceVisit ? [
                 [
                     'code' => 'warranty_check',
@@ -2714,8 +2814,8 @@ class TechnicalServiceWorkflowService
             'service_code' => $request->service_code,
             'service_visit_reason' => $request->service_visit_reason,
             'service_visit_reason_label' => TechnicalServiceUiLabelService::serviceVisitReasonLabel($request->service_visit_reason),
-            'status' => $request->status,
-            'workflow_status' => $request->workflow_status,
+            'status' => TechnicalServiceUiLabelService::cleanDisplayText($request->status),
+            'workflow_status' => TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status),
             'completed_at' => $this->dateTimeString($request->completed_at),
             'created_at' => $this->dateTimeString($request->created_at),
             'latest_event' => $request->relationLoaded('events')
@@ -2733,8 +2833,8 @@ class TechnicalServiceWorkflowService
 
         return [
             ...$this->serviceVisitRequestSummary($request),
-            'customer_name' => $request->customer_name,
-            'technician_name' => $request->technicianRecord?->name ?? $request->technician_name,
+            'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->customer_name),
+            'technician_name' => TechnicalServiceUiLabelService::displayName($request->technicianRecord?->name ?? $request->technician_name),
             'technician_phone' => $request->technicianRecord?->phone,
             'scheduled_at' => $this->dateTimeString($request->scheduled_at),
             'field_started_at' => $this->dateTimeString($request->field_started_at),
@@ -2978,6 +3078,10 @@ class TechnicalServiceWorkflowService
      */
     private function primaryMountPaidAmount(TechnicalServiceRequest $request, array $paymentStatus, ?array $extraPayment): ?float
     {
+        if ($this->isServiceVisitRequest($request)) {
+            return null;
+        }
+
         $latestPaymentId = $paymentStatus['latest_payment_id'] ?? null;
         $extraPaymentId = $extraPayment['id'] ?? null;
         $latestPaymentIsExtra = $latestPaymentId !== null
@@ -3003,11 +3107,12 @@ class TechnicalServiceWorkflowService
      */
     private function financialAliases(TechnicalServiceRequest $request): array
     {
+        $isServiceVisit = $this->isServiceVisitRequest($request);
         $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $customerCharges = $this->customerChargeSummaryPayload($request);
         $paidMountCustomerAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment);
-        $customerAmount = $paidMountCustomerAmount ?? $this->customerAmountForService($request->service_type);
+        $customerAmount = $paidMountCustomerAmount ?? ($isServiceVisit ? null : $this->customerAmountForService($request->service_type));
         $paidExtraCustomerAmount = ($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
             ? (float) ($extraPayment['amount'] ?? 0)
             : 0.0;
@@ -3026,7 +3131,7 @@ class TechnicalServiceWorkflowService
                 : null);
         $technicianFee = $request->technician_payment_amount !== null
             ? (float) $request->technician_payment_amount
-            : $customerAmount;
+            : ($isServiceVisit ? null : $customerAmount);
         $totalTechnicianCost = $technicianFee !== null && $travelFee !== null
             ? $technicianFee + $travelFee
             : null;

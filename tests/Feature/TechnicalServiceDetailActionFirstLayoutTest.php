@@ -102,6 +102,64 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertLessThan($completionSectionIndex, $photosSectionIndex);
     }
 
+    public function test_ops_detail_hides_empty_service_part_payment_blocks_when_no_charge(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const showServicePartPaymentSummary', $source);
+        $this->assertStringContainsString('const showPaymentTechnicalDetails', $source);
+        $this->assertStringContainsString('{showServicePartPaymentSummary ? (', $source);
+        $this->assertStringContainsString('{showPaymentTechnicalDetails ? (', $source);
+        $this->assertStringContainsString('hasServiceCustomerPayment ? (', $source);
+        $this->assertStringContainsString('hasPartCustomerPayment ? (', $source);
+        $this->assertStringNotContainsString("paidServiceCustomerAmount > 0 ? formatMoneyValue(paidServiceCustomerAmount) : 'Yok'", $source);
+        $this->assertStringNotContainsString("paidPartCustomerAmount > 0 ? formatMoneyValue(paidPartCustomerAmount) : 'Yok'", $source);
+    }
+
+    public function test_ops_detail_hides_address_check_when_not_actionable(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $types = $this->source('resources/js/components/technical-service/types.ts');
+        $workflow = $this->source('app/Services/TechnicalService/TechnicalServiceWorkflowService.php');
+
+        $this->assertStringContainsString('const showAddressControl', $source);
+        $this->assertStringContainsString('{showAddressControl ? (', $source);
+        $this->assertStringContainsString('show_address_control?: boolean', $types);
+        $this->assertStringContainsString("\$result['show_address_control'] = \$addressControlActionable", $workflow);
+    }
+
+    public function test_ops_detail_hides_mount_operation_controls_for_srv_unless_manual_check_needed(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $types = $this->source('resources/js/components/technical-service/types.ts');
+        $workflow = $this->source('app/Services/TechnicalService/TechnicalServiceWorkflowService.php');
+
+        $this->assertStringContainsString('const showMountOperationControls', $source);
+        $this->assertStringContainsString('SRV Bağlamı', $source);
+        $this->assertStringContainsString('{showDoorPhotoControl ? (', $source);
+        $this->assertStringContainsString('show_mount_controls?: boolean', $types);
+        $this->assertStringContainsString("\$result['context_mode'] = \$isServiceVisit ? 'service_visit_context' : 'mount_operation'", $workflow);
+    }
+
+    public function test_partner_actions_refresh_job_cards_without_manual_reload(): void
+    {
+        $source = $this->source('resources/js/pages/partner/portal-shell.tsx');
+
+        $this->assertStringContainsString('const refreshJobs = useCallback(async (silent = true, force = false)', $source);
+        $this->assertStringContainsString('onJobsRefresh={() => refreshJobs(true, true)}', $source);
+        $this->assertStringContainsString('await onJobsRefresh?.()', $source);
+        $this->assertStringContainsString('onJobsRefresh?: () => Promise<void>', $source);
+    }
+
+    public function test_earning_summary_displays_selected_locksmith_name(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const earningSummaryTechnicianName', $source);
+        $this->assertStringContainsString('Hakediş / Maliyet Özeti — {earningSummaryTechnicianName}', $source);
+        $this->assertStringContainsString("selectedTechnician?.name || request.technicianName || 'Usta seçilmedi'", $source);
+    }
+
     public function test_timeline_label_fallbacks_do_not_render_unknown_operation(): void
     {
         $opsSource = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');

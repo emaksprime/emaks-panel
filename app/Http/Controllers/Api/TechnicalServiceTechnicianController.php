@@ -8,6 +8,7 @@ use App\Http\Requests\StoreTechnicalServiceTechnicianRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\TechnicalService\TechnicalServiceGeocodingService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -96,7 +97,9 @@ class TechnicalServiceTechnicianController extends Controller
                 ->orderByRaw('priority is null')
                 ->orderBy('priority')
                 ->orderBy('name')
-                ->get(),
+                ->get()
+                ->map(fn (TechnicalServiceTechnician $technician): array => $this->technicianResponsePayload($technician))
+                ->values(),
         ]);
     }
 
@@ -104,7 +107,7 @@ class TechnicalServiceTechnicianController extends Controller
     {
         $technician = TechnicalServiceTechnician::create($this->technicianPayload($request->validated()));
 
-        return response()->json(['technician' => $technician], 201);
+        return response()->json(['technician' => $this->technicianResponsePayload($technician)], 201);
     }
 
     public function update(
@@ -125,7 +128,7 @@ class TechnicalServiceTechnicianController extends Controller
 
         $technician->update($payload);
 
-        return response()->json(['technician' => $technician->fresh()]);
+        return response()->json(['technician' => $this->technicianResponsePayload($technician->fresh())]);
     }
 
     public function geocode(
@@ -144,7 +147,7 @@ class TechnicalServiceTechnicianController extends Controller
                 'ok' => false,
                 'message' => $result['error_message'] ?? 'Geocoding başarısız.',
                 'result' => $result,
-                'technician' => $technician->fresh(),
+                'technician' => $this->technicianResponsePayload($technician->fresh()),
             ], 422);
         }
 
@@ -162,7 +165,7 @@ class TechnicalServiceTechnicianController extends Controller
             'ok' => true,
             'message' => 'Koordinat Google ile güncellendi.',
             'result' => $result,
-            'technician' => $technician->fresh(),
+            'technician' => $this->technicianResponsePayload($technician->fresh()),
         ]);
     }
 
@@ -170,7 +173,7 @@ class TechnicalServiceTechnicianController extends Controller
     {
         $technician->update(['active' => false]);
 
-        return response()->json(['technician' => $technician->fresh()]);
+        return response()->json(['technician' => $this->technicianResponsePayload($technician->fresh())]);
     }
 
     public function importCsv(ImportTechnicalServiceTechniciansCsvRequest $request): JsonResponse
@@ -323,6 +326,38 @@ class TechnicalServiceTechnicianController extends Controller
     private function normalizeDuplicateKey(?string $value): string
     {
         return Str::lower(trim((string) $value));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function technicianResponsePayload(TechnicalServiceTechnician $technician): array
+    {
+        $payload = $technician->toArray();
+        $city = TechnicalServiceUiLabelService::cityLabel($technician->city);
+
+        $payload['name'] = TechnicalServiceUiLabelService::displayName($technician->name);
+        $payload['first_name'] = TechnicalServiceUiLabelService::displayName($technician->first_name);
+        $payload['last_name'] = TechnicalServiceUiLabelService::displayName($technician->last_name);
+        $payload['display_name'] = TechnicalServiceUiLabelService::displayName($technician->display_name);
+        $payload['city'] = $city;
+        $payload['district'] = TechnicalServiceUiLabelService::districtLabel($technician->district, $city);
+
+        foreach ([
+            'address',
+            'google_formatted_address',
+            'default_start_address',
+            'mikro_cari_adi',
+            'cari_title',
+            'cari_address',
+            'cari_city_district_country',
+            'note',
+            'route_note',
+        ] as $field) {
+            $payload[$field] = TechnicalServiceUiLabelService::addressLabel($technician->{$field});
+        }
+
+        return $payload;
     }
 
     private function normalizeCsvEncoding(string $contents): string

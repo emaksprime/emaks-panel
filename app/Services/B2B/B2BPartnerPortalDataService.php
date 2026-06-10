@@ -119,13 +119,13 @@ class B2BPartnerPortalDataService
 
         return [
             'id' => $partner->id,
-            'display_name' => $partner->display_name,
+            'display_name' => TechnicalServiceUiLabelService::displayName($partner->display_name),
             'capabilities' => $partner->capabilityCodes(),
             'phone' => $partner->phone,
             'email' => $partner->email,
-            'city' => $partner->city,
-            'district' => $partner->district,
-            'address' => $partner->address ?? ($metadata['address'] ?? null),
+            'city' => TechnicalServiceUiLabelService::cityLabel($partner->city),
+            'district' => TechnicalServiceUiLabelService::districtLabel($partner->district, $partner->city),
+            'address' => TechnicalServiceUiLabelService::addressLabel($partner->address ?? ($metadata['address'] ?? null)),
             'child_accounts' => $this->safeChildAccounts($metadata['child_cari_accounts'] ?? []),
             'linked_technicians' => $this->safeTechnicianSummaries($partner),
             'users_count' => $partner->profiles->count(),
@@ -476,6 +476,8 @@ class B2BPartnerPortalDataService
         if ($appointmentLabel === null && $hasAppointmentProposalInReview) {
             $appointmentLabel = 'Randevu önerildi';
         }
+        $displayCity = TechnicalServiceUiLabelService::cityLabel($request->customer_city);
+        $displayDistrict = TechnicalServiceUiLabelService::districtLabel($request->customer_district, $displayCity);
 
         return [
             'id' => $request->id,
@@ -483,13 +485,13 @@ class B2BPartnerPortalDataService
             'parent_request_id' => $request->parent_request_id,
             'root_mrn' => $request->root_mrn,
             'service_code' => $request->service_code,
-            'status_label' => $request->status,
-            'service_stage_label' => $request->workflow_status,
-            'customer_name' => $request->customer_name,
+            'status_label' => TechnicalServiceUiLabelService::cleanDisplayText($request->status),
+            'service_stage_label' => TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status),
+            'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->customer_name),
             'customer_phone' => $request->customer_phone,
-            'city' => $request->customer_city,
-            'district' => $request->customer_district,
-            'address_summary' => $request->service_address,
+            'city' => $displayCity,
+            'district' => $displayDistrict,
+            'address_summary' => TechnicalServiceUiLabelService::addressLabel($request->service_address),
             'product_name' => $request->product_name,
             'product_model' => $request->product_model,
             'model' => $request->product_model,
@@ -498,16 +500,16 @@ class B2BPartnerPortalDataService
             'scheduled_at' => $request->scheduled_at?->toIso8601String(),
             'scheduled_date' => $request->scheduled_date?->toDateString(),
             'appointment_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
-            'appointment_label' => $appointmentLabel,
+            'appointment_label' => TechnicalServiceUiLabelService::cleanDisplayText($appointmentLabel),
             'priority' => $request->priority,
-            'status' => $request->status,
-            'workflow_status' => $request->workflow_status,
-            'next_action' => $partnerNextActionLabel,
+            'status' => TechnicalServiceUiLabelService::cleanDisplayText($request->status),
+            'workflow_status' => TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status),
+            'next_action' => TechnicalServiceUiLabelService::cleanDisplayText($partnerNextActionLabel),
             'field_action_hint' => $partnerColumn === 'appointment_confirmed'
                 ? $this->appointmentConfirmedPartnerHint($completionRequirements)
                 : null,
             'route_distance_summary' => $request->travel_round_trip_km !== null ? ((float) $request->travel_round_trip_km).' km' : null,
-            'payment_status_summary' => $request->mount_payment_label ?? $request->mount_payment_status,
+            'payment_status_summary' => TechnicalServiceUiLabelService::cleanDisplayText($request->mount_payment_label ?? $request->mount_payment_status),
             'maps_link' => $this->mapsLink($request),
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'checklist_status' => $request->checklist_status,
@@ -710,7 +712,7 @@ class B2BPartnerPortalDataService
                     'id' => $sibling->id,
                     'mrn' => $sibling->mrn,
                     'service_code' => $sibling->service_code,
-                    'status_label' => $sibling->workflow_status ?: $sibling->status,
+                    'status_label' => TechnicalServiceUiLabelService::cleanDisplayText($sibling->workflow_status ?: $sibling->status),
                 ]);
         }
 
@@ -788,8 +790,8 @@ class B2BPartnerPortalDataService
                             ?? $request->installation_completed_at?->toDateString()
                             ?? $request->scheduled_date?->toDateString(),
                         'mrn' => $request->mrn,
-                        'city' => $request->customer_city,
-                        'district' => $request->customer_district,
+                        'city' => TechnicalServiceUiLabelService::cityLabel($request->customer_city),
+                        'district' => TechnicalServiceUiLabelService::districtLabel($request->customer_district, $request->customer_city),
                         'labor_amount' => $earningSummary['labor_amount'],
                         'travel_fee_amount' => $earningSummary['route_fee_amount'],
                         'line_total' => $earningSummary['total_amount'],
@@ -828,8 +830,8 @@ class B2BPartnerPortalDataService
                     'related_mrns' => $earningSummary['related_mrns'],
                     'status' => $this->pendingEarningStatus($request),
                     'offer_status' => $earningSummary['status'],
-                    'city' => $request->customer_city,
-                    'district' => $request->customer_district,
+                    'city' => TechnicalServiceUiLabelService::cityLabel($request->customer_city),
+                    'district' => TechnicalServiceUiLabelService::districtLabel($request->customer_district, $request->customer_city),
                 ];
             })
             ->values();
@@ -950,8 +952,8 @@ class B2BPartnerPortalDataService
                     ?? $request->installation_completed_at?->toDateString()
                     ?? $request->scheduled_date?->toDateString(),
                 'mrn' => $request->mrn ?: $item->mrn,
-                'city' => $item->customer_city ?: $request->customer_city,
-                'district' => $item->customer_district ?: $request->customer_district,
+                'city' => TechnicalServiceUiLabelService::cityLabel($item->customer_city ?: $request->customer_city),
+                'district' => TechnicalServiceUiLabelService::districtLabel($item->customer_district ?: $request->customer_district, $item->customer_city ?: $request->customer_city),
                 'labor_amount' => $earningSummary['labor_amount'],
                 'travel_fee_amount' => $earningSummary['route_fee_amount'],
                 'line_total' => $earningSummary['total_amount'],
@@ -965,8 +967,8 @@ class B2BPartnerPortalDataService
             'technical_service_request_id' => $item->technical_service_request_id,
             'job_date' => $item->job_date?->toDateString(),
             'mrn' => $item->mrn,
-            'city' => $item->customer_city,
-            'district' => $item->customer_district,
+            'city' => TechnicalServiceUiLabelService::cityLabel($item->customer_city),
+            'district' => TechnicalServiceUiLabelService::districtLabel($item->customer_district, $item->customer_city),
             'labor_amount' => (float) $item->labor_amount,
             'travel_fee_amount' => (float) $item->travel_fee_amount,
             'line_total' => (float) $item->line_total,
@@ -1244,20 +1246,17 @@ class B2BPartnerPortalDataService
 
     private function isTechnicianApprovalStatus(TechnicalServiceRequest $request): bool
     {
-        return in_array($request->workflow_status, ['Usta Onayı Bekleyen', 'Usta OnayÄ± Bekleyen'], true);
+        return TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status) === 'Usta Onayı Bekleyen';
     }
 
     private function isAppointmentConfirmedStatus(TechnicalServiceRequest $request): bool
     {
-        return in_array($request->workflow_status, [
+        return in_array(TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status), [
             'Planlı',
-            'PlanlÄ±',
             'Yolda',
             'Sahada',
             'Belge / Fotoğraf Bekleyen',
-            'Belge / FotoÄŸraf Bekleyen',
             'Müşteri Kapanış Onayı Bekleyen',
-            'MÃ¼ÅŸteri KapanÄ±ÅŸ OnayÄ± Bekleyen',
         ], true);
     }
 
@@ -1949,10 +1948,10 @@ class B2BPartnerPortalDataService
     {
         return $partner->activePartnerTechnicians
             ->map(fn (B2BPartnerTechnician $link): array => [
-                'name' => $link->technician?->name,
+                'name' => TechnicalServiceUiLabelService::displayName($link->technician?->name),
                 'phone' => $link->technician?->phone,
-                'city' => $link->technician?->city,
-                'district' => $link->technician?->district,
+                'city' => TechnicalServiceUiLabelService::cityLabel($link->technician?->city),
+                'district' => TechnicalServiceUiLabelService::districtLabel($link->technician?->district, $link->technician?->city),
                 'relationship_type' => $link->relationship_type,
                 'is_primary' => (bool) $link->is_primary,
             ])

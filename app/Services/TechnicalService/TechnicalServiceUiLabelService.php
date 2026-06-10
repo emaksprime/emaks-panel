@@ -4,6 +4,7 @@ namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Support\TechnicalServiceTurkeyLocations;
 
 class TechnicalServiceUiLabelService
 {
@@ -133,6 +134,31 @@ class TechnicalServiceUiLabelService
         }
 
         return strtr($value, [
+            '?stanbul' => 'İstanbul',
+            'Istanbul' => 'İstanbul',
+            '?zmir' => 'İzmir',
+            'Izmir' => 'İzmir',
+            '?ankaya' => 'Çankaya',
+            'Cankaya' => 'Çankaya',
+            '?sküdar' => 'Üsküdar',
+            'Uskudar' => 'Üsküdar',
+            '?i?li' => 'Şişli',
+            'Sisli' => 'Şişli',
+            'Ata?ehir' => 'Ataşehir',
+            'Atasehir' => 'Ataşehir',
+            'Be?ikta?' => 'Beşiktaş',
+            'Besiktas' => 'Beşiktaş',
+            'Kad?k?y' => 'Kadıköy',
+            'Kadikoy' => 'Kadıköy',
+            'K???kçekmece' => 'Küçükçekmece',
+            'Kucukcekmece' => 'Küçükçekmece',
+            'M??teri' => 'Müşteri',
+            'Planl?' => 'Planlı',
+            'Tamamland?' => 'Tamamlandı',
+            'Atamas?' => 'Ataması',
+            'Onay?' => 'Onayı',
+            'onaylad?' => 'onayladı',
+            'onayland?' => 'onaylandı',
             'ÃƒÂ‡' => 'Ç',
             'ÃƒÂ–' => 'Ö',
             'ÃƒÂœ' => 'Ü',
@@ -158,7 +184,50 @@ class TechnicalServiceUiLabelService
             'Ã‚' => '',
             'Â' => '',
             'ï¿½' => '',
+            '�' => '',
         ]);
+    }
+
+    public static function displayName(?string $value): ?string
+    {
+        $cleaned = self::cleanDisplayText($value);
+
+        if ($cleaned === null || trim($cleaned) === '') {
+            return $cleaned;
+        }
+
+        if (preg_match('/\b(SMOKE-SCOPE|Portal|Scope|E2E)\b/u', $cleaned) === 1) {
+            return str_replace('Other Usta', 'Diğer Usta', $cleaned);
+        }
+
+        return $cleaned;
+    }
+
+    public static function cityLabel(?string $value): ?string
+    {
+        $cleaned = self::cleanDisplayText($value);
+
+        if ($cleaned === null || trim($cleaned) === '') {
+            return $cleaned;
+        }
+
+        return TechnicalServiceTurkeyLocations::standardizeProvinceName($cleaned) ?? $cleaned;
+    }
+
+    public static function districtLabel(?string $value, ?string $city = null): ?string
+    {
+        $cleaned = self::cleanDisplayText($value);
+
+        if ($cleaned === null || trim($cleaned) === '') {
+            return $cleaned;
+        }
+
+        return TechnicalServiceTurkeyLocations::standardizeDistrictName(self::cityLabel($city), $cleaned) ?? $cleaned;
+    }
+
+    public static function addressLabel(?string $value): ?string
+    {
+        return self::cleanDisplayText($value);
     }
 
     private static function safeFallback(string $value, string $fallback): string

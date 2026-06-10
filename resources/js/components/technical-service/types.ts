@@ -10,6 +10,12 @@ export type ServiceRequestVisibleSections = {
   service_part_charge?: boolean
   part_request_decision?: boolean
   earnings_breakdown?: boolean
+  is_service_visit?: boolean
+  operation_mount_controls?: boolean
+  payment_control?: boolean
+  door_photo_control?: boolean
+  address_control?: boolean
+  schedule_control?: boolean
   manual_checks?: Array<{
     code: string
     label: string
@@ -364,6 +370,10 @@ export type ServiceRequestPaymentSummary = {
   extra?: ServiceRequestPaymentSummaryLine | null
   total_customer_collection?: number | null
   total_customer_collection_label?: string | null
+  has_mount_collection?: boolean
+  has_service_charge?: boolean
+  has_part_charge?: boolean
+  has_extra_charge?: boolean
 }
 
 export type ServiceRequestPaymentStatus = {
@@ -460,6 +470,14 @@ export type ServiceRequestOperationControl = {
   note?: string | null
   checked_by_user_id?: number | string | null
   checked_at?: string | null
+  is_service_visit?: boolean
+  applies_to_assignment?: boolean
+  show_mount_controls?: boolean
+  show_payment_control?: boolean
+  show_door_photo_control?: boolean
+  show_address_control?: boolean
+  show_schedule_control?: boolean
+  context_mode?: 'service_visit_context' | 'mount_operation' | string | null
   mount_exclusion_acknowledgement?: {
     required?: boolean
     payment_received?: boolean
@@ -475,6 +493,7 @@ export type ServiceRequestAssignmentBlockers = {
   door_photo_check_required?: boolean
   mount_exclusion_ack_required?: boolean
   mount_payment_received?: boolean
+  applies_to_assignment?: boolean
   messages?: string[]
 }
 
