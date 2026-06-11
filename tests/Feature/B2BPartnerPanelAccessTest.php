@@ -5735,6 +5735,83 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->count());
     }
 
+    public function test_partner_upload_validation_uses_turkish_max_file_message_for_before_photo(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-UPLOAD-MAX-TR-BEFORE');
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $response = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before-large.jpg', 11264, 'image/jpeg'),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('before_photo');
+
+        $this->assertSame(
+            'Öncesi fotoğrafı en fazla 10240 kilobayt olmalıdır.',
+            $response->json('errors.before_photo.0'),
+        );
+    }
+
+    public function test_partner_upload_validation_uses_turkish_attribute_names_for_all_required_fields(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-UPLOAD-MAX-TR-ALL');
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $response = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before-large.jpg', 11264, 'image/jpeg'),
+                'after_photo' => UploadedFile::fake()->create('after-large.jpg', 11264, 'image/jpeg'),
+                'warranty_document_photo' => UploadedFile::fake()->create('warranty-large.jpg', 11264, 'image/jpeg'),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['before_photo', 'after_photo', 'warranty_document_photo']);
+
+        $this->assertSame(
+            'Öncesi fotoğrafı en fazla 10240 kilobayt olmalıdır.',
+            $response->json('errors.before_photo.0'),
+        );
+        $this->assertSame(
+            'Sonrası fotoğrafı en fazla 10240 kilobayt olmalıdır.',
+            $response->json('errors.after_photo.0'),
+        );
+        $this->assertSame(
+            'Garanti belgesi fotoğrafı en fazla 10240 kilobayt olmalıdır.',
+            $response->json('errors.warranty_document_photo.0'),
+        );
+    }
+
+    public function test_partner_upload_validation_does_not_return_english_fallback_or_raw_key(): void
+    {
+        Storage::fake('public');
+        $fixture = $this->locksmithPortalJobFixture('MRN-UPLOAD-MAX-NO-FALLBACK');
+        $job = $fixture['job'];
+        $portalUser = $fixture['portalUser'];
+
+        $response = $this->actingAs($portalUser)
+            ->postJson("/api/partner/service-jobs/{$job->id}/photos", [
+                'before_photo' => UploadedFile::fake()->create('before-large.jpg', 11264, 'image/jpeg'),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('before_photo');
+
+        $encoded = (string) json_encode($response->json(), JSON_UNESCAPED_UNICODE);
+
+        foreach ([
+            'validation.max.file',
+            'validation.mimes',
+            'The before photo field',
+            'before photo field',
+            'kilobytes',
+        ] as $badFragment) {
+            $this->assertStringNotContainsString($badFragment, $encoded);
+        }
+    }
+
     public function test_reupload_after_customer_approval_resets_customer_confirmation_gate(): void
     {
         Storage::fake('public');

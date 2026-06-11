@@ -392,14 +392,18 @@ class PartnerServiceJobController extends Controller
         $this->ensureFieldActionStage($job, 'Fotoğraf yükleme sadece randevu onaylandıktan sonra yapılabilir.');
         $this->ensurePhotoUploadIsOpen($job);
         $portalPhotoRule = $this->portalPhotoRule();
-        $data = $request->validate([
-            'before_photo' => $portalPhotoRule,
-            'after_photo' => $portalPhotoRule,
-            'warranty_document_photo' => $portalPhotoRule,
-            'door_front_photo' => $portalPhotoRule,
-            'door_side_photo' => $portalPhotoRule,
-            'door_back_photo' => $portalPhotoRule,
-        ]);
+        $data = $request->validate(
+            [
+                'before_photo' => $portalPhotoRule,
+                'after_photo' => $portalPhotoRule,
+                'warranty_document_photo' => $portalPhotoRule,
+                'door_front_photo' => $portalPhotoRule,
+                'door_side_photo' => $portalPhotoRule,
+                'door_back_photo' => $portalPhotoRule,
+            ],
+            $this->portalPhotoValidationMessages(),
+            $this->portalPhotoValidationAttributes(),
+        );
 
         $fieldFiles = [];
         foreach (array_keys(self::REQUIRED_PORTAL_PHOTO_FIELDS) as $fieldCode) {
@@ -999,6 +1003,42 @@ class PartnerServiceJobController extends Controller
 
                 $fail('Fotoğraf dosyası desteklenen bir görsel formatında olmalıdır.');
             },
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function portalPhotoValidationMessages(): array
+    {
+        return [
+            'before_photo.file' => 'Öncesi fotoğrafı bir dosya olmalıdır.',
+            'before_photo.max' => 'Öncesi fotoğrafı en fazla :max kilobayt olmalıdır.',
+            'after_photo.file' => 'Sonrası fotoğrafı bir dosya olmalıdır.',
+            'after_photo.max' => 'Sonrası fotoğrafı en fazla :max kilobayt olmalıdır.',
+            'warranty_document_photo.file' => 'Garanti belgesi fotoğrafı bir dosya olmalıdır.',
+            'warranty_document_photo.max' => 'Garanti belgesi fotoğrafı en fazla :max kilobayt olmalıdır.',
+            'door_front_photo.file' => 'Öncesi fotoğrafı bir dosya olmalıdır.',
+            'door_front_photo.max' => 'Öncesi fotoğrafı en fazla :max kilobayt olmalıdır.',
+            'door_side_photo.file' => 'Sonrası fotoğrafı bir dosya olmalıdır.',
+            'door_side_photo.max' => 'Sonrası fotoğrafı en fazla :max kilobayt olmalıdır.',
+            'door_back_photo.file' => 'Garanti belgesi fotoğrafı bir dosya olmalıdır.',
+            'door_back_photo.max' => 'Garanti belgesi fotoğrafı en fazla :max kilobayt olmalıdır.',
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function portalPhotoValidationAttributes(): array
+    {
+        return [
+            'before_photo' => 'Öncesi fotoğrafı',
+            'after_photo' => 'Sonrası fotoğrafı',
+            'warranty_document_photo' => 'Garanti belgesi fotoğrafı',
+            'door_front_photo' => 'Öncesi fotoğrafı',
+            'door_side_photo' => 'Sonrası fotoğrafı',
+            'door_back_photo' => 'Garanti belgesi fotoğrafı',
         ];
     }
 

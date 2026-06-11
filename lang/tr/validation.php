@@ -45,6 +45,6 @@ return [
         'current_password' => 'mevcut şifre',
         'password' => 'şifre',
         'password_confirmation' => 'şifre tekrarı',
-        'warranty_document_photo' => 'Garanti belgesi',
+        'warranty_document_photo' => 'Garanti belgesi fotoğrafı',
     ],
 ];
