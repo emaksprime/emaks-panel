@@ -21,6 +21,7 @@ class EvolutionWhatsAppMessageService
         'MRN-ACTION',
         'MRN-PR88',
         'ACCEPT-',
+        'FAZ2A-ASSIGN-',
         'TEST-',
         'SMOKE-',
     ];

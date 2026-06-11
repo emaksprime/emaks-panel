@@ -1146,7 +1146,7 @@ class TechnicalServiceWorkflowService
         $operationControl = $this->operationControlPayload($request);
         $errors = [];
 
-        if (($operationControl['payment_checked'] ?? 'unreviewed') !== 'yes') {
+        if ($this->assignmentPaymentCheckRequired($request, $operationControl)) {
             $errors['operation_control.payment_checked'] = 'Usta atanamaz. Önce ödeme kontrolünü tamamlayın.';
         }
 
@@ -2181,6 +2181,7 @@ class TechnicalServiceWorkflowService
         $payload = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
         $isServiceVisit = $this->isServiceVisitRequest($request);
         $showMountControls = ! $isServiceVisit;
+        $paymentRequiredForAssignment = $this->paymentControlAppliesToAssignment($request);
         $addressControlActionable = $showMountControls
             && (
                 ($payload['address_checked'] ?? 'unreviewed') !== 'unreviewed'
@@ -2219,6 +2220,7 @@ class TechnicalServiceWorkflowService
         ]);
         $result['is_service_visit'] = $isServiceVisit;
         $result['applies_to_assignment'] = ! $isServiceVisit;
+        $result['payment_required_for_assignment'] = $paymentRequiredForAssignment;
         $result['show_mount_controls'] = $showMountControls;
         $result['show_payment_control'] = $showMountControls;
         $result['show_door_photo_control'] = $showMountControls;
@@ -2378,13 +2380,14 @@ class TechnicalServiceWorkflowService
     }
 
     /**
-     * @return array{payment_check_required:bool,door_photo_check_required:bool,messages:array<int,string>}
+     * @return array{payment_check_required:bool,payment_required_for_assignment:bool,door_photo_check_required:bool,messages:array<int,string>}
      */
     private function assignmentBlockers(TechnicalServiceRequest $request): array
     {
         if ($this->isServiceVisitRequest($request)) {
             return [
                 'payment_check_required' => false,
+                'payment_required_for_assignment' => false,
                 'door_photo_check_required' => false,
                 'mount_exclusion_ack_required' => false,
                 'mount_payment_received' => false,
@@ -2395,7 +2398,8 @@ class TechnicalServiceWorkflowService
 
         $operationControl = $this->operationControlPayload($request);
         $messages = [];
-        $paymentRequired = ($operationControl['payment_checked'] ?? 'unreviewed') !== 'yes';
+        $paymentControlApplies = (bool) ($operationControl['payment_required_for_assignment'] ?? false);
+        $paymentRequired = $this->assignmentPaymentCheckRequired($request, $operationControl);
         $doorPhotoRequired = ($operationControl['door_photos_checked'] ?? 'unreviewed') !== 'compatible';
         $mountExclusionAckRequired = $this->requiresMountExclusionAcknowledgement($request);
 
@@ -2409,12 +2413,34 @@ class TechnicalServiceWorkflowService
 
         return [
             'payment_check_required' => $paymentRequired,
+            'payment_required_for_assignment' => $paymentControlApplies,
             'door_photo_check_required' => $doorPhotoRequired,
             'mount_exclusion_ack_required' => $mountExclusionAckRequired,
             'mount_payment_received' => $this->mountPaymentReceived($request),
             'applies_to_assignment' => true,
             'messages' => $messages,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $operationControl
+     */
+    private function assignmentPaymentCheckRequired(TechnicalServiceRequest $request, array $operationControl): bool
+    {
+        return $this->paymentControlAppliesToAssignment($request)
+            && ($operationControl['payment_checked'] ?? 'unreviewed') !== 'yes';
+    }
+
+    private function paymentControlAppliesToAssignment(TechnicalServiceRequest $request): bool
+    {
+        if ($this->isServiceVisitRequest($request)) {
+            return false;
+        }
+
+        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+
+        return (bool) ($paymentStatus['requires_payment'] ?? false)
+            && ! (bool) ($paymentStatus['is_paid'] ?? false);
     }
 
     private function hasMultiProductMountRequest(TechnicalServiceRequest $request): bool

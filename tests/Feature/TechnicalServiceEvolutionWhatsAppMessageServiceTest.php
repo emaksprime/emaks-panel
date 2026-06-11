@@ -50,6 +50,24 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_faz2a_assignment_smoke_mrn_is_suppressed_by_default(): void
+    {
+        $this->configureEvolution(['services.evolution.real_send_enabled' => true]);
+        Http::fake();
+
+        $dispatch = $this->service()->send(
+            'assignment_offer_technician',
+            'technician',
+            '05321112233',
+            'Yeni iş ataması yapıldı.',
+            $this->manualContext(['job_link' => 'https://panel.test/partner/service-jobs?job_id=1']),
+            $this->requestWithMrn('FAZ2A-ASSIGN-20260611080000'),
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE, $dispatch->refresh()->status);
+        Http::assertNothingSent();
+    }
+
     public function test_browser_smoke_send_is_suppressed_by_default(): void
     {
         $this->configureEvolution(['services.evolution.real_send_enabled' => true]);

@@ -472,6 +472,7 @@ export type ServiceRequestOperationControl = {
   checked_at?: string | null
   is_service_visit?: boolean
   applies_to_assignment?: boolean
+  payment_required_for_assignment?: boolean
   show_mount_controls?: boolean
   show_payment_control?: boolean
   show_door_photo_control?: boolean
@@ -490,6 +491,7 @@ export type ServiceRequestOperationControl = {
 
 export type ServiceRequestAssignmentBlockers = {
   payment_check_required?: boolean
+  payment_required_for_assignment?: boolean
   door_photo_check_required?: boolean
   mount_exclusion_ack_required?: boolean
   mount_payment_received?: boolean

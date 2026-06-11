@@ -1720,9 +1720,10 @@ export function ServiceRequestDetails({
   const mountExclusionAckComplete = !mountExclusionAckRequired
     || (mountExclusionAcknowledged && mountExclusionNote.trim().length >= 5)
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
+  const backendAssignmentBlockersAvailable = request.assignmentBlockers !== undefined && request.assignmentBlockers !== null
   const assignmentRequiresOperationControls = (request.assignmentBlockers?.applies_to_assignment ?? operationControl.applies_to_assignment ?? !isServiceVisitDetail) !== false
-  const assignmentUiBlockerMessages = assignmentRequiresOperationControls ? [
-    showPaymentControl && operationControl.payment_checked !== 'yes' ? 'Önce ödeme kontrolünü tamamlayın.' : null,
+  const assignmentUiBlockerMessages = !backendAssignmentBlockersAvailable && assignmentRequiresOperationControls ? [
+    showPaymentControl && canonicalPaymentRequiresPayment && operationControl.payment_checked !== 'yes' ? 'Önce ödeme kontrolünü tamamlayın.' : null,
     showDoorPhotoControl && operationControl.door_photos_checked !== 'compatible' ? 'Önce kapı görsellerini uygun olarak işaretleyin.' : null,
   ].filter((message): message is string => Boolean(message)) : []
   const combinedAssignmentBlockerMessages = Array.from(new Set([...assignmentUiBlockerMessages, ...assignmentBlockerMessages]))

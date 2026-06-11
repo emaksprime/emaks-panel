@@ -878,12 +878,20 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'route-quote',
             'payments/mount-extra-payment',
             'handleExtraMountPaymentCreate',
+            'assignmentPartnerJobPath',
+            'assignmentFinalMessagePreview',
+            'Son hakediş onayı',
+            'Gönderim modu: sistem payload',
+            'İş kartı:',
+            'Atamayı onayla ve mesajı hazırla',
+            'loadRequestDetail(updatedRequest?.id ?? selectedId)',
         ] as $expectedText) {
             $this->assertStringContainsString($expectedText, $pageSource);
         }
 
         $this->assertStringNotContainsString('Usta → müşteri mesafesi', $detailsSource);
         $this->assertStringNotContainsString('Usta → müşteri mesafesi', $pageSource);
+        $this->assertStringNotContainsString('Servise ata ve mesaj gönder', $pageSource);
 
         foreach ([
             'Usta yol hakedişi hesaplanamadı',

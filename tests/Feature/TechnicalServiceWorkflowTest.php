@@ -1131,10 +1131,12 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertFalse($payload['visible_sections']['payment_control']);
         $this->assertFalse($payload['visible_sections']['door_photo_control']);
         $this->assertFalse($payload['operation_control']['applies_to_assignment']);
+        $this->assertFalse($payload['operation_control']['payment_required_for_assignment']);
         $this->assertFalse($payload['operation_control']['show_mount_controls']);
         $this->assertFalse($payload['operation_control']['show_payment_control']);
         $this->assertFalse($payload['operation_control']['show_door_photo_control']);
         $this->assertFalse($payload['assignment_blockers']['applies_to_assignment']);
+        $this->assertFalse($payload['assignment_blockers']['payment_required_for_assignment']);
         $this->assertSame([], $payload['assignment_blockers']['messages']);
     }
 
@@ -1991,6 +1993,8 @@ class TechnicalServiceWorkflowTest extends TestCase
         $request = $this->technicalServiceRequest([
             'status' => 'Yeni',
             'workflow_status' => 'Yeni Talep',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
         ]);
 
         $this->actingAs($user)
@@ -2018,6 +2022,62 @@ class TechnicalServiceWorkflowTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonValidationErrors(['operation_control.door_photos_checked']);
+    }
+
+    public function test_assignment_allows_unreviewed_payment_check_when_payment_is_not_required(): void
+    {
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technician_name' => 'Ödeme Gerekmeyen Usta',
+                'travel_round_trip_km' => 12,
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.assignment_blockers.payment_required_for_assignment', false)
+            ->assertJsonPath('request.assignment_blockers.payment_check_required', false)
+            ->assertJsonPath('request.assignment_blockers.messages', []);
+    }
+
+    public function test_assignment_gate_payload_matches_canonical_payment_requirement(): void
+    {
+        $service = app(TechnicalServiceWorkflowService::class);
+        $notRequired = $this->technicalServiceRequest([
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $required = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+
+        $notRequiredPayload = $service->serialize($notRequired->fresh(), true);
+        $requiredPayload = $service->serialize($required->fresh(), true);
+
+        $this->assertFalse($notRequiredPayload['operation_control']['payment_required_for_assignment']);
+        $this->assertFalse($notRequiredPayload['assignment_blockers']['payment_required_for_assignment']);
+        $this->assertFalse($notRequiredPayload['assignment_blockers']['payment_check_required']);
+        $this->assertSame([], $notRequiredPayload['assignment_blockers']['messages']);
+
+        $this->assertTrue($requiredPayload['operation_control']['payment_required_for_assignment']);
+        $this->assertTrue($requiredPayload['assignment_blockers']['payment_required_for_assignment']);
+        $this->assertTrue($requiredPayload['assignment_blockers']['payment_check_required']);
+        $this->assertSame(['Usta atanamaz. Önce ödeme kontrolünü tamamlayın.'], $requiredPayload['assignment_blockers']['messages']);
     }
 
     public function test_contact_log_endpoint_advances_customer_contact_workflow(): void
@@ -2623,6 +2683,8 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Teknik detaylar',
             'Kapı görselleri kontrolü',
             'Montaj ödeme kontrolü',
+            'backendAssignmentBlockersAvailable',
+            'canonicalPaymentRequiresPayment && operationControl.payment_checked',
             'Servis atanabilir',
             'Ödeme aşaması',
             'Ödeme tutarı',

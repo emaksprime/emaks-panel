@@ -508,6 +508,14 @@ function technicianDisplayName(technician: ServiceTechnician): string {
   return [technician.first_name, technician.last_name].filter(Boolean).join(' ').trim() || technician.name
 }
 
+function technicianPrimaryPartnerId(technician: ServiceTechnician | null): string | null {
+  const activeLink = technician?.b2b_partner_links?.find((link) => link.active !== false && link.partner_id !== null && link.partner_id !== undefined)
+
+  return activeLink?.partner_id === null || activeLink?.partner_id === undefined
+    ? null
+    : String(activeLink.partner_id)
+}
+
 function normalizeLocationText(value: string | null | undefined): string {
   return normalizeTurkishLocation(value)
 }
@@ -1695,6 +1703,74 @@ export function TechnicalServiceOperationCenter() {
   const finalAssignmentNetDifference = modalCollectedPaymentAmount !== null
     ? roundTwo(modalCollectedPaymentAmount - finalAssignmentTotalAmount)
     : null
+  const selectedAssignTechnicianName = assignTechnicianOption === 'other'
+    ? assignOtherTechnician.trim()
+    : selectedAssignTechnicianRecord ? technicianDisplayName(selectedAssignTechnicianRecord) : ''
+  const selectedAssignTechnicianPartnerId = technicianPrimaryPartnerId(selectedAssignTechnicianRecord)
+  const assignmentPartnerJobPath = modalRequest?.id
+    ? `/partner/service-jobs?${new URLSearchParams({
+      ...(selectedAssignTechnicianPartnerId ? { partner_id: selectedAssignTechnicianPartnerId } : {}),
+      job_id: String(modalRequest.id),
+    }).toString()}`
+    : null
+  const assignmentRouteFeeReason = (() => {
+    if (!modalRequest) {
+      return 'Talep seçilmedi.'
+    }
+
+    if (!assignmentRouteQuote) {
+      const hasTechnicianCoordinates = selectedAssignTechnicianRecord ? technicianCoordinatePair(selectedAssignTechnicianRecord) !== null : false
+      const hasRequestCoordinates = validCoordinatePair(modalRequest.location?.latitude, modalRequest.location?.longitude) !== null
+
+      if (!selectedAssignTechnicianRecord && assignTechnicianOption !== 'other') {
+        return 'Usta seçilmedi; yol hakedişi henüz hesaplanmadı.'
+      }
+
+      if (!hasTechnicianCoordinates) {
+        return 'Usta konumu yok; yol hakedişi manuel girilecek.'
+      }
+
+      if (!hasRequestCoordinates) {
+        return 'Müşteri konumu yok; yol hakedişi manuel girilecek.'
+      }
+
+      return 'Yol hakedişi henüz hesaplanmadı; popup tutarı kaydeder.'
+    }
+
+    if (assignmentRouteQuote.status && !['calculated', 'manual_override'].includes(assignmentRouteQuote.status)) {
+      return assignmentRouteQuote.message ?? 'Yol hakedişi hesaplanamadı; manuel kontrol gerekli.'
+    }
+
+    if (finalAssignmentRouteAmount > 0) {
+      return `Ücrete tabi km: ${assignmentRouteExtraKmLabel}.`
+    }
+
+    if (typeof assignmentRouteQuote.threshold_km === 'number') {
+      return `${assignmentRouteQuote.threshold_km.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km ücretsiz sınır içinde; yol hakedişi 0 TL.`
+    }
+
+    return assignmentRouteQuote.message ?? 'Yol hakedişi 0 TL.'
+  })()
+  const assignmentFinalMessagePreview = [
+    'EMAKS Prime Teknik Servis',
+    '',
+    'Yeni iş ataması yapıldı.',
+    '',
+    `MRN: ${modalRequest?.mrn ?? '-'}`,
+    `Müşteri: ${modalRequest?.customer ?? '-'}`,
+    `Telefon: ${modalRequest?.phone ?? '-'}`,
+    `Adres: ${modalRequest?.address ?? '-'}`,
+    modalRequest?.appointment && modalRequest.appointment !== 'Belirlenmedi' ? `Randevu: ${modalRequest.appointment}` : null,
+    '',
+    'Hakediş:',
+    `İşçilik: ${formatMoneyLabel(finalAssignmentLaborAmount)}`,
+    `Yol: ${formatMoneyLabel(finalAssignmentRouteAmount)}`,
+    `Toplam: ${formatMoneyLabel(finalAssignmentTotalAmount)}`,
+    '',
+    'İş kartı:',
+    assignmentPartnerJobPath ?? 'Atama sonrası partner bağlantısı üretilecek',
+    assignOfferNote.trim() ? `Not: ${assignOfferNote.trim()}` : null,
+  ].filter((line): line is string => line !== null).join('\n')
   const effectiveMountPaymentMissing = Boolean(
     modalRequest?.serviceType === 'Montaj'
     && isMountPaymentMissing(mikroMountCheck)
@@ -1758,7 +1834,7 @@ export function TechnicalServiceOperationCenter() {
   const visibleTechnicianMatches = showNearbyTechnicians
     ? technicianMatches
     : sameCityTechnicians
-  const assignmentReferenceDateKey = useMemo(() => {
+  const assignmentReferenceDateKey = (() => {
     if (modalRequest?.scheduledDate) {
       return modalRequest.scheduledDate
     }
@@ -1768,17 +1844,17 @@ export function TechnicalServiceOperationCenter() {
     }
 
     return toDateKey(selectedDate)
-  }, [modalRequest?.customerPreferredDate, modalRequest?.scheduledDate, selectedDate])
-  const assignmentReferenceRequests = useMemo(() => {
+  })()
+  const assignmentReferenceRequests = (() => {
     return requests.filter((request) => {
       const requestDate = request.scheduledDate
         ?? (request.scheduledAt ? toDateKey(new Date(request.scheduledAt)) : null)
 
       return requestDate === assignmentReferenceDateKey
     })
-  }, [assignmentReferenceDateKey, requests])
-  const technicianAssignmentInsights = useMemo<TechnicianAssignmentInsight[]>(() => {
-  const insights = technicianMatches.map((match) => {
+  })()
+  const technicianAssignmentInsights: TechnicianAssignmentInsight[] = (() => {
+    const insights = technicianMatches.map((match) => {
       const technicianName = technicianDisplayName(match.technician)
       const hasTechnicianCoordinates = technicianCoordinatePair(match.technician) !== null
       const addressSummary = technicianAddressSummary(match.technician)
@@ -1884,8 +1960,8 @@ export function TechnicalServiceOperationCenter() {
       ...insight,
       recommended: insight.id === recommendedId,
     }))
-  }, [assignmentReferenceRequests, modalRequest?.serviceType, technicianMatches])
-  const visibleTechnicianAssignmentInsights = useMemo(() => {
+  })()
+  const visibleTechnicianAssignmentInsights = (() => {
     const visible = technicianAssignmentInsights.slice(0, 4)
 
     if (!assignTechnicianOption || assignTechnicianOption === 'other') {
@@ -1899,8 +1975,8 @@ export function TechnicalServiceOperationCenter() {
     }
 
     return [selectedInsight, ...visible]
-  }, [assignTechnicianOption, technicianAssignmentInsights])
-  const assignmentScheduleSupport = useMemo(() => {
+  })()
+  const assignmentScheduleSupport = (() => {
     const currentSchedule = modalRequest?.scheduledDate
       ? [
           formatTechnicalServiceDate(modalRequest.scheduledDate),
@@ -1919,7 +1995,7 @@ export function TechnicalServiceOperationCenter() {
       customerContactLabel: modalRequest?.customerContactStatus || 'Müşteri teyidi yok',
       slotSuggestions: recommendedSlots.slice(0, 3),
     }
-  }, [modalRequest, technicianAssignmentInsights])
+  })()
 
   const weeklyDayCounts = useMemo(() => {
     const labels = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz']
@@ -3338,6 +3414,7 @@ export function TechnicalServiceOperationCenter() {
 
       await loadRequests({ silent: true, preserveSelection: true })
       await loadSummary()
+      await loadRequestDetail(updatedRequest?.id ?? selectedId)
     } catch (caught) {
       setAssignError(caught instanceof Error ? caught.message : 'Usta atama işlemi başarısız oldu.')
     } finally {
@@ -4249,11 +4326,11 @@ export function TechnicalServiceOperationCenter() {
           </Dialog>
 
           <Dialog open={assignmentConfirmDialogOpen} onOpenChange={setAssignmentConfirmDialogOpen}>
-            <DialogContent className="max-w-xl rounded-[28px]">
+            <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto rounded-[28px]">
               <DialogHeader>
                 <DialogTitle>Son hakediş onayı</DialogTitle>
                 <DialogDescription>
-                  Ustaya gönderilecek son işçilik ve yol hakedişini onaylayın. Popup'taki tutar backend'e kaydedilir ve mesajda bu tutar kullanılır.
+                  Ustaya hazırlanacak son işçilik ve yol hakedişini onaylayın. Popup'taki tutar backend'e kaydedilir ve mesaj taslağında bu tutar kullanılır.
                 </DialogDescription>
               </DialogHeader>
 
@@ -4267,10 +4344,13 @@ export function TechnicalServiceOperationCenter() {
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Usta</p>
                   <p className="mt-1 text-base font-semibold text-slate-950">
-                    {assignTechnicianOption === 'other'
-                      ? assignOtherTechnician.trim() || 'Manuel usta'
-                      : selectedAssignTechnicianRecord ? technicianDisplayName(selectedAssignTechnicianRecord) : 'Usta seçilmedi'}
+                    {selectedAssignTechnicianName || 'Usta seçilmedi'}
                   </p>
+                  {assignmentPartnerJobPath ? (
+                    <a className="mt-2 inline-flex text-xs font-semibold text-blue-700 underline" href={assignmentPartnerJobPath} target="_blank" rel="noreferrer">
+                      Partner iş kartı bağlantısı
+                    </a>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -4295,6 +4375,7 @@ export function TechnicalServiceOperationCenter() {
                       onChange={(event) => setAssignOfferRouteFeeAmount(event.target.value)}
                       placeholder={String(assignmentRouteFeeAmount ?? 0)}
                     />
+                    <span className="text-xs font-medium text-slate-500">{assignmentRouteFeeReason}</span>
                   </label>
                 </div>
 
@@ -4317,6 +4398,23 @@ export function TechnicalServiceOperationCenter() {
                   Operasyon notu / usta mesaj notu
                   <Input value={assignOfferNote} onChange={(event) => setAssignOfferNote(event.target.value)} placeholder="Ustaya gidecek bilgilendirme notu" />
                 </label>
+
+                <div className="grid gap-2 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Mesaj taslağı</p>
+                      <p className="mt-1 text-xs font-medium text-blue-800">Gönderim modu: sistem payload'ı hazırlanır; canlı WhatsApp gönderimi yapılmaz.</p>
+                    </div>
+                    {assignmentPartnerJobPath ? (
+                      <a className="text-xs font-semibold text-blue-700 underline" href={assignmentPartnerJobPath} target="_blank" rel="noreferrer">
+                        İş kartını aç
+                      </a>
+                    ) : null}
+                  </div>
+                  <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-xl border border-blue-100 bg-white p-3 text-xs leading-5 text-slate-800">
+                    {assignmentFinalMessagePreview}
+                  </pre>
+                </div>
               </div>
 
               <DialogFooter className="gap-2">
@@ -4324,7 +4422,7 @@ export function TechnicalServiceOperationCenter() {
                   Vazgeç
                 </Button>
                 <Button type="button" onClick={handleAssignSubmit} disabled={!canSubmitAssign || assignLoading}>
-                  {assignLoading ? 'Kaydediliyor...' : 'Servise ata ve mesaj gönder'}
+                  {assignLoading ? 'Kaydediliyor...' : 'Atamayı onayla ve mesajı hazırla'}
                 </Button>
               </DialogFooter>
             </DialogContent>
