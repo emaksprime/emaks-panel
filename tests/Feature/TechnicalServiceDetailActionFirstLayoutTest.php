@@ -156,7 +156,8 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
 
         $this->assertStringContainsString('const earningSummaryTechnicianName', $source);
-        $this->assertStringContainsString('Hakediş / Maliyet Özeti — {earningSummaryTechnicianName}', $source);
+        $this->assertStringContainsString('Usta Hakedişi / Operasyon Maliyeti', $source);
+        $this->assertStringContainsString('{financeSummaryTitle} — {earningSummaryTechnicianName}', $source);
         $this->assertStringContainsString("selectedTechnician?.name || request.technicianName || 'Usta seçilmedi'", $source);
     }
 

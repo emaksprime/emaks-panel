@@ -3189,6 +3189,31 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringNotContainsString('�', $encoded);
     }
 
+    public function test_partner_payload_keeps_display_labels_normalized(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $scope['jobA']->forceFill([
+            'product_name' => 'Portal Ak?ll? Kap? Kilidi',
+            'product_model' => 'Kap? Model',
+        ])->save();
+
+        $response = $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk();
+
+        $job = collect($response->json('jobs'))->firstWhere('mrn', $scope['jobA']->mrn);
+
+        $this->assertIsArray($job);
+        $this->assertSame('Portal Akıllı Kapı Kilidi', $job['product_name']);
+        $this->assertSame('Kapı Model', $job['product_model']);
+        $this->assertSame('Kapı Model', $job['model']);
+
+        $encoded = json_encode($job, JSON_UNESCAPED_UNICODE);
+        $this->assertIsString($encoded);
+        $this->assertStringNotContainsString('Ak?ll?', $encoded);
+        $this->assertStringNotContainsString('Kap?', $encoded);
+    }
+
     public function test_ops_detail_does_not_render_mojibake_user_facing_labels(): void
     {
         $admin = $this->userWithRole('admin', true);
@@ -3437,7 +3462,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.earning_summary.labor_amount', 5500)
             ->assertJsonPath('job.earning_summary.route_fee_amount', 500)
             ->assertJsonPath('job.earning_summary.total_amount', 6000)
-            ->assertJsonPath('job.earning_summary.job_count', 2);
+            ->assertJsonPath('job.earning_summary.job_count', 2)
+            ->assertJsonPath('job.earning_breakdown.current_visit.technician_name', 'Scope Usta A')
+            ->assertJsonPath('job.earning_breakdown.rows.0.technician_name', 'Scope Usta A')
+            ->assertJsonPath('job.earning_breakdown.rows.1.technician_name', 'Scope Usta A')
+            ->assertJsonPath('job.earning_breakdown.root_total.is_multi_technician', false);
 
         $this->actingAs($scope['userA'])
             ->getJson('/api/partner/earnings?partner_id='.$scope['partnerA']->id)
@@ -4231,7 +4260,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.kanban_column', 'completed');
         $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('job.kanban_column', 'completed');
 
         $this->actingAs($otherPortalUser)
             ->getJson("/api/partner/service-jobs/{$child->id}")
@@ -4564,7 +4594,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.can_submit_completion', false);
     }
 
-    public function test_partner_active_jobs_hides_parent_when_srv_child_is_active(): void
+    public function test_active_duplicate_filter_hides_parent_when_srv_child_is_active(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
@@ -4619,6 +4649,12 @@ class B2BPartnerPanelAccessTest extends TestCase
             'scheduled_time' => '15:00',
         ]);
         $parentState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($parent->fresh());
+        $this->assertNull($parent->fresh()->completed_at);
+        $this->assertNull($parent->fresh()->installation_completed_at);
+        $this->assertNotSame('Tamamlandı', $parent->fresh()->workflow_status);
+        $this->assertSame($parent->id, $child->parent_request_id);
+        $this->assertSame(1, $parent->childRequests()->count());
+        $this->assertTrue(app(\App\Services\B2B\B2BPartnerServiceJobScopeService::class)->shouldHideActiveParentWithChild($parent->fresh()));
         $this->assertNotSame('review', $parentState['ops_column']);
         $this->assertNotSame('revisit', $parentState['partner_column']);
         $this->assertFalse($parentState['requires_ops_action']);
@@ -4634,10 +4670,14 @@ class B2BPartnerPanelAccessTest extends TestCase
         $response = $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs?partner_id={$partner->id}")
             ->assertOk();
-        $mrns = collect($response->json('jobs'))->pluck('mrn')->all();
+        $activeMrns = collect($response->json('jobs'))
+            ->reject(fn (array $job): bool => ($job['kanban_column'] ?? null) === 'completed')
+            ->pluck('mrn')
+            ->all();
+        $allMrns = collect($response->json('jobs'))->pluck('mrn')->all();
 
-        $this->assertNotContains($parent->mrn, $mrns);
-        $this->assertContains($child->mrn, $mrns);
+        $this->assertNotContains($parent->mrn, $activeMrns);
+        $this->assertContains($child->mrn, $allMrns);
         $this->assertSame('Servis', collect($response->json('jobs'))->firstWhere('mrn', $child->mrn)['service_type']);
 
         $opsList = $this->actingAs($admin)
@@ -4681,7 +4721,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson("/api/partner/service-jobs?partner_id={$partner->id}")
             ->assertOk();
         $completedMrns = collect($completedResponse->json('jobs'))->pluck('mrn')->all();
-        $this->assertNotContains($parent->mrn, $completedMrns);
+        $this->assertContains($parent->mrn, $completedMrns);
         $this->assertContains($child->mrn, $completedMrns);
     }
 
@@ -7261,7 +7301,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Tamamlandı');
     }
 
-    public function test_reopening_completed_request_creates_unassigned_srv_hidden_from_old_partner_until_assignment(): void
+    public function test_completed_reopen_creates_unassigned_srv_hidden_from_old_partner_until_assignment(): void
     {
         $scope = $this->partnerPortalScopeFixture();
         $admin = $this->userWithRole('admin', true);
@@ -7321,6 +7361,88 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->getJson("/api/partner/service-jobs/{$child->id}?partner_id={$scope['partnerB']->id}")
             ->assertOk()
             ->assertJsonPath('job.service_visit_context.root_mrn', $parent->mrn);
+    }
+
+    public function test_original_locksmith_sees_completed_parent_mrn_after_child_srv_assigned_elsewhere(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $admin = $this->userWithRole('admin', true);
+        $parent = $scope['completedJobB'];
+
+        $response = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$parent->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => 'Operasyon d'.hex2bin('c3bc').'zeltmesi',
+                'reopen_note' => 'Başka ustaya servis açılacak.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('reopened_as_service_visit', true);
+
+        $child = TechnicalServiceRequest::query()->findOrFail($response->json('request.id'));
+        $child->forceFill([
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ])->save();
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$child->id}/technician", [
+                'technical_service_technician_id' => $scope['technicianA']->id,
+                'labor_amount' => 1500,
+                'travel_amount' => 250,
+                'confirm_assignment' => true,
+                'note' => 'Yeni SRV başka ustaya atandı.',
+            ])
+            ->assertOk();
+
+        $oldPartnerJobs = $this->actingAs($scope['userB'])
+            ->getJson("/api/partner/service-jobs?partner_id={$scope['partnerB']->id}")
+            ->assertOk()
+            ->json('jobs');
+        $oldPartnerMrns = collect($oldPartnerJobs)->pluck('mrn')->all();
+
+        $this->assertContains($parent->mrn, $oldPartnerMrns);
+        $this->assertNotContains($child->mrn, $oldPartnerMrns);
+        $oldPartnerCompletedJob = collect($oldPartnerJobs)->firstWhere('mrn', $parent->mrn);
+        $this->assertSame('completed', $oldPartnerCompletedJob['kanban_column'] ?? null);
+        $this->assertEquals(1100.0, $oldPartnerCompletedJob['earning_summary']['total_amount'] ?? null);
+        $this->assertSame([$parent->mrn], $oldPartnerCompletedJob['earning_summary']['related_mrns'] ?? null);
+        $this->assertSame('Scope Usta B', $oldPartnerCompletedJob['earning_breakdown']['current_visit']['technician_name'] ?? null);
+        $this->assertSame('Scope Usta B', $oldPartnerCompletedJob['earning_breakdown']['rows'][0]['technician_name'] ?? null);
+
+        $oldPartnerEarnings = $this->actingAs($scope['userB'])
+            ->getJson("/api/partner/earnings?partner_id={$scope['partnerB']->id}")
+            ->assertOk()
+            ->json('items.0.earnings.completed.rows');
+        $oldPartnerEarningMrns = collect($oldPartnerEarnings)
+            ->flatMap(fn (array $row): array => collect($row['items'] ?? [])->pluck('mrn')->all())
+            ->all();
+
+        $this->assertContains($parent->mrn, $oldPartnerEarningMrns);
+        $this->assertNotContains($child->mrn, $oldPartnerEarningMrns);
+        $oldPartnerParentEarningRow = collect($oldPartnerEarnings)
+            ->first(fn (array $row): bool => collect($row['items'] ?? [])->pluck('mrn')->contains($parent->mrn));
+        $this->assertNotNull($oldPartnerParentEarningRow);
+        $this->assertSame('Hakediş ödeme kaydı yok', $oldPartnerParentEarningRow['status'] ?? null);
+        $this->assertNull($oldPartnerParentEarningRow['paid_at'] ?? null);
+        $oldPartnerParentEarningItem = collect($oldPartnerParentEarningRow['items'] ?? [])
+            ->firstWhere('mrn', $parent->mrn);
+        $this->assertNotNull($oldPartnerParentEarningItem);
+        $this->assertEquals(1100.0, $oldPartnerParentEarningItem['line_total'] ?? null);
+        $this->assertSame('Scope Usta B', $oldPartnerParentEarningItem['technician_name'] ?? null);
+        $this->assertSame('Hakediş ödeme kaydı yok', $oldPartnerParentEarningItem['status'] ?? null);
+
+        $newPartnerJobs = $this->actingAs($scope['userA'])
+            ->getJson("/api/partner/service-jobs?partner_id={$scope['partnerA']->id}")
+            ->assertOk()
+            ->json('jobs');
+        $newPartnerMrns = collect($newPartnerJobs)->pluck('mrn')->all();
+
+        $this->assertContains($child->mrn, $newPartnerMrns);
+        $this->assertNotContains($parent->mrn, $newPartnerMrns);
+        $newPartnerChildJob = collect($newPartnerJobs)->firstWhere('mrn', $child->mrn);
+        $this->assertSame('Scope Usta A', $newPartnerChildJob['earning_breakdown']['current_visit']['technician_name'] ?? null);
     }
 
     public function test_partner_portal_users_stay_out_of_internal_panel_routes(): void

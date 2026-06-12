@@ -4,6 +4,7 @@ namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceAuditLog;
 use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartnerJobAction;
@@ -15,6 +16,7 @@ use App\Models\TechnicalServiceTechnician;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Schema;
@@ -72,6 +74,46 @@ class TechnicalServiceWorkflowService
         'Müşteriye kullanım bilgisi verildi',
         'Garanti / servis formu bilgisi kontrol edildi',
     ];
+
+    /**
+     * @var array<int, array<string, mixed>>
+     */
+    private array $paymentStatusCache = [];
+
+    /**
+     * @var array<int, array<string, mixed>|null>
+     */
+    private array $extraMountPaymentCache = [];
+
+    /**
+     * @var array<int, Collection<int, TechnicalServiceMountPayment>>
+     */
+    private array $mountPaymentsByRequestIdCache = [];
+
+    /**
+     * @var array<int, Collection<int, TechnicalServiceMountPayment>>
+     */
+    private array $mountPaymentsBySessionIdCache = [];
+
+    /**
+     * @var array<string, Collection<int, TechnicalServiceMountPayment>>
+     */
+    private array $customerChargePaymentsCache = [];
+
+    /**
+     * @var array<int, array{status:string,status_label:string,paid_at:string|null,earning_id:int|null}>
+     */
+    private array $payoutPaymentStatusCache = [];
+
+    /**
+     * @var array<int, TechnicalServiceRequest|null>
+     */
+    private array $rootFinancialRequestCache = [];
+
+    /**
+     * @var array<int, Collection<int, TechnicalServiceRequest>>
+     */
+    private array $rootFinancialRequestsCache = [];
 
     /**
      * @return array<string, string>
@@ -490,6 +532,9 @@ class TechnicalServiceWorkflowService
 
         $this->applyPayloadForWorkflow($request, $target, $payload);
         $this->applyDerivedState($request, $payload);
+        if ($target === 'Tamamlandı') {
+            $this->storeCompletedEarningSnapshot($request);
+        }
         $request->updated_by_user_id = $user?->id;
         $request->save();
 
@@ -1003,6 +1048,302 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
+    public function preloadSerializationContext(Collection $requests): void
+    {
+        $requests = $requests
+            ->filter(fn (mixed $request): bool => $request instanceof TechnicalServiceRequest)
+            ->unique(fn (TechnicalServiceRequest $request): int => (int) $request->id)
+            ->values();
+
+        if ($requests->isEmpty()) {
+            return;
+        }
+
+        $this->loadSerializationRelations($requests);
+
+        $rootIds = $requests
+            ->flatMap(fn (TechnicalServiceRequest $request): array => array_filter([
+                $request->parent_request_id !== null ? (int) $request->parent_request_id : null,
+                $request->parent_request_id === null ? (int) $request->id : null,
+                $request->parentRequest instanceof TechnicalServiceRequest ? (int) $request->parentRequest->id : null,
+            ]))
+            ->unique()
+            ->values();
+        $rootMrns = $requests
+            ->map(fn (TechnicalServiceRequest $request): string => (string) ($request->root_mrn ?: ($request->parent_request_id === null ? $request->mrn : '')))
+            ->filter(fn (string $mrn): bool => $mrn !== '')
+            ->unique()
+            ->values();
+        $roots = collect();
+
+        if ($rootIds->isNotEmpty() || $rootMrns->isNotEmpty()) {
+            $roots = TechnicalServiceRequest::query()
+                ->where(function ($query) use ($rootIds, $rootMrns): void {
+                    if ($rootIds->isNotEmpty()) {
+                        $query->whereIn('id', $rootIds->all());
+                    }
+
+                    if ($rootMrns->isNotEmpty()) {
+                        $rootIds->isNotEmpty()
+                            ? $query->orWhereIn('mrn', $rootMrns->all())
+                            : $query->whereIn('mrn', $rootMrns->all());
+                    }
+                })
+                ->get();
+        }
+
+        $this->loadSerializationRelations($roots);
+
+        $related = $requests->concat($roots);
+        $roots->each(function (TechnicalServiceRequest $root) use (&$related): void {
+            if ($root->relationLoaded('childRequests')) {
+                $related = $related->concat($root->childRequests);
+            }
+        });
+        $requests->each(function (TechnicalServiceRequest $request) use (&$related): void {
+            if ($request->parentRequest instanceof TechnicalServiceRequest) {
+                $related = $related->push($request->parentRequest);
+            }
+        });
+
+        $related = $related
+            ->filter(fn (mixed $request): bool => $request instanceof TechnicalServiceRequest)
+            ->unique(fn (TechnicalServiceRequest $request): int => (int) $request->id)
+            ->values();
+
+        $this->loadSerializationRelations($related);
+        $this->seedRootFinancialContext($related, $roots);
+        $this->preloadPaymentLookups($related);
+        $this->preloadPayoutStatuses($related);
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     */
+    private function loadSerializationRelations(Collection $requests): void
+    {
+        $models = new EloquentCollection($requests
+            ->filter(fn (mixed $request): bool => $request instanceof TechnicalServiceRequest)
+            ->unique(fn (TechnicalServiceRequest $request): int => (int) $request->id)
+            ->values()
+            ->all());
+
+        if ($models->isEmpty()) {
+            return;
+        }
+
+        $models->loadMissing([
+            'events' => fn ($query) => $query->orderBy('created_at'),
+            'technicianRecord',
+            'requestSerials',
+            'uploads',
+            'parentRequest.latestAssignmentOffer.technician',
+            'parentRequest.technicianRecord',
+            'sourcePartRequest',
+            'latestRouteQuote',
+            'latestAssignmentOffer.technician',
+            'partnerJobActions' => fn ($query) => $query->latest(),
+            'partRequests' => fn ($query) => $query->latest(),
+            'childRequests' => fn ($query) => $query->orderBy('service_sequence')->orderBy('id'),
+            'childRequests.events' => fn ($query) => $query->orderBy('created_at'),
+            'childRequests.technicianRecord',
+            'childRequests.requestSerials',
+            'childRequests.uploads',
+            'childRequests.latestRouteQuote',
+            'childRequests.latestAssignmentOffer.technician',
+            'childRequests.partnerJobActions' => fn ($query) => $query->latest(),
+            'childRequests.partRequests' => fn ($query) => $query->latest(),
+        ]);
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @param Collection<int, TechnicalServiceRequest> $roots
+     */
+    private function seedRootFinancialContext(Collection $requests, Collection $roots): void
+    {
+        $rootById = $roots->keyBy('id');
+        $rootByMrn = $roots
+            ->filter(fn (TechnicalServiceRequest $request): bool => filled($request->mrn))
+            ->keyBy('mrn');
+
+        $requests
+            ->filter(fn (TechnicalServiceRequest $request): bool => $request->parent_request_id === null)
+            ->each(function (TechnicalServiceRequest $request) use (&$rootById, &$rootByMrn): void {
+                $rootById[(int) $request->id] = $request;
+                if (filled($request->mrn)) {
+                    $rootByMrn[(string) $request->mrn] = $request;
+                }
+            });
+
+        $requests->each(function (TechnicalServiceRequest $request) use ($rootById, $rootByMrn): void {
+            $root = $request->parent_request_id === null
+                ? ($rootById[(int) $request->id] ?? $request)
+                : ($rootById[(int) $request->parent_request_id]
+                    ?? ($rootByMrn[(string) $request->root_mrn] ?? null)
+                    ?? ($request->parentRequest instanceof TechnicalServiceRequest ? $request->parentRequest : null));
+
+            if (! $root instanceof TechnicalServiceRequest) {
+                return;
+            }
+
+            $group = collect([$root]);
+            if ($root->relationLoaded('childRequests')) {
+                $group = $group->concat($root->childRequests);
+            }
+
+            $group = $group
+                ->filter(fn (mixed $related): bool => $related instanceof TechnicalServiceRequest)
+                ->unique(fn (TechnicalServiceRequest $related): int => (int) $related->id)
+                ->values();
+
+            $group->each(function (TechnicalServiceRequest $related) use ($root, $group): void {
+                $this->rootFinancialRequestCache[(int) $related->id] = $root;
+                $this->rootFinancialRequestsCache[(int) $related->id] = $group;
+            });
+        });
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     */
+    private function preloadPaymentLookups(Collection $requests): void
+    {
+        $requestIds = $requests
+            ->pluck('id')
+            ->filter()
+            ->map(fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values();
+        $sessionIds = $requests
+            ->pluck('mount_session_id')
+            ->filter()
+            ->map(fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values();
+
+        $requestIds->each(fn (int $id) => $this->mountPaymentsByRequestIdCache[$id] = collect());
+        $sessionIds->each(fn (int $id) => $this->mountPaymentsBySessionIdCache[$id] = collect());
+
+        if ($requestIds->isEmpty() && $sessionIds->isEmpty()) {
+            return;
+        }
+
+        $payments = TechnicalServiceMountPayment::query()
+            ->with('technicalServiceRequest')
+            ->where(function ($query) use ($requestIds, $sessionIds): void {
+                if ($requestIds->isNotEmpty()) {
+                    $query->whereIn('technical_service_request_id', $requestIds->all());
+                }
+
+                if ($sessionIds->isNotEmpty()) {
+                    $requestIds->isNotEmpty()
+                        ? $query->orWhereIn('technical_service_mount_session_id', $sessionIds->all())
+                        : $query->whereIn('technical_service_mount_session_id', $sessionIds->all());
+                }
+            })
+            ->latest('id')
+            ->get();
+
+        $payments->each(function (TechnicalServiceMountPayment $payment): void {
+            if ($payment->technical_service_request_id !== null) {
+                $requestId = (int) $payment->technical_service_request_id;
+                $this->mountPaymentsByRequestIdCache[$requestId] = ($this->mountPaymentsByRequestIdCache[$requestId] ?? collect())->push($payment);
+            }
+
+            if ($payment->technical_service_mount_session_id !== null) {
+                $sessionId = (int) $payment->technical_service_mount_session_id;
+                $this->mountPaymentsBySessionIdCache[$sessionId] = ($this->mountPaymentsBySessionIdCache[$sessionId] ?? collect())->push($payment);
+            }
+        });
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     */
+    private function preloadPayoutStatuses(Collection $requests): void
+    {
+        $requestIds = $requests
+            ->pluck('id')
+            ->filter()
+            ->map(fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values();
+
+        $requestIds->each(fn (int $id) => $this->payoutPaymentStatusCache[$id] = $this->emptyPayoutPaymentStatusPayload());
+
+        if ($requestIds->isEmpty()) {
+            return;
+        }
+
+        TechnicalServiceEarningItem::query()
+            ->with('earning')
+            ->whereIn('technical_service_request_id', $requestIds->all())
+            ->latest('id')
+            ->get()
+            ->groupBy('technical_service_request_id')
+            ->each(function (Collection $items, mixed $requestId): void {
+                $item = $items->first();
+                if ($item instanceof TechnicalServiceEarningItem) {
+                    $this->payoutPaymentStatusCache[(int) $requestId] = $this->payoutPaymentStatusFromItem($item);
+                }
+            });
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceMountPayment> $payments
+     * @return Collection<int, TechnicalServiceMountPayment>
+     */
+    private function sortedUniquePayments(Collection $payments): Collection
+    {
+        return $payments
+            ->filter(fn (mixed $payment): bool => $payment instanceof TechnicalServiceMountPayment)
+            ->unique(fn (TechnicalServiceMountPayment $payment): int => (int) $payment->id)
+            ->sortByDesc('id')
+            ->values();
+    }
+
+    /**
+     * @return Collection<int, TechnicalServiceMountPayment>|null
+     */
+    private function cachedPaymentsForRequest(TechnicalServiceRequest $request): ?Collection
+    {
+        $hasCache = array_key_exists((int) $request->id, $this->mountPaymentsByRequestIdCache)
+            || ($request->mount_session_id !== null && array_key_exists((int) $request->mount_session_id, $this->mountPaymentsBySessionIdCache));
+
+        if (! $hasCache) {
+            return null;
+        }
+
+        $payments = $this->mountPaymentsByRequestIdCache[(int) $request->id] ?? collect();
+
+        if ($request->mount_session_id !== null) {
+            $payments = $payments->concat($this->mountPaymentsBySessionIdCache[(int) $request->mount_session_id] ?? collect());
+        }
+
+        return $this->sortedUniquePayments($payments);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function paymentStatusForRequest(TechnicalServiceRequest $request): array
+    {
+        $requestId = (int) $request->id;
+        if (array_key_exists($requestId, $this->paymentStatusCache)) {
+            return $this->paymentStatusCache[$requestId];
+        }
+
+        $payments = $this->cachedPaymentsForRequest($request);
+        $status = app(TechnicalServicePaymentStatusResolver::class)->resolve($request, $payments);
+        $this->paymentStatusCache[$requestId] = $status;
+
+        return $status;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function serialize(TechnicalServiceRequest $request, bool $includeHistory = false): array
     {
         $this->applyDerivedState($request);
@@ -1027,6 +1368,8 @@ class TechnicalServiceWorkflowService
         $payload['customer_district'] = $displayDistrict;
         $payload['service_address'] = TechnicalServiceUiLabelService::addressLabel($request->service_address);
         $payload['location_formatted_address'] = TechnicalServiceUiLabelService::addressLabel($request->location_formatted_address);
+        $payload['product_name'] = TechnicalServiceUiLabelService::cleanDisplayText($request->product_name);
+        $payload['product_model'] = TechnicalServiceUiLabelService::cleanDisplayText($request->product_model);
         $payload['technician_name'] = TechnicalServiceUiLabelService::displayName($request->technician_name);
         $payload['status'] = TechnicalServiceUiLabelService::cleanDisplayText($request->status);
         $payload['workflow_status'] = TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status);
@@ -1068,6 +1411,7 @@ class TechnicalServiceWorkflowService
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
         $payload['earning_breakdown'] = $this->earningBreakdownPayload($request);
+        $payload['finance_summary'] = $this->financeSummaryPayload($request, $payload['earning_breakdown']);
         $payload['partner_portal_actions'] = $this->partnerPortalActionPayload($request);
         $payload['part_requests'] = $request->partRequests
             ->map(fn ($partRequest): array => app(TechnicalServicePartRequestService::class)->serialize($partRequest))
@@ -1089,7 +1433,7 @@ class TechnicalServiceWorkflowService
         $payload['display_tags'] = $operationalState['display_tags'];
         $payload['attention'] = $operationalState['attention'];
         $payload['visible_sections'] = $this->visibleSectionsPayload($request);
-        $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request);
+        $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request, $this->paymentStatusForRequest($request));
 
         if ($includeHistory) {
             if ($this->auditLogTableAvailable()) {
@@ -1102,6 +1446,38 @@ class TechnicalServiceWorkflowService
         }
 
         return $payload;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function operationControlUpdatePayload(TechnicalServiceRequest $request): array
+    {
+        $this->applyDerivedState($request);
+        $request->loadMissing([
+            'childRequests',
+            'parentRequest',
+            'partRequests' => fn ($query) => $query->latest(),
+        ]);
+
+        $operationalState = app(TechnicalServiceOperationalStatePresenter::class)->present($request);
+
+        return [
+            'id' => $request->id,
+            'operation_control' => $this->operationControlPayload($request),
+            'assignment_blockers' => $this->assignmentBlockers($request),
+            'allowed_workflow_actions' => $this->allowedActionsFor($request),
+            'allowed_workflow_transitions' => self::transitionMap()[$this->currentWorkflowStatus($request)] ?? [],
+            'operational_state' => $operationalState,
+            'kanban_column' => $operationalState['ops_column'],
+            'display_action_label' => $operationalState['display_action_label'],
+            'display_tags' => $operationalState['display_tags'],
+            'attention' => $operationalState['attention'],
+            'visible_sections' => $this->visibleSectionsPayload($request),
+            'next_action' => TechnicalServiceUiLabelService::cleanDisplayText($request->next_action),
+            'next_action_payload' => app(TechnicalServiceNextActionService::class)->forRequest($request, $this->paymentStatusForRequest($request)),
+            'updated_at' => $this->dateTimeString($request->updated_at),
+        ];
     }
 
     public function assertTransitionAllowed(string $from, string $to): void
@@ -1513,9 +1889,9 @@ class TechnicalServiceWorkflowService
     {
         return [
             'serial_number' => $request->serial_number,
-            'product_name' => $request->product_name,
-            'product_model' => $request->product_model,
-            'brand' => $request->brand,
+            'product_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->product_name),
+            'product_model' => TechnicalServiceUiLabelService::cleanDisplayText($request->product_model),
+            'brand' => TechnicalServiceUiLabelService::cleanDisplayText($request->brand),
             'stock_code' => $request->stock_code,
             'activation_code' => $request->activation_code,
         ];
@@ -1528,7 +1904,7 @@ class TechnicalServiceWorkflowService
     {
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $customerCharges = $this->customerChargeSummaryPayload($request);
-        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+        $paymentStatus = $this->paymentStatusForRequest($request);
         $paidAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment);
         $paymentSummary = $this->paymentSummaryPayload($request, $paymentStatus, $extraPayment, $customerCharges, $paidAmount);
 
@@ -1619,12 +1995,12 @@ class TechnicalServiceWorkflowService
 
     public function mountPaymentReceived(TechnicalServiceRequest $request): bool
     {
-        return (bool) app(TechnicalServicePaymentStatusResolver::class)->resolve($request)['is_paid'];
+        return (bool) $this->paymentStatusForRequest($request)['is_paid'];
     }
 
     public function requiresMountExclusionAcknowledgement(TechnicalServiceRequest $request): bool
     {
-        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+        $paymentStatus = $this->paymentStatusForRequest($request);
 
         return $request->sale_mount_status === TechnicalServiceMountSession::SALE_MONTAJ_HARIC
             && $this->hasMultiProductMountRequest($request)
@@ -1714,14 +2090,24 @@ class TechnicalServiceWorkflowService
      */
     private function latestExtraMountPaymentPayload(TechnicalServiceRequest $request): ?array
     {
+        $requestId = (int) $request->id;
+        if (array_key_exists($requestId, $this->extraMountPaymentCache)) {
+            return $this->extraMountPaymentCache[$requestId];
+        }
+
         if ($request->mount_session_id === null) {
+            $this->extraMountPaymentCache[$requestId] = null;
+
             return null;
         }
 
-        $payments = TechnicalServiceMountPayment::query()
-            ->where('technical_service_mount_session_id', $request->mount_session_id)
-            ->latest('id')
-            ->get();
+        $cachedPayments = $this->cachedPaymentsForRequest($request);
+        $payments = $cachedPayments !== null
+            ? $cachedPayments->filter(fn (TechnicalServiceMountPayment $payment): bool => (int) ($payment->technical_service_mount_session_id ?? 0) === (int) $request->mount_session_id)->values()
+            : TechnicalServiceMountPayment::query()
+                ->where('technical_service_mount_session_id', $request->mount_session_id)
+                ->latest('id')
+                ->get();
 
         $payment = $payments->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
             $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
@@ -1736,12 +2122,14 @@ class TechnicalServiceWorkflowService
         });
 
         if (! $payment instanceof TechnicalServiceMountPayment) {
+            $this->extraMountPaymentCache[$requestId] = null;
+
             return null;
         }
 
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
 
-        return [
+        return $this->extraMountPaymentCache[$requestId] = [
             'id' => $payment->id,
             'status' => $payment->status,
             'amount' => (float) $payment->amount,
@@ -1774,6 +2162,12 @@ class TechnicalServiceWorkflowService
         $laborTotal = round((float) $rows->sum('labor_amount'), 2);
         $routeTotal = round((float) $rows->sum('route_fee_amount'), 2);
         $total = round((float) $rows->sum('total_amount'), 2);
+        $technicianNames = $rows
+            ->pluck('technician_name')
+            ->filter(fn (mixed $name): bool => filled($name))
+            ->map(fn (mixed $name): string => (string) $name)
+            ->unique()
+            ->values();
 
         return [
             'root_request_id' => $this->rootFinancialRequest($request)?->id ?? $request->id,
@@ -1788,6 +2182,9 @@ class TechnicalServiceWorkflowService
                 'route_fee_amount_label' => $this->moneyLabel($routeTotal),
                 'total_amount_label' => $this->moneyLabel($total),
                 'job_count' => $rows->count(),
+                'technician_count' => $technicianNames->count(),
+                'technician_names' => $technicianNames->all(),
+                'is_multi_technician' => $technicianNames->count() > 1,
             ],
         ];
     }
@@ -1797,7 +2194,50 @@ class TechnicalServiceWorkflowService
      */
     private function earningBreakdownRow(TechnicalServiceRequest $currentRequest, TechnicalServiceRequest $request): array
     {
-        $request->loadMissing('latestAssignmentOffer');
+        $request->loadMissing(['latestAssignmentOffer.technician', 'technicianRecord']);
+        $completedSnapshot = $this->completedEarningSnapshot($request);
+        if ($completedSnapshot !== null) {
+            $laborAmount = round((float) ($completedSnapshot['labor_amount'] ?? 0), 2);
+            $routeFeeAmount = round((float) ($completedSnapshot['route_fee_amount'] ?? 0), 2);
+            $totalAmount = round((float) ($completedSnapshot['total_amount'] ?? ($laborAmount + $routeFeeAmount)), 2);
+            $payoutStatus = (string) ($completedSnapshot['payout_status'] ?? $this->locksmithPayoutStatus(null, $totalAmount));
+            $kindLabel = $request->parent_request_id !== null || filled($request->service_code) ? 'Servis' : 'Montaj';
+            $paymentStatus = $this->payoutPaymentStatusPayload($request);
+            $technician = $this->earningRowTechnicianPayload($request, $completedSnapshot, $request->latestAssignmentOffer);
+
+            return [
+                'id' => $request->id,
+                'mrn' => $request->mrn,
+                'display_mrn' => $request->service_code
+                    ? trim((string) ($request->root_mrn ?: $request->mrn)).' / '.$request->service_code
+                    : $request->mrn,
+                'service_code' => $request->service_code,
+                'kind' => $kindLabel === 'Servis' ? 'service' : 'mount',
+                'kind_label' => $kindLabel,
+                'is_current' => (int) $request->id === (int) $currentRequest->id,
+                'is_parent' => $request->parent_request_id === null,
+                'technician_id' => $technician['technician_id'],
+                'technician_name' => $technician['technician_name'],
+                'technician_source' => $technician['source'],
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => $totalAmount,
+                'labor_amount_label' => $this->moneyLabel($laborAmount),
+                'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+                'total_amount_label' => $this->moneyLabel($totalAmount),
+                'status' => $completedSnapshot['status'] ?? null,
+                'status_label' => (string) ($completedSnapshot['status_label'] ?? $this->assignmentOfferStatusLabel($completedSnapshot['status'] ?? null)),
+                'payout_status' => $payoutStatus,
+                'payout_status_label' => (string) ($completedSnapshot['payout_status_label'] ?? $this->locksmithPayoutStatusLabel($payoutStatus)),
+                'payment_status' => $paymentStatus['status'],
+                'payment_status_label' => $paymentStatus['status_label'],
+                'paid_at' => $paymentStatus['paid_at'],
+                'is_confirmed' => $payoutStatus === 'confirmed',
+                'is_draft' => $payoutStatus === 'draft',
+                'source' => 'completed_earning_snapshot',
+                'completed_at' => $this->dateTimeString($request->completed_at),
+            ];
+        }
         $offer = $request->latestAssignmentOffer;
         $laborAmount = $offer instanceof TechnicalServiceAssignmentOffer
             ? (float) ($offer->labor_amount ?? 0)
@@ -1806,7 +2246,11 @@ class TechnicalServiceWorkflowService
             ? (float) ($offer->route_fee_amount ?? 0)
             : (float) ($this->nullableFloat($request->travel_fee_amount) ?? 0);
         $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+        $offerStatus = $offer instanceof TechnicalServiceAssignmentOffer ? $offer->status : null;
+        $payoutStatus = $this->locksmithPayoutStatus($offerStatus, $totalAmount);
         $kindLabel = $request->parent_request_id !== null || filled($request->service_code) ? 'Servis' : 'Montaj';
+        $paymentStatus = $this->payoutPaymentStatusPayload($request);
+        $technician = $this->earningRowTechnicianPayload($request, null, $offer);
 
         return [
             'id' => $request->id,
@@ -1819,17 +2263,334 @@ class TechnicalServiceWorkflowService
             'kind_label' => $kindLabel,
             'is_current' => (int) $request->id === (int) $currentRequest->id,
             'is_parent' => $request->parent_request_id === null,
-            'technician_id' => $request->technical_service_technician_id,
-            'technician_name' => TechnicalServiceUiLabelService::displayName($request->technician_name),
+            'technician_id' => $technician['technician_id'],
+            'technician_name' => $technician['technician_name'],
+            'technician_source' => $technician['source'],
             'labor_amount' => round($laborAmount, 2),
             'route_fee_amount' => round($routeFeeAmount, 2),
             'total_amount' => $totalAmount,
             'labor_amount_label' => $this->moneyLabel($laborAmount),
             'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
             'total_amount_label' => $this->moneyLabel($totalAmount),
-            'status' => $offer instanceof TechnicalServiceAssignmentOffer ? $offer->status : null,
-            'status_label' => $this->assignmentOfferStatusLabel($offer instanceof TechnicalServiceAssignmentOffer ? $offer->status : null),
+            'status' => $offerStatus,
+            'status_label' => $this->assignmentOfferStatusLabel($offerStatus),
+            'payout_status' => $payoutStatus,
+            'payout_status_label' => $this->locksmithPayoutStatusLabel($payoutStatus),
+            'payment_status' => $paymentStatus['status'],
+            'payment_status_label' => $paymentStatus['status_label'],
+            'paid_at' => $paymentStatus['paid_at'],
+            'is_confirmed' => $payoutStatus === 'confirmed',
+            'is_draft' => $payoutStatus === 'draft',
+            'source' => $offer instanceof TechnicalServiceAssignmentOffer
+                ? 'assignment_offer'
+                : ($totalAmount > 0 ? 'request_default' : 'none'),
             'completed_at' => $this->dateTimeString($request->completed_at),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed>|null $completedSnapshot
+     * @return array{technician_id:mixed,technician_name:string|null,source:string}
+     */
+    private function earningRowTechnicianPayload(
+        TechnicalServiceRequest $request,
+        ?array $completedSnapshot = null,
+        ?TechnicalServiceAssignmentOffer $offer = null,
+    ): array {
+        $source = 'request_assignment';
+        $technicianId = $request->technical_service_technician_id;
+        $technicianName = $request->technician_name ?? $request->technicianRecord?->name;
+
+        if ($offer instanceof TechnicalServiceAssignmentOffer) {
+            $offer->loadMissing('technician');
+            $technicianId ??= $offer->technical_service_technician_id;
+            $technicianName = $this->firstFilled($technicianName, $offer->technician?->name);
+            $source = 'assignment_offer';
+        }
+
+        if ($completedSnapshot !== null) {
+            $technicianId = $completedSnapshot['technical_service_technician_id']
+                ?? $completedSnapshot['technician_id']
+                ?? $technicianId;
+            $technicianName = $this->firstFilled($completedSnapshot['technician_name'] ?? null, $technicianName);
+            $source = 'completed_earning_snapshot';
+        }
+
+        return [
+            'technician_id' => $technicianId,
+            'technician_name' => TechnicalServiceUiLabelService::displayName($technicianName),
+            'source' => $source,
+        ];
+    }
+
+    private function firstFilled(mixed ...$values): ?string
+    {
+        foreach ($values as $value) {
+            if (filled($value)) {
+                return (string) $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $earningBreakdown
+     * @return array<string, mixed>
+     */
+    private function financeSummaryPayload(TechnicalServiceRequest $request, array $earningBreakdown): array
+    {
+        $currentCollection = $this->financeCustomerCollectionForRequest($request);
+        $rootCollection = $this->financeRootCustomerCollection($request);
+        $currentPayout = $this->financePayoutFromRow($earningBreakdown['current_visit'] ?? null, $request);
+        $rootPayout = $this->financePayoutFromRootTotal($earningBreakdown['root_total'] ?? null);
+        $currentNetMargin = round($currentCollection['total_amount'] - $currentPayout['total_amount'], 2);
+        $rootNetMargin = round($rootCollection['total_amount'] - $rootPayout['total_amount'], 2);
+        $isServiceVisit = $this->isServiceVisitRequest($request);
+        $warrantyCovered = $isServiceVisit
+            && $currentCollection['service_amount'] <= 0
+            && $currentCollection['part_amount'] <= 0;
+        $completedSnapshot = $this->completedEarningSnapshot($request);
+        $currentOperationCost = $this->financeOperationCostPayload($currentPayout, $warrantyCovered);
+        $confirmedPayout = ($currentPayout['payout_status'] ?? null) === 'confirmed' ? $currentPayout : null;
+        $draftPayout = ($currentPayout['payout_status'] ?? null) === 'draft' ? $currentPayout : null;
+
+        return [
+            'currency' => 'TRY',
+            'current_visit_customer_collection' => $currentCollection,
+            'current_visit_locksmith_payout' => $currentPayout,
+            'current_visit_operation_cost' => $currentOperationCost,
+            'root_total_customer_collection' => $rootCollection,
+            'root_total_locksmith_payout' => $rootPayout,
+            'current_visit' => [
+                'is_service_visit' => $isServiceVisit,
+                'technician_id' => $currentPayout['technician_id'] ?? $completedSnapshot['technical_service_technician_id'] ?? $request->technical_service_technician_id,
+                'technician_name' => TechnicalServiceUiLabelService::displayName((string) ($currentPayout['technician_name'] ?? $completedSnapshot['technician_name'] ?? $request->technician_name)),
+                'customer_collection' => $currentCollection,
+                'locksmith_payout' => $currentPayout,
+                'operation_cost' => $currentOperationCost,
+                'warranty_customer_charge' => $this->financeWarrantyCustomerChargePayload($currentCollection, $warrantyCovered),
+                'confirmed_locksmith_payout' => $confirmedPayout,
+                'draft_locksmith_payout' => $draftPayout,
+                'payout_status' => $currentPayout['payout_status'] ?? 'none',
+                'payout_status_label' => $currentPayout['payout_status_label'] ?? $this->locksmithPayoutStatusLabel('none'),
+                'payment_status' => $currentPayout['payment_status'] ?? 'not_recorded',
+                'payment_status_label' => $currentPayout['payment_status_label'] ?? $this->payoutPaymentStatusLabel('not_recorded'),
+                'paid_at' => $currentPayout['paid_at'] ?? null,
+                'completed_earning_snapshot' => $completedSnapshot,
+                'net_margin' => $this->financeNetMarginPayload($currentNetMargin),
+                'warranty_covered' => $warrantyCovered,
+                'warranty_note' => $warrantyCovered
+                    ? 'Garanti kapsamında - müşteriden servis/parça tahsilatı yok'
+                    : null,
+                'operation_cost_note' => $warrantyCovered && $currentPayout['total_amount'] > 0
+                    ? 'Usta hakedişi operasyon maliyeti olarak hesaplandı'
+                    : null,
+            ],
+            'root_total' => [
+                'customer_collection' => $rootCollection,
+                'locksmith_payout' => $rootPayout,
+                'net_margin' => $this->financeNetMarginPayload($rootNetMargin),
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function financeCustomerCollectionForRequest(TechnicalServiceRequest $request): array
+    {
+        $isServiceVisit = $this->isServiceVisitRequest($request);
+        $paymentStatus = $this->paymentStatusForRequest($request);
+        $extraPayment = $this->latestExtraMountPaymentPayload($request);
+        $customerCharges = $this->customerChargeSummaryForRequests(collect([$request]));
+        $mountAmount = $isServiceVisit
+            ? 0.0
+            : round((float) ($this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment) ?? 0), 2);
+        $extraAmount = $isServiceVisit
+            ? 0.0
+            : (($extraPayment['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID
+                ? round((float) ($extraPayment['amount'] ?? 0), 2)
+                : 0.0);
+        $serviceAmount = round((float) ($customerCharges['paid_service_amount'] ?? 0), 2);
+        $partAmount = round((float) ($customerCharges['paid_part_amount'] ?? 0), 2);
+        $totalAmount = round($mountAmount + $extraAmount + $serviceAmount + $partAmount, 2);
+
+        return [
+            'mount_amount' => $mountAmount,
+            'service_amount' => $serviceAmount,
+            'part_amount' => $partAmount,
+            'extra_amount' => $extraAmount,
+            'total_amount' => $totalAmount,
+            'mount_amount_label' => $this->moneyLabel($mountAmount),
+            'service_amount_label' => $this->moneyLabel($serviceAmount),
+            'part_amount_label' => $this->moneyLabel($partAmount),
+            'extra_amount_label' => $this->moneyLabel($extraAmount),
+            'total_amount_label' => $this->moneyLabel($totalAmount),
+            'has_collection' => $totalAmount > 0,
+            'has_mount_collection' => $mountAmount > 0,
+            'has_service_charge' => $serviceAmount > 0,
+            'has_part_charge' => $partAmount > 0,
+            'has_extra_charge' => $extraAmount > 0,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function financeRootCustomerCollection(TechnicalServiceRequest $request): array
+    {
+        $totals = $this->rootFinancialRequests($request)
+            ->reject(fn (TechnicalServiceRequest $related): bool => $this->isCancelledRequest($related))
+            ->map(fn (TechnicalServiceRequest $related): array => $this->financeCustomerCollectionForRequest($related))
+            ->reduce(function (array $carry, array $row): array {
+                $carry['mount_amount'] += (float) ($row['mount_amount'] ?? 0);
+                $carry['service_amount'] += (float) ($row['service_amount'] ?? 0);
+                $carry['part_amount'] += (float) ($row['part_amount'] ?? 0);
+                $carry['extra_amount'] += (float) ($row['extra_amount'] ?? 0);
+
+                return $carry;
+            }, [
+                'mount_amount' => 0.0,
+                'service_amount' => 0.0,
+                'part_amount' => 0.0,
+                'extra_amount' => 0.0,
+            ]);
+        $mountAmount = round((float) $totals['mount_amount'], 2);
+        $serviceAmount = round((float) $totals['service_amount'], 2);
+        $partAmount = round((float) $totals['part_amount'], 2);
+        $extraAmount = round((float) $totals['extra_amount'], 2);
+        $totalAmount = round($mountAmount + $serviceAmount + $partAmount + $extraAmount, 2);
+
+        return [
+            'mount_amount' => $mountAmount,
+            'service_amount' => $serviceAmount,
+            'part_amount' => $partAmount,
+            'extra_amount' => $extraAmount,
+            'total_amount' => $totalAmount,
+            'mount_amount_label' => $this->moneyLabel($mountAmount),
+            'service_amount_label' => $this->moneyLabel($serviceAmount),
+            'part_amount_label' => $this->moneyLabel($partAmount),
+            'extra_amount_label' => $this->moneyLabel($extraAmount),
+            'total_amount_label' => $this->moneyLabel($totalAmount),
+            'has_collection' => $totalAmount > 0,
+            'has_mount_collection' => $mountAmount > 0,
+            'has_service_charge' => $serviceAmount > 0,
+            'has_part_charge' => $partAmount > 0,
+            'has_extra_charge' => $extraAmount > 0,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed>|null $row
+     * @return array<string, mixed>
+     */
+    private function financePayoutFromRow(?array $row, TechnicalServiceRequest $request): array
+    {
+        $laborAmount = round((float) ($row['labor_amount'] ?? $this->nullableFloat($request->technician_payment_amount) ?? 0), 2);
+        $routeFeeAmount = round((float) ($row['route_fee_amount'] ?? $this->nullableFloat($request->travel_fee_amount) ?? 0), 2);
+        $totalAmount = round((float) ($row['total_amount'] ?? ($laborAmount + $routeFeeAmount)), 2);
+        $paymentStatus = $this->payoutPaymentStatusPayload($request);
+
+        return [
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => $totalAmount,
+            'labor_amount_label' => $this->moneyLabel($laborAmount),
+            'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+            'total_amount_label' => $this->moneyLabel($totalAmount),
+            'technician_id' => $row['technician_id'] ?? $request->technical_service_technician_id,
+            'technician_name' => $row['technician_name'] ?? TechnicalServiceUiLabelService::displayName($request->technician_name),
+            'status' => $row['status'] ?? null,
+            'status_label' => $row['status_label'] ?? $this->assignmentOfferStatusLabel($row['status'] ?? null),
+            'payout_status' => $row['payout_status'] ?? $this->locksmithPayoutStatus($row['status'] ?? null, $totalAmount),
+            'payout_status_label' => $row['payout_status_label'] ?? $this->locksmithPayoutStatusLabel(
+                $row['payout_status'] ?? $this->locksmithPayoutStatus($row['status'] ?? null, $totalAmount)
+            ),
+            'payment_status' => $row['payment_status'] ?? $paymentStatus['status'],
+            'payment_status_label' => $row['payment_status_label'] ?? $paymentStatus['status_label'],
+            'paid_at' => $row['paid_at'] ?? $paymentStatus['paid_at'],
+            'is_confirmed' => (bool) ($row['is_confirmed'] ?? (($row['payout_status'] ?? null) === 'confirmed')),
+            'is_draft' => (bool) ($row['is_draft'] ?? (($row['payout_status'] ?? null) === 'draft')),
+            'source' => $row['source'] ?? ($totalAmount > 0 ? 'request_default' : 'none'),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payout
+     * @return array<string, mixed>
+     */
+    private function financeOperationCostPayload(array $payout, bool $warrantyCovered): array
+    {
+        $laborAmount = $warrantyCovered ? round((float) ($payout['labor_amount'] ?? 0), 2) : 0.0;
+        $routeFeeAmount = $warrantyCovered ? round((float) ($payout['route_fee_amount'] ?? 0), 2) : 0.0;
+        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+
+        return [
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => $totalAmount,
+            'labor_amount_label' => $this->moneyLabel($laborAmount),
+            'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+            'total_amount_label' => $this->moneyLabel($totalAmount),
+            'applies' => $warrantyCovered && $totalAmount > 0,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $collection
+     * @return array<string, mixed>
+     */
+    private function financeWarrantyCustomerChargePayload(array $collection, bool $warrantyCovered): array
+    {
+        $serviceAmount = $warrantyCovered ? 0.0 : round((float) ($collection['service_amount'] ?? 0), 2);
+        $partAmount = $warrantyCovered ? 0.0 : round((float) ($collection['part_amount'] ?? 0), 2);
+        $totalAmount = round($serviceAmount + $partAmount, 2);
+
+        return [
+            'service_amount' => $serviceAmount,
+            'part_amount' => $partAmount,
+            'total_amount' => $totalAmount,
+            'service_amount_label' => $this->moneyLabel($serviceAmount),
+            'part_amount_label' => $this->moneyLabel($partAmount),
+            'total_amount_label' => $this->moneyLabel($totalAmount),
+            'covered_by_warranty' => $warrantyCovered,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed>|null $rootTotal
+     * @return array<string, mixed>
+     */
+    private function financePayoutFromRootTotal(?array $rootTotal): array
+    {
+        $laborAmount = round((float) ($rootTotal['labor_amount'] ?? 0), 2);
+        $routeFeeAmount = round((float) ($rootTotal['route_fee_amount'] ?? 0), 2);
+        $totalAmount = round((float) ($rootTotal['total_amount'] ?? ($laborAmount + $routeFeeAmount)), 2);
+
+        return [
+            'labor_amount' => $laborAmount,
+            'route_fee_amount' => $routeFeeAmount,
+            'total_amount' => $totalAmount,
+            'labor_amount_label' => $this->moneyLabel($laborAmount),
+            'route_fee_amount_label' => $this->moneyLabel($routeFeeAmount),
+            'total_amount_label' => $this->moneyLabel($totalAmount),
+            'job_count' => $rootTotal['job_count'] ?? 0,
+            'technician_count' => $rootTotal['technician_count'] ?? 0,
+            'technician_names' => $rootTotal['technician_names'] ?? [],
+            'is_multi_technician' => (bool) ($rootTotal['is_multi_technician'] ?? false),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function financeNetMarginPayload(float $amount): array
+    {
+        return [
+            'amount' => round($amount, 2),
+            'amount_label' => $this->moneyLabel($amount),
+            'is_negative' => $amount < 0,
         ];
     }
 
@@ -1838,7 +2599,16 @@ class TechnicalServiceWorkflowService
      */
     private function customerChargeSummaryPayload(TechnicalServiceRequest $request): array
     {
-        $rows = $this->customerChargePayments($request)
+        return $this->customerChargeSummaryForRequests($this->rootFinancialRequests($request));
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @return array<string, mixed>
+     */
+    private function customerChargeSummaryForRequests(Collection $requests): array
+    {
+        $rows = $this->customerChargePaymentsForRequests($requests)
             ->map(fn (TechnicalServiceMountPayment $payment): array => $this->customerChargePaymentPayload($payment))
             ->values();
         $paidRows = $rows->filter(fn (array $row): bool => ($row['status'] ?? null) === TechnicalServiceMountPayment::STATUS_PAID);
@@ -1863,7 +2633,16 @@ class TechnicalServiceWorkflowService
      */
     private function customerChargePayments(TechnicalServiceRequest $request): Collection
     {
-        $requestIds = $this->rootFinancialRequests($request)
+        return $this->customerChargePaymentsForRequests($this->rootFinancialRequests($request));
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @return Collection<int, TechnicalServiceMountPayment>
+     */
+    private function customerChargePaymentsForRequests(Collection $requests): Collection
+    {
+        $requestIds = $requests
             ->pluck('id')
             ->map(fn (mixed $id): int => (int) $id)
             ->values();
@@ -1872,11 +2651,37 @@ class TechnicalServiceWorkflowService
             return collect();
         }
 
-        return TechnicalServiceMountPayment::query()
+        $cacheKey = $requestIds
+            ->sort()
+            ->implode(':');
+        if (array_key_exists($cacheKey, $this->customerChargePaymentsCache)) {
+            return $this->customerChargePaymentsCache[$cacheKey];
+        }
+
+        $hasRequestPaymentCache = $requestIds
+            ->every(fn (int $requestId): bool => array_key_exists($requestId, $this->mountPaymentsByRequestIdCache));
+        if ($hasRequestPaymentCache) {
+            $payments = $requestIds
+                ->flatMap(fn (int $requestId): Collection => $this->mountPaymentsByRequestIdCache[$requestId] ?? collect());
+
+            return $this->customerChargePaymentsCache[$cacheKey] = $this->filterCustomerChargePayments($payments);
+        }
+
+        return $this->customerChargePaymentsCache[$cacheKey] = TechnicalServiceMountPayment::query()
             ->with('technicalServiceRequest')
             ->whereIn('technical_service_request_id', $requestIds->all())
             ->latest('id')
             ->get()
+            ->pipe(fn (Collection $payments): Collection => $this->filterCustomerChargePayments($payments));
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceMountPayment> $payments
+     * @return Collection<int, TechnicalServiceMountPayment>
+     */
+    private function filterCustomerChargePayments(Collection $payments): Collection
+    {
+        return $this->sortedUniquePayments($payments)
             ->filter(function (TechnicalServiceMountPayment $payment): bool {
                 $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
 
@@ -1941,26 +2746,48 @@ class TechnicalServiceWorkflowService
      */
     private function rootFinancialRequests(TechnicalServiceRequest $request): Collection
     {
-        $root = $this->rootFinancialRequest($request) ?? $request;
-        $root->loadMissing(['latestAssignmentOffer', 'childRequests.latestAssignmentOffer']);
+        $requestId = (int) $request->id;
+        if (array_key_exists($requestId, $this->rootFinancialRequestsCache)) {
+            return $this->rootFinancialRequestsCache[$requestId];
+        }
 
-        return collect([$root])
+        $root = $this->rootFinancialRequest($request) ?? $request;
+        $root->loadMissing([
+            'latestAssignmentOffer.technician',
+            'technicianRecord',
+            'childRequests.latestAssignmentOffer.technician',
+            'childRequests.technicianRecord',
+        ]);
+
+        $requests = collect([$root])
             ->concat($root->childRequests)
             ->unique('id')
             ->values();
+
+        $requests->each(function (TechnicalServiceRequest $related) use ($root, $requests): void {
+            $this->rootFinancialRequestCache[(int) $related->id] = $root;
+            $this->rootFinancialRequestsCache[(int) $related->id] = $requests;
+        });
+
+        return $this->rootFinancialRequestsCache[$requestId] ?? $requests;
     }
 
     private function rootFinancialRequest(TechnicalServiceRequest $request): ?TechnicalServiceRequest
     {
+        $requestId = (int) $request->id;
+        if (array_key_exists($requestId, $this->rootFinancialRequestCache)) {
+            return $this->rootFinancialRequestCache[$requestId];
+        }
+
         if ($request->parent_request_id === null) {
-            return $request;
+            return $this->rootFinancialRequestCache[$requestId] = $request;
         }
 
         if ($request->parentRequest instanceof TechnicalServiceRequest) {
-            return $request->parentRequest;
+            return $this->rootFinancialRequestCache[$requestId] = $request->parentRequest;
         }
 
-        return TechnicalServiceRequest::query()
+        return $this->rootFinancialRequestCache[$requestId] = TechnicalServiceRequest::query()
             ->with('latestAssignmentOffer')
             ->find($request->parent_request_id);
     }
@@ -1981,6 +2808,168 @@ class TechnicalServiceWorkflowService
             TechnicalServiceAssignmentOffer::STATUS_CANCELLED => 'İptal edildi',
             TechnicalServiceAssignmentOffer::STATUS_DRAFT => 'Taslak',
             default => 'Hakediş yok',
+        };
+    }
+
+    private function locksmithPayoutStatus(?string $offerStatus, float $totalAmount): string
+    {
+        if ($totalAmount <= 0) {
+            return 'none';
+        }
+
+        return match ($offerStatus) {
+            TechnicalServiceAssignmentOffer::STATUS_SENT,
+            TechnicalServiceAssignmentOffer::STATUS_ACCEPTED,
+            TechnicalServiceAssignmentOffer::STATUS_REVISED => 'confirmed',
+            TechnicalServiceAssignmentOffer::STATUS_DRAFT => 'draft',
+            TechnicalServiceAssignmentOffer::STATUS_CANCELLED => 'none',
+            default => 'draft',
+        };
+    }
+
+    private function locksmithPayoutStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'confirmed' => 'Onaylanan usta hakedişi',
+            'draft' => 'Önerilen / taslak hakediş',
+            default => 'Hakediş yok',
+        };
+    }
+
+    private function storeCompletedEarningSnapshot(TechnicalServiceRequest $request): void
+    {
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $operationControl['completed_earning_snapshot'] = $this->buildCompletedEarningSnapshotPayload($request);
+        $request->operation_control_payload = $operationControl;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function completedEarningSnapshot(TechnicalServiceRequest $request): ?array
+    {
+        if ($request->completed_at === null && $request->installation_completed_at === null) {
+            return null;
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $snapshot = $operationControl['completed_earning_snapshot'] ?? null;
+
+        return is_array($snapshot) ? $snapshot : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildCompletedEarningSnapshotPayload(TechnicalServiceRequest $request): array
+    {
+        $request->loadMissing('latestAssignmentOffer');
+        $offer = $request->latestAssignmentOffer;
+        $laborAmount = $offer instanceof TechnicalServiceAssignmentOffer
+            ? (float) ($offer->labor_amount ?? 0)
+            : (float) ($this->nullableFloat($request->technician_payment_amount) ?? 0);
+        $routeFeeAmount = $offer instanceof TechnicalServiceAssignmentOffer
+            ? (float) ($offer->route_fee_amount ?? 0)
+            : (float) ($this->nullableFloat($request->travel_fee_amount) ?? 0);
+        $totalAmount = round($laborAmount + $routeFeeAmount, 2);
+        $offerStatus = $offer instanceof TechnicalServiceAssignmentOffer ? $offer->status : null;
+        $payoutStatus = $this->locksmithPayoutStatus($offerStatus, $totalAmount);
+        $earningMessage = $this->technicianEarningMessagePayload($request);
+        $paymentStatus = $this->payoutPaymentStatusPayload($request);
+        $customerCollection = $this->financeCustomerCollectionForRequest($request);
+        $isServiceVisit = $this->isServiceVisitRequest($request);
+        $warrantyCovered = $isServiceVisit
+            && $customerCollection['service_amount'] <= 0
+            && $customerCollection['part_amount'] <= 0;
+
+        return [
+            'completed_request_id' => $request->id,
+            'mrn' => $request->mrn,
+            'root_mrn' => $request->root_mrn ?: ($request->parentRequest?->mrn ?: $request->mrn),
+            'service_code' => $request->service_code,
+            'parent_request_id' => $request->parent_request_id,
+            'completed_at' => $this->dateTimeString($request->completed_at),
+            'technical_service_technician_id' => $request->technical_service_technician_id,
+            'technician_name' => TechnicalServiceUiLabelService::displayName($request->technician_name),
+            'labor_amount' => round($laborAmount, 2),
+            'route_fee_amount' => round($routeFeeAmount, 2),
+            'total_amount' => $totalAmount,
+            'status' => $offerStatus,
+            'status_label' => $this->assignmentOfferStatusLabel($offerStatus),
+            'payout_status' => $payoutStatus,
+            'payout_status_label' => $this->locksmithPayoutStatusLabel($payoutStatus),
+            'earning_message_status' => $earningMessage['status'] ?? null,
+            'earning_message_sent_at' => $earningMessage['sent_at'] ?? null,
+            'earning_message_label' => $earningMessage !== null ? 'Hakediş bilgisi gönderildi' : 'Hakediş bilgisi gönderilmedi',
+            'payment_status' => $paymentStatus['status'],
+            'payment_status_label' => $paymentStatus['status_label'],
+            'paid_at' => $paymentStatus['paid_at'],
+            'customer_collection' => $customerCollection,
+            'warranty_covered' => $warrantyCovered,
+            'source' => 'completion_snapshot',
+        ];
+    }
+
+    /**
+     * @return array{status:string,status_label:string,paid_at:string|null,earning_id:int|null}
+     */
+    private function payoutPaymentStatusPayload(TechnicalServiceRequest $request): array
+    {
+        $requestId = (int) $request->id;
+        if (array_key_exists($requestId, $this->payoutPaymentStatusCache)) {
+            return $this->payoutPaymentStatusCache[$requestId];
+        }
+
+        $item = TechnicalServiceEarningItem::query()
+            ->with('earning')
+            ->where('technical_service_request_id', $request->id)
+            ->latest('id')
+            ->first();
+
+        return $this->payoutPaymentStatusCache[$requestId] = $item instanceof TechnicalServiceEarningItem
+            ? $this->payoutPaymentStatusFromItem($item)
+            : $this->emptyPayoutPaymentStatusPayload();
+    }
+
+    /**
+     * @return array{status:string,status_label:string,paid_at:string|null,earning_id:int|null}
+     */
+    private function payoutPaymentStatusFromItem(TechnicalServiceEarningItem $item): array
+    {
+        if ($item->earning === null) {
+            return $this->emptyPayoutPaymentStatusPayload();
+        }
+
+        $paidAt = $item->earning->paid_at?->toIso8601String();
+        $status = $paidAt !== null ? 'paid' : 'pending';
+
+        return [
+            'status' => $status,
+            'status_label' => $this->payoutPaymentStatusLabel($status),
+            'paid_at' => $paidAt,
+            'earning_id' => $item->earning->id,
+        ];
+    }
+
+    /**
+     * @return array{status:string,status_label:string,paid_at:string|null,earning_id:int|null}
+     */
+    private function emptyPayoutPaymentStatusPayload(): array
+    {
+        return [
+            'status' => 'not_recorded',
+            'status_label' => $this->payoutPaymentStatusLabel('not_recorded'),
+            'paid_at' => null,
+            'earning_id' => null,
+        ];
+    }
+
+    private function payoutPaymentStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'paid' => 'Ödendi',
+            'pending' => 'Ödeme bekliyor',
+            default => 'Hakediş ödeme kaydı yok',
         };
     }
 
@@ -2093,9 +3082,9 @@ class TechnicalServiceWorkflowService
         return [
             'id' => $serial->id,
             'serial_number' => $serial->serial_number,
-            'product_name' => $serial->product_name,
-            'product_model' => $serial->product_model,
-            'brand' => $serial->brand,
+            'product_name' => TechnicalServiceUiLabelService::cleanDisplayText($serial->product_name),
+            'product_model' => TechnicalServiceUiLabelService::cleanDisplayText($serial->product_model),
+            'brand' => TechnicalServiceUiLabelService::cleanDisplayText($serial->brand),
             'stock_code' => $serial->stock_code,
             'invoice_series' => $serial->invoice_series,
             'invoice_number' => $serial->invoice_number,
@@ -2237,9 +3226,30 @@ class TechnicalServiceWorkflowService
      */
     private function locationPayload(TechnicalServiceRequest $request): array
     {
+        $routeLatitude = $request->location_latitude !== null ? (float) $request->location_latitude : null;
+        $routeLongitude = $request->location_longitude !== null ? (float) $request->location_longitude : null;
+        $routeSource = $routeLatitude !== null && $routeLongitude !== null ? 'request' : null;
+
+        if (($routeLatitude === null || $routeLongitude === null) && $request->parent_request_id !== null) {
+            $request->loadMissing('parentRequest');
+            $parent = $request->parentRequest;
+
+            if ($parent instanceof TechnicalServiceRequest
+                && $parent->location_latitude !== null
+                && $parent->location_longitude !== null
+            ) {
+                $routeLatitude = (float) $parent->location_latitude;
+                $routeLongitude = (float) $parent->location_longitude;
+                $routeSource = 'parent_request';
+            }
+        }
+
         return [
             'latitude' => $request->location_latitude !== null ? (float) $request->location_latitude : null,
             'longitude' => $request->location_longitude !== null ? (float) $request->location_longitude : null,
+            'route_latitude' => $routeLatitude,
+            'route_longitude' => $routeLongitude,
+            'route_source' => $routeSource,
             'place_id' => $request->location_place_id,
             'formatted_address' => TechnicalServiceUiLabelService::addressLabel($request->location_formatted_address),
             'map_url' => $request->location_map_url,
@@ -2298,7 +3308,7 @@ class TechnicalServiceWorkflowService
         bool $includePrevious = false,
     ): array
     {
-        $request->load('uploads');
+        $request->loadMissing('uploads');
         $documents = $request->uploads
             ->filter(function (TechnicalServiceRequestUpload $upload) use ($request, $onlyPrevious, $includePrevious): bool {
                 if (! $this->isFieldCompletionDocument($upload)) {
@@ -2348,7 +3358,7 @@ class TechnicalServiceWorkflowService
      */
     private function currentFieldCompletionDocuments(TechnicalServiceRequest $request): Collection
     {
-        $request->load('uploads');
+        $request->loadMissing('uploads');
 
         return $request->uploads
             ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isFieldCompletionDocument($upload)
@@ -2437,7 +3447,7 @@ class TechnicalServiceWorkflowService
             return false;
         }
 
-        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+        $paymentStatus = $this->paymentStatusForRequest($request);
 
         return (bool) ($paymentStatus['requires_payment'] ?? false)
             && ! (bool) ($paymentStatus['is_paid'] ?? false);
@@ -2728,7 +3738,9 @@ class TechnicalServiceWorkflowService
             'warranty_mode' => $isServiceVisit ? 'compact' : (($isMount && $isCompleted) ? 'full' : 'hidden'),
             'service_part_charge' => $hasChargeablePartRequest,
             'part_request_decision' => $activePartRequests->isNotEmpty(),
-            'earnings_breakdown' => $isServiceVisit || $request->childRequests()->exists(),
+            'earnings_breakdown' => $isServiceVisit || ($request->relationLoaded('childRequests')
+                ? $request->childRequests->isNotEmpty()
+                : $request->childRequests()->exists()),
             'is_service_visit' => $isServiceVisit,
             'operation_mount_controls' => ! $isServiceVisit,
             'payment_control' => ! $isServiceVisit,
@@ -2757,10 +3769,24 @@ class TechnicalServiceWorkflowService
     {
         $rootMrn = (string) ($request->root_mrn ?: ($request->parent_request_id ? $request->parentRequest?->mrn : $request->mrn));
         $isServiceVisit = filled($request->service_code) || $request->parent_request_id !== null;
-        $parent = $request->parentRequest;
-        $root = null;
+        $root = $this->rootFinancialRequest($request);
+        $siblings = collect();
 
-        if ($rootMrn !== '') {
+        if (array_key_exists((int) $request->id, $this->rootFinancialRequestsCache)) {
+            $records = $this->rootFinancialRequests($request);
+            $root = $root instanceof TechnicalServiceRequest
+                ? $root
+                : $records->first(fn (TechnicalServiceRequest $record): bool => $record->parent_request_id === null);
+            $siblings = $records
+                ->reject(fn (TechnicalServiceRequest $record): bool => $root instanceof TechnicalServiceRequest && (int) $record->id === (int) $root->id)
+                ->sortBy([
+                    ['service_sequence', 'asc'],
+                    ['id', 'asc'],
+                ])
+                ->take(12)
+                ->values();
+            $this->loadServiceVisitHistoryRelations($records);
+        } elseif ($rootMrn !== '') {
             $root = TechnicalServiceRequest::query()
                 ->with([
                     'events' => fn ($query) => $query->latest()->limit(8),
@@ -2768,14 +3794,13 @@ class TechnicalServiceWorkflowService
                 ])
                 ->where('mrn', $rootMrn)
                 ->first();
+
+            if (! $root instanceof TechnicalServiceRequest && $request->parentRequest instanceof TechnicalServiceRequest) {
+                $root = $request->parentRequest;
+            }
         }
 
-        if (! $root instanceof TechnicalServiceRequest && $parent instanceof TechnicalServiceRequest) {
-            $root = $parent;
-        }
-
-        $siblings = collect();
-        if ($root instanceof TechnicalServiceRequest) {
+        if ($root instanceof TechnicalServiceRequest && ! array_key_exists((int) $request->id, $this->rootFinancialRequestsCache)) {
             $siblings = TechnicalServiceRequest::query()
                 ->with(['technicianRecord', 'uploads', 'events' => fn ($query) => $query->latest()->limit(6)])
                 ->where(function ($query) use ($root, $rootMrn): void {
@@ -2826,6 +3851,29 @@ class TechnicalServiceWorkflowService
                 ->values()
                 ->all(),
         ];
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     */
+    private function loadServiceVisitHistoryRelations(Collection $requests): void
+    {
+        $models = new EloquentCollection($requests
+            ->filter(fn (mixed $request): bool => $request instanceof TechnicalServiceRequest)
+            ->unique(fn (TechnicalServiceRequest $request): int => (int) $request->id)
+            ->values()
+            ->all());
+
+        if ($models->isEmpty()) {
+            return;
+        }
+
+        $models->loadMissing([
+            'technicianRecord',
+            'uploads',
+            'events' => fn ($query) => $query->latest()->limit(8),
+            'partRequests' => fn ($query) => $query->latest()->limit(6),
+        ]);
     }
 
     /**
@@ -3134,7 +4182,7 @@ class TechnicalServiceWorkflowService
     private function financialAliases(TechnicalServiceRequest $request): array
     {
         $isServiceVisit = $this->isServiceVisitRequest($request);
-        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+        $paymentStatus = $this->paymentStatusForRequest($request);
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $customerCharges = $this->customerChargeSummaryPayload($request);
         $paidMountCustomerAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment);
@@ -3380,7 +4428,7 @@ class TechnicalServiceWorkflowService
 
     private function fieldCompletionDocumentsComplete(TechnicalServiceRequest $request): bool
     {
-        $request->load('uploads');
+        $request->loadMissing('uploads');
 
         $presentTypes = $request->uploads
             ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->isFieldCompletionDocument($upload))
@@ -3479,6 +4527,7 @@ class TechnicalServiceWorkflowService
         $request->photo_status = 'tamamlandı';
         $request->updated_by_user_id = $user?->id;
         $this->applyDerivedState($request, $payload);
+        $this->storeCompletedEarningSnapshot($request);
         $request->save();
 
         $this->writeAuditLog($request, 'field_completed', $old, $this->snapshot($request), $user, $payload['note'] ?? null);

@@ -8,6 +8,9 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServiceEarning;
+use App\Models\TechnicalServiceEarningItem;
+use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServicePartnerJobAction;
@@ -27,6 +30,7 @@ use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
@@ -618,6 +622,416 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('completed', data_get($payload, 'operational_state.partner_column'));
         $this->assertContains('Tamamlandı', $tagLabels);
         $this->assertNotContains('Aksiyon: Randevu onaylandı', $tagLabels);
+    }
+
+    public function test_completed_mrn_freezes_assigned_locksmith_and_ops_completed_parent_payout_snapshot_on_completion(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Bekir Karakız',
+            'phone' => '05550001122',
+            'city' => 'İstanbul',
+            'district' => 'Kadıköy',
+            'active' => true,
+        ]);
+        $newTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Yeni SRV Ustası',
+            'phone' => '05550003344',
+            'city' => 'İstanbul',
+            'district' => 'Üsküdar',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-COMPLETED-SNAPSHOT',
+            'status' => 'Sahada',
+            'workflow_status' => 'Sahada',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'technician_payment_amount' => 1800,
+            'travel_fee_amount' => 120,
+            'before_photo_count' => 3,
+            'after_photo_count' => 3,
+            'general_photo_count' => 1,
+            'document_status' => 'tamamlandı',
+            'checklist_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1800,
+            'route_fee_amount' => 120,
+            'total_amount' => 1920,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/workflow", [
+                'action' => 'complete',
+                'note' => 'Saha işi tamamlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Tamamlandı')
+            ->assertJsonPath('request.finance_summary.current_visit.completed_earning_snapshot.technician_name', 'Bekir Karakız')
+            ->assertJsonPath('request.finance_summary.current_visit.locksmith_payout.total_amount', 1920)
+            ->assertJsonPath('request.finance_summary.current_visit.locksmith_payout.payment_status_label', 'Hakediş ödeme kaydı yok');
+
+        $completed = $request->fresh();
+        $snapshot = $completed->operation_control_payload['completed_earning_snapshot'] ?? null;
+
+        $this->assertIsArray($snapshot);
+        $this->assertSame($technician->id, $snapshot['technical_service_technician_id']);
+        $this->assertSame('Bekir Karakız', $snapshot['technician_name']);
+        $this->assertEquals(1800.0, $snapshot['labor_amount']);
+        $this->assertEquals(120.0, $snapshot['route_fee_amount']);
+        $this->assertEquals(1920.0, $snapshot['total_amount']);
+        $this->assertSame('confirmed', $snapshot['payout_status']);
+        $this->assertSame('not_recorded', $snapshot['payment_status']);
+
+        $completed->forceFill([
+            'technical_service_technician_id' => $newTechnician->id,
+            'technician_name' => $newTechnician->name,
+            'technician_payment_amount' => 99,
+            'travel_fee_amount' => 1,
+        ])->save();
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($completed->fresh(), true);
+
+        $this->assertSame('Bekir Karakız', data_get($payload, 'finance_summary.current_visit.technician_name'));
+        $this->assertEquals(1800.0, data_get($payload, 'finance_summary.current_visit.locksmith_payout.labor_amount'));
+        $this->assertEquals(120.0, data_get($payload, 'finance_summary.current_visit.locksmith_payout.route_fee_amount'));
+        $this->assertEquals(1920.0, data_get($payload, 'finance_summary.current_visit.locksmith_payout.total_amount'));
+        $this->assertSame('Hakediş ödeme kaydı yok', data_get($payload, 'finance_summary.current_visit.locksmith_payout.payment_status_label'));
+    }
+
+    public function test_earning_breakdown_rows_include_technician_name_for_parent_and_srv(): void
+    {
+        $user = $this->adminUser();
+        $parentTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Bekir Karakız',
+            'phone' => '05550001122',
+            'city' => 'İstanbul',
+            'district' => 'Kadıköy',
+            'active' => true,
+        ]);
+        $childTechnician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Samet Güner',
+            'phone' => '05550003344',
+            'city' => 'İstanbul',
+            'district' => 'Üsküdar',
+            'active' => true,
+        ]);
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-EARNING-BREAKDOWN',
+            'status' => 'Sahada',
+            'workflow_status' => 'Sahada',
+            'technical_service_technician_id' => $parentTechnician->id,
+            'technician_name' => $parentTechnician->name,
+            'technician_payment_amount' => 3000,
+            'travel_fee_amount' => 0,
+            'before_photo_count' => 3,
+            'after_photo_count' => 3,
+            'general_photo_count' => 1,
+            'document_status' => 'tamamlandı',
+            'checklist_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $parent->id,
+            'technical_service_technician_id' => $parentTechnician->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 0,
+            'total_amount' => 3000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$parent->id}/workflow", [
+                'action' => 'complete',
+                'note' => 'Parent MRN tamamlandı.',
+            ])
+            ->assertOk();
+
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'MRN-EARNING-BREAKDOWN-SRV',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-EARNING-BREAKDOWN-001',
+            'service_visit_reason' => 'revisit',
+            'status' => 'Planlı',
+            'workflow_status' => 'Planlı',
+            'technical_service_technician_id' => $childTechnician->id,
+            'technician_name' => $childTechnician->name,
+            'technician_payment_amount' => 3000,
+            'travel_fee_amount' => 0,
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $child->id,
+            'technical_service_technician_id' => $childTechnician->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 0,
+            'total_amount' => 3000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+        $rows = collect(data_get($payload, 'earning_breakdown.rows'));
+        $parentRow = $rows->firstWhere('id', $parent->id);
+        $childRow = $rows->firstWhere('id', $child->id);
+
+        $this->assertSame('Bekir Karakız', $parentRow['technician_name'] ?? null);
+        $this->assertSame('completed_earning_snapshot', $parentRow['technician_source'] ?? null);
+        $this->assertSame('Samet Güner', $childRow['technician_name'] ?? null);
+        $this->assertSame('assignment_offer', $childRow['technician_source'] ?? null);
+        $this->assertTrue((bool) data_get($payload, 'earning_breakdown.root_total.is_multi_technician'));
+        $this->assertSame(['Bekir Karakız', 'Samet Güner'], data_get($payload, 'earning_breakdown.root_total.technician_names'));
+        $this->assertEquals(6000.0, data_get($payload, 'earning_breakdown.root_total.total_amount'));
+    }
+
+    public function test_ops_index_serialization_avoids_finance_n_plus_one_queries(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Performans Ustası',
+            'phone' => '+905551111199',
+            'city' => 'İstanbul',
+            'district' => 'Kadıköy',
+            'active' => true,
+        ]);
+        $period = TechnicalServiceEarningsPeriod::query()->create([
+            'year' => 2026,
+            'month' => 6,
+            'status' => 'Onaylandı',
+            'calculated_at' => now(),
+            'approved_at' => now(),
+            'paid_at' => now(),
+        ]);
+        $earning = TechnicalServiceEarning::query()->create([
+            'period_id' => $period->id,
+            'technical_service_technician_id' => $technician->id,
+            'technician_name_snapshot' => $technician->name,
+            'city_snapshot' => 'İstanbul',
+            'job_count' => 16,
+            'installation_count' => 8,
+            'service_count' => 8,
+            'labor_total' => 24000,
+            'travel_fee_total' => 800,
+            'grand_total' => 24800,
+            'status' => 'Onaylandı',
+            'paid_at' => now(),
+        ]);
+        $listIds = collect();
+
+        for ($index = 1; $index <= 8; $index++) {
+            $parent = $this->technicalServiceRequest([
+                'mrn' => 'MRN-PERF-NPLUS-'.$index,
+                'service_type' => 'Montaj',
+                'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+                'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+                'mount_payment_provider' => 'fake',
+                'mount_payment_reference' => 'perf-parent-'.$index,
+                'mount_payment_paid_at' => now(),
+                'technical_service_technician_id' => $technician->id,
+                'technician_name' => $technician->name,
+                'technician_payment_amount' => 2000,
+                'travel_fee_amount' => 100,
+            ]);
+            $parentSession = $this->mountSessionForRequest($parent);
+            TechnicalServiceMountPayment::query()->create([
+                'technical_service_mount_session_id' => $parentSession->id,
+                'technical_service_request_id' => $parent->id,
+                'provider' => 'fake',
+                'provider_reference' => 'perf-parent-payment-'.$index,
+                'status' => TechnicalServiceMountPayment::STATUS_PAID,
+                'amount' => 3000,
+                'currency' => 'TRY',
+                'paid_at' => now(),
+                'raw_payload' => ['source' => 'public_form_payment'],
+            ]);
+            TechnicalServiceAssignmentOffer::query()->create([
+                'technical_service_request_id' => $parent->id,
+                'technical_service_technician_id' => $technician->id,
+                'labor_amount' => 2000,
+                'route_fee_amount' => 100,
+                'total_amount' => 2100,
+                'currency' => 'TRY',
+                'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+                'sent_at' => now(),
+            ]);
+            TechnicalServiceEarningItem::query()->create([
+                'earning_id' => $earning->id,
+                'technical_service_request_id' => $parent->id,
+                'mrn' => $parent->mrn,
+                'job_date' => now(),
+                'customer_city' => 'İstanbul',
+                'customer_district' => 'Kadıköy',
+                'service_type' => 'Montaj',
+                'product_name' => $parent->product_name,
+                'serial_number' => $parent->serial_number,
+                'labor_amount' => 2000,
+                'travel_round_trip_km' => 0,
+                'travel_billable_km' => 0,
+                'travel_fee_amount' => 100,
+                'line_total' => 2100,
+            ]);
+
+            $child = $this->technicalServiceRequest([
+                'mrn' => 'SRV-PERF-NPLUS-'.$index,
+                'parent_request_id' => $parent->id,
+                'root_mrn' => $parent->mrn,
+                'service_sequence' => 1,
+                'service_code' => 'SRV-PERF-NPLUS-'.$index,
+                'service_visit_reason' => 'revisit',
+                'service_type' => 'Servis',
+                'technical_service_technician_id' => $technician->id,
+                'technician_name' => $technician->name,
+                'technician_payment_amount' => 1000,
+                'travel_fee_amount' => 100,
+            ]);
+            $childSession = $this->mountSessionForRequest($child);
+            TechnicalServiceMountPayment::query()->create([
+                'technical_service_mount_session_id' => $childSession->id,
+                'technical_service_request_id' => $child->id,
+                'provider' => 'fake',
+                'provider_reference' => 'perf-child-charge-'.$index,
+                'status' => TechnicalServiceMountPayment::STATUS_PAID,
+                'amount' => 500,
+                'currency' => 'TRY',
+                'paid_at' => now(),
+                'raw_payload' => [
+                    'source' => 'operation_customer_charge',
+                    'purpose' => 'service_payment',
+                    'service_amount' => 500,
+                    'part_amount' => 0,
+                    'total_amount' => 500,
+                ],
+            ]);
+            TechnicalServiceAssignmentOffer::query()->create([
+                'technical_service_request_id' => $child->id,
+                'technical_service_technician_id' => $technician->id,
+                'labor_amount' => 1000,
+                'route_fee_amount' => 100,
+                'total_amount' => 1100,
+                'currency' => 'TRY',
+                'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+                'sent_at' => now(),
+            ]);
+            TechnicalServiceEarningItem::query()->create([
+                'earning_id' => $earning->id,
+                'technical_service_request_id' => $child->id,
+                'mrn' => $child->mrn,
+                'job_date' => now(),
+                'customer_city' => 'İstanbul',
+                'customer_district' => 'Kadıköy',
+                'service_type' => 'Servis',
+                'product_name' => $child->product_name,
+                'serial_number' => $child->serial_number,
+                'labor_amount' => 1000,
+                'travel_round_trip_km' => 0,
+                'travel_billable_km' => 0,
+                'travel_fee_amount' => 100,
+                'line_total' => 1100,
+            ]);
+
+            $listIds->push($child->id);
+        }
+
+        $items = TechnicalServiceRequest::query()
+            ->whereIn('id', $listIds->all())
+            ->orderBy('id')
+            ->get();
+        $service = app(TechnicalServiceWorkflowService::class);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $service->preloadSerializationContext($items);
+        $payloads = $items
+            ->map(fn (TechnicalServiceRequest $request): array => $service->serialize($request))
+            ->values();
+
+        $queries = collect(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        $this->assertCount(8, $payloads);
+        $this->assertSame(3500.0, data_get($payloads->first(), 'finance_summary.root_total.customer_collection.total_amount'));
+        $this->assertSame(3200.0, data_get($payloads->first(), 'earning_breakdown.root_total.total_amount'));
+        $this->assertLessThan(220, $queries->count());
+        $this->assertLessThanOrEqual(6, $queries->filter(fn (array $query): bool => str_contains($query['query'], 'technical_service_mount_payments'))->count());
+        $this->assertLessThanOrEqual(2, $queries->filter(fn (array $query): bool => str_contains($query['query'], 'technical_service_earning_items'))->count());
+        $this->assertLessThanOrEqual(8, $queries->filter(fn (array $query): bool => str_contains($query['query'], 'technical_service_requests') && str_contains($query['query'], 'parent_request_id'))->count());
+    }
+
+    public function test_dashboard_list_normalizes_legacy_question_mark_turkish_product_labels(): void
+    {
+        $admin = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-DASHBOARD-MOJIBAKE',
+            'customer_city' => '?stanbul',
+            'customer_district' => 'Kad?k?y',
+            'product_name' => 'Acceptance Ak?ll? Kap? Kilidi',
+            'product_model' => 'Kap? Model',
+            'scheduled_at' => CarbonImmutable::now()->setTime(10, 0),
+            'scheduled_date' => CarbonImmutable::now()->toDateString(),
+            'scheduled_time' => '10:00',
+        ]);
+
+        $response = $this->actingAs($admin)
+            ->getJson('/api/technical-service/operations-dashboard')
+            ->assertOk();
+
+        $item = collect($response->json('today_appointments'))->firstWhere('mrn', $request->mrn);
+
+        $this->assertIsArray($item);
+        $this->assertSame('Acceptance Akıllı Kapı Kilidi', $item['product_name']);
+        $this->assertSame('Kapı Model', $item['product_model']);
+        $this->assertSame('İstanbul', $item['customer_city']);
+        $this->assertSame('Kadıköy', $item['customer_district']);
+        $this->assertContains('İstanbul', collect($response->json('city_summary'))->pluck('city')->all());
+        $this->assertNotContains('?stanbul', collect($response->json('city_summary'))->pluck('city')->all());
+
+        $encoded = json_encode($item, JSON_UNESCAPED_UNICODE);
+        $this->assertIsString($encoded);
+        $this->assertStringNotContainsString('Ak?ll?', $encoded);
+        $this->assertStringNotContainsString('Kap?', $encoded);
+    }
+
+    public function test_ops_index_serialization_keeps_display_labels_normalized_after_perf_preload(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'product_name' => 'Acceptance Ak?ll? Kap? Kilidi',
+            'product_model' => 'Kap? Model',
+        ]);
+
+        $items = TechnicalServiceRequest::query()->whereKey($request->id)->get();
+        $service = app(TechnicalServiceWorkflowService::class);
+        $service->preloadSerializationContext($items);
+
+        $payload = $service->serialize($items->first(), true);
+
+        $this->assertSame('Acceptance Akıllı Kapı Kilidi', $payload['product_name']);
+        $this->assertSame('Kapı Model', $payload['product_model']);
+        $this->assertSame('Acceptance Akıllı Kapı Kilidi', $payload['product']['product_name']);
+        $this->assertSame('Kapı Model', $payload['product']['product_model']);
+
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        $this->assertIsString($encoded);
+        $this->assertStringNotContainsString('Ak?ll?', $encoded);
+        $this->assertStringNotContainsString('Kap?', $encoded);
     }
 
     public function test_workflow_endpoint_rejects_invalid_action_for_current_status(): void
@@ -1235,6 +1649,197 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(1780.0, $payload['earning_breakdown']['root_total']['total_amount']);
     }
 
+    public function test_warranty_srv_labor_is_locksmith_payout_not_customer_collection_and_warranty_service_shows_zero_customer_collection(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Garanti SRV Ustası',
+            'phone' => '+905551111120',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-WARRANTY-FINANCE-PARENT',
+            'service_type' => 'Montaj',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_provider' => 'fake',
+            'mount_payment_reference' => 'parent-paid-3500',
+            'mount_payment_paid_at' => now(),
+        ]);
+        $parentSession = $this->mountSessionForRequest($parent);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $parentSession->id,
+            'technical_service_request_id' => $parent->id,
+            'provider' => 'fake',
+            'provider_reference' => 'parent-paid-3500',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'public_form_payment'],
+        ]);
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-WARRANTY-FINANCE-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-WARRANTY-FINANCE-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $child->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1800,
+            'route_fee_amount' => 0,
+            'total_amount' => 1800,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame('0 TL', $payload['finance_summary']['current_visit']['customer_collection']['total_amount_label']);
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit_customer_collection']['total_amount']);
+        $this->assertSame(1800.0, $payload['finance_summary']['current_visit']['locksmith_payout']['labor_amount']);
+        $this->assertSame(1800.0, $payload['finance_summary']['current_visit']['locksmith_payout']['total_amount']);
+        $this->assertSame(1800.0, $payload['finance_summary']['current_visit_locksmith_payout']['total_amount']);
+        $this->assertSame('confirmed', $payload['finance_summary']['current_visit']['locksmith_payout']['payout_status']);
+        $this->assertSame('Onaylanan usta hakedişi', $payload['finance_summary']['current_visit']['locksmith_payout']['payout_status_label']);
+        $this->assertSame(1800.0, $payload['finance_summary']['current_visit']['confirmed_locksmith_payout']['total_amount']);
+        $this->assertNull($payload['finance_summary']['current_visit']['draft_locksmith_payout']);
+        $this->assertSame(-1800.0, $payload['finance_summary']['current_visit']['net_margin']['amount']);
+        $this->assertTrue($payload['finance_summary']['current_visit']['warranty_covered']);
+        $this->assertSame('Garanti kapsamında - müşteriden servis/parça tahsilatı yok', $payload['finance_summary']['current_visit']['warranty_note']);
+        $this->assertSame('Usta hakedişi operasyon maliyeti olarak hesaplandı', $payload['finance_summary']['current_visit']['operation_cost_note']);
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['warranty_customer_charge']['total_amount']);
+        $this->assertSame(1800.0, $payload['finance_summary']['current_visit']['operation_cost']['total_amount']);
+        $this->assertTrue($payload['finance_summary']['current_visit']['operation_cost']['applies']);
+        $this->assertSame(1800.0, $payload['finance_summary']['current_visit_operation_cost']['total_amount']);
+        $this->assertSame(3500.0, $payload['finance_summary']['root_total']['customer_collection']['total_amount']);
+        $this->assertSame(1800.0, $payload['finance_summary']['root_total']['locksmith_payout']['total_amount']);
+        $this->assertSame(1700.0, $payload['finance_summary']['root_total']['net_margin']['amount']);
+    }
+
+    public function test_draft_assignment_labor_is_not_displayed_as_confirmed_payout(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Taslak Hakediş Ustası',
+            'phone' => '+905551111122',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'SRV-DRAFT-PAYOUT-001',
+            'service_sequence' => 1,
+            'service_code' => 'SRV-DRAFT-PAYOUT-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'technician_payment_amount' => 1800,
+            'travel_fee_amount' => 120,
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+        $payout = $payload['finance_summary']['current_visit']['locksmith_payout'];
+
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(1800.0, $payout['labor_amount']);
+        $this->assertSame(120.0, $payout['route_fee_amount']);
+        $this->assertSame(1920.0, $payout['total_amount']);
+        $this->assertSame('draft', $payout['payout_status']);
+        $this->assertSame('Önerilen / taslak hakediş', $payout['payout_status_label']);
+        $this->assertTrue($payout['is_draft']);
+        $this->assertFalse($payout['is_confirmed']);
+        $this->assertNull($payload['finance_summary']['current_visit']['confirmed_locksmith_payout']);
+        $this->assertSame(1920.0, $payload['finance_summary']['current_visit']['draft_locksmith_payout']['total_amount']);
+    }
+
+    public function test_confirmed_assignment_payout_displays_as_confirmed_locksmith_earning(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Onaylı Hakediş Ustası',
+            'phone' => '+905551111123',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'SRV-CONFIRMED-PAYOUT-001',
+            'service_sequence' => 1,
+            'service_code' => 'SRV-CONFIRMED-PAYOUT-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1800,
+            'route_fee_amount' => 120,
+            'total_amount' => 1920,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+        $payout = $payload['finance_summary']['current_visit']['locksmith_payout'];
+
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(1920.0, $payout['total_amount']);
+        $this->assertSame('confirmed', $payout['payout_status']);
+        $this->assertSame('Onaylanan usta hakedişi', $payout['payout_status_label']);
+        $this->assertTrue($payout['is_confirmed']);
+        $this->assertFalse($payout['is_draft']);
+        $this->assertSame(1920.0, $payload['finance_summary']['current_visit']['confirmed_locksmith_payout']['total_amount']);
+        $this->assertNull($payload['finance_summary']['current_visit']['draft_locksmith_payout']);
+    }
+
+    public function test_route_travel_fee_is_payout_not_customer_collection(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Yol Hakediş Ustası',
+            'phone' => '+905551111121',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-ROUTE-PAYOUT-001',
+            'service_sequence' => 1,
+            'service_code' => 'SRV-ROUTE-PAYOUT-001',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $child->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1800,
+            'route_fee_amount' => 120,
+            'total_amount' => 1920,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(1800.0, $payload['finance_summary']['current_visit']['locksmith_payout']['labor_amount']);
+        $this->assertSame(120.0, $payload['finance_summary']['current_visit']['locksmith_payout']['route_fee_amount']);
+        $this->assertSame(1920.0, $payload['finance_summary']['current_visit']['locksmith_payout']['total_amount']);
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(1920.0, $payload['finance_summary']['current_visit']['operation_cost']['total_amount']);
+        $this->assertSame(-1920.0, $payload['finance_summary']['current_visit']['net_margin']['amount']);
+    }
+
     public function test_user_facing_status_labels_have_no_mojibake(): void
     {
         $dirty = 'M??teri Planl? Tamamland? iÅŸ FotoÄŸraf Ã‡ilingir';
@@ -1359,6 +1964,34 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('Tahsilat durumu', $source);
         $this->assertStringContainsString('Alınan ödeme tutarı', $source);
         $this->assertStringContainsString('Operasyon ödeme kontrolü', $source);
+    }
+
+    public function test_assignment_popup_uses_canonical_finance_collection_not_service_default(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('financeSummary: request.finance_summary ?? null', $source);
+        $this->assertStringContainsString('const modalFinanceCustomerCollection = modalCurrentFinance?.customer_collection ?? null', $source);
+        $this->assertStringContainsString('modalFinanceCustomerCollection?.total_amount_label', $source);
+        $this->assertStringNotContainsString('?? modalPayment.customerAmount', $source);
+        $this->assertStringNotContainsString('Müşteriden alınan montaj ödemesi', $source);
+    }
+
+    public function test_ops_finance_ui_labels_payout_as_cost_not_customer_payment(): void
+    {
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $panelSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $this->assertIsString($detailSource);
+        $this->assertIsString($panelSource);
+
+        $this->assertStringContainsString('Usta Hakedişi / Operasyon Maliyeti', $detailSource);
+        $this->assertStringContainsString('ödeme/tahsilat değildir', $detailSource);
+        $this->assertStringContainsString('Önerilen / taslak usta hakedişi', $detailSource);
+        $this->assertStringContainsString('Onaylanan usta hakedişi', $detailSource);
+        $this->assertStringContainsString('Bu tutar müşteri tahsilatı değildir', $panelSource);
+        $this->assertStringContainsString('Onaylanacak usta hakedişi', $panelSource);
+        $this->assertStringContainsString('Net operasyon farkı', $panelSource);
     }
 
     public function test_payment_resolver_uses_paid_serial_payload_over_mikro_excluded_signal(): void
@@ -1521,9 +2154,12 @@ class TechnicalServiceWorkflowTest extends TestCase
                 'note' => 'Operasyon kontrolü tamamlandı.',
             ])
             ->assertOk()
-            ->assertJsonPath('request.operation_control.payment_checked', 'yes')
-            ->assertJsonPath('request.operation_control.door_photos_checked', 'compatible')
-            ->assertJsonPath('request.assignment_blockers.messages', []);
+            ->assertJsonMissingPath('request')
+            ->assertJsonPath('operation_control_update.id', $request->id)
+            ->assertJsonPath('operation_control_update.operation_control.payment_checked', 'yes')
+            ->assertJsonPath('operation_control_update.operation_control.door_photos_checked', 'compatible')
+            ->assertJsonPath('operation_control_update.assignment_blockers.messages', [])
+            ->assertJsonPath('operation_control_update.assignment_blockers.door_photo_check_required', false);
 
         $request->refresh();
 
@@ -1539,6 +2175,72 @@ class TechnicalServiceWorkflowTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen');
+    }
+
+    public function test_door_compatible_action_uses_lightweight_response_payload(): void
+    {
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'address_checked' => 'yes',
+                'door_photos_checked' => 'unreviewed',
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/operation-control", [
+                'door_photos_checked' => 'compatible',
+            ])
+            ->assertOk()
+            ->assertJsonMissingPath('request')
+            ->assertJsonPath('operation_control_update.id', $request->id)
+            ->assertJsonPath('operation_control_update.operation_control.door_photos_checked', 'compatible')
+            ->assertJsonPath('operation_control_update.assignment_blockers.door_photo_check_required', false)
+            ->assertJsonStructure([
+                'operation_control_update' => [
+                    'id',
+                    'operation_control',
+                    'assignment_blockers',
+                    'allowed_workflow_actions',
+                    'allowed_workflow_transitions',
+                    'operational_state',
+                    'visible_sections',
+                    'next_action',
+                    'next_action_payload',
+                ],
+            ]);
+    }
+
+    public function test_door_compatible_action_performance_query_budget(): void
+    {
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'address_checked' => 'yes',
+                'door_photos_checked' => 'unreviewed',
+            ],
+        ]);
+        $queryCount = 0;
+
+        DB::listen(static function () use (&$queryCount): void {
+            $queryCount++;
+        });
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/operation-control", [
+                'door_photos_checked' => 'compatible',
+            ])
+            ->assertOk()
+            ->assertJsonMissingPath('request')
+            ->assertJsonPath('operation_control_update.operation_control.door_photos_checked', 'compatible');
+
+        $this->assertLessThan(80, $queryCount, "Door compatible operation-control action used {$queryCount} queries.");
     }
 
     public function test_assign_endpoint_uses_selected_technician_and_returns_fresh_payload(): void
@@ -2775,6 +3477,29 @@ class TechnicalServiceWorkflowTest extends TestCase
         ] as $removedCardTag) {
             $this->assertStringNotContainsString($removedCardTag, $cardSource);
         }
+    }
+
+    public function test_door_compatible_frontend_uses_lightweight_update_without_full_reload(): void
+    {
+        $panelSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+
+        $this->assertIsString($panelSource);
+        $this->assertStringContainsString('operation_control_update', $panelSource);
+        $this->assertStringContainsString('applyOperationControlUpdate', $panelSource);
+        $this->assertStringContainsString('optimisticOperationControlUpdate', $panelSource);
+        $this->assertStringContainsString('previousRequestsSnapshot', $panelSource);
+
+        $handlerStart = strpos($panelSource, 'const handleOperationControlChange = async');
+        $handlerEnd = strpos($panelSource, 'const handleInvoiceSerialRecheck = async');
+
+        $this->assertIsInt($handlerStart);
+        $this->assertIsInt($handlerEnd);
+
+        $handlerSource = substr($panelSource, $handlerStart, $handlerEnd - $handlerStart);
+
+        $this->assertStringNotContainsString('loadRequests(', $handlerSource);
+        $this->assertStringNotContainsString('loadSummary(', $handlerSource);
+        $this->assertStringContainsString('operation_control_update', $handlerSource);
     }
 
     private function adminUser(): User

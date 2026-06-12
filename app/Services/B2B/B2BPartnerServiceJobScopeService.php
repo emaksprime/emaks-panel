@@ -113,7 +113,7 @@ class B2BPartnerServiceJobScopeService
             throw new AuthorizationException('Bu iş aktif partner işlerinde görünmez.');
         }
 
-        if ($this->hasNonCancelledChildServiceVisit($request)) {
+        if ($this->hasNonCancelledChildServiceVisit($request) && ! $this->isCompletedHistoryJob($request)) {
             throw new AuthorizationException('Bu ana talebin SRV kaydi var; partner islerinde SRV karti gorunur.');
         }
 
@@ -149,6 +149,31 @@ class B2BPartnerServiceJobScopeService
                 ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW));
     }
 
+    public function completedHistoryJobsQuery(B2BPartner $partner): Builder
+    {
+        return TechnicalServiceRequest::query()
+            ->whereIn('technical_service_technician_id', $this->activeTechnicianIds($partner))
+            ->whereNull('cancelled_at')
+            ->where(fn (Builder $query): Builder => $this->completedHistoryQuery($query))
+            ->whereNotIn('status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->whereNotIn('workflow_status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->whereDoesntHave('partnerJobActions', fn (Builder $query): Builder => $query
+                ->where('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED)
+                ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW));
+    }
+
+    public function shouldHideActiveParentWithChild(TechnicalServiceRequest $request): bool
+    {
+        return $this->hasNonCancelledChildServiceVisit($request)
+            && ! $this->isCompletedHistoryJob($request);
+    }
+
+    public function isCompletedHistoryJob(TechnicalServiceRequest $request): bool
+    {
+        return $request->completed_at !== null
+            || $request->installation_completed_at !== null;
+    }
+
     private function isCancelled(TechnicalServiceRequest $request): bool
     {
         return $request->cancelled_at !== null
@@ -165,6 +190,13 @@ class B2BPartnerServiceJobScopeService
         return $request->childRequests()
             ->where(fn (Builder $query): Builder => $this->nonCancelledChildServiceVisitQuery($query))
             ->exists();
+    }
+
+    private function completedHistoryQuery(Builder $query): Builder
+    {
+        return $query
+            ->whereNotNull('completed_at')
+            ->orWhereNotNull('installation_completed_at');
     }
 
     private function nonCancelledChildServiceVisitQuery(Builder $query): Builder

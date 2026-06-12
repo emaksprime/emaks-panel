@@ -101,8 +101,11 @@ class TechnicalServiceController extends Controller
             ->orderByDesc('created_at')
             ->paginate($limit);
 
+        $items = collect($paginator->items());
+        $this->workflowService->preloadSerializationContext($items);
+
         return response()->json([
-            'items' => collect($paginator->items())
+            'items' => $items
                 ->map(fn (TechnicalServiceRequest $request) => $this->workflowService->serialize($request))
                 ->all(),
             'pagination' => [
@@ -506,7 +509,7 @@ class TechnicalServiceController extends Controller
         ])->save();
 
         return response()->json([
-            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+            'operation_control_update' => $this->workflowService->operationControlUpdatePayload($technicalServiceRequest->refresh()),
         ]);
     }
 
@@ -1355,7 +1358,7 @@ class TechnicalServiceController extends Controller
             'warranty_started_requests' => $warrantyStarted->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request))->all(),
             'past_scheduled_not_completed' => $pastScheduledNotCompleted->map(fn (TechnicalServiceRequest $request) => $this->operationRequestPayload($request, true))->all(),
             'technician_summary' => $requests
-                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->technician_name) !== '' ? $request->technician_name : 'Atanmadı')
+                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->technician_name) !== '' ? TechnicalServiceUiLabelService::displayName($request->technician_name) : 'Atanmadı')
                 ->map(fn ($items, string $technicianName) => [
                     'technician_name' => $technicianName,
                     'today_jobs' => $items->filter(fn (TechnicalServiceRequest $request) => $request->scheduled_at?->isToday() ?? false)->count(),
@@ -1367,7 +1370,7 @@ class TechnicalServiceController extends Controller
                 ->values()
                 ->all(),
             'city_summary' => $requests
-                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->customer_city) !== '' ? $request->customer_city : 'Belirtilmedi')
+                ->groupBy(fn (TechnicalServiceRequest $request) => trim((string) $request->customer_city) !== '' ? TechnicalServiceUiLabelService::cityLabel($request->customer_city) : 'Belirtilmedi')
                 ->map(fn ($items, string $city) => [
                     'city' => $city,
                     'open_requests' => $items->whereNotIn('workflow_status', ['Tamamlandı', 'İptal'])->count(),
@@ -1423,8 +1426,8 @@ class TechnicalServiceController extends Controller
             'customer_city' => $displayCity,
             'customer_district' => $displayDistrict,
             'service_address' => TechnicalServiceUiLabelService::addressLabel($request->service_address),
-            'product_name' => $request->product_name,
-            'product_model' => $request->product_model,
+            'product_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->product_name),
+            'product_model' => TechnicalServiceUiLabelService::cleanDisplayText($request->product_model),
             'serial_number' => $request->serial_number,
             'service_type' => $request->service_type,
             'technician_name' => TechnicalServiceUiLabelService::displayName($request->technician_name),

@@ -379,6 +379,22 @@ const formatCoordinatePair = (
   return `${parsedLatitude.toFixed(6)}, ${parsedLongitude.toFixed(6)}`
 }
 
+const routeDestinationCoordinatePair = (
+  locationInfo: ServiceRequest['location'] | null,
+): { latitude: number, longitude: number } | null => {
+  const routeLatitude = parseCoordinateValue(locationInfo?.route_latitude)
+  const routeLongitude = parseCoordinateValue(locationInfo?.route_longitude)
+
+  if (routeLatitude !== null && routeLongitude !== null) {
+    return { latitude: routeLatitude, longitude: routeLongitude }
+  }
+
+  const latitude = parseCoordinateValue(locationInfo?.latitude)
+  const longitude = parseCoordinateValue(locationInfo?.longitude)
+
+  return latitude !== null && longitude !== null ? { latitude, longitude } : null
+}
+
 const sameCoordinateValue = (
   left: number | string | null | undefined,
   right: number | string | null | undefined,
@@ -400,20 +416,25 @@ const routeQuoteMatchesCoordinates = (
 
   const technicianLatitude = parseCoordinateValue(technician.latitude) ?? parseCoordinateValue(technician.startLatitude)
   const technicianLongitude = parseCoordinateValue(technician.longitude) ?? parseCoordinateValue(technician.startLongitude)
+  const destination = routeDestinationCoordinatePair(locationInfo)
+
+  if (destination === null) {
+    return false
+  }
 
   return sameCoordinateValue(routeQuote.origin_latitude, technicianLatitude)
     && sameCoordinateValue(routeQuote.origin_longitude, technicianLongitude)
-    && sameCoordinateValue(routeQuote.destination_latitude, locationInfo.latitude)
-    && sameCoordinateValue(routeQuote.destination_longitude, locationInfo.longitude)
+    && sameCoordinateValue(routeQuote.destination_latitude, destination.latitude)
+    && sameCoordinateValue(routeQuote.destination_longitude, destination.longitude)
 }
 
 const routeQuoteMessage = (message: string | null | undefined): string => {
   if (message === 'Usta konumu eksik.') {
-    return 'Usta konumu eksik. Usta yol hakedişi hesaplanamadı.'
+    return 'Usta konumu eksik; yol hakedişi manuel girilmeli.'
   }
 
   if (message === 'Müşteri konumu eksik.') {
-    return 'Müşteri konumu eksik. Usta yol hakedişi hesaplanamadı.'
+    return 'Müşteri konumu eksik; yol hakedişi manuel girilmeli.'
   }
 
   return displayOrEmpty(message, 'Usta yol hakedişi hesaplanamadı')
@@ -1582,6 +1603,12 @@ export function ServiceRequestDetails({
   const latestCustomerCharge = customerChargeSummary?.latest ?? null
   const technicianEarningMessage = saleAndPayment?.technician_earning_message ?? null
   const earningBreakdown = request.earningBreakdown ?? null
+  const financeSummary = request.financeSummary ?? null
+  const financeCurrentVisit = financeSummary?.current_visit ?? null
+  const financeRootTotal = financeSummary?.root_total ?? null
+  const financeCustomerCollection = financeCurrentVisit?.customer_collection ?? null
+  const financeLocksmithPayout = financeCurrentVisit?.locksmith_payout ?? null
+  const financeNetMargin = financeCurrentVisit?.net_margin ?? null
   const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
   const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
   const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
@@ -1605,7 +1632,10 @@ export function ServiceRequestDetails({
   const selectedTechnicianMapHref = selectedTechnicianCoordinateLabel !== '-'
     ? `https://www.google.com/maps?q=${selectedTechnicianCoordinateLabel.replace(/\s/g, '')}`
     : null
-  const customerCoordinateLabel = formatCoordinatePair(locationInfo?.latitude, locationInfo?.longitude)
+  const routeDestinationCoordinates = routeDestinationCoordinatePair(locationInfo)
+  const customerCoordinateLabel = routeDestinationCoordinates
+    ? formatCoordinatePair(routeDestinationCoordinates.latitude, routeDestinationCoordinates.longitude)
+    : formatCoordinatePair(locationInfo?.latitude, locationInfo?.longitude)
   const customerMapHref = customerCoordinateLabel !== '-'
     ? `https://www.google.com/maps?q=${customerCoordinateLabel.replace(/\s/g, '')}`
     : null
@@ -1740,17 +1770,23 @@ export function ServiceRequestDetails({
     : canonicalPaymentRequiresPayment
       ? saleAndPayment?.mount_payment_label ?? mountPaymentStageLabel
       : mountPaymentStageLabel
-  const paidExtraCustomerAmount = typeof paymentSummaryExtra?.amount === 'number' && Number.isFinite(paymentSummaryExtra.amount)
+  const paidExtraCustomerAmount = typeof financeCustomerCollection?.extra_amount === 'number' && Number.isFinite(financeCustomerCollection.extra_amount)
+    ? financeCustomerCollection.extra_amount
+    : typeof paymentSummaryExtra?.amount === 'number' && Number.isFinite(paymentSummaryExtra.amount)
     ? paymentSummaryExtra.amount
     : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
       ? extraMountPayment.amount
       : 0
-  const paidServiceCustomerAmount = typeof paymentSummaryService?.amount === 'number' && Number.isFinite(paymentSummaryService.amount)
+  const paidServiceCustomerAmount = typeof financeCustomerCollection?.service_amount === 'number' && Number.isFinite(financeCustomerCollection.service_amount)
+    ? financeCustomerCollection.service_amount
+    : typeof paymentSummaryService?.amount === 'number' && Number.isFinite(paymentSummaryService.amount)
     ? paymentSummaryService.amount
     : typeof customerChargeSummary?.paid_service_amount === 'number' && Number.isFinite(customerChargeSummary.paid_service_amount)
       ? customerChargeSummary.paid_service_amount
       : 0
-  const paidPartCustomerAmount = typeof paymentSummaryPart?.amount === 'number' && Number.isFinite(paymentSummaryPart.amount)
+  const paidPartCustomerAmount = typeof financeCustomerCollection?.part_amount === 'number' && Number.isFinite(financeCustomerCollection.part_amount)
+    ? financeCustomerCollection.part_amount
+    : typeof paymentSummaryPart?.amount === 'number' && Number.isFinite(paymentSummaryPart.amount)
     ? paymentSummaryPart.amount
     : typeof customerChargeSummary?.paid_part_amount === 'number' && Number.isFinite(customerChargeSummary.paid_part_amount)
       ? customerChargeSummary.paid_part_amount
@@ -1758,22 +1794,33 @@ export function ServiceRequestDetails({
   const paidCustomerChargeAmount = typeof customerChargeSummary?.paid_total_amount === 'number' && Number.isFinite(customerChargeSummary.paid_total_amount)
     ? customerChargeSummary.paid_total_amount
     : roundTwo(paidServiceCustomerAmount + paidPartCustomerAmount)
-  const totalCustomerCollectedAmount = typeof paymentSummary?.total_customer_collection === 'number' && Number.isFinite(paymentSummary.total_customer_collection)
+  const totalCustomerCollectedAmount = typeof financeCustomerCollection?.total_amount === 'number' && Number.isFinite(financeCustomerCollection.total_amount)
+    ? financeCustomerCollection.total_amount
+    : typeof paymentSummary?.total_customer_collection === 'number' && Number.isFinite(paymentSummary.total_customer_collection)
     ? paymentSummary.total_customer_collection
     : customerMountAmount !== null
     ? roundTwo(customerMountAmount + paidExtraCustomerAmount + paidCustomerChargeAmount)
     : paidExtraCustomerAmount + paidCustomerChargeAmount > 0 ? roundTwo(paidExtraCustomerAmount + paidCustomerChargeAmount) : null
-  const hasServiceCustomerPayment = paidServiceCustomerAmount > 0 || paymentSummary?.has_service_charge === true
-  const hasPartCustomerPayment = paidPartCustomerAmount > 0 || paymentSummary?.has_part_charge === true
-  const hasExtraCustomerPayment = paidExtraCustomerAmount > 0 || paymentSummary?.has_extra_charge === true
-  const hasMountCustomerPayment = paidMountPaymentAmount !== null || paymentSummary?.has_mount_collection === true
+  const hasServiceCustomerPayment = financeCustomerCollection
+    ? paidServiceCustomerAmount > 0 || financeCustomerCollection.has_service_charge === true
+    : paidServiceCustomerAmount > 0 || paymentSummary?.has_service_charge === true
+  const hasPartCustomerPayment = financeCustomerCollection
+    ? paidPartCustomerAmount > 0 || financeCustomerCollection.has_part_charge === true
+    : paidPartCustomerAmount > 0 || paymentSummary?.has_part_charge === true
+  const hasExtraCustomerPayment = financeCustomerCollection
+    ? paidExtraCustomerAmount > 0 || financeCustomerCollection.has_extra_charge === true
+    : paidExtraCustomerAmount > 0 || paymentSummary?.has_extra_charge === true
+  const hasMountCustomerPayment = financeCustomerCollection
+    ? financeCustomerCollection.mount_amount > 0 || financeCustomerCollection.has_mount_collection === true
+    : paidMountPaymentAmount !== null || paymentSummary?.has_mount_collection === true
   const serviceCustomerPaymentLabel = hasServiceCustomerPayment
-    ? `${paymentSummaryService?.status_label ?? 'Ödendi'} - ${paymentSummaryService?.amount_label ?? formatMoneyValue(paidServiceCustomerAmount)}`
+    ? `${paymentSummaryService?.status_label ?? 'Ödendi'} - ${financeCustomerCollection?.service_amount_label ?? paymentSummaryService?.amount_label ?? formatMoneyValue(paidServiceCustomerAmount)}`
     : null
   const partCustomerPaymentLabel = hasPartCustomerPayment
-    ? `${paymentSummaryPart?.status_label ?? 'Ödendi'} - ${paymentSummaryPart?.amount_label ?? formatMoneyValue(paidPartCustomerAmount)}`
+    ? `${paymentSummaryPart?.status_label ?? 'Ödendi'} - ${financeCustomerCollection?.part_amount_label ?? paymentSummaryPart?.amount_label ?? formatMoneyValue(paidPartCustomerAmount)}`
     : null
-  const totalCustomerCollectionLabel = paymentSummary?.total_customer_collection_label
+  const totalCustomerCollectionLabel = financeCustomerCollection?.total_amount_label
+    ?? paymentSummary?.total_customer_collection_label
     ?? (totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : null)
   const showServicePartPaymentSummary = servicePartChargeSectionVisible
     || Boolean(latestCustomerCharge)
@@ -1788,8 +1835,21 @@ export function ServiceRequestDetails({
   const fallbackTechnicianLaborCostAmount = typeof request.technicianPaymentAmount === 'number' && Number.isFinite(request.technicianPaymentAmount)
     ? request.technicianPaymentAmount
     : basePaymentInfo.customerAmount
-  const technicianLaborCostAmount = assignmentOfferLaborAmount ?? fallbackTechnicianLaborCostAmount
-  const technicianLaborCostLabel = assignmentOfferLaborAmount !== null
+  const hasCanonicalPayout = Boolean(
+    financeLocksmithPayout
+    && (
+      financeLocksmithPayout.total_amount > 0
+      || activeAssignmentOffer
+      || request.technicianPaymentAmount !== null
+      || request.travelFeeAmount !== null
+    ),
+  )
+  const technicianLaborCostAmount = hasCanonicalPayout
+    ? financeLocksmithPayout?.labor_amount ?? 0
+    : assignmentOfferLaborAmount ?? fallbackTechnicianLaborCostAmount
+  const technicianLaborCostLabel = hasCanonicalPayout
+    ? financeLocksmithPayout?.labor_amount_label ?? formatMoneyValue(financeLocksmithPayout?.labor_amount ?? 0)
+    : assignmentOfferLaborAmount !== null
     ? formatMoneyValue(assignmentOfferLaborAmount)
     : fallbackTechnicianLaborCostLabel
   const fallbackTravelCostLabel = hasRouteCostEvidence
@@ -1797,22 +1857,57 @@ export function ServiceRequestDetails({
       ? 'Km başı ücret ayarı eksik'
       : formatMoneyValue(routeFeeAmount)
     : 'Hesaplanmadı'
-  const travelCostLabel = assignmentOfferRouteAmount !== null
+  const travelCostLabel = hasCanonicalPayout
+    ? financeLocksmithPayout?.route_fee_amount_label ?? formatMoneyValue(financeLocksmithPayout?.route_fee_amount ?? 0)
+    : assignmentOfferRouteAmount !== null
     ? formatMoneyValue(assignmentOfferRouteAmount)
     : fallbackTravelCostLabel
-  const totalTechnicianCostAmount = assignmentOfferTotalAmount !== null
+  const totalTechnicianCostAmount = hasCanonicalPayout
+    ? financeLocksmithPayout?.total_amount ?? 0
+    : assignmentOfferTotalAmount !== null
     ? assignmentOfferTotalAmount
     : technicianLaborCostAmount !== null
       ? roundTwo(technicianLaborCostAmount + (hasRouteCostEvidence && routeFeeAmount !== null ? routeFeeAmount : 0))
       : null
   const earningTotalAmount = totalTechnicianCostAmount
-  const totalTechnicianCostLabel = totalTechnicianCostAmount !== null
+  const totalTechnicianCostLabel = hasCanonicalPayout
+    ? financeLocksmithPayout?.total_amount_label ?? formatMoneyValue(financeLocksmithPayout?.total_amount ?? 0)
+    : totalTechnicianCostAmount !== null
     ? formatMoneyValue(totalTechnicianCostAmount)
     : 'Hakediş ayarı eksik'
+  const locksmithPayoutStatus = financeLocksmithPayout?.payout_status
+    ?? financeCurrentVisit?.payout_status
+    ?? (activeAssignmentOffer ? 'confirmed' : hasCanonicalPayout ? 'draft' : null)
+  const locksmithPayoutStatusLabel = financeLocksmithPayout?.payout_status_label
+    ?? financeCurrentVisit?.payout_status_label
+    ?? (locksmithPayoutStatus === 'confirmed'
+      ? 'Onaylanan usta hakedişi'
+      : locksmithPayoutStatus === 'draft'
+        ? 'Önerilen / taslak hakediş'
+        : 'Hakediş yok')
+  const locksmithPayoutPaymentStatusLabel = financeLocksmithPayout?.payment_status_label
+    ?? financeCurrentVisit?.payment_status_label
+    ?? 'Hakediş ödeme kaydı yok'
+  const locksmithPayoutPaidAt = financeLocksmithPayout?.paid_at ?? financeCurrentVisit?.paid_at ?? null
+  const locksmithPayoutTotalMetricLabel = locksmithPayoutStatus === 'confirmed'
+    ? 'Onaylanan usta hakedişi'
+    : locksmithPayoutStatus === 'draft'
+      ? 'Önerilen / taslak usta hakedişi'
+      : 'Usta hakedişi toplamı'
+  const financeSummaryTitle = financeCurrentVisit?.warranty_covered
+    ? 'Usta Hakedişi / Operasyon Maliyeti'
+    : 'Usta Hakedişi'
+  const financeSummaryHint = financeCurrentVisit?.warranty_covered
+    ? 'Müşteri tahsilatı 0 TL ise usta hakedişi operasyon maliyetidir; ödeme/tahsilat değildir.'
+    : 'Müşteri tahsilatı ve usta hakedişi ayrı izlenir.'
+  const netDifferenceMetricLabel = financeCurrentVisit?.warranty_covered
+    ? 'Net operasyon farkı'
+    : 'Net fark / kâr'
   const earningSummaryTechnicianName = cleanDisplayText(selectedTechnician?.name || request.technicianName || 'Usta seçilmedi')
-  const netProfitLabel = totalCustomerCollectedAmount !== null && earningTotalAmount !== null
+  const netProfitLabel = financeNetMargin?.amount_label
+    ?? (totalCustomerCollectedAmount !== null && earningTotalAmount !== null
     ? formatMoneyValue(totalCustomerCollectedAmount - earningTotalAmount)
-    : 'Hesaplanamadı'
+    : 'Hesaplanamadı')
   const canSendTechnicianEarning = Boolean(
     selectedTechnician
     && selectedTechnician.phone
@@ -3658,9 +3753,9 @@ export function ServiceRequestDetails({
                   <MiniMetric label="Şehir" value={assignedTechnicianCityLabel} />
                   <MiniMetric label="İşçilik" value={technicianLaborCostLabel} />
                   <MiniMetric label="Yol" value={travelCostLabel} />
-                  <MiniMetric label="Toplam hakediş" value={totalTechnicianCostLabel} />
+                  <MiniMetric label={locksmithPayoutTotalMetricLabel} value={totalTechnicianCostLabel} />
                   <MiniMetric label="Müşteri tahsilatı" value={totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : '-'} />
-                  <MiniMetric label="Net fark / kâr" value={netProfitLabel} />
+                  <MiniMetric label={netDifferenceMetricLabel} value={netProfitLabel} />
                 </div>
               </div>
             ) : null}
@@ -4190,8 +4285,19 @@ export function ServiceRequestDetails({
             </details>
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3">
               <div>
-                <p className="text-sm font-semibold text-slate-950">Hakediş / Maliyet Özeti — {earningSummaryTechnicianName}</p>
-                <p className="mt-1 text-xs text-slate-500">Müşteri tahsilatı ve ustaya gönderilecek hakediş ayrı izlenir.</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-slate-950">{financeSummaryTitle} — {earningSummaryTechnicianName}</p>
+                  <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                    {locksmithPayoutStatusLabel}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">{financeSummaryHint}</p>
+                {financeCurrentVisit?.warranty_note ? (
+                  <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                    {financeCurrentVisit.warranty_note}
+                    {financeCurrentVisit.operation_cost_note ? ` · ${financeCurrentVisit.operation_cost_note}` : ''}
+                  </p>
+                ) : null}
               </div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {(hasMountCustomerPayment || showPaymentControl) ? (
@@ -4214,24 +4320,49 @@ export function ServiceRequestDetails({
                 ) : null}
                 <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} />
                 <MiniMetric label="Usta yol hakedişi" value={travelCostLabel} />
-                <MiniMetric label="Ustaya gönderilecek toplam hakediş" value={earningTotalAmount !== null ? formatMoneyValue(earningTotalAmount) : totalTechnicianCostLabel} />
-                <MiniMetric label="Net fark / kâr" value={netProfitLabel} />
+                <MiniMetric label={locksmithPayoutTotalMetricLabel} value={earningTotalAmount !== null ? formatMoneyValue(earningTotalAmount) : totalTechnicianCostLabel} />
+                <MiniMetric label={netDifferenceMetricLabel} value={netProfitLabel} />
                 <MiniMetric
-                  label="Hakediş durumu"
-                  value={earningDispatchStatusLabel}
-                  hint={technicianEarningMessage?.sent_at ? dateTimeOrEmpty(technicianEarningMessage.sent_at, '-') : activeAssignmentOffer?.sent_at ? dateTimeOrEmpty(activeAssignmentOffer.sent_at, '-') : undefined}
+                  label="Hakediş statüsü"
+                  value={locksmithPayoutStatusLabel}
+                  hint={technicianEarningMessage?.sent_at || activeAssignmentOffer?.sent_at
+                    ? `Mesaj: ${earningDispatchStatusLabel} · ${dateTimeOrEmpty(technicianEarningMessage?.sent_at ?? activeAssignmentOffer?.sent_at, '-')}`
+                    : `Mesaj: ${earningDispatchStatusLabel}`}
+                />
+                <MiniMetric
+                  label="Ödeme durumu"
+                  value={locksmithPayoutPaymentStatusLabel}
+                  hint={locksmithPayoutPaidAt ? `Ödeme tarihi: ${dateTimeOrEmpty(locksmithPayoutPaidAt, '-')}` : 'Ödeme onayı sadece hakediş ödeme kaydı varsa gösterilir.'}
                 />
               </div>
               {earningBreakdown?.root_total ? (
                 <div className="grid gap-2 rounded-2xl border border-emerald-100 bg-white p-3 text-xs text-slate-700">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold text-slate-950">MRN / SRV hakediş kırılımı</p>
-                    <p className="font-semibold text-emerald-700">Toplam: {earningBreakdown.root_total.total_amount_label ?? formatMoneyValue(earningBreakdown.root_total.total_amount)}</p>
+                    <p className="font-semibold text-emerald-700">
+                      Toplam: {earningBreakdown.root_total.total_amount_label ?? formatMoneyValue(earningBreakdown.root_total.total_amount)}
+                      {earningBreakdown.root_total.is_multi_technician ? ` (${earningBreakdown.root_total.technician_count ?? earningBreakdown.root_total.technician_names?.length ?? 0} usta toplamı)` : ''}
+                    </p>
                   </div>
+                  {earningBreakdown.root_total.is_multi_technician ? (
+                    <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                      Bu toplam birden fazla ustanın MRN/SRV hakedişlerini içerir: {(earningBreakdown.root_total.technician_names ?? []).join(', ')}
+                    </p>
+                  ) : null}
+                  {financeRootTotal ? (
+                    <div className="grid gap-2 rounded-xl bg-slate-50 px-3 py-2 sm:grid-cols-3">
+                      <span>Müşteri tahsilatı: <strong>{financeRootTotal.customer_collection.total_amount_label ?? formatMoneyValue(financeRootTotal.customer_collection.total_amount)}</strong></span>
+                      <span>Usta hakedişi: <strong>{financeRootTotal.locksmith_payout.total_amount_label ?? formatMoneyValue(financeRootTotal.locksmith_payout.total_amount)}</strong></span>
+                      <span>Net fark: <strong>{financeRootTotal.net_margin.amount_label ?? formatMoneyValue(financeRootTotal.net_margin.amount)}</strong></span>
+                    </div>
+                  ) : null}
                   <div className="grid gap-1">
                     {earningBreakdown.rows.map((row) => (
                       <div key={`${row.id}-${row.mrn}`} className="grid gap-2 rounded-xl bg-slate-50 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_110px_110px_110px]">
-                        <span className="min-w-0 truncate font-semibold">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}{row.is_current ? ' (açık detay)' : ''}</span>
+                        <span className="min-w-0">
+                          <span className="block truncate font-semibold">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}{row.is_current ? ' (açık detay)' : ''}</span>
+                          <span className="mt-0.5 block truncate text-[11px] font-semibold text-slate-500">Usta: {displayOrEmpty(row.technician_name, 'Usta bilgisi yok')}</span>
+                        </span>
                         <span>İşçilik: {row.labor_amount_label ?? formatMoneyValue(row.labor_amount)}</span>
                         <span>Yol: {row.route_fee_amount_label ?? formatMoneyValue(row.route_fee_amount)}</span>
                         <strong>Toplam: {row.total_amount_label ?? formatMoneyValue(row.total_amount)}</strong>

@@ -8,6 +8,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 
 class TechnicalServicePaymentStatusResolver
 {
@@ -24,10 +25,10 @@ class TechnicalServicePaymentStatusResolver
      *     message: string
      * }
      */
-    public function resolve(TechnicalServiceRequest $request): array
+    public function resolve(TechnicalServiceRequest $request, ?Collection $payments = null): array
     {
-        $latestPaidPayment = $this->latestRequestPayment($request, TechnicalServiceMountPayment::STATUS_PAID);
-        $latestPayment = $this->latestRequestPayment($request);
+        $latestPaidPayment = $this->latestRequestPayment($request, TechnicalServiceMountPayment::STATUS_PAID, $payments);
+        $latestPayment = $this->latestRequestPayment($request, payments: $payments);
 
         if ($latestPaidPayment instanceof TechnicalServiceMountPayment) {
             return $this->paidPayload(
@@ -129,8 +130,12 @@ class TechnicalServicePaymentStatusResolver
         ];
     }
 
-    private function latestRequestPayment(TechnicalServiceRequest $request, ?string $status = null): ?TechnicalServiceMountPayment
+    private function latestRequestPayment(TechnicalServiceRequest $request, ?string $status = null, ?Collection $payments = null): ?TechnicalServiceMountPayment
     {
+        if ($payments !== null) {
+            return $this->latestRequestPaymentFromCollection($request, $payments, $status);
+        }
+
         $directQuery = TechnicalServiceMountPayment::query()
             ->where('technical_service_request_id', $request->id);
 
@@ -161,6 +166,50 @@ class TechnicalServicePaymentStatusResolver
 
         $sessionPayments = $sessionQuery
             ->get()
+            ->filter(fn (TechnicalServiceMountPayment $payment): bool => ! $this->isCustomerChargePayment($payment))
+            ->values();
+
+        return $sessionPayments
+            ->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
+                $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+                return (int) ($payload['technical_service_request_id'] ?? 0) === (int) $request->id;
+            })
+            ?? $sessionPayments
+                ->first(function (TechnicalServiceMountPayment $payment) use ($request): bool {
+                    $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+                    return $request->source_channel === TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM
+                        && $request->mount_session_id !== null
+                        && $payment->technical_service_request_id === null
+                        && in_array(($payload['source'] ?? null), ['public_mount_payment', 'public_form_payment'], true);
+                });
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceMountPayment> $payments
+     */
+    private function latestRequestPaymentFromCollection(TechnicalServiceRequest $request, Collection $payments, ?string $status = null): ?TechnicalServiceMountPayment
+    {
+        $filteredPayments = $payments
+            ->filter(fn (TechnicalServiceMountPayment $payment): bool => $status === null || $payment->status === $status)
+            ->sortByDesc('id')
+            ->values();
+
+        $direct = $filteredPayments
+            ->filter(fn (TechnicalServiceMountPayment $payment): bool => (int) ($payment->technical_service_request_id ?? 0) === (int) $request->id)
+            ->first(fn (TechnicalServiceMountPayment $payment): bool => ! $this->isCustomerChargePayment($payment));
+
+        if ($direct instanceof TechnicalServiceMountPayment) {
+            return $direct;
+        }
+
+        if ($request->mount_session_id === null) {
+            return null;
+        }
+
+        $sessionPayments = $filteredPayments
+            ->filter(fn (TechnicalServiceMountPayment $payment): bool => (int) ($payment->technical_service_mount_session_id ?? 0) === (int) $request->mount_session_id)
             ->filter(fn (TechnicalServiceMountPayment $payment): bool => ! $this->isCustomerChargePayment($payment))
             ->values();
 

@@ -104,7 +104,7 @@ class PartnerServiceJobController extends Controller
             $request->integer('partner_id') ?: null,
         );
 
-        $jobs = $this->scope
+        $activeJobs = $this->scope
             ->serviceJobsQuery($partner)
             ->with([
                 'partnerJobActions' => fn ($query) => $query->latest(),
@@ -116,6 +116,26 @@ class PartnerServiceJobController extends Controller
             ->orderByDesc('updated_at')
             ->limit(100)
             ->get()
+            ->reject(fn (TechnicalServiceRequest $job): bool => $this->scope->shouldHideActiveParentWithChild($job))
+            ->values();
+        $activeJobIds = $activeJobs->pluck('id')->map(fn (mixed $id): int => (int) $id)->all();
+        $completedHistoryJobs = $this->scope
+            ->completedHistoryJobsQuery($partner)
+            ->with([
+                'partnerJobActions' => fn ($query) => $query->latest(),
+                'partRequests' => fn ($query) => $query->latest(),
+                'uploads',
+            ])
+            ->when($activeJobIds !== [], fn ($query) => $query->whereNotIn('id', $activeJobIds))
+            ->latest('completed_at')
+            ->latest('updated_at')
+            ->limit(100)
+            ->get()
+            ->filter(fn (TechnicalServiceRequest $job): bool => $this->scope->isCompletedHistoryJob($job))
+            ->values();
+        $jobs = $activeJobs
+            ->concat($completedHistoryJobs)
+            ->unique('id')
             ->map(fn (TechnicalServiceRequest $job): array => $this->portalData->safeServiceJobSummary($job, $partner))
             ->values()
             ->all();

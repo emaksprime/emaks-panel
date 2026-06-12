@@ -193,6 +193,7 @@ type ApiTechnicalServiceRequest = {
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
   earning_breakdown?: ServiceRequest['earningBreakdown']
+  finance_summary?: ServiceRequest['financeSummary']
   partner_portal_actions?: ServiceRequest['partnerPortalActions']
   part_requests?: ServiceRequest['partRequests']
   active_part_request?: ServiceRequest['activePartRequest']
@@ -206,6 +207,22 @@ type ApiTechnicalServiceRequest = {
   documents?: unknown
   photo?: unknown
   photos?: unknown
+}
+
+type ApiOperationControlUpdate = {
+  id: string | number
+  operation_control?: ServiceRequest['operationControl'] | null
+  assignment_blockers?: ServiceRequest['assignmentBlockers'] | null
+  allowed_workflow_actions?: ApiTechnicalServiceRequest['allowed_workflow_actions']
+  allowed_workflow_transitions?: string[] | null
+  operational_state?: ServiceRequest['operationalState'] | null
+  kanban_column?: ServiceRequest['kanbanColumn']
+  display_action_label?: string | null
+  display_tags?: ServiceRequest['displayTags']
+  attention?: ServiceRequest['attention']
+  visible_sections?: ServiceRequest['visibleSections'] | null
+  next_action?: string | null
+  next_action_payload?: ServiceRequest['nextActionPayload'] | null
 }
 
 type ApiTechnicalServiceEvent = {
@@ -438,6 +455,22 @@ function formatMoneyLabel(value: number | null | undefined): string {
     : '-'
 }
 
+function routeQuoteFailureMessage(message: string | null | undefined): string {
+  if (message === 'Usta konumu eksik.') {
+    return 'Usta konumu eksik; yol hakedişi manuel girilmeli.'
+  }
+
+  if (message === 'Müşteri konumu eksik.') {
+    return 'Müşteri konumu eksik; yol hakedişi manuel girilmeli.'
+  }
+
+  if (typeof message === 'string' && message.trim() !== '') {
+    return `${message} Manuel giriş yapın.`
+  }
+
+  return 'Yol hakedişi hesaplanamadı; manuel giriş yapın.'
+}
+
 function validCoordinatePair(
   latitude: number | string | null | undefined,
   longitude: number | string | null | undefined,
@@ -461,6 +494,11 @@ function technicianCoordinatePair(technician: ServiceTechnician): { latitude: nu
     ?? validCoordinatePair(technician.start_latitude, technician.start_longitude)
 }
 
+function requestRouteCoordinatePair(request: ServiceRequest | null | undefined): { latitude: number, longitude: number } | null {
+  return validCoordinatePair(request?.location?.route_latitude, request?.location?.route_longitude)
+    ?? validCoordinatePair(request?.location?.latitude, request?.location?.longitude)
+}
+
 function sameCoordinateValue(left: number | string | null | undefined, right: number | string | null | undefined): boolean {
   const parsedLeft = parseNullableNumber(left)
   const parsedRight = parseNullableNumber(right)
@@ -479,7 +517,7 @@ function routeQuoteActiveForSelection(
   }
 
   const technicianCoordinates = technicianCoordinatePair(technician)
-  const requestCoordinates = validCoordinatePair(request.location?.latitude, request.location?.longitude)
+  const requestCoordinates = requestRouteCoordinatePair(request)
   const routeQuoteTechnicianId = routeQuote.technician_id === null || routeQuote.technician_id === undefined
     ? null
     : String(routeQuote.technician_id)
@@ -685,7 +723,7 @@ function technicianMatchInfo(technician: ServiceTechnician, request: ServiceRequ
   const technicianProvince = findProvinceByName(technician.city)
   const requestProvince = findProvinceByName(request?.city)
   const technicianCoordinates = technicianCoordinatePair(technician)
-  const requestCoordinates = validCoordinatePair(request?.location?.latitude, request?.location?.longitude)
+  const requestCoordinates = requestRouteCoordinatePair(request)
   const technicianLat = technicianCoordinates?.latitude ?? technicianProvince?.latitude ?? null
   const technicianLng = technicianCoordinates?.longitude ?? technicianProvince?.longitude ?? null
   const requestLat = requestCoordinates?.latitude ?? requestProvince?.latitude ?? null
@@ -879,6 +917,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
     earningBreakdown: request.earning_breakdown ?? null,
+    financeSummary: request.finance_summary ?? null,
     partnerPortalActions: request.partner_portal_actions ?? [],
     partRequests: request.part_requests ?? [],
     activePartRequest: request.active_part_request ?? null,
@@ -889,6 +928,52 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     visibleSections: request.visible_sections ?? null,
     serviceVisitHistory: request.service_visit_history ?? null,
     attention: request.attention ?? null,
+  }
+}
+
+function applyOperationControlUpdate(request: ServiceRequest, update: ApiOperationControlUpdate): ServiceRequest {
+  if (String(request.id) !== String(update.id)) {
+    return request
+  }
+
+  return {
+    ...request,
+    operationControl: Object.prototype.hasOwnProperty.call(update, 'operation_control')
+      ? update.operation_control ?? null
+      : request.operationControl,
+    assignmentBlockers: Object.prototype.hasOwnProperty.call(update, 'assignment_blockers')
+      ? update.assignment_blockers ?? null
+      : request.assignmentBlockers,
+    allowedWorkflowActions: Object.prototype.hasOwnProperty.call(update, 'allowed_workflow_actions')
+      ? update.allowed_workflow_actions ?? null
+      : request.allowedWorkflowActions,
+    allowedWorkflowTransitions: Object.prototype.hasOwnProperty.call(update, 'allowed_workflow_transitions')
+      ? update.allowed_workflow_transitions ?? null
+      : request.allowedWorkflowTransitions,
+    operationalState: Object.prototype.hasOwnProperty.call(update, 'operational_state')
+      ? update.operational_state ?? null
+      : request.operationalState,
+    kanbanColumn: Object.prototype.hasOwnProperty.call(update, 'kanban_column')
+      ? update.kanban_column ?? null
+      : request.kanbanColumn,
+    displayActionLabel: Object.prototype.hasOwnProperty.call(update, 'display_action_label')
+      ? update.display_action_label ?? null
+      : request.displayActionLabel,
+    displayTags: Object.prototype.hasOwnProperty.call(update, 'display_tags')
+      ? update.display_tags ?? []
+      : request.displayTags,
+    attention: Object.prototype.hasOwnProperty.call(update, 'attention')
+      ? update.attention ?? null
+      : request.attention,
+    visibleSections: Object.prototype.hasOwnProperty.call(update, 'visible_sections')
+      ? update.visible_sections ?? null
+      : request.visibleSections,
+    nextAction: Object.prototype.hasOwnProperty.call(update, 'next_action')
+      ? update.next_action ?? null
+      : request.nextAction,
+    nextActionPayload: Object.prototype.hasOwnProperty.call(update, 'next_action_payload')
+      ? update.next_action_payload ?? null
+      : request.nextActionPayload,
   }
 }
 
@@ -1538,12 +1623,46 @@ export function TechnicalServiceOperationCenter() {
     setOperationControlUpdateLoading(true)
     setOperationControlUpdateError(null)
 
+    let previousRequestsSnapshot: ServiceRequest[] | null = null
+    const previousListRequest = selectedListRequest
+    const previousDetailRequest = selectedDetailRequest
+    const currentOperationControl = selectedDetailRequest?.operationControl
+      ?? selectedListRequest?.operationControl
+      ?? selectedRequest?.operationControl
+      ?? {}
+    const optimisticOperationControlUpdate: ApiOperationControlUpdate = {
+      id: selectedId,
+      operation_control: {
+        ...currentOperationControl,
+        ...payload,
+      },
+    }
+
+    preserveDetailScroll(() => {
+      setRequests((current) => {
+        previousRequestsSnapshot = current
+
+        return current.map((request) => applyOperationControlUpdate(request, optimisticOperationControlUpdate))
+      })
+      setSelectedListRequest((current) => (
+        current && String(current.id) === String(selectedId)
+          ? applyOperationControlUpdate(current, optimisticOperationControlUpdate)
+          : current
+      ))
+      setSelectedDetailRequest((current) => (
+        current && String(current.id) === String(selectedId)
+          ? applyOperationControlUpdate(current, optimisticOperationControlUpdate)
+          : current
+      ))
+    })
+
     try {
       const response = await apiRequest(`/api/technical-service/requests/${selectedId}/operation-control`, {
         method: 'PATCH',
         body: JSON.stringify(payload),
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
+      const operationControlUpdate = response.operation_control_update as ApiOperationControlUpdate | undefined
 
       if (updatedRequest) {
         preserveDetailScroll(() => {
@@ -1555,10 +1674,32 @@ export function TechnicalServiceOperationCenter() {
           ))
           setSelectedDetailRequest(updatedRequest)
         })
+      } else if (operationControlUpdate) {
+        preserveDetailScroll(() => {
+          setRequests((current) => current.map((request) => applyOperationControlUpdate(request, operationControlUpdate)))
+          setSelectedListRequest((current) => (
+            current && String(current.id) === String(operationControlUpdate.id)
+              ? applyOperationControlUpdate(current, operationControlUpdate)
+              : current
+          ))
+          setSelectedDetailRequest((current) => (
+            current && String(current.id) === String(operationControlUpdate.id)
+              ? applyOperationControlUpdate(current, operationControlUpdate)
+              : current
+          ))
+        })
       } else {
         await loadRequestDetail(selectedId)
       }
     } catch (caught) {
+      if (previousRequestsSnapshot) {
+        preserveDetailScroll(() => {
+          setRequests(previousRequestsSnapshot ?? [])
+          setSelectedListRequest(previousListRequest)
+          setSelectedDetailRequest(previousDetailRequest)
+        })
+      }
+
       setOperationControlUpdateError(caught instanceof Error ? caught.message : 'Operasyon kontrolü güncellenemedi.')
     } finally {
       setOperationControlUpdateLoading(false)
@@ -1661,6 +1802,11 @@ export function TechnicalServiceOperationCenter() {
   }, [])
   const selectedAssignTechnicianRecord = technicians.find((technician) => technician.id === assignTechnicianOption) ?? null
   const modalRouteQuote = modalRequest?.routeQuote ?? null
+  const modalFinanceSummary = modalRequest?.financeSummary ?? null
+  const modalCurrentFinance = modalFinanceSummary?.current_visit ?? null
+  const modalFinanceCustomerCollection = modalCurrentFinance?.customer_collection ?? null
+  const modalFinancePayout = modalCurrentFinance?.locksmith_payout ?? null
+  const modalFinanceNetMargin = modalCurrentFinance?.net_margin ?? null
   const assignmentRouteQuote = routeQuoteActiveForSelection(modalRouteQuote, assignTechnicianOption, selectedAssignTechnicianRecord, modalRequest)
     ? modalRouteQuote
     : null
@@ -1671,18 +1817,23 @@ export function TechnicalServiceOperationCenter() {
     assignmentRouteQuote?.billable_km ?? assignmentRouteQuote?.extra_km ?? null,
     modalRequest?.technicianPaymentAmount,
   )
-  const modalCollectedPaymentAmount = parseNullableNumber(modalRequest?.saleAndPayment?.paid_amount)
+  const modalCollectedPaymentAmount = typeof modalFinanceCustomerCollection?.total_amount === 'number' && Number.isFinite(modalFinanceCustomerCollection.total_amount)
+    ? modalFinanceCustomerCollection.total_amount
+    : parseNullableNumber(modalRequest?.saleAndPayment?.paid_amount)
     ?? parseNullableNumber(modalRequest?.saleAndPayment?.payment_status?.amount)
-    ?? modalPayment.customerAmount
-  const modalCollectedPaymentLabel = modalRequest?.saleAndPayment?.paid_amount_label
-    ?? (modalCollectedPaymentAmount !== null ? `${formatMoneyLabel(modalCollectedPaymentAmount)} KDV dahil` : modalPayment.customerAmountLabel)
+    ?? null
+  const modalCollectedPaymentLabel = modalFinanceCustomerCollection?.total_amount_label
+    ?? modalRequest?.saleAndPayment?.paid_amount_label
+    ?? (modalCollectedPaymentAmount !== null ? formatMoneyLabel(modalCollectedPaymentAmount) : '0 TL')
   const assignPaymentPreview = getServicePaymentInfo(
     modalRequest?.serviceType,
     assignmentRouteQuote?.round_trip_distance_km ?? assignmentRouteQuote?.distance_km ?? null,
     assignmentRouteQuote?.fee_amount ?? null,
     assignmentRouteQuote?.billable_km ?? assignmentRouteQuote?.extra_km ?? null,
   )
-  const assignmentTechnicianLaborAmount = typeof modalRequest?.technicianPaymentAmount === 'number' && Number.isFinite(modalRequest.technicianPaymentAmount)
+  const assignmentTechnicianLaborAmount = typeof modalFinancePayout?.labor_amount === 'number' && Number.isFinite(modalFinancePayout.labor_amount) && modalFinancePayout.labor_amount > 0
+    ? modalFinancePayout.labor_amount
+    : typeof modalRequest?.technicianPaymentAmount === 'number' && Number.isFinite(modalRequest.technicianPaymentAmount)
     ? modalRequest.technicianPaymentAmount
     : assignPaymentPreview.customerAmount
   const assignmentRouteFeeAmount = assignmentRouteQuote && typeof assignmentRouteQuote.fee_amount === 'number' && Number.isFinite(assignmentRouteQuote.fee_amount)
@@ -1697,12 +1848,32 @@ export function TechnicalServiceOperationCenter() {
   const assignmentTotalTechnicianCostLabel = assignmentTotalTechnicianCostAmount !== null
     ? formatMoneyLabel(assignmentTotalTechnicianCostAmount)
     : 'Belirlenmedi'
+  const modalPayoutStatus = modalFinancePayout?.payout_status
+    ?? modalCurrentFinance?.payout_status
+    ?? (modalRequest?.assignmentOffer ? 'confirmed' : assignmentTotalTechnicianCostAmount !== null && assignmentTotalTechnicianCostAmount > 0 ? 'draft' : null)
+  const modalPayoutStatusLabel = modalFinancePayout?.payout_status_label
+    ?? modalCurrentFinance?.payout_status_label
+    ?? (modalPayoutStatus === 'confirmed'
+      ? 'Onaylanan usta hakedişi'
+      : modalPayoutStatus === 'draft'
+        ? 'Önerilen / taslak hakediş'
+        : 'Hakediş yok')
+  const assignmentPayoutSummaryLabel = modalPayoutStatus === 'confirmed'
+    ? 'Onaylanan usta hakedişi'
+    : modalPayoutStatus === 'draft'
+      ? 'Önerilen / taslak hakediş'
+      : 'Usta hakedişi'
+  const modalNetDifferenceLabel = modalCurrentFinance?.warranty_covered
+    ? 'Net operasyon farkı'
+    : 'Net fark / kâr'
   const finalAssignmentLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
   const finalAssignmentRouteAmount = parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0
   const finalAssignmentTotalAmount = roundTwo(finalAssignmentLaborAmount + finalAssignmentRouteAmount)
   const finalAssignmentNetDifference = modalCollectedPaymentAmount !== null
     ? roundTwo(modalCollectedPaymentAmount - finalAssignmentTotalAmount)
-    : null
+    : typeof modalFinanceNetMargin?.amount === 'number' && Number.isFinite(modalFinanceNetMargin.amount)
+      ? modalFinanceNetMargin.amount
+      : null
   const selectedAssignTechnicianName = assignTechnicianOption === 'other'
     ? assignOtherTechnician.trim()
     : selectedAssignTechnicianRecord ? technicianDisplayName(selectedAssignTechnicianRecord) : ''
@@ -1713,6 +1884,33 @@ export function TechnicalServiceOperationCenter() {
       job_id: String(modalRequest.id),
     }).toString()}`
     : null
+  const assignmentRouteRoundTripKm = typeof assignmentRouteQuote?.round_trip_distance_km === 'number'
+    ? assignmentRouteQuote.round_trip_distance_km
+    : typeof assignmentRouteQuote?.distance_km === 'number'
+      ? assignmentRouteQuote.distance_km
+      : null
+  const assignmentRouteOneWayKm = typeof assignmentRouteQuote?.one_way_distance_km === 'number'
+    ? assignmentRouteQuote.one_way_distance_km
+    : typeof assignmentRouteRoundTripKm === 'number'
+      ? Math.round((assignmentRouteRoundTripKm / 2) * 100) / 100
+      : null
+  const assignmentRouteDistanceLabel = typeof assignmentRouteOneWayKm === 'number'
+    ? `${assignmentRouteOneWayKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+    : '-'
+  const assignmentRouteRoundTripLabel = typeof assignmentRouteRoundTripKm === 'number'
+    ? `${assignmentRouteRoundTripKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+    : '-'
+  const assignmentRouteExtraKm = typeof assignmentRouteQuote?.billable_km === 'number'
+    ? assignmentRouteQuote.billable_km
+    : typeof assignmentRouteQuote?.extra_km === 'number'
+      ? assignmentRouteQuote.extra_km
+      : null
+  const assignmentRouteExtraKmLabel = typeof assignmentRouteExtraKm === 'number'
+    ? `${assignmentRouteExtraKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
+    : '-'
+  const assignmentRouteFeeLabel = typeof assignmentRouteQuote?.fee_amount === 'number'
+    ? `${assignmentRouteQuote.fee_amount.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
+    : (assignmentRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : '-')
   const assignmentRouteFeeReason = (() => {
     if (!modalRequest) {
       return 'Talep seçilmedi.'
@@ -1720,18 +1918,18 @@ export function TechnicalServiceOperationCenter() {
 
     if (!assignmentRouteQuote) {
       const hasTechnicianCoordinates = selectedAssignTechnicianRecord ? technicianCoordinatePair(selectedAssignTechnicianRecord) !== null : false
-      const hasRequestCoordinates = validCoordinatePair(modalRequest.location?.latitude, modalRequest.location?.longitude) !== null
+      const hasRequestCoordinates = requestRouteCoordinatePair(modalRequest) !== null
 
       if (!selectedAssignTechnicianRecord && assignTechnicianOption !== 'other') {
         return 'Usta seçilmedi; yol hakedişi henüz hesaplanmadı.'
       }
 
       if (!hasTechnicianCoordinates) {
-        return 'Usta konumu yok; yol hakedişi manuel girilecek.'
+        return 'Usta konumu eksik; yol hakedişi manuel girilmeli.'
       }
 
       if (!hasRequestCoordinates) {
-        return 'Müşteri konumu yok; yol hakedişi manuel girilecek.'
+        return 'Müşteri konumu eksik; yol hakedişi manuel girilmeli.'
       }
 
       return 'Yol hakedişi henüz hesaplanmadı; popup tutarı kaydeder.'
@@ -1782,33 +1980,6 @@ export function TechnicalServiceOperationCenter() {
     || (assignOverrideWithoutPayment && assignOverrideReason.trim().length >= 5)
   const assignmentBlockerMessages = modalRequest?.assignmentBlockers?.messages ?? []
   const hasAssignmentBlockers = assignmentBlockerMessages.length > 0
-  const assignmentRouteRoundTripKm = typeof assignmentRouteQuote?.round_trip_distance_km === 'number'
-    ? assignmentRouteQuote.round_trip_distance_km
-    : typeof assignmentRouteQuote?.distance_km === 'number'
-      ? assignmentRouteQuote.distance_km
-      : null
-  const assignmentRouteOneWayKm = typeof assignmentRouteQuote?.one_way_distance_km === 'number'
-    ? assignmentRouteQuote.one_way_distance_km
-    : typeof assignmentRouteRoundTripKm === 'number'
-      ? Math.round((assignmentRouteRoundTripKm / 2) * 100) / 100
-      : null
-  const assignmentRouteDistanceLabel = typeof assignmentRouteOneWayKm === 'number'
-    ? `${assignmentRouteOneWayKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
-    : '-'
-  const assignmentRouteRoundTripLabel = typeof assignmentRouteRoundTripKm === 'number'
-    ? `${assignmentRouteRoundTripKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
-    : '-'
-  const assignmentRouteExtraKm = typeof assignmentRouteQuote?.billable_km === 'number'
-    ? assignmentRouteQuote.billable_km
-    : typeof assignmentRouteQuote?.extra_km === 'number'
-      ? assignmentRouteQuote.extra_km
-      : null
-  const assignmentRouteExtraKmLabel = typeof assignmentRouteExtraKm === 'number'
-    ? `${assignmentRouteExtraKm.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} km`
-    : '-'
-  const assignmentRouteFeeLabel = typeof assignmentRouteQuote?.fee_amount === 'number'
-    ? `${assignmentRouteQuote.fee_amount.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
-    : (assignmentRouteQuote?.travel_fee_required ? 'Km başı ücret ayarı eksik' : '-')
   const canSubmitAssign = Boolean(
     !assignLoading &&
     assignTechnicianOption &&
@@ -2695,10 +2866,10 @@ export function TechnicalServiceOperationCenter() {
       const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
 
       setRouteQuoteError(routeQuoteFailed
-        ? (typeof response.message === 'string' ? response.message : 'Usta yol hakedişi hesaplanamadı.')
+        ? routeQuoteFailureMessage(typeof response.message === 'string' ? response.message : null)
         : null)
     } catch (caught) {
-      setRouteQuoteError(caught instanceof Error ? caught.message : 'Usta yol hakedişi hesaplanamadı.')
+      setRouteQuoteError(routeQuoteFailureMessage(caught instanceof Error ? caught.message : null))
     } finally {
       if (routeQuoteAutoRequestSeq.current === requestSeq) {
         setRouteQuoteLoading(false)
@@ -2719,21 +2890,23 @@ export function TechnicalServiceOperationCenter() {
     }
 
     const technicianCoordinates = technicianCoordinatePair(selectedAssignTechnicianRecord)
-    const requestCoordinates = validCoordinatePair(modalRequest.location?.latitude, modalRequest.location?.longitude)
-
-    if (!technicianCoordinates || !requestCoordinates) {
-      return
-    }
+    const requestCoordinates = requestRouteCoordinatePair(modalRequest)
+    const missingRouteReason = !technicianCoordinates
+      ? 'Usta konumu eksik; yol hakedişi manuel girilmeli.'
+      : !requestCoordinates
+        ? 'Müşteri konumu eksik; yol hakedişi manuel girilmeli.'
+        : null
 
     const autoKey = [
       selectedId,
       assignTechnicianOption,
-      technicianCoordinates.latitude,
-      technicianCoordinates.longitude,
-      requestCoordinates.latitude,
-      requestCoordinates.longitude,
+      technicianCoordinates?.latitude ?? 'no-technician-location',
+      technicianCoordinates?.longitude ?? 'no-technician-location',
+      requestCoordinates?.latitude ?? 'no-request-location',
+      requestCoordinates?.longitude ?? 'no-request-location',
       modalRequest.routeFeeConfig?.fee_per_km ?? '',
       modalRequest.routeFeeConfig?.threshold_km ?? '',
+      missingRouteReason ?? '',
     ].join('|')
 
     if (routeQuoteLastAutoKey.current === autoKey) {
@@ -2747,6 +2920,14 @@ export function TechnicalServiceOperationCenter() {
       }
 
       routeQuoteLastAutoKey.current = autoKey
+
+      if (missingRouteReason) {
+        setRouteQuoteError(missingRouteReason)
+        setRouteQuoteManualSaveError(null)
+
+        return
+      }
+
       const submittedRequestId = selectedId
       const submittedTechnicianId = assignTechnicianOption
       const requestSeq = ++routeQuoteAutoRequestSeq.current
@@ -2800,12 +2981,12 @@ export function TechnicalServiceOperationCenter() {
           const routeQuoteFailed = response.ok === false || (responseStatus !== null && responseStatus !== 'calculated')
 
           setRouteQuoteError(routeQuoteFailed
-            ? (typeof response.message === 'string' ? response.message : 'Usta yol hakedişi hesaplanamadı.')
+            ? routeQuoteFailureMessage(typeof response.message === 'string' ? response.message : null)
             : null)
         })
         .catch((caught: unknown) => {
           if (!cancelled && routeQuoteAutoRequestSeq.current === requestSeq) {
-            setRouteQuoteError(caught instanceof Error ? caught.message : 'Usta yol hakedişi hesaplanamadı.')
+            setRouteQuoteError(routeQuoteFailureMessage(caught instanceof Error ? caught.message : null))
           }
         })
         .finally(() => {
@@ -4249,15 +4430,21 @@ export function TechnicalServiceOperationCenter() {
                     <span className="font-semibold text-slate-900">{assignmentTravelAmountLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
-                    <span className="font-medium text-slate-600">Toplam usta maliyeti</span>
+                    <span className="font-medium text-slate-600">{assignmentPayoutSummaryLabel}</span>
                     <span className="font-semibold text-slate-950">{assignmentTotalTechnicianCostLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
-                    <span className="font-medium text-slate-600">Müşteriden alınan montaj ödemesi</span>
+                    <span className="font-medium text-slate-600">Müşteri tahsilatı</span>
                     <span className="font-semibold text-slate-950">{modalCollectedPaymentLabel}</span>
                   </div>
+                  {modalCurrentFinance?.warranty_note ? (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                      {modalCurrentFinance.warranty_note}
+                      {modalCurrentFinance.operation_cost_note ? ` · ${modalCurrentFinance.operation_cost_note}` : ''}
+                    </div>
+                  ) : null}
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-slate-600">Net fark / kâr</span>
+                    <span className="font-medium text-slate-600">{modalNetDifferenceLabel}</span>
                     <span className="font-semibold text-slate-950">
                       {modalCollectedPaymentAmount !== null && assignmentTotalTechnicianCostAmount !== null
                         ? formatMoneyLabel(modalCollectedPaymentAmount - assignmentTotalTechnicianCostAmount)
@@ -4268,8 +4455,13 @@ export function TechnicalServiceOperationCenter() {
 
                 <div className="grid gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-950">
                   <div>
-                    <p className="font-semibold">Ustaya gönderilecek hakediş bilgisi</p>
-                    <p className="mt-1 text-xs text-emerald-800">Atama kaydıyla birlikte sisteme bildirim payload'ı düşer; canlı WhatsApp/SMS gönderimi yapılmaz.</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold">{assignmentPayoutSummaryLabel} bilgisi</p>
+                      <span className="rounded-full border border-emerald-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                        {modalPayoutStatusLabel}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-emerald-800">Bu tutar müşteri tahsilatı değildir; atama kaydıyla birlikte sisteme bildirim payload'ı düşer ve canlı WhatsApp/SMS gönderimi yapılmaz.</p>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-3">
                     <label className="grid gap-1 text-xs font-semibold text-emerald-800">
@@ -4295,7 +4487,7 @@ export function TechnicalServiceOperationCenter() {
                       />
                     </label>
                     <div className="rounded-xl bg-white/80 p-3">
-                      <p className="text-xs font-semibold text-emerald-700">Toplam hakediş</p>
+                      <p className="text-xs font-semibold text-emerald-700">{assignmentPayoutSummaryLabel}</p>
                       <p className="mt-1 font-semibold text-slate-950">
                         {formatMoneyLabel((parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0) + (parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0))}
                       </p>
@@ -4381,15 +4573,21 @@ export function TechnicalServiceOperationCenter() {
 
                 <div className="grid gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-950 sm:grid-cols-2">
                   <div>
-                    <p className="text-xs font-semibold text-emerald-700">Toplam hakediş</p>
+                    <p className="text-xs font-semibold text-emerald-700">Onaylanacak usta hakedişi</p>
                     <p className="mt-1 text-lg font-semibold">{formatMoneyLabel(finalAssignmentTotalAmount)}</p>
                   </div>
                   <div>
                     <p className="text-xs font-semibold text-emerald-700">Müşteri tahsilatı</p>
                     <p className="mt-1 text-lg font-semibold">{modalCollectedPaymentLabel}</p>
                   </div>
+                  {modalCurrentFinance?.warranty_note ? (
+                    <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-xs font-semibold text-amber-900 sm:col-span-2">
+                      {modalCurrentFinance.warranty_note}
+                      {modalCurrentFinance.operation_cost_note ? ` · ${modalCurrentFinance.operation_cost_note}` : ''}
+                    </div>
+                  ) : null}
                   <div className="sm:col-span-2">
-                    <p className="text-xs font-semibold text-emerald-700">Net fark / kâr</p>
+                    <p className="text-xs font-semibold text-emerald-700">{modalNetDifferenceLabel}</p>
                     <p className="mt-1 text-lg font-semibold">{finalAssignmentNetDifference !== null ? formatMoneyLabel(finalAssignmentNetDifference) : '-'}</p>
                   </div>
                 </div>
@@ -4783,7 +4981,7 @@ export function TechnicalServiceOperationCenter() {
                 </DialogDescription>
                 {modalRequest?.serviceType ? (
                   <p className="text-sm leading-6 text-slate-600">
-                    Montaj ödeme durumu: {modalCollectedPaymentLabel}
+                    Müşteri tahsilatı: {modalCollectedPaymentLabel}
                   </p>
                 ) : null}
               </DialogHeader>

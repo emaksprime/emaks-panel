@@ -10,7 +10,7 @@ class TechnicalServiceNextActionService
     /**
      * @return array{code:string,title:string,description:string,severity:string,primary_action:?string,secondary_actions:array<int, string>,blocking:bool}
      */
-    public function forRequest(TechnicalServiceRequest $request): array
+    public function forRequest(TechnicalServiceRequest $request, ?array $paymentStatus = null): array
     {
         if ($request->completed_at !== null || $this->isCompletedStatus($request->status) || $this->isCompletedStatus($request->workflow_status)) {
             return $this->payload(
@@ -28,7 +28,7 @@ class TechnicalServiceNextActionService
         }
 
         $operation = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
-        $paymentStatus = app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
+        $paymentStatus ??= app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
 
         if (($operation['door_photos_checked'] ?? null) !== 'compatible') {
             return $this->payload(

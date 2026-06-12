@@ -379,6 +379,13 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame((float) $parent->location_longitude, $payload['destination_longitude']);
         $this->assertSame('60.00', $child->fresh()->travel_round_trip_km);
         $this->assertSame('300.00', $child->fresh()->travel_fee_amount);
+
+        $childPayload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+        $this->assertNull($childPayload['location']['latitude']);
+        $this->assertNull($childPayload['location']['longitude']);
+        $this->assertSame((float) $parent->location_latitude, $childPayload['location']['route_latitude']);
+        $this->assertSame((float) $parent->location_longitude, $childPayload['location']['route_longitude']);
+        $this->assertSame('parent_request', $childPayload['location']['route_source']);
         Http::assertSentCount(1);
     }
 
@@ -392,8 +399,11 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringContainsString('window.setTimeout(() =>', $pageSource);
         $this->assertStringContainsString('routeQuoteLastAutoKey.current = autoKey', $pageSource);
         $this->assertStringContainsString('routeQuoteAutoRequestSeq.current', $pageSource);
+        $this->assertStringContainsString('requestRouteCoordinatePair', $pageSource);
         $this->assertStringContainsString('technicianCoordinates.latitude', $pageSource);
         $this->assertStringContainsString('requestCoordinates.latitude', $pageSource);
+        $this->assertStringContainsString('Usta konumu eksik; yol hakedişi manuel girilmeli.', $pageSource);
+        $this->assertStringContainsString('Müşteri konumu eksik; yol hakedişi manuel girilmeli.', $pageSource);
         $this->assertStringContainsString('/route-quote', $pageSource);
     }
 
@@ -737,7 +747,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringNotContainsString('�', $encoded);
     }
 
-    public function test_legacy_turkish_normalizer_is_idempotent_for_valid_turkish_and_fixes_mojibake_labels(): void
+    public function test_technical_service_label_normalizer_is_idempotent_for_valid_turkish_and_converts_akilli_kapi_variants(): void
     {
         $valid = 'İstanbul / Kadıköy / Müşteri / Fotoğraf / Çilingir';
 
@@ -746,6 +756,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame('Müşteri Planlı Tamamlandı', TechnicalServiceUiLabelService::cleanDisplayText('M??teri Planl? Tamamland?'));
         $this->assertSame('Usta işi kabul etti', TechnicalServiceUiLabelService::cleanDisplayText('Usta iÅŸi kabul etti'));
         $this->assertSame('Fotoğraf / Müşteri / Çilingir', TechnicalServiceUiLabelService::cleanDisplayText('FotoÄŸraf / MÃ¼ÅŸteri / Ã‡ilingir'));
+        $this->assertSame('Acceptance Akıllı Kapı Kilidi', TechnicalServiceUiLabelService::cleanDisplayText('Acceptance Ak?ll? Kap? Kilidi'));
     }
 
     public function test_frontend_contains_route_quote_and_travel_fee_labels(): void
@@ -809,6 +820,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         foreach ([
             'validCoordinatePair',
             'technicianCoordinatePair',
+            'requestRouteCoordinatePair',
             'routeQuoteActiveForSelection',
             'routeQuoteAutoRequestSeq',
             'routeQuoteLatestSelection',

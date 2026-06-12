@@ -75,6 +75,7 @@ export type ServiceRequest = {
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
   earningBreakdown?: ServiceRequestEarningBreakdown | null
+  financeSummary?: ServiceRequestFinanceSummary | null
   partnerPortalActions?: ServiceRequestPartnerPortalAction[]
   partRequests?: ServiceRequestPartRequest[]
   activePartRequest?: ServiceRequestPartRequest | null
@@ -209,6 +210,7 @@ export type ServiceRequestEarningBreakdownRow = {
   is_parent?: boolean
   technician_id?: number | string | null
   technician_name?: string | null
+  technician_source?: string | null
   labor_amount: number
   route_fee_amount: number
   total_amount: number
@@ -233,6 +235,101 @@ export type ServiceRequestEarningBreakdown = {
     route_fee_amount_label?: string | null
     total_amount_label?: string | null
     job_count?: number
+    technician_count?: number
+    technician_names?: string[]
+    is_multi_technician?: boolean
+  }
+}
+
+export type ServiceRequestFinanceCollection = {
+  mount_amount: number
+  service_amount: number
+  part_amount: number
+  extra_amount: number
+  total_amount: number
+  mount_amount_label?: string | null
+  service_amount_label?: string | null
+  part_amount_label?: string | null
+  extra_amount_label?: string | null
+  total_amount_label?: string | null
+  has_collection?: boolean
+  has_mount_collection?: boolean
+  has_service_charge?: boolean
+  has_part_charge?: boolean
+  has_extra_charge?: boolean
+}
+
+export type ServiceRequestFinancePayout = {
+  labor_amount: number
+  route_fee_amount: number
+  total_amount: number
+  labor_amount_label?: string | null
+  route_fee_amount_label?: string | null
+  total_amount_label?: string | null
+  status?: string | null
+  status_label?: string | null
+  payout_status?: string | null
+  payout_status_label?: string | null
+  payment_status?: string | null
+  payment_status_label?: string | null
+  paid_at?: string | null
+  technician_id?: number | string | null
+  technician_name?: string | null
+  is_confirmed?: boolean
+  is_draft?: boolean
+  source?: string | null
+  job_count?: number
+  technician_count?: number
+  technician_names?: string[]
+  is_multi_technician?: boolean
+}
+
+export type ServiceRequestFinanceNetMargin = {
+  amount: number
+  amount_label?: string | null
+  is_negative?: boolean
+}
+
+export type ServiceRequestFinanceSummary = {
+  currency?: string | null
+  current_visit_customer_collection?: ServiceRequestFinanceCollection
+  current_visit_locksmith_payout?: ServiceRequestFinancePayout
+  current_visit_operation_cost?: ServiceRequestFinancePayout & { applies?: boolean }
+  root_total_customer_collection?: ServiceRequestFinanceCollection
+  root_total_locksmith_payout?: ServiceRequestFinancePayout
+  current_visit: {
+    is_service_visit?: boolean
+    technician_id?: number | string | null
+    technician_name?: string | null
+    customer_collection: ServiceRequestFinanceCollection
+    locksmith_payout: ServiceRequestFinancePayout
+    operation_cost?: (ServiceRequestFinancePayout & { applies?: boolean }) | null
+    warranty_customer_charge?: {
+      service_amount: number
+      part_amount: number
+      total_amount: number
+      service_amount_label?: string | null
+      part_amount_label?: string | null
+      total_amount_label?: string | null
+      covered_by_warranty?: boolean
+    } | null
+    confirmed_locksmith_payout?: ServiceRequestFinancePayout | null
+    draft_locksmith_payout?: ServiceRequestFinancePayout | null
+    payout_status?: string | null
+    payout_status_label?: string | null
+    payment_status?: string | null
+    payment_status_label?: string | null
+    paid_at?: string | null
+    completed_earning_snapshot?: Record<string, unknown> | null
+    net_margin: ServiceRequestFinanceNetMargin
+    warranty_covered?: boolean
+    warranty_note?: string | null
+    operation_cost_note?: string | null
+  }
+  root_total: {
+    customer_collection: ServiceRequestFinanceCollection
+    locksmith_payout: ServiceRequestFinancePayout
+    net_margin: ServiceRequestFinanceNetMargin
   }
 }
 
@@ -560,6 +657,9 @@ export type ServiceRequestInvoiceSerials = {
 export type ServiceRequestLocation = {
   latitude?: number | string | null
   longitude?: number | string | null
+  route_latitude?: number | string | null
+  route_longitude?: number | string | null
+  route_source?: 'request' | 'parent_request' | string | null
   place_id?: string | null
   formatted_address?: string | null
   map_url?: string | null

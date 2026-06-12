@@ -1,6 +1,6 @@
 import { Head, Link } from '@inertiajs/react'
 import { ChevronDown } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api'
 
@@ -177,6 +177,9 @@ type ServiceJob = {
       mrn: string
       display_mrn?: string | null
       kind_label?: string | null
+      technician_id?: number | string | null
+      technician_name?: string | null
+      technician_source?: string | null
       labor_amount: number
       route_fee_amount: number
       total_amount: number
@@ -188,6 +191,9 @@ type ServiceJob = {
       display_mrn?: string | null
       kind_label?: string | null
       is_current?: boolean
+      technician_id?: number | string | null
+      technician_name?: string | null
+      technician_source?: string | null
       labor_amount: number
       route_fee_amount: number
       total_amount: number
@@ -198,6 +204,9 @@ type ServiceJob = {
       route_fee_amount: number
       total_amount: number
       job_count?: number
+      technician_count?: number
+      technician_names?: string[]
+      is_multi_technician?: boolean
     }
   } | null
   completion_requirements: {
@@ -1045,22 +1054,13 @@ const slotValidationMessage = (slots: AppointmentSlotDraft[]) => {
 
 function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, board: PartnerPortalProps['partnerPortal']['serviceJobBoard'], readOnly: boolean }) {
   const initialJobs = useMemo(() => board.columns.flatMap((column) => column.jobs), [board.columns])
-  const requestedJobId = useMemo(() => {
-    if (typeof window === 'undefined') {
-      return null
-    }
-
-    const jobId = Number(new URLSearchParams(window.location.search).get('job_id'))
-
-    return Number.isFinite(jobId) && jobId > 0 ? jobId : null
-  }, [])
-  const initialSelectedJobId = requestedJobId !== null && initialJobs.some((job) => job.id === requestedJobId) ? requestedJobId : null
   const [jobs, setJobs] = useState<ServiceJob[]>(initialJobs)
-  const [selectedJobId, setSelectedJobId] = useState<number | null>(initialSelectedJobId)
-  const [detailOpen, setDetailOpen] = useState(initialSelectedJobId !== null)
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [detailActionOpen, setDetailActionOpen] = useState(false)
+  const requestedJobAppliedRef = useRef(false)
   const selectedJob = selectedJobId === null ? null : jobs.find((job) => job.id === selectedJobId) ?? null
   const refreshJobs = useCallback(async (silent = true, force = false) => {
     if (readOnly) {
@@ -1120,6 +1120,32 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
     setDetailOpen(false)
     setDetailActionOpen(false)
   }
+
+  useEffect(() => {
+    if (requestedJobAppliedRef.current || typeof window === 'undefined') {
+      return
+    }
+
+    const jobId = Number(new URLSearchParams(window.location.search).get('job_id'))
+
+    if (!Number.isFinite(jobId) || jobId <= 0) {
+      requestedJobAppliedRef.current = true
+
+      return
+    }
+
+    if (jobs.some((job) => job.id === jobId)) {
+      requestedJobAppliedRef.current = true
+
+      const timeoutId = window.setTimeout(() => {
+        setSelectedJobId(jobId)
+        setDetailOpen(true)
+        setDetailActionOpen(false)
+      }, 0)
+
+      return () => window.clearTimeout(timeoutId)
+    }
+  }, [jobs])
 
   useEffect(() => {
     if (readOnly) {
@@ -1702,6 +1728,7 @@ function ServiceJobDetail({
               <div className="mt-3 grid gap-2">
                   <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-emerald-100 bg-white/80 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Bu ziyaret</p>
+                    <p className="mt-1 truncate text-xs font-semibold text-slate-500">Usta: {cleanDisplayText(job.earning_breakdown?.current_visit?.technician_name ?? job.technician_name ?? 'Usta bilgisi yok')}</p>
                     <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-3"><span className="min-w-0 break-words">{job.earning_breakdown?.current_visit?.kind_label ?? 'İş'} işçilik</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown?.current_visit?.labor_amount ?? jobEarningLabor(job))}</strong></div>
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3"><span className="min-w-0 break-words">Yol hakedişi</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown?.current_visit?.route_fee_amount ?? jobEarningRoute(job))}</strong></div>
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-t border-emerald-100 pt-2"><span className="min-w-0 break-words">Bu ziyaret toplamı</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown?.current_visit?.total_amount ?? jobEarningTotal(job))}</strong></div>
@@ -1709,15 +1736,18 @@ function ServiceJobDetail({
                   </div>
                 {job.earning_breakdown?.root_total && (job.earning_breakdown.root_total.job_count ?? 0) > 1 ? (
                   <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3"><span className="min-w-0 break-words">Ana MRN toplam hakedişi</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown.root_total.total_amount)}</strong></div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3"><span className="min-w-0 break-words">Ana MRN toplam hakedişi{job.earning_breakdown.root_total.is_multi_technician ? ` (${job.earning_breakdown.root_total.technician_count ?? job.earning_breakdown.root_total.technician_names?.length ?? 0} usta)` : ''}</span><strong className="shrink-0 whitespace-nowrap">{money.format(job.earning_breakdown.root_total.total_amount)}</strong></div>
                     <p className="mt-1 text-xs text-emerald-700">{job.earning_breakdown.root_total.job_count} bağlı iş toplamı. İptal edilen işler toplamdan düşer.</p>
+                    {job.earning_breakdown.root_total.is_multi_technician ? (
+                      <p className="mt-1 text-xs font-semibold text-emerald-800">Ustalar: {(job.earning_breakdown.root_total.technician_names ?? []).map((name) => cleanDisplayText(name)).join(', ')}</p>
+                    ) : null}
                   </div>
                 ) : null}
                 {(job.earning_breakdown?.rows ?? []).length > 1 ? (
                   <div className="grid min-w-0 max-w-full gap-1 overflow-hidden rounded-xl border border-slate-200 bg-white/80 p-2 text-xs text-slate-700">
                     {(job.earning_breakdown?.rows ?? []).map((row) => (
                       <div key={`${row.id}-${row.mrn}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
-                        <span className="min-w-0 break-words leading-5">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}{row.is_current ? ' (bu ziyaret)' : ''}</span>
+                        <span className="min-w-0 break-words leading-5">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}{row.is_current ? ' (bu ziyaret)' : ''}<br /><span className="font-semibold text-slate-500">Usta: {cleanDisplayText(row.technician_name ?? 'Usta bilgisi yok')}</span></span>
                         <strong className="shrink-0 whitespace-nowrap">{money.format(row.total_amount)}</strong>
                       </div>
                     ))}
