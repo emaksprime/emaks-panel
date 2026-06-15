@@ -10,8 +10,12 @@ class SupportGuideEntry extends Model
 
     protected $fillable = [
         'code',
+        'title',
         'source_sheet',
         'source_row',
+        'stok_kodu',
+        'product_keyword',
+        'guide_content',
         'devices',
         'device_aliases',
         'method',
@@ -22,6 +26,8 @@ class SupportGuideEntry extends Model
         'search_text',
         'is_active',
         'sort_order',
+        'created_by',
+        'updated_by',
     ];
 
     protected function casts(): array

@@ -8,6 +8,7 @@ import {
     ExternalLink,
     FileText,
     Headset,
+    LifeBuoy,
     UsersRound,
 } from 'lucide-react';
 
@@ -68,6 +69,13 @@ const moduleCards = [
         candidates: ['/accounting-finance/resmi-stok-kontrol'],
         icon: Calculator,
         tone: 'from-teal-700 to-emerald-500',
+    },
+    {
+        title: 'Destek',
+        description: 'Kurulum, tuşlama ve aktivasyon bilgilerine hızlı erişin.',
+        candidates: ['/support', '/support/keypad-guide', '/support/activation'],
+        icon: LifeBuoy,
+        tone: 'from-rose-700 to-pink-500',
     },
 ];
 

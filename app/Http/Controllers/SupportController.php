@@ -20,8 +20,7 @@ class SupportController extends Controller
         private readonly SupportGuideService $guides,
         private readonly SupportActivationCodeService $activationCodes,
         private readonly AuditLogger $auditLogger,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request): Response
     {
@@ -36,6 +35,29 @@ class SupportController extends Controller
     public function activation(Request $request): Response
     {
         return $this->render($request, 'support_activation_query', 'activation');
+    }
+
+    public function management(Request $request): Response
+    {
+        $user = $request->user();
+        $page = Page::query()
+            ->where('code', 'support_management')
+            ->where('active', true)
+            ->firstOrFail();
+
+        $this->auditLogger->log(
+            $user,
+            'panel.page.view',
+            [
+                'page' => $page->code,
+                'path' => $page->route,
+            ],
+            $request,
+        );
+
+        return Inertia::render('panel/support-management', [
+            'page' => $this->navigation->pagePayload($page, $user),
+        ]);
     }
 
     private function render(Request $request, string $pageCode, ?string $activeTab): Response
