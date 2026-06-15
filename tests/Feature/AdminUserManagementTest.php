@@ -243,7 +243,7 @@ class AdminUserManagementTest extends TestCase
         $component = file_get_contents(resource_path('js/pages/panel/admin/AdminUsers.jsx')) ?: '';
 
         $this->assertMatchesRegularExpression(
-            "/'Proforma',\\s*'Muhasebe \\/ Finans',\\s*'Sistem Yönetimi'/",
+            "/'Proforma',\\s*'Muhasebe \\/ Finans',\\s*'Destek',\\s*'Sistem Yönetimi'/",
             $component,
         );
         $this->assertStringContainsString('access: data.resources.map((resource) => resource.code)', $component);
