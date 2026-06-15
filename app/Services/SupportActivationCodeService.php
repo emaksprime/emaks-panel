@@ -20,6 +20,10 @@ class SupportActivationCodeService
         $normalizedQuery = $this->normalizeSearchValue($rawQuery);
         $digits = preg_replace('/\D+/', '', $rawQuery) ?? '';
         $needle = Str::lower($rawQuery);
+        $normalizedNeedle = Str::lower($normalizedQuery);
+        $directLike = '%'.$needle.'%';
+        $normalizedLike = '%'.$normalizedNeedle.'%';
+        $digitsLike = $digits !== '' ? '%'.$digits.'%' : '__no_digit_fallback__';
 
         if ($rawQuery === '' || strlen($normalizedQuery) < self::MIN_QUERY_LENGTH) {
             return [
@@ -66,6 +70,65 @@ class SupportActivationCodeService
                         ->orWhereRaw('LOWER(search_text) like ?', ['%'.$digits.'%']);
                 }
             })
+            ->orderByRaw(
+                <<<'SQL'
+                CASE
+                    WHEN LOWER(search_code) IN (?, ?)
+                        OR LOWER(activation_code) IN (?, ?)
+                        OR LOWER(serial_number_clean) IN (?, ?)
+                        OR LOWER(serial_number) IN (?, ?)
+                        THEN 0
+                    WHEN LOWER(search_code) LIKE ?
+                        OR LOWER(search_code) LIKE ?
+                        OR LOWER(activation_code) LIKE ?
+                        OR LOWER(activation_code) LIKE ?
+                        OR LOWER(serial_number_clean) LIKE ?
+                        OR LOWER(serial_number_clean) LIKE ?
+                        OR LOWER(serial_number) LIKE ?
+                        OR LOWER(serial_number) LIKE ?
+                        THEN 1
+                    WHEN LOWER(stock_code) LIKE ?
+                        OR LOWER(stock_name) LIKE ?
+                        OR LOWER(search_text) LIKE ?
+                        OR LOWER(code) LIKE ?
+                        THEN 2
+                    WHEN LOWER(serial_number) LIKE ?
+                        OR LOWER(serial_number_clean) LIKE ?
+                        OR LOWER(search_code) LIKE ?
+                        OR LOWER(activation_code) LIKE ?
+                        OR LOWER(search_text) LIKE ?
+                        THEN 3
+                    ELSE 4
+                END
+                SQL,
+                [
+                    $needle,
+                    $normalizedNeedle,
+                    $needle,
+                    $normalizedNeedle,
+                    $needle,
+                    $normalizedNeedle,
+                    $needle,
+                    $normalizedNeedle,
+                    $directLike,
+                    $normalizedLike,
+                    $directLike,
+                    $normalizedLike,
+                    $directLike,
+                    $normalizedLike,
+                    $directLike,
+                    $normalizedLike,
+                    $directLike,
+                    $directLike,
+                    $directLike,
+                    $normalizedLike,
+                    $digitsLike,
+                    $digitsLike,
+                    $digitsLike,
+                    $digitsLike,
+                    $digitsLike,
+                ],
+            )
             ->orderBy('stock_name')
             ->orderBy('serial_number')
             ->limit($limit)
@@ -142,7 +205,7 @@ class SupportActivationCodeService
     }
 
     /**
-     * @param Collection<int, SupportActivationCode> $records
+     * @param  Collection<int, SupportActivationCode>  $records
      * @return list<array<string, mixed>>
      */
     private function mapRecords(Collection $records): array
@@ -207,11 +270,18 @@ class SupportActivationCodeService
             return [$serialNumberClean, $activationCode];
         }
 
+        if ($serialNumberClean !== null && str_starts_with($serialNumber, $serialNumberClean.'-')) {
+            return [
+                $serialNumberClean,
+                $this->nullableText(substr($serialNumber, strlen($serialNumberClean) + 1)) ?? $activationCode,
+            ];
+        }
+
         $serialPrefix = $this->nullableText(substr($serialNumber, 0, $lastDash));
         $serialSuffix = $this->nullableText(substr($serialNumber, $lastDash + 1));
 
         return [
-            $serialPrefix ?? $serialNumberClean,
+            $serialNumberClean ?? $serialPrefix,
             $serialSuffix ?? $activationCode,
         ];
     }

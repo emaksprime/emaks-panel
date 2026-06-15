@@ -17,6 +17,11 @@ class SupportActivationCode extends Model
         'search_code',
         'activation_code',
         'activation_link',
+        'source',
+        'imported_at',
+        'created_by',
+        'updated_by',
+        'import_batch_id',
         'metadata',
         'search_text',
         'is_active',
@@ -25,6 +30,7 @@ class SupportActivationCode extends Model
     protected function casts(): array
     {
         return [
+            'imported_at' => 'datetime',
             'metadata' => 'array',
             'is_active' => 'boolean',
         ];

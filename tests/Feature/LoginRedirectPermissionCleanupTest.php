@@ -91,7 +91,16 @@ class LoginRedirectPermissionCleanupTest extends TestCase
             'resource_code' => 'dashboard',
             'can_view' => false,
         ]);
-        foreach (['stock', 'stock_critical', 'orders', 'orders_alinan', 'orders_verilen'] as $resourceCode) {
+        foreach ([
+            'support',
+            'support_keypad_guide',
+            'support_activation_query',
+            'stock',
+            'stock_critical',
+            'orders',
+            'orders_alinan',
+            'orders_verilen',
+        ] as $resourceCode) {
             UserAccess::query()->create([
                 'user_id' => $user->id,
                 'resource_code' => $resourceCode,
@@ -102,6 +111,32 @@ class LoginRedirectPermissionCleanupTest extends TestCase
         $this->assertNull($navigation->firstAccessibleRouteFor($user));
         $this->assertSame('/dashboard', $navigation->homePathFor($user));
         $this->actingAs($user)->get('/dashboard')->assertForbidden();
+    }
+
+    public function test_user_with_only_support_visibility_defaults_to_support_route(): void
+    {
+        $navigation = app(PanelNavigationService::class);
+        $user = User::factory()->create(['role_code' => 'viewer']);
+
+        foreach ([
+            'dashboard',
+            'support_keypad_guide',
+            'support_activation_query',
+            'stock',
+            'stock_critical',
+            'orders',
+            'orders_alinan',
+            'orders_verilen',
+        ] as $resourceCode) {
+            UserAccess::query()->create([
+                'user_id' => $user->id,
+                'resource_code' => $resourceCode,
+                'can_view' => false,
+            ]);
+        }
+
+        $this->assertSame('/support', $navigation->firstAccessibleRouteFor($user));
+        $this->assertSame('/support', $navigation->homePathFor($user));
     }
 
     public function test_login_redirects_to_dashboard_when_dashboard_is_accessible(): void

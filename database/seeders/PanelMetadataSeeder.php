@@ -77,6 +77,10 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'admin_pages', 'name' => 'Sayfalar', 'type' => 'page'],
             ['code' => 'admin_datasources', 'name' => 'Veri Kaynakları', 'type' => 'page'],
             ['code' => 'admin_logs', 'name' => 'Loglar', 'type' => 'page'],
+            ['code' => 'support', 'name' => 'Destek Merkezi', 'type' => 'page'],
+            ['code' => 'support_keypad_guide', 'name' => 'Destek - Tuşlama ve Kurulum Rehberi', 'type' => 'page'],
+            ['code' => 'support_activation_query', 'name' => 'Destek - Aktivasyon Sorgu', 'type' => 'page'],
+            ['code' => 'support_management', 'name' => 'Destek Yönetimi', 'type' => 'page'],
             ['code' => 'customers', 'name' => 'Müşteri Yönetimi', 'type' => 'page'],
             ['code' => 'customers_all', 'name' => 'Tüm Müşteriler', 'type' => 'scope'],
             ['code' => 'customers_online', 'name' => 'Online / Perakende Müşterileri', 'type' => 'scope'],
@@ -120,6 +124,7 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'cari', 'name' => 'Müşteri Yönetimi', 'icon' => 'wallet', 'menu_order' => 50, 'active' => true],
             ['code' => 'proforma', 'name' => 'Proforma', 'icon' => 'folder-kanban', 'menu_order' => 60, 'active' => true],
             ['code' => 'accounting_finance', 'name' => 'Muhasebe / Finans', 'icon' => 'calculator', 'menu_order' => 65, 'active' => true],
+            ['code' => 'support', 'name' => 'Destek', 'icon' => 'life-buoy', 'menu_order' => 66, 'active' => true],
             ['code' => 'administration', 'name' => 'Sistem Yönetimi', 'icon' => 'shield', 'menu_order' => 70, 'active' => true],
         ])->mapWithKeys(fn (array $group) => [
             $group['code'] => MenuGroup::query()->updateOrCreate(['code' => $group['code']], $group),
@@ -152,6 +157,10 @@ class PanelMetadataSeeder extends Seeder
             ['code' => 'proforma_detail', 'name' => 'Proforma Detay', 'route' => '/proforma/detail', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Proforma detay görüntüleme iskeleti.', 'resource_code' => 'proforma_detail', 'page_order' => 92, 'active' => true],
             ['code' => 'proforma_edit', 'name' => 'Proforma Düzenle', 'route' => '/proforma/edit', 'component' => 'panel/page', 'layout_type' => 'module', 'icon' => 'folder-kanban', 'description' => 'Proforma düzenleme akışı için placeholder ekran.', 'resource_code' => 'proforma_edit', 'page_order' => 93, 'active' => true],
             ['code' => 'accounting_finance_resmi_stok_kontrol', 'name' => 'Resmi Stok Kontrolü', 'route' => '/accounting-finance/resmi-stok-kontrol', 'component' => 'panel/accounting-finance/resmi-stok-kontrol', 'layout_type' => 'module', 'icon' => 'calculator', 'description' => 'Resmi stok, fiili stok ve muhasebe kontrol farklarını izleyin.', 'resource_code' => 'accounting_finance_resmi_stok_kontrol', 'page_order' => 95, 'active' => true],
+            ['code' => 'support', 'name' => 'Destek Merkezi', 'route' => '/support', 'component' => 'panel/support', 'layout_type' => 'module', 'icon' => 'life-buoy', 'description' => 'Cihaz kurulum, tuşlama ve aktivasyon destek ekranı', 'resource_code' => 'support', 'page_order' => 96, 'active' => true],
+            ['code' => 'support_keypad_guide', 'name' => 'Tuşlama ve Kurulum Rehberi', 'route' => '/support/keypad-guide', 'component' => 'panel/support', 'layout_type' => 'module', 'icon' => 'keyboard', 'description' => 'Cihaz kurulum ve tuşlama rehberi', 'resource_code' => 'support_keypad_guide', 'page_order' => 97, 'active' => true],
+            ['code' => 'support_activation_query', 'name' => 'Aktivasyon Sorgu', 'route' => '/support/activation', 'component' => 'panel/support', 'layout_type' => 'module', 'icon' => 'badge-check', 'description' => 'Aktivasyon sorgu ekranı', 'resource_code' => 'support_activation_query', 'page_order' => 98, 'active' => true],
+            ['code' => 'support_management', 'name' => 'Destek Yönetimi', 'route' => '/support/management', 'component' => 'panel/support-management', 'layout_type' => 'module', 'icon' => 'settings', 'description' => 'Aktivasyon kodu ve tuşlama rehberi yönetimi', 'resource_code' => 'support_management', 'page_order' => 99, 'active' => true],
             ['code' => 'finance_cari_durum', 'name' => 'Müşteri Durumu', 'route' => '/finance/cari-durum', 'component' => 'panel/page', 'layout_type' => 'admin', 'icon' => 'wallet', 'description' => 'Müşteri durumu ve finans yönetim görünümü', 'resource_code' => 'finance_cari_durum', 'page_order' => 100, 'active' => true],
             ['code' => 'admin_panel', 'name' => 'Yönetim Paneli', 'route' => '/admin', 'component' => 'panel/admin/index', 'layout_type' => 'admin', 'icon' => 'shield', 'description' => 'Panel yönetim merkezi', 'resource_code' => 'admin_panel', 'page_order' => 110, 'active' => true],
             ['code' => 'admin_users', 'name' => 'Kullanıcılar', 'route' => '/admin/users', 'component' => 'panel/admin/users', 'layout_type' => 'admin', 'icon' => 'users', 'description' => 'Kullanıcı, rol ve erişim yönetimi', 'resource_code' => 'user_admin', 'page_order' => 111, 'active' => true],
@@ -188,6 +197,8 @@ class PanelMetadataSeeder extends Seeder
             ['menu_group' => 'proforma', 'page' => 'proforma_detail', 'label' => 'Proforma Detay', 'icon' => 'folder-kanban', 'sort_order' => 92],
             ['menu_group' => 'proforma', 'page' => 'proforma_edit', 'label' => 'Proforma Düzenle', 'icon' => 'folder-kanban', 'sort_order' => 93],
             ['menu_group' => 'accounting_finance', 'page' => 'accounting_finance_resmi_stok_kontrol', 'label' => 'Resmi Stok Kontrolü', 'icon' => 'calculator', 'sort_order' => 95],
+            ['menu_group' => 'support', 'page' => 'support', 'label' => 'Destek Merkezi', 'icon' => 'life-buoy', 'sort_order' => 96],
+            ['menu_group' => 'support', 'page' => 'support_management', 'label' => 'Destek Yönetimi', 'icon' => 'settings', 'sort_order' => 99],
             ['menu_group' => 'executive', 'page' => 'finance_cari_durum', 'label' => 'Müşteri Durumu', 'icon' => 'wallet', 'sort_order' => 100],
             ['menu_group' => 'administration', 'page' => 'admin_panel', 'label' => 'Yönetim Paneli', 'icon' => 'shield', 'sort_order' => 110],
             ['menu_group' => 'administration', 'page' => 'admin_users', 'label' => 'Kullanıcılar', 'icon' => 'users', 'sort_order' => 111],
@@ -515,6 +526,10 @@ SQL,
             'accounting_finance' => [
                 ['label' => 'Resmi Stok Kontrolü', 'href' => '/accounting-finance/resmi-stok-kontrol'],
             ],
+            'support' => [
+                ['label' => 'Tuşlama ve Kurulum Rehberi', 'href' => '/support/keypad-guide'],
+                ['label' => 'Aktivasyon Sorgu', 'href' => '/support/activation'],
+            ],
         ];
 
         foreach ([
@@ -535,6 +550,9 @@ SQL,
             'proforma_detail' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_detail'],
             'proforma_edit' => ['eyebrow' => 'Proforma', 'tabs' => 'proforma', 'datasource' => 'proforma_detail'],
             'accounting_finance_resmi_stok_kontrol' => ['eyebrow' => 'Muhasebe / Finans', 'tabs' => 'accounting_finance', 'datasource' => 'accounting_finance_resmi_stok_kontrol'],
+            'support' => ['eyebrow' => 'Destek', 'tabs' => 'support', 'datasource' => null],
+            'support_keypad_guide' => ['eyebrow' => 'Destek', 'tabs' => 'support', 'datasource' => null],
+            'support_activation_query' => ['eyebrow' => 'Destek', 'tabs' => 'support', 'datasource' => null],
         ] as $pageCode => $configDefinition) {
             PageConfig::query()->updateOrCreate(
                 ['page_code' => $pageCode],
@@ -545,16 +563,18 @@ SQL,
                         'moduleTabs' => $tabs[$configDefinition['tabs']],
                     ],
                     'filters_json' => [],
-                    'datasource_id' => DataSource::query()->where('code', $configDefinition['datasource'])->value('id'),
+                    'datasource_id' => $configDefinition['datasource']
+                        ? DataSource::query()->where('code', $configDefinition['datasource'])->value('id')
+                        : null,
                 ],
             );
         }
 
-        foreach (['admin_panel', 'admin_users', 'admin_pages', 'admin_datasources', 'admin_logs'] as $pageCode) {
+        foreach (['support_management', 'admin_panel', 'admin_users', 'admin_pages', 'admin_datasources', 'admin_logs'] as $pageCode) {
             PageConfig::query()->updateOrCreate(
                 ['page_code' => $pageCode],
                 [
-                    'layout_json' => ['heroEyebrow' => 'Yönetim modülü'],
+                    'layout_json' => ['heroEyebrow' => $pageCode === 'support_management' ? 'Destek' : 'Yönetim modülü'],
                     'filters_json' => [],
                     'datasource_id' => null,
                 ],
@@ -565,6 +585,8 @@ SQL,
 
         foreach ($resources as $resource) {
             foreach ($roles as $role) {
+                $isPrivileged = $role->code === 'admin' || (bool) $role->is_super_admin;
+
                 RoleResourcePermission::query()->updateOrCreate(
                     [
                         'role_code' => $role->code,
@@ -573,9 +595,12 @@ SQL,
                     [
                         'can_view' => match ($role->code) {
                             'admin' => true,
-                            'manager' => $resource->code !== 'accounting_finance_resmi_stok_kontrol',
+                            'manager' => ! in_array($resource->code, ['accounting_finance_resmi_stok_kontrol', 'support_management'], true),
                             'sales' => in_array($resource->code, [
                                 'dashboard',
+                                'support',
+                                'support_keypad_guide',
+                                'support_activation_query',
                                 'sales_main',
                                 'stock',
                                 'stock_critical',
@@ -592,6 +617,9 @@ SQL,
                             ], true),
                             'stock' => in_array($resource->code, [
                                 'dashboard',
+                                'support',
+                                'support_keypad_guide',
+                                'support_activation_query',
                                 'stock',
                                 'stock_critical',
                                 'stock_locks',
@@ -602,6 +630,9 @@ SQL,
                             ], true),
                             'orders' => in_array($resource->code, [
                                 'dashboard',
+                                'support',
+                                'support_keypad_guide',
+                                'support_activation_query',
                                 'stock',
                                 'stock_critical',
                                 'stock_locks',
@@ -610,6 +641,10 @@ SQL,
                                 'orders_verilen',
                             ], true),
                             'technical' => in_array($resource->code, [
+                                'dashboard',
+                                'support',
+                                'support_keypad_guide',
+                                'support_activation_query',
                                 'technical_service',
                                 'technical_service_manage',
                                 'technical_service_dashboard',
@@ -627,6 +662,9 @@ SQL,
                             ], true),
                             'customer' => in_array($resource->code, [
                                 'dashboard',
+                                'support',
+                                'support_keypad_guide',
+                                'support_activation_query',
                                 'stock',
                                 'stock_critical',
                                 'stock_locks',
@@ -638,6 +676,9 @@ SQL,
                             ], true),
                             'proforma' => in_array($resource->code, [
                                 'dashboard',
+                                'support',
+                                'support_keypad_guide',
+                                'support_activation_query',
                                 'customers',
                                 'customers_own_rep',
                                 'stock',
@@ -653,6 +694,9 @@ SQL,
                             ], true),
                             'viewer' => in_array($resource->code, [
                                 'dashboard',
+                                'support',
+                                'support_keypad_guide',
+                                'support_activation_query',
                                 'stock',
                                 'stock_critical',
                                 'stock_locks',
@@ -660,9 +704,9 @@ SQL,
                                 'orders_alinan',
                                 'orders_verilen',
                             ], true),
-                            default => false,
+                            default => $isPrivileged,
                         },
-                        'can_execute' => $role->code === 'admin',
+                        'can_execute' => $isPrivileged,
                     ],
                 );
             }
