@@ -65,8 +65,14 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                     ->name('api.support.management.guides.index');
                 Route::post('guides', [SupportManagementController::class, 'storeGuide'])
                     ->name('api.support.management.guides.store');
-                Route::patch('guides/{supportGuideEntry}', [SupportManagementController::class, 'updateGuide'])
+                Route::patch('guides/{guide}', [SupportManagementController::class, 'updateGuide'])
                     ->name('api.support.management.guides.update');
+                Route::post('guides/{guide}/duplicate', [SupportManagementController::class, 'duplicateGuide'])
+                    ->name('api.support.management.guides.duplicate');
+                Route::post('guides/{guide}/steps', [SupportManagementController::class, 'storeGuideStep'])
+                    ->name('api.support.management.guides.steps.store');
+                Route::patch('guides/{guide}/steps/{step}', [SupportManagementController::class, 'updateGuideStep'])
+                    ->name('api.support.management.guides.steps.update');
             });
         });
 

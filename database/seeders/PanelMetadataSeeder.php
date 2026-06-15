@@ -585,6 +585,8 @@ SQL,
 
         foreach ($resources as $resource) {
             foreach ($roles as $role) {
+                $isPrivileged = $role->code === 'admin' || (bool) $role->is_super_admin;
+
                 RoleResourcePermission::query()->updateOrCreate(
                     [
                         'role_code' => $role->code,
@@ -702,9 +704,9 @@ SQL,
                                 'orders_alinan',
                                 'orders_verilen',
                             ], true),
-                            default => false,
+                            default => $isPrivileged,
                         },
-                        'can_execute' => $role->code === 'admin',
+                        'can_execute' => $isPrivileged,
                     ],
                 );
             }

@@ -57,31 +57,45 @@ return new class extends Migration
             });
         }
 
-        if (Schema::hasTable('panel.support_guide_entries')) {
-            Schema::table('panel.support_guide_entries', function (Blueprint $table): void {
-                if (! Schema::hasColumn('panel.support_guide_entries', 'title')) {
-                    $table->text('title')->nullable();
-                }
+        if (! Schema::hasTable('panel.support_keying_guide_products')) {
+            Schema::create('panel.support_keying_guide_products', function (Blueprint $table): void {
+                $table->id();
+                $table->text('product_name');
+                $table->text('search_keywords')->nullable();
+                $table->boolean('is_active')->default(true)->index();
+                $table->integer('sort_order')->default(100)->index();
+                $table->unsignedBigInteger('created_by')->nullable()->index();
+                $table->unsignedBigInteger('updated_by')->nullable()->index();
+                $table->timestampsTz();
 
-                if (! Schema::hasColumn('panel.support_guide_entries', 'stok_kodu')) {
-                    $table->text('stok_kodu')->nullable()->index();
-                }
+                $table->index('product_name');
+            });
+        }
 
-                if (! Schema::hasColumn('panel.support_guide_entries', 'product_keyword')) {
-                    $table->text('product_keyword')->nullable()->index();
-                }
+        if (! Schema::hasTable('panel.support_keying_guide_steps')) {
+            $productsTable = DB::connection()->getDriverName() === 'sqlite'
+                ? 'support_keying_guide_products'
+                : 'panel.support_keying_guide_products';
 
-                if (! Schema::hasColumn('panel.support_guide_entries', 'guide_content')) {
-                    $table->text('guide_content')->nullable();
-                }
+            Schema::create('panel.support_keying_guide_steps', function (Blueprint $table) use ($productsTable): void {
+                $table->id();
+                $table->unsignedBigInteger('product_id')->index();
+                $table->text('section_type');
+                $table->text('custom_title')->nullable();
+                $table->text('entry_method')->nullable()->index();
+                $table->text('entry_format')->nullable()->index();
+                $table->text('title');
+                $table->text('content');
+                $table->boolean('is_active')->default(true)->index();
+                $table->integer('sort_order')->default(100)->index();
+                $table->unsignedBigInteger('created_by')->nullable()->index();
+                $table->unsignedBigInteger('updated_by')->nullable()->index();
+                $table->timestampsTz();
 
-                if (! Schema::hasColumn('panel.support_guide_entries', 'created_by')) {
-                    $table->unsignedBigInteger('created_by')->nullable()->index();
-                }
-
-                if (! Schema::hasColumn('panel.support_guide_entries', 'updated_by')) {
-                    $table->unsignedBigInteger('updated_by')->nullable()->index();
-                }
+                $table->foreign('product_id')
+                    ->references('id')
+                    ->on($productsTable)
+                    ->cascadeOnDelete();
             });
         }
 
@@ -101,6 +115,8 @@ return new class extends Migration
         DB::table('panel.pages')->where('code', 'support_management')->delete();
         DB::table('panel.resources')->where('code', 'support_management')->delete();
 
+        Schema::dropIfExists('panel.support_keying_guide_steps');
+        Schema::dropIfExists('panel.support_keying_guide_products');
         Schema::dropIfExists('panel.support_activation_import_batches');
     }
 
@@ -179,15 +195,18 @@ return new class extends Migration
             ],
         );
 
-        $roles = DB::table('panel.roles')->pluck('code');
+        $roles = DB::table('panel.roles')->get(['code', 'is_super_admin']);
 
-        foreach ($roles as $roleCode) {
+        foreach ($roles as $role) {
+            $roleCode = (string) $role->code;
+            $isPrivileged = $roleCode === 'admin' || (bool) $role->is_super_admin;
+
             foreach (['support', 'support_keypad_guide', 'support_activation_query'] as $resourceCode) {
                 DB::table('panel.role_resource_permissions')->updateOrInsert(
                     ['role_code' => $roleCode, 'resource_code' => $resourceCode],
                     [
                         'can_view' => true,
-                        'can_execute' => $roleCode === 'admin',
+                        'can_execute' => $isPrivileged,
                         'created_at' => $now,
                         'updated_at' => $now,
                     ],
@@ -197,8 +216,8 @@ return new class extends Migration
             DB::table('panel.role_resource_permissions')->updateOrInsert(
                 ['role_code' => $roleCode, 'resource_code' => 'support_management'],
                 [
-                    'can_view' => $roleCode === 'admin',
-                    'can_execute' => $roleCode === 'admin',
+                    'can_view' => $isPrivileged,
+                    'can_execute' => $isPrivileged,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ],
