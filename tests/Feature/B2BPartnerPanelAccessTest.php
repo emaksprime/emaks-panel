@@ -4380,6 +4380,75 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $job->refresh()->mount_payment_status);
     }
 
+    public function test_ops_can_create_free_and_chargeable_part_request_from_srv_detail(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Ops Part Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-OPS-PART-CREATE', [
+            'serial_number' => 'SN-OPS-PART-CREATE',
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+        ]);
+        $session = $this->mountSessionForServiceRequest($job);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $job->id,
+            'provider' => 'fake',
+            'provider_reference' => 'MOUNT-OPS-PART-CREATE',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 3000,
+            'currency' => 'TRY',
+            'payment_url' => 'http://127.0.0.1:8000/mount-payment/mount-ops-part-create',
+            'paid_at' => now(),
+            'raw_payload' => ['source' => 'mount_payment'],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/part-requests", [
+                'part_name' => 'Garanti karşılığı',
+                'part_code' => 'FREE-PART-001',
+                'quantity' => 2,
+                'charge_decision' => 'free',
+                'note' => 'Garanti kapsamında değişim.',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_APPROVED)
+            ->assertJsonPath('part_request.charge_decision', 'free')
+            ->assertJsonPath('part_request.part_code', 'FREE-PART-001')
+            ->assertJsonPath('part_request.quantity', 2)
+            ->assertJsonPath('part_request.payment_url', null)
+            ->assertJsonPath('customer_charge', null);
+
+        $chargeableResponse = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/part-requests", [
+                'part_name' => 'Ücretli karşılık',
+                'part_code' => 'PAID-PART-001',
+                'quantity' => 1,
+                'charge_decision' => 'chargeable',
+                'service_amount' => 500,
+                'part_amount' => 1250,
+                'note' => 'Müşteri ücretli parça istedi.',
+                'customer_message' => 'Ücretli parça bedeli müşteri tarafından ödenecektir.',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('part_request.status', TechnicalServicePartRequest::STATUS_APPROVED)
+            ->assertJsonPath('part_request.charge_decision', 'chargeable')
+            ->assertJsonPath('part_request.service_amount', 500)
+            ->assertJsonPath('part_request.part_amount', 1250)
+            ->assertJsonPath('part_request.total_amount', 1750)
+            ->assertJsonPath('customer_charge.status', TechnicalServiceMountPayment::STATUS_PENDING);
+
+        $this->assertNotEmpty($chargeableResponse->json('customer_charge.payment_url'));
+        $this->assertSame(2, TechnicalServicePartRequest::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('metadata->source', 'ops_part_request')
+            ->count());
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'part_request_created',
+            'title' => 'Parça talebi oluşturuldu',
+        ]);
+    }
+
     public function test_chargeable_part_request_requires_amount_and_customer_message(): void
     {
         $admin = $this->userWithRole('admin', true);
@@ -4416,6 +4485,58 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonValidationErrors('customer_message');
+    }
+
+    public function test_ops_extra_document_upload_appears_in_same_preview_payload_without_replacing_partner_documents(): void
+    {
+        Storage::fake('public');
+
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Ops Extra Doc Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-OPS-EXTRA-DOC');
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($job, $fieldCode);
+        }
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/ops-extra-documents", [
+                'ops_extra_documents' => [
+                    UploadedFile::fake()->create('ops-extra.jpg', 256, 'image/jpeg'),
+                ],
+                'note' => 'Operasyon ek kanıt görseli.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'ok');
+
+        $payload = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk()
+            ->json('request.field_completion_documents');
+
+        $documents = collect($payload);
+        $this->assertCount(4, $documents);
+        $this->assertSame(
+            ['after_photo', 'before_photo', 'ops_extra_photo', 'warranty_document_photo'],
+            $documents->pluck('field_code')->sort()->values()->all()
+        );
+        $this->assertSame(3, $documents
+            ->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])
+            ->count());
+        $this->assertSame('ops_extra_document', $documents->firstWhere('field_code', 'ops_extra_photo')['category'] ?? null);
+        $this->assertSame('OPS Ek Görsel', $documents->firstWhere('field_code', 'ops_extra_photo')['label'] ?? null);
+
+        $this->assertDatabaseHas('technical_service_request_uploads', [
+            'technical_service_request_id' => $job->id,
+            'field_code' => 'ops_extra_photo',
+            'category' => TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT,
+            'review_status' => 'accepted',
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'ops_extra_document_uploaded',
+            'title' => 'OPS ek görsel yüklendi',
+        ]);
     }
 
     public function test_revisit_request_creates_isolated_srv_child_without_parent_completion_state(): void
@@ -4869,7 +4990,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.active_part_request.status_label', 'Parça talebi incelenmeli');
     }
 
-    public function test_srv_detail_shows_root_mrn_history(): void
+    public function test_parent_documents_history_is_shown_for_srv_detail_context(): void
     {
         $admin = $this->userWithRole('admin', true);
         $technician = $this->technician(['name' => 'SRV History Usta']);
@@ -4942,7 +5063,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.service_visit_history.parent_events.0.event_type_label', 'Tamamlamaya gönderildi');
     }
 
-    public function test_srv_child_does_not_inherit_parent_completion_gate(): void
+    public function test_srv_child_visual_gate_does_not_inherit_parent_completion_gate(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
@@ -5010,6 +5131,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.service_visit_context.service_code', 'SRV-ACTION-SRV-GATE-001')
             ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 0)
             ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false);
+
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertStringContainsString("isServiceVisitDetail && chip.label === 'Görseller'", $source);
     }
 
     public function test_ops_can_reject_spare_part_request_with_note_and_partner_cannot_act_on_other_partner_part_request(): void
@@ -6959,6 +7084,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             'customer_district' => 'Kadikoy',
             'service_address' => 'Offer test adresi',
             'product_name' => 'Offer Kilit',
+            'product_model' => 'Offer Model',
+            'brand' => 'Emaks Prime',
+            'stock_code' => 'STK-OFFER',
+            'serial_number' => 'SN-OFFER-ACT-001',
+            'activation_code' => 'ACT-OFFER',
             'service_type' => 'Montaj',
             'status' => 'Yeni',
             'workflow_status' => 'Usta Ataması Bekleyen',
@@ -7072,7 +7202,15 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.earning_summary.total_amount', 3000)
             ->assertJsonPath('job.earning_breakdown.current_visit.kind_label', 'Montaj')
             ->assertJsonPath('job.earning_breakdown.current_visit.total_amount', 3000)
-            ->assertJsonPath('job.earning_breakdown.root_total.total_amount', 3000);
+            ->assertJsonPath('job.earning_breakdown.root_total.total_amount', 3000)
+            ->assertJsonPath('job.product_name', 'Offer Kilit')
+            ->assertJsonPath('job.product_model', 'Offer Model')
+            ->assertJsonPath('job.brand', 'Emaks Prime')
+            ->assertJsonPath('job.stock_code', 'STK-OFFER')
+            ->assertJsonPath('job.serial_no', 'SN-OFFER-ACT-001')
+            ->assertJsonPath('job.activation_code', 'ACT-OFFER')
+            ->assertJsonPath('job.serial_context.serial_number', 'SN-OFFER-ACT-001')
+            ->assertJsonPath('job.serial_context.activation_code', 'ACT-OFFER');
 
         $this->actingAs($portalUser)
             ->getJson('/api/partner/earnings')
@@ -7470,6 +7608,15 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($portalUser)->get('/sales/main')->assertForbidden();
         $this->actingAs($portalUser)->get('/stock')->assertForbidden();
         $this->actingAs($portalUser)->get('/orders')->assertForbidden();
+    }
+
+    public function test_partner_serial_display_hides_stock_code_from_user_facing_label(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+
+        $this->assertStringContainsString('Aktivasyon:', $source);
+        $this->assertStringContainsString('Seri:', $source);
+        $this->assertStringNotContainsString('Stok:', $source);
     }
 
     /**

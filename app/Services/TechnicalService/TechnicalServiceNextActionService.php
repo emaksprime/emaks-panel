@@ -27,10 +27,22 @@ class TechnicalServiceNextActionService
             return $this->fieldProcessPayload();
         }
 
+        $isServiceVisit = $this->isServiceVisitRequest($request);
         $operation = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
         $paymentStatus ??= app(TechnicalServicePaymentStatusResolver::class)->resolve($request);
 
-        if (($operation['door_photos_checked'] ?? null) !== 'compatible') {
+        if ($isServiceVisit && ! filled($request->technical_service_technician_id)) {
+            return $this->payload(
+                'assign_technician',
+                'Usta Ata',
+                'SRV child akışı parent kapı/görsel kontrolüne takılmaz. Bu servis ziyareti için usta atanmalı.',
+                'info',
+                'assign_technician',
+                true
+            );
+        }
+
+        if (! $isServiceVisit && ($operation['door_photos_checked'] ?? null) !== 'compatible') {
             return $this->payload(
                 'review_photos',
                 'Kapı görsellerini kontrol et',
@@ -41,7 +53,7 @@ class TechnicalServiceNextActionService
             );
         }
 
-        if (! (bool) $paymentStatus['is_paid'] && (bool) $paymentStatus['requires_payment']) {
+        if (! $isServiceVisit && ! (bool) $paymentStatus['is_paid'] && (bool) $paymentStatus['requires_payment']) {
             if (filled($paymentStatus['pending_payment_id'])) {
                 $amount = is_numeric($paymentStatus['amount'] ?? null)
                     ? number_format((float) $paymentStatus['amount'], 2, ',', '.').' TRY'
@@ -192,6 +204,13 @@ class TechnicalServiceNextActionService
         return $quote instanceof TechnicalServiceRouteQuote
             && (int) $quote->technician_id === (int) $request->technical_service_technician_id
             && in_array($quote->status, [TechnicalServiceRouteQuote::STATUS_CALCULATED], true);
+    }
+
+    private function isServiceVisitRequest(TechnicalServiceRequest $request): bool
+    {
+        return $request->parent_request_id !== null
+            || filled($request->service_code)
+            || filled($request->service_visit_reason);
     }
 
     private function isCompletedStatus(?string $status): bool

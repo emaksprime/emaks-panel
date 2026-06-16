@@ -18,6 +18,40 @@ class TechnicalServicePartRequestController extends Controller
         private readonly TechnicalServiceWorkflowService $workflow,
     ) {}
 
+    public function store(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        $validated = $request->validate([
+            'part_name' => ['required', 'string', 'max:255'],
+            'part_code' => ['nullable', 'string', 'max:255'],
+            'quantity' => ['nullable', 'integer', 'min:1', 'max:999'],
+            'charge_decision' => ['required', 'string', Rule::in(['free', 'chargeable'])],
+            'service_amount' => ['nullable', 'numeric', 'min:0'],
+            'part_amount' => ['nullable', 'numeric', 'min:0'],
+            'note' => ['nullable', 'string', 'max:2000'],
+            'partner_message' => ['nullable', 'string', 'max:2000'],
+            'customer_message' => ['nullable', 'string', 'max:4000'],
+        ]);
+
+        $partRequest = $this->partRequests->createFromOperations($technicalServiceRequest, $request->user(), $validated);
+        $updated = $this->partRequests->transition($partRequest, TechnicalServicePartRequest::STATUS_APPROVED, $request->user(), [
+            ...$validated,
+            'partner_message' => $validated['partner_message']
+                ?? ($validated['charge_decision'] === 'free' ? 'Parça ücretsiz / garanti kapsamında karşılanacak.' : null),
+        ]);
+
+        $partRequestPayload = $this->partRequests->serialize($updated);
+        $requestPayload = $this->workflow->serialize($technicalServiceRequest->refresh(), true);
+
+        return response()->json([
+            'ok' => true,
+            'status' => $updated->status,
+            'part_request' => $partRequestPayload,
+            'customer_charge' => $partRequestPayload['customer_charge'] ?? null,
+            'payment_summary' => $requestPayload['sale_and_payment']['payment_summary'] ?? null,
+            'request' => $requestPayload,
+        ], 201);
+    }
+
     public function transition(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,

@@ -500,6 +500,10 @@ class B2BPartnerPortalDataService
         }
         $displayCity = TechnicalServiceUiLabelService::cityLabel($request->customer_city);
         $displayDistrict = TechnicalServiceUiLabelService::districtLabel($request->customer_district, $displayCity);
+        $serialContext = $this->serviceJobSerialContext($request);
+        $productName = $this->firstFilled($request->product_name, $serialContext['product_name'] ?? null);
+        $productModel = $this->firstFilled($request->product_model, $serialContext['product_model'] ?? null);
+        $productBrand = $this->firstFilled($request->brand, $serialContext['brand'] ?? null);
 
         return [
             'id' => $request->id,
@@ -514,9 +518,13 @@ class B2BPartnerPortalDataService
             'city' => $displayCity,
             'district' => $displayDistrict,
             'address_summary' => TechnicalServiceUiLabelService::addressLabel($request->service_address),
-            'product_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->product_name),
-            'product_model' => TechnicalServiceUiLabelService::cleanDisplayText($request->product_model),
-            'model' => TechnicalServiceUiLabelService::cleanDisplayText($request->product_model),
+            'product_name' => TechnicalServiceUiLabelService::cleanDisplayText($productName),
+            'product_model' => TechnicalServiceUiLabelService::cleanDisplayText($productModel),
+            'model' => TechnicalServiceUiLabelService::cleanDisplayText($productModel),
+            'brand' => TechnicalServiceUiLabelService::cleanDisplayText($productBrand),
+            'stock_code' => $this->firstFilled($request->stock_code, $serialContext['stock_code'] ?? null),
+            'activation_code' => $this->firstFilled($request->activation_code, $serialContext['activation_code'] ?? null),
+            'serial_context' => $serialContext,
             'serial_no' => $request->serial_number,
             'service_type' => $this->displayServiceType($request),
             'scheduled_at' => $request->scheduled_at?->toIso8601String(),
@@ -1306,6 +1314,34 @@ class B2BPartnerPortalDataService
         }
 
         return null;
+    }
+
+    /**
+     * @return array<string, string|null>|null
+     */
+    private function serviceJobSerialContext(TechnicalServiceRequest $request): ?array
+    {
+        $qrPayload = is_array($request->qr_context_payload) ? $request->qr_context_payload : [];
+        $serialPayload = is_array($qrPayload['serial_context'] ?? null) ? $qrPayload['serial_context'] : [];
+
+        $context = [
+            'serial_number' => $this->firstFilled($request->serial_number, $serialPayload['serial_number'] ?? null),
+            'activation_code' => $this->firstFilled($request->activation_code, $serialPayload['activation_code'] ?? null, $qrPayload['activation_code'] ?? null),
+            'product_name' => TechnicalServiceUiLabelService::cleanDisplayText(
+                $this->firstFilled($request->product_name, $serialPayload['product_name'] ?? null, $qrPayload['product_name'] ?? null)
+            ),
+            'product_model' => TechnicalServiceUiLabelService::cleanDisplayText(
+                $this->firstFilled($request->product_model, $serialPayload['product_model'] ?? null, $qrPayload['product_model'] ?? null)
+            ),
+            'brand' => TechnicalServiceUiLabelService::cleanDisplayText(
+                $this->firstFilled($request->brand, $serialPayload['brand'] ?? null, $qrPayload['brand'] ?? null)
+            ),
+            'stock_code' => $this->firstFilled($request->stock_code, $serialPayload['stock_code'] ?? null, $qrPayload['stock_code'] ?? null),
+        ];
+
+        return collect($context)->filter(fn (?string $value): bool => filled($value))->isEmpty()
+            ? null
+            : $context;
     }
 
     private function earningStatusLabel(?string $status): string

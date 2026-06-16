@@ -120,10 +120,12 @@ type ServiceRequestDetailsProps = {
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
   onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onRevisitServiceVisitCreate?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
+  onPartRequestCreate?: (payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
+  onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null }) => void | Promise<void>
   onCustomerApprovalResend?: (payload?: { note?: string | null }) => void | Promise<void>
   fieldDocumentReviewInFlight?: string | null
   fieldDocumentReviewError?: string | null
@@ -180,6 +182,16 @@ const displayOrEmpty = (value: string | null | undefined, fallback: string): str
 const dateTimeOrEmpty = (value: string | null | undefined, fallback: string): string => (
   hasText(value) ? formatTechnicalServiceDateTime(value, fallback) : fallback
 )
+
+const dateOrDateTimeOrEmpty = (value: string | null | undefined, fallback: string): string => {
+  if (!hasText(value)) {
+    return fallback
+  }
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value))
+    ? formatTechnicalServiceDate(value, fallback)
+    : formatTechnicalServiceDateTime(value, fallback)
+}
 
 const actionCodeLabels: Record<string, string> = {
   accepted: 'İş kabul edildi',
@@ -1265,10 +1277,12 @@ export function ServiceRequestDetails({
   onPartnerAppointmentProposalReject,
   onPartnerCompletionApprove,
   onRevisitServiceVisitCreate,
+  onPartRequestCreate,
   onPartRequestTransition,
   onPartRequestServiceVisitCreate,
   onAssignmentOfferUpdate,
   onFieldDocumentReview,
+  onOpsExtraDocumentUpload,
   onCustomerApprovalResend,
   fieldDocumentReviewInFlight = null,
   fieldDocumentReviewError = null,
@@ -1303,6 +1317,8 @@ export function ServiceRequestDetails({
   const warrantySectionVisible = visibleSections?.warranty === true
   const warrantySectionMode = visibleSections?.warranty_mode ?? null
   const servicePartChargeSectionVisible = visibleSections?.service_part_charge === true
+  const canCreatePartRequest = Boolean(onPartRequestCreate)
+    && (visibleSections?.is_service_visit === true || servicePartChargeSectionVisible || partRequests.length > 0)
   const warrantyStatusText = String(warranty?.status ?? '')
   const warrantyIsActive = warrantyStatusText.includes('Aktif')
   const warrantyIsExpired = warrantyStatusText.includes('Bitti')
@@ -1434,11 +1450,26 @@ export function ServiceRequestDetails({
   const [partRequestPartnerMessages, setPartRequestPartnerMessages] = useState<Record<string, string>>({})
   const [partRequestProviders, setPartRequestProviders] = useState<Record<string, string>>({})
   const [partRequestTrackings, setPartRequestTrackings] = useState<Record<string, string>>({})
+  const [partCreateModalOpen, setPartCreateModalOpen] = useState(false)
+  const [partCreateName, setPartCreateName] = useState('')
+  const [partCreateCode, setPartCreateCode] = useState('')
+  const [partCreateQuantity, setPartCreateQuantity] = useState('1')
+  const [partCreateMode, setPartCreateMode] = useState<'free' | 'chargeable'>('free')
+  const [partCreateServiceAmount, setPartCreateServiceAmount] = useState('')
+  const [partCreatePartAmount, setPartCreatePartAmount] = useState('')
+  const [partCreateNote, setPartCreateNote] = useState('')
+  const [partCreateMessage, setPartCreateMessage] = useState('')
+  const [partCreateSubmitting, setPartCreateSubmitting] = useState(false)
+  const [partCreateError, setPartCreateError] = useState<string | null>(null)
   const [partDecisionRequestId, setPartDecisionRequestId] = useState<number | string | null>(null)
   const [partDecisionMode, setPartDecisionMode] = useState<'free' | 'chargeable'>('free')
   const [partDecisionServiceAmount, setPartDecisionServiceAmount] = useState('')
   const [partDecisionPartAmount, setPartDecisionPartAmount] = useState('')
   const [partDecisionMessage, setPartDecisionMessage] = useState('')
+  const [opsExtraFiles, setOpsExtraFiles] = useState<File[]>([])
+  const [opsExtraNote, setOpsExtraNote] = useState('')
+  const [opsExtraUploading, setOpsExtraUploading] = useState(false)
+  const [opsExtraMessage, setOpsExtraMessage] = useState<string | null>(null)
   const [historyRecordId, setHistoryRecordId] = useState<number | string | null>(null)
   const selectedPartDecisionRequest = partDecisionRequestId === null
     ? null
@@ -1456,12 +1487,24 @@ export function ServiceRequestDetails({
   const assignmentOffer = request.assignmentOffer ?? null
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
   const selectedTechnicianIdString = selectedTechnicianId ? String(selectedTechnicianId) : null
+  const requestTechnicianIdString = request.technicianId !== null && request.technicianId !== undefined
+    ? String(request.technicianId)
+    : null
+  const selectedTechnicianMatchesRequest = selectedTechnicianIdString
+    ? requestTechnicianIdString === selectedTechnicianIdString
+    : Boolean(requestTechnicianIdString)
   const assignmentOfferTechnicianIdString = assignmentOffer?.technical_service_technician_id !== null && assignmentOffer?.technical_service_technician_id !== undefined
     ? String(assignmentOffer.technical_service_technician_id)
     : null
   const assignmentOfferMatchesSelectedTechnician = Boolean(
     assignmentOffer
-    && (!selectedTechnicianIdString || !assignmentOfferTechnicianIdString || assignmentOfferTechnicianIdString === selectedTechnicianIdString),
+    && (
+      selectedTechnicianIdString
+        ? !assignmentOfferTechnicianIdString || assignmentOfferTechnicianIdString === selectedTechnicianIdString
+        : requestTechnicianIdString
+          ? !assignmentOfferTechnicianIdString || assignmentOfferTechnicianIdString === requestTechnicianIdString
+          : false
+    ),
   )
   const activeAssignmentOffer = assignmentOfferMatchesSelectedTechnician ? assignmentOffer : null
   const assignmentOfferLaborAmount = activeAssignmentOffer && Number.isFinite(Number(activeAssignmentOffer.labor_amount))
@@ -1492,7 +1535,7 @@ export function ServiceRequestDetails({
     : null
   const routeQuoteMatchesSelectedTechnician = Boolean(routeQuote && selectedTechnicianIdString && routeQuoteTechnicianIdString === selectedTechnicianIdString)
   const routeQuoteStaleForSelectedTechnician = Boolean(routeQuote && selectedTechnicianIdString && routeQuoteTechnicianIdString && routeQuoteTechnicianIdString !== selectedTechnicianIdString)
-  const hasAssignmentChange = Boolean(selectedTechnicianId && selectedTechnicianId !== String(request.technicianId ?? ''))
+  const hasAssignmentChange = Boolean(selectedTechnicianIdString && selectedTechnicianIdString !== requestTechnicianIdString)
   const hasMultiProductRequest = Boolean(invoiceSerials?.has_multi_product || (invoiceSerials?.selected_serials?.length ?? 0) > 1 || saleAndPayment?.mount_payment_status === 'skipped_multi_product')
   const customerOpenAddress = [
     [request.city, request.district].filter(Boolean).join(' / '),
@@ -1521,15 +1564,16 @@ export function ServiceRequestDetails({
   )
   const activeRouteQuote = routeQuoteActiveForSelectedTechnician ? routeQuote : null
   const hasActiveRouteQuote = Boolean(activeRouteQuote)
-  const storedRouteRoundTripKm = typeof request.travelRoundTripKm === 'number' && Number.isFinite(request.travelRoundTripKm)
+  const storedRouteCostMatchesSelection = selectedTechnicianMatchesRequest || assignmentOfferMatchesSelectedTechnician
+  const storedRouteRoundTripKm = storedRouteCostMatchesSelection && typeof request.travelRoundTripKm === 'number' && Number.isFinite(request.travelRoundTripKm)
     ? request.travelRoundTripKm
     : null
-  const storedRouteBillableKm = typeof request.travelBillableKm === 'number' && Number.isFinite(request.travelBillableKm)
+  const storedRouteBillableKm = storedRouteCostMatchesSelection && typeof request.travelBillableKm === 'number' && Number.isFinite(request.travelBillableKm)
     ? request.travelBillableKm
     : null
   const storedRouteFeeAmount = assignmentOfferRouteAmount !== null
     ? assignmentOfferRouteAmount
-    : typeof request.travelFeeAmount === 'number' && Number.isFinite(request.travelFeeAmount)
+    : storedRouteCostMatchesSelection && typeof request.travelFeeAmount === 'number' && Number.isFinite(request.travelFeeAmount)
       ? request.travelFeeAmount
       : null
   const hasStoredRouteFeeAmount = storedRouteFeeAmount !== null && storedRouteFeeAmount > 0
@@ -1547,7 +1591,9 @@ export function ServiceRequestDetails({
   const routeFeeNotCalculatedHint = 'Usta yol hakedişini hesaplamak için seçili usta ve müşteri konumu kullanılacak.'
   const routeFeeSavedHint = assignmentOfferRouteAmount !== null
     ? 'Atama hakedişi üzerinden kaydedildi.'
-    : 'Kaydedilmiş yol hakedişi üzerinden gösteriliyor.'
+    : storedRouteCostMatchesSelection
+      ? 'Kaydedilmiş yol hakedişi üzerinden gösteriliyor.'
+      : 'Seçili usta değiştiği için yol hakedişi yeniden hesaplanmalı.'
   const shouldShowRouteFeeNotCalculatedMessage = Boolean(
     selectedTechnician && !routeQuoteLoading && !hasRouteCostEvidence,
   )
@@ -1609,6 +1655,20 @@ export function ServiceRequestDetails({
   const financeCustomerCollection = financeCurrentVisit?.customer_collection ?? null
   const financeLocksmithPayout = financeCurrentVisit?.locksmith_payout ?? null
   const financeNetMargin = financeCurrentVisit?.net_margin ?? null
+  const financePayoutTechnicianIdString = financeLocksmithPayout?.technician_id !== null && financeLocksmithPayout?.technician_id !== undefined
+    ? String(financeLocksmithPayout.technician_id)
+    : null
+  const financePayoutMatchesSelectedTechnician = Boolean(
+    financeLocksmithPayout
+    && (
+      selectedTechnicianIdString
+        ? financePayoutTechnicianIdString === selectedTechnicianIdString
+        : requestTechnicianIdString
+          ? !financePayoutTechnicianIdString || financePayoutTechnicianIdString === requestTechnicianIdString
+          : false
+    ),
+  )
+  const activeFinanceLocksmithPayout = financePayoutMatchesSelectedTechnician ? financeLocksmithPayout : null
   const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
   const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
   const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
@@ -1835,20 +1895,25 @@ export function ServiceRequestDetails({
   const fallbackTechnicianLaborCostAmount = typeof request.technicianPaymentAmount === 'number' && Number.isFinite(request.technicianPaymentAmount)
     ? request.technicianPaymentAmount
     : basePaymentInfo.customerAmount
+  const hasPayoutTechnicianContext = Boolean(selectedTechnician || requestTechnicianIdString || activeAssignmentOffer || activeFinanceLocksmithPayout)
   const hasCanonicalPayout = Boolean(
-    financeLocksmithPayout
+    activeFinanceLocksmithPayout
     && (
-      financeLocksmithPayout.total_amount > 0
+      activeFinanceLocksmithPayout.total_amount > 0
       || activeAssignmentOffer
       || request.technicianPaymentAmount !== null
       || request.travelFeeAmount !== null
     ),
   )
-  const technicianLaborCostAmount = hasCanonicalPayout
-    ? financeLocksmithPayout?.labor_amount ?? 0
+  const technicianLaborCostAmount = !hasPayoutTechnicianContext
+    ? null
+    : hasCanonicalPayout
+    ? activeFinanceLocksmithPayout?.labor_amount ?? 0
     : assignmentOfferLaborAmount ?? fallbackTechnicianLaborCostAmount
-  const technicianLaborCostLabel = hasCanonicalPayout
-    ? financeLocksmithPayout?.labor_amount_label ?? formatMoneyValue(financeLocksmithPayout?.labor_amount ?? 0)
+  const technicianLaborCostLabel = !hasPayoutTechnicianContext
+    ? 'Usta seçilmedi'
+    : hasCanonicalPayout
+    ? activeFinanceLocksmithPayout?.labor_amount_label ?? formatMoneyValue(activeFinanceLocksmithPayout?.labor_amount ?? 0)
     : assignmentOfferLaborAmount !== null
     ? formatMoneyValue(assignmentOfferLaborAmount)
     : fallbackTechnicianLaborCostLabel
@@ -1858,37 +1923,41 @@ export function ServiceRequestDetails({
       : formatMoneyValue(routeFeeAmount)
     : 'Hesaplanmadı'
   const travelCostLabel = hasCanonicalPayout
-    ? financeLocksmithPayout?.route_fee_amount_label ?? formatMoneyValue(financeLocksmithPayout?.route_fee_amount ?? 0)
+    ? activeFinanceLocksmithPayout?.route_fee_amount_label ?? formatMoneyValue(activeFinanceLocksmithPayout?.route_fee_amount ?? 0)
     : assignmentOfferRouteAmount !== null
     ? formatMoneyValue(assignmentOfferRouteAmount)
     : fallbackTravelCostLabel
-  const totalTechnicianCostAmount = hasCanonicalPayout
-    ? financeLocksmithPayout?.total_amount ?? 0
+  const totalTechnicianCostAmount = !hasPayoutTechnicianContext
+    ? null
+    : hasCanonicalPayout
+    ? activeFinanceLocksmithPayout?.total_amount ?? 0
     : assignmentOfferTotalAmount !== null
     ? assignmentOfferTotalAmount
     : technicianLaborCostAmount !== null
       ? roundTwo(technicianLaborCostAmount + (hasRouteCostEvidence && routeFeeAmount !== null ? routeFeeAmount : 0))
       : null
   const earningTotalAmount = totalTechnicianCostAmount
-  const totalTechnicianCostLabel = hasCanonicalPayout
-    ? financeLocksmithPayout?.total_amount_label ?? formatMoneyValue(financeLocksmithPayout?.total_amount ?? 0)
+  const totalTechnicianCostLabel = !hasPayoutTechnicianContext
+    ? 'Usta seçilmedi'
+    : hasCanonicalPayout
+    ? activeFinanceLocksmithPayout?.total_amount_label ?? formatMoneyValue(activeFinanceLocksmithPayout?.total_amount ?? 0)
     : totalTechnicianCostAmount !== null
     ? formatMoneyValue(totalTechnicianCostAmount)
     : 'Hakediş ayarı eksik'
-  const locksmithPayoutStatus = financeLocksmithPayout?.payout_status
-    ?? financeCurrentVisit?.payout_status
+  const locksmithPayoutStatus = activeFinanceLocksmithPayout?.payout_status
+    ?? (financePayoutMatchesSelectedTechnician ? financeCurrentVisit?.payout_status : null)
     ?? (activeAssignmentOffer ? 'confirmed' : hasCanonicalPayout ? 'draft' : null)
-  const locksmithPayoutStatusLabel = financeLocksmithPayout?.payout_status_label
-    ?? financeCurrentVisit?.payout_status_label
+  const locksmithPayoutStatusLabel = activeFinanceLocksmithPayout?.payout_status_label
+    ?? (financePayoutMatchesSelectedTechnician ? financeCurrentVisit?.payout_status_label : null)
     ?? (locksmithPayoutStatus === 'confirmed'
       ? 'Onaylanan usta hakedişi'
       : locksmithPayoutStatus === 'draft'
         ? 'Önerilen / taslak hakediş'
         : 'Hakediş yok')
-  const locksmithPayoutPaymentStatusLabel = financeLocksmithPayout?.payment_status_label
-    ?? financeCurrentVisit?.payment_status_label
+  const locksmithPayoutPaymentStatusLabel = activeFinanceLocksmithPayout?.payment_status_label
+    ?? (financePayoutMatchesSelectedTechnician ? financeCurrentVisit?.payment_status_label : null)
     ?? 'Hakediş ödeme kaydı yok'
-  const locksmithPayoutPaidAt = financeLocksmithPayout?.paid_at ?? financeCurrentVisit?.paid_at ?? null
+  const locksmithPayoutPaidAt = activeFinanceLocksmithPayout?.paid_at ?? (financePayoutMatchesSelectedTechnician ? financeCurrentVisit?.paid_at : null) ?? null
   const locksmithPayoutTotalMetricLabel = locksmithPayoutStatus === 'confirmed'
     ? 'Onaylanan usta hakedişi'
     : locksmithPayoutStatus === 'draft'
@@ -1903,6 +1972,7 @@ export function ServiceRequestDetails({
   const netDifferenceMetricLabel = financeCurrentVisit?.warranty_covered
     ? 'Net operasyon farkı'
     : 'Net fark / kâr'
+  const showFinanceCollectionMetrics = !hasAssignmentChange && Boolean(requestTechnicianIdString || activeFinanceLocksmithPayout || activeAssignmentOffer)
   const earningSummaryTechnicianName = cleanDisplayText(selectedTechnician?.name || request.technicianName || 'Usta seçilmedi')
   const netProfitLabel = financeNetMargin?.amount_label
     ?? (totalCustomerCollectedAmount !== null && earningTotalAmount !== null
@@ -2156,6 +2226,76 @@ export function ServiceRequestDetails({
     setPartDecisionPartAmount(partRequest.part_amount !== null && partRequest.part_amount !== undefined ? String(partRequest.part_amount) : '')
     setPartDecisionMessage(partRequest.customer_message ?? partRequest.partner_message ?? '')
   }
+  const openPartCreateModal = () => {
+    setPartCreateMode(warrantyIsActive ? 'free' : 'chargeable')
+    setPartCreateError(null)
+    setPartCreateModalOpen(true)
+  }
+  const closePartCreateModal = () => {
+    setPartCreateModalOpen(false)
+    setPartCreateName('')
+    setPartCreateCode('')
+    setPartCreateQuantity('1')
+    setPartCreateMode('free')
+    setPartCreateServiceAmount('')
+    setPartCreatePartAmount('')
+    setPartCreateNote('')
+    setPartCreateMessage('')
+    setPartCreateError(null)
+  }
+  const handlePartCreateSubmit = async () => {
+    if (!onPartRequestCreate) {
+      return
+    }
+
+    const partName = partCreateName.trim()
+    const quantity = Math.max(1, Math.round(parseNumericInput(partCreateQuantity) ?? 1))
+    const serviceAmount = parseNumericInput(partCreateServiceAmount) ?? 0
+    const partAmount = parseNumericInput(partCreatePartAmount) ?? 0
+    const note = partCreateNote.trim()
+    const message = partCreateMessage.trim()
+
+    if (partName.length < 2) {
+      setPartCreateError('Parça adı zorunludur.')
+
+      return
+    }
+
+    if (partCreateMode === 'chargeable' && partAmount <= 0) {
+      setPartCreateError('Ücretli parça için parça bedeli 0 TL üzerinde olmalı.')
+
+      return
+    }
+
+    if (partCreateMode === 'chargeable' && message.length < 3) {
+      setPartCreateError('Ücretli parça için müşteriye gönderilecek mesaj zorunludur.')
+
+      return
+    }
+
+    setPartCreateSubmitting(true)
+    setPartCreateError(null)
+
+    try {
+      await onPartRequestCreate({
+        part_name: partName,
+        part_code: partCreateCode.trim() || null,
+        quantity,
+        charge_decision: partCreateMode,
+        service_amount: serviceAmount,
+        part_amount: partAmount,
+        note: note || null,
+        partner_message: partCreateMode === 'free' ? 'Parça ücretsiz / garanti kapsamında karşılanacak.' : message,
+        customer_message: partCreateMode === 'chargeable' ? message : null,
+      })
+      closePartCreateModal()
+      setRouteFeeEditorMessage(partCreateMode === 'chargeable' ? 'Parça talebi ve ödeme state’i oluşturuldu.' : 'Ücretsiz parça talebi oluşturuldu.')
+    } catch (caught) {
+      setPartCreateError(caught instanceof Error ? caught.message : 'Parça talebi oluşturulamadı.')
+    } finally {
+      setPartCreateSubmitting(false)
+    }
+  }
   const closePartDecisionModal = () => {
     setPartDecisionRequestId(null)
     setPartDecisionMode('free')
@@ -2351,6 +2491,76 @@ export function ServiceRequestDetails({
       </div>
     </div>
   ) : null
+  const partCreateModal = partCreateModalOpen ? (
+    <div className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Parça talebi oluştur">
+      <div className="grid max-h-[92vh] w-full max-w-2xl gap-4 overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Parça talebi</p>
+            <h3 className="mt-1 text-lg font-bold text-slate-950">Parça Talebi Oluştur</h3>
+            <p className="mt-1 text-sm text-slate-600">SRV/MRN üzerinde gerçek parça talebi kaydı açılır; karar aynı kayda işlenir.</p>
+          </div>
+          <Button type="button" variant="ghost" onClick={closePartCreateModal}>Kapat</Button>
+        </div>
+        <div className="grid gap-3">
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_96px]">
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Parça adı
+              <Input value={partCreateName} onChange={(event) => setPartCreateName(event.target.value)} placeholder="Örn. Kilit gövdesi" />
+            </label>
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Parça kodu
+              <Input value={partCreateCode} onChange={(event) => setPartCreateCode(event.target.value)} placeholder="Opsiyonel" />
+            </label>
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              Adet
+              <Input type="number" min="1" step="1" value={partCreateQuantity} onChange={(event) => setPartCreateQuantity(event.target.value)} />
+            </label>
+          </div>
+          <label className="grid gap-1 text-xs font-semibold text-slate-600">
+            Not
+            <textarea value={partCreateNote} onChange={(event) => setPartCreateNote(event.target.value)} className="min-h-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" placeholder="Parça ihtiyacı, neden veya operasyon notu" />
+          </label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button type="button" onClick={() => setPartCreateMode('free')} className={['rounded-2xl border px-4 py-3 text-left text-sm font-semibold', partCreateMode === 'free' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-700'].join(' ')}>
+              Ücretsiz / Garanti kapsamında
+            </button>
+            <button type="button" onClick={() => setPartCreateMode('chargeable')} className={['rounded-2xl border px-4 py-3 text-left text-sm font-semibold', partCreateMode === 'chargeable' ? 'border-violet-300 bg-violet-50 text-violet-900' : 'border-slate-200 bg-white text-slate-700'].join(' ')}>
+              Ücretli
+            </button>
+          </div>
+          {partCreateMode === 'chargeable' ? (
+            <div className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50 p-3">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                  Servis bedeli
+                  <Input type="number" min="0" step="0.01" value={partCreateServiceAmount} onChange={(event) => setPartCreateServiceAmount(event.target.value)} />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                  Parça bedeli
+                  <Input type="number" min="0" step="0.01" value={partCreatePartAmount} onChange={(event) => setPartCreatePartAmount(event.target.value)} />
+                </label>
+                <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partCreateServiceAmount) ?? 0) + (parseNumericInput(partCreatePartAmount) ?? 0)))} />
+              </div>
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                Müşteri mesajı
+                <textarea value={partCreateMessage} onChange={(event) => setPartCreateMessage(event.target.value)} className="min-h-24 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" placeholder="Parça bedeli ve ödeme linki için mesaj" />
+              </label>
+            </div>
+          ) : null}
+          {partCreateError ? (
+            <p className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">{partCreateError}</p>
+          ) : null}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={closePartCreateModal}>Vazgeç</Button>
+            <Button type="button" onClick={() => void handlePartCreateSubmit()} disabled={partCreateSubmitting}>
+              {partCreateSubmitting ? 'Kaydediliyor...' : 'Parça talebi oluştur'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null
   const partDecisionModal = selectedPartDecisionRequest ? (
     <div className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Parça talebi kararı">
       <div className="grid max-h-[92vh] w-full max-w-2xl gap-4 overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
@@ -2411,6 +2621,7 @@ export function ServiceRequestDetails({
       </div>
     </div>
   ) : null
+  const selectedHistoryStartTimestamp = selectedHistoryRecord?.technician_arrived_at ?? selectedHistoryRecord?.field_started_at ?? null
   const historyRecordModal = selectedHistoryRecord ? (
     <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/55 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="SRV ve ana MRN geçmiş detayı">
       <div className="max-h-[92dvh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-violet-100 bg-white p-5 shadow-2xl">
@@ -2436,10 +2647,12 @@ export function ServiceRequestDetails({
           <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ziyaret zaman çizelgesi</p>
             <div className="mt-3 grid gap-2 text-sm text-slate-700">
-              <div className="flex justify-between gap-3 rounded-xl bg-white px-3 py-2">
-                <span>Usta gidiş / başlangıç</span>
-                <strong className="text-right text-slate-950">{dateTimeOrEmpty(selectedHistoryRecord.technician_arrived_at ?? selectedHistoryRecord.field_started_at, 'Kayıt yok')}</strong>
-              </div>
+              {selectedHistoryStartTimestamp ? (
+                <div className="flex justify-between gap-3 rounded-xl bg-white px-3 py-2">
+                  <span>Usta gidiş / başlangıç</span>
+                  <strong className="text-right text-slate-950">{dateTimeOrEmpty(selectedHistoryStartTimestamp, 'Kayıt yok')}</strong>
+                </div>
+              ) : null}
               <div className="flex justify-between gap-3 rounded-xl bg-white px-3 py-2">
                 <span>İş tamamlanma</span>
                 <strong className="text-right text-slate-950">{dateTimeOrEmpty(selectedHistoryRecord.technician_completed_at ?? selectedHistoryRecord.field_completed_at ?? selectedHistoryRecord.completed_at, 'Kayıt yok')}</strong>
@@ -2489,12 +2702,23 @@ export function ServiceRequestDetails({
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">İşlem geçmişi</p>
           {(selectedHistoryRecord.events?.length ?? 0) > 0 ? (
             <div className="mt-3 grid gap-2">
-              {selectedHistoryRecord.events?.map((event) => (
-                <div key={String(event.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
-                  <span className="font-semibold text-slate-800">{event.title_label ?? event.event_type_label ?? actionLabel(event.event_type, event.title)}</span>
-                  <span className="text-xs text-slate-500">{eventTime(event.created_at)}</span>
-                </div>
-              ))}
+              {selectedHistoryRecord.events?.map((event) => {
+                const eventTitle = event.title_label ?? event.event_type_label ?? actionLabel(event.event_type, event.title)
+                const statusTransition = event.from_status_label && event.to_status_label && event.from_status_label !== event.to_status_label
+                  ? `${event.from_status_label} -> ${event.to_status_label}`
+                  : null
+
+                return (
+                  <div key={String(event.id)} className="grid gap-1 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-800">{eventTitle}</span>
+                      <span className="text-xs text-slate-500">{eventTime(event.created_at)}</span>
+                    </div>
+                    {event.note ? <p className="text-xs text-slate-600">{event.note}</p> : null}
+                    {statusTransition ? <p className="text-[11px] font-semibold text-slate-500">{statusTransition}</p> : null}
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">İşlem geçmişi bulunmuyor.</p>
@@ -2505,17 +2729,25 @@ export function ServiceRequestDetails({
   ) : null
   const approvalState = technicianApprovalState(request, events)
   const operationSteps: Array<{ title: string, status: OperationStepStatus, message: string }> = [
-    operationControl.door_photos_checked === 'compatible'
-      ? { title: 'Kapı görselleri kontrolü', status: 'Tamamlandı', message: 'Kapı görselleri uygun işaretlendi.' }
-      : { title: 'Kapı görselleri kontrolü', status: 'Engelleyici hata', message: 'Kapı görselleri kontrol edilmedi.' },
-    mountPaymentReceived || !canonicalPaymentRequiresPayment || operationControl.payment_checked === 'yes'
-      ? { title: 'Montaj ödeme kontrolü', status: 'Tamamlandı', message: mountPaymentReceived ? mountPaymentStageLabel : canonicalPaymentRequiresPayment ? 'Ödeme kontrolü tamamlandı.' : mountPaymentStageLabel }
-      : mountExclusionAckRequired
-        ? { title: 'Montaj ödeme kontrolü', status: 'Kontrol gerekli', message: 'Montaj hariç çoklu ürün onayı gerekiyor.' }
-        : { title: 'Montaj ödeme kontrolü', status: 'Engelleyici hata', message: 'Montaj ödeme durumu net değil.' },
-    operationControl.schedule_update_required === 'no' || Boolean(request.scheduledAt || request.scheduledDate)
-      ? { title: 'Müşteri/randevu kontrolü', status: 'Tamamlandı', message: 'Randevu kontrolü tamamlandı.' }
-      : { title: 'Müşteri/randevu kontrolü', status: 'Bekliyor', message: 'Randevu veya müşteri dönüşü bekliyor.' },
+    ...(isServiceVisitDetail
+      ? [{
+          title: 'SRV servis ziyareti',
+          status: 'Tamamlandı' as OperationStepStatus,
+          message: 'Parent MRN kapı ve montaj kontrolleri bu child atamasını engellemez.',
+        }]
+      : [
+          operationControl.door_photos_checked === 'compatible'
+            ? { title: 'Kapı görselleri kontrolü', status: 'Tamamlandı' as OperationStepStatus, message: 'Kapı görselleri uygun işaretlendi.' }
+            : { title: 'Kapı görselleri kontrolü', status: 'Engelleyici hata' as OperationStepStatus, message: 'Kapı görselleri kontrol edilmedi.' },
+          mountPaymentReceived || !canonicalPaymentRequiresPayment || operationControl.payment_checked === 'yes'
+            ? { title: 'Montaj ödeme kontrolü', status: 'Tamamlandı' as OperationStepStatus, message: mountPaymentReceived ? mountPaymentStageLabel : canonicalPaymentRequiresPayment ? 'Ödeme kontrolü tamamlandı.' : mountPaymentStageLabel }
+            : mountExclusionAckRequired
+              ? { title: 'Montaj ödeme kontrolü', status: 'Kontrol gerekli' as OperationStepStatus, message: 'Montaj hariç çoklu ürün onayı gerekiyor.' }
+              : { title: 'Montaj ödeme kontrolü', status: 'Engelleyici hata' as OperationStepStatus, message: 'Montaj ödeme durumu net değil.' },
+          operationControl.schedule_update_required === 'no' || Boolean(request.scheduledAt || request.scheduledDate)
+            ? { title: 'Müşteri/randevu kontrolü', status: 'Tamamlandı' as OperationStepStatus, message: 'Randevu kontrolü tamamlandı.' }
+            : { title: 'Müşteri/randevu kontrolü', status: 'Bekliyor' as OperationStepStatus, message: 'Randevu veya müşteri dönüşü bekliyor.' },
+        ]),
     selectedTechnician
       ? { title: 'Usta seçimi', status: 'Tamamlandı', message: `${selectedTechnician.name} seçildi.` }
       : { title: 'Usta seçimi', status: 'Bekliyor', message: 'Usta seçimi bekliyor.' },
@@ -2613,6 +2845,11 @@ export function ServiceRequestDetails({
   ]
   const fieldCompletionDocuments = request.fieldCompletionDocuments ?? []
   const previousFieldCompletionDocuments = request.previousFieldCompletionDocuments ?? []
+  const opsExtraFieldDocuments = fieldCompletionDocuments.filter((document) => (
+    document.category === 'ops_extra_document'
+    || document.field_code === 'ops_extra_photo'
+    || document.field_code === 'ops_additional_document'
+  ))
   const fieldCompletionDocumentStatuses = fieldCompletionDocumentTypes.map((type) => {
     const document = fieldCompletionDocuments.find((item) => item.field_code === type.field)
 
@@ -2696,6 +2933,34 @@ export function ServiceRequestDetails({
       setFieldDocumentOverallReviewEditing(false)
     } finally {
       setFieldDocumentOverallReviewLoading(false)
+    }
+  }
+  const handleOpsExtraDocumentUpload = async () => {
+    if (!onOpsExtraDocumentUpload) {
+      return
+    }
+
+    if (opsExtraFiles.length === 0) {
+      setOpsExtraMessage('Yüklenecek ek görsel seçilmedi.')
+
+      return
+    }
+
+    setOpsExtraUploading(true)
+    setOpsExtraMessage(null)
+
+    try {
+      await onOpsExtraDocumentUpload({
+        files: opsExtraFiles,
+        note: opsExtraNote.trim() || null,
+      })
+      setOpsExtraFiles([])
+      setOpsExtraNote('')
+      setOpsExtraMessage('OPS ek görsel yüklendi.')
+    } catch (caught) {
+      setOpsExtraMessage(caught instanceof Error ? caught.message : 'OPS ek görsel yüklenemedi.')
+    } finally {
+      setOpsExtraUploading(false)
     }
   }
 
@@ -2909,9 +3174,17 @@ export function ServiceRequestDetails({
       tone: request.scheduledAt || request.scheduledDate ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-700',
     },
   ]
-  const visibleCompactControlChips = assignedStageNeedsAppointment
-    ? compactControlChips.filter((chip) => ['Usta', 'Randevu'].includes(chip.label))
-    : compactControlChips
+  const visibleCompactControlChips = compactControlChips.filter((chip) => {
+    if (assignedStageNeedsAppointment && !['Usta', 'Randevu'].includes(chip.label)) {
+      return false
+    }
+
+    if (isServiceVisitDetail && chip.label === 'Görseller') {
+      return false
+    }
+
+    return true
+  })
   const notesLabel = displayOrEmpty(request.notes, 'Talep notu girilmedi')
   const currentStatusLabel = statusDisplayLabel(request)
   const currentPriorityLabel = priorityDisplayLabel(request.priority)
@@ -3222,8 +3495,8 @@ export function ServiceRequestDetails({
             </div>
             {warranty ? (
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <MiniMetric label="Başlangıç" value={dateTimeOrEmpty(warranty.warranty_started_at, '-')} />
-                <MiniMetric label="Bitiş" value={dateTimeOrEmpty(warranty.warranty_ends_at, '-')} />
+                <MiniMetric label="Başlangıç" value={dateOrDateTimeOrEmpty(warranty.warranty_started_at_datetime ?? warranty.installation.completed_at_datetime ?? warranty.warranty_started_at, '-')} />
+                <MiniMetric label="Bitiş" value={dateOrDateTimeOrEmpty(warranty.warranty_ends_at, '-')} />
                 <MiniMetric label="Kalan süre" value={warranty.remaining_days === null || warranty.remaining_days === undefined ? '-' : `${warranty.remaining_days} gün`} />
                 <MiniMetric label="Garanti süresi" value={`${warranty.warranty_period_months} ay`} />
               </div>
@@ -3269,6 +3542,7 @@ export function ServiceRequestDetails({
         </section>
         ) : null}
         {customerChargeModal}
+        {partCreateModal}
         {partDecisionModal}
         {historyRecordModal}
 
@@ -3757,6 +4031,17 @@ export function ServiceRequestDetails({
                   <MiniMetric label="Müşteri tahsilatı" value={totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : '-'} />
                   <MiniMetric label={netDifferenceMetricLabel} value={netProfitLabel} />
                 </div>
+              </div>
+            ) : null}
+            {canCreatePartRequest ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-100 bg-white p-3 text-sm text-slate-700">
+                <div>
+                  <p className="font-semibold text-slate-950">Parça talepleri</p>
+                  <p className="mt-1 text-xs text-slate-600">Ücretli veya ücretsiz parça ihtiyacı bu talep üzerinde kayıt altına alınır.</p>
+                </div>
+                <Button type="button" variant="outline" onClick={openPartCreateModal}>
+                  Parça Talebi Oluştur
+                </Button>
               </div>
             ) : null}
             {partRequests.length > 0 ? (
@@ -4300,28 +4585,30 @@ export function ServiceRequestDetails({
                 ) : null}
               </div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {(hasMountCustomerPayment || showPaymentControl) ? (
+                {showFinanceCollectionMetrics && (hasMountCustomerPayment || showPaymentControl) ? (
                   <MiniMetric label="Müşteriden alınan montaj ücreti" value={mountPaymentLabel} />
                 ) : null}
-                {hasServiceCustomerPayment ? (
+                {showFinanceCollectionMetrics && hasServiceCustomerPayment ? (
                   <MiniMetric label="Müşteriden alınan servis ücreti" value={formatMoneyValue(paidServiceCustomerAmount)} />
                 ) : null}
-                {hasPartCustomerPayment ? (
+                {showFinanceCollectionMetrics && hasPartCustomerPayment ? (
                   <MiniMetric label="Müşteriden alınan parça ücreti" value={formatMoneyValue(paidPartCustomerAmount)} />
                 ) : null}
-                {hasExtraCustomerPayment ? (
+                {showFinanceCollectionMetrics && hasExtraCustomerPayment ? (
                   <MiniMetric label="Müşteriden alınan ek ödeme" value={formatMoneyValue(paidExtraCustomerAmount)} />
                 ) : null}
-                {totalCustomerCollectionLabel ? (
+                {showFinanceCollectionMetrics && totalCustomerCollectionLabel ? (
                   <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel} />
                 ) : null}
-                {showPaymentControl ? (
+                {showFinanceCollectionMetrics && showPaymentControl ? (
                   <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
                 ) : null}
                 <MiniMetric label="Usta işçilik hakedişi" value={technicianLaborCostLabel} />
                 <MiniMetric label="Usta yol hakedişi" value={travelCostLabel} />
                 <MiniMetric label={locksmithPayoutTotalMetricLabel} value={earningTotalAmount !== null ? formatMoneyValue(earningTotalAmount) : totalTechnicianCostLabel} />
-                <MiniMetric label={netDifferenceMetricLabel} value={netProfitLabel} />
+                {showFinanceCollectionMetrics ? (
+                  <MiniMetric label={netDifferenceMetricLabel} value={netProfitLabel} />
+                ) : null}
                 <MiniMetric
                   label="Hakediş statüsü"
                   value={locksmithPayoutStatusLabel}
@@ -4335,7 +4622,7 @@ export function ServiceRequestDetails({
                   hint={locksmithPayoutPaidAt ? `Ödeme tarihi: ${dateTimeOrEmpty(locksmithPayoutPaidAt, '-')}` : 'Ödeme onayı sadece hakediş ödeme kaydı varsa gösterilir.'}
                 />
               </div>
-              {earningBreakdown?.root_total ? (
+              {showFinanceCollectionMetrics && earningBreakdown?.root_total ? (
                 <div className="grid gap-2 rounded-2xl border border-emerald-100 bg-white p-3 text-xs text-slate-700">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold text-slate-950">MRN / SRV hakediş kırılımı</p>
@@ -4349,7 +4636,7 @@ export function ServiceRequestDetails({
                       Bu toplam birden fazla ustanın MRN/SRV hakedişlerini içerir: {(earningBreakdown.root_total.technician_names ?? []).join(', ')}
                     </p>
                   ) : null}
-                  {financeRootTotal ? (
+                  {showFinanceCollectionMetrics && financeRootTotal ? (
                     <div className="grid gap-2 rounded-xl bg-slate-50 px-3 py-2 sm:grid-cols-3">
                       <span>Müşteri tahsilatı: <strong>{financeRootTotal.customer_collection.total_amount_label ?? formatMoneyValue(financeRootTotal.customer_collection.total_amount)}</strong></span>
                       <span>Usta hakedişi: <strong>{financeRootTotal.locksmith_payout.total_amount_label ?? formatMoneyValue(financeRootTotal.locksmith_payout.total_amount)}</strong></span>
@@ -4901,6 +5188,71 @@ export function ServiceRequestDetails({
                 </div>
               ))}
             </div>
+            {opsExtraFieldDocuments.length > 0 ? (
+              <div className="grid gap-2 md:grid-cols-3">
+                {opsExtraFieldDocuments.map((document) => {
+                  const label = displayOrEmpty(document.label, 'OPS Ek Görsel')
+
+                  return (
+                    <div key={String(document.id ?? `${document.field_code}-${document.created_at ?? document.original_name}`)} className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-blue-950">{label}</p>
+                        <Badge variant="outline">OPS ek</Badge>
+                      </div>
+                      {document.preview_url ? (
+                        <a href={document.preview_url} target="_blank" rel="noreferrer" className="mt-3 block overflow-hidden rounded-xl border border-blue-100 bg-white">
+                          <img src={document.preview_url} alt={label} className="h-40 w-full object-cover" />
+                          <span className="block px-3 py-2 text-xs font-semibold text-blue-700">Belgeyi aç</span>
+                        </a>
+                      ) : document.url ? (
+                        <a
+                          href={document.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-3 inline-flex rounded-full border border-blue-100 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900"
+                        >
+                          Belgeyi aç
+                        </a>
+                      ) : (
+                        <p className="mt-3 text-xs text-blue-700">Önizleme yok.</p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+            {onOpsExtraDocumentUpload ? (
+              <div className="grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-3">
+                <div>
+                  <p className="text-sm font-semibold text-blue-950">OPS ek görsel</p>
+                  <p className="mt-1 text-xs text-blue-800">Bu görseller zorunlu üç saha belgesini değiştirmez; aynı önizleme yapısında ek kanıt olarak görünür.</p>
+                </div>
+                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+                  <label className="grid gap-1 text-xs font-semibold text-blue-900">
+                    Görseller
+                    <Input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(event) => setOpsExtraFiles(Array.from(event.target.files ?? []))}
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-blue-900">
+                    Not
+                    <Input value={opsExtraNote} onChange={(event) => setOpsExtraNote(event.target.value)} placeholder="OPS ek görsel notu" />
+                  </label>
+                  <Button type="button" variant="outline" onClick={() => void handleOpsExtraDocumentUpload()} disabled={opsExtraUploading || opsExtraFiles.length === 0}>
+                    {opsExtraUploading ? 'Yükleniyor...' : 'Ek görsel yükle'}
+                  </Button>
+                </div>
+                {opsExtraFiles.length > 0 ? (
+                  <p className="text-xs font-semibold text-blue-800">{opsExtraFiles.length} dosya seçildi.</p>
+                ) : null}
+                {opsExtraMessage ? (
+                  <p className="text-xs font-semibold text-blue-800">{opsExtraMessage}</p>
+                ) : null}
+              </div>
+            ) : null}
             {previousFieldCompletionDocuments.length > 0 ? (
               <details className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <summary className="cursor-pointer text-sm font-semibold text-slate-700">

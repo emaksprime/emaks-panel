@@ -97,6 +97,17 @@ type ServiceJob = {
   product_name: string | null
   product_model: string | null
   model: string | null
+  brand?: string | null
+  stock_code?: string | null
+  activation_code?: string | null
+  serial_context?: {
+    serial_number?: string | null
+    activation_code?: string | null
+    product_name?: string | null
+    product_model?: string | null
+    brand?: string | null
+    stock_code?: string | null
+  } | null
   serial_no: string | null
   service_type: string | null
   scheduled_at: string | null
@@ -447,6 +458,27 @@ const cleanDisplayText = (value: string | null | undefined): string => {
     .replaceAll('Åž', 'Ş')
     .replaceAll('Â', '')
     .replaceAll('ï¿½', '')
+}
+
+const serviceJobProductLabel = (job: ServiceJob): string => {
+  const values = [
+    job.product_name,
+    job.product_model ?? job.model,
+    job.brand ?? job.serial_context?.brand,
+  ].map((value) => cleanDisplayText(value).trim()).filter(Boolean)
+
+  return values.join(' / ') || '-'
+}
+
+const serviceJobSerialLabel = (job: ServiceJob): string => {
+  const activationCode = cleanDisplayText(job.activation_code ?? job.serial_context?.activation_code).trim()
+  const serialNumber = cleanDisplayText(job.serial_no ?? job.serial_context?.serial_number).trim()
+  const values = [
+    activationCode ? `Aktivasyon: ${activationCode}` : null,
+    serialNumber ? `Seri: ${serialNumber}` : null,
+  ].filter((value): value is string => Boolean(value))
+
+  return values.join(' / ') || '-'
 }
 
 const statusLabel = (status: string | null | undefined, provided?: string | null): string => {
@@ -1161,6 +1193,26 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
     return () => window.clearInterval(interval)
   }, [readOnly, refreshJobs])
 
+  useEffect(() => {
+    if (readOnly) {
+      return undefined
+    }
+
+    const refreshVisibleJobs = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshJobs(true, true)
+      }
+    }
+
+    window.addEventListener('focus', refreshVisibleJobs)
+    document.addEventListener('visibilitychange', refreshVisibleJobs)
+
+    return () => {
+      window.removeEventListener('focus', refreshVisibleJobs)
+      document.removeEventListener('visibilitychange', refreshVisibleJobs)
+    }
+  }, [readOnly, refreshJobs])
+
   return (
     <div className="grid gap-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1707,8 +1759,8 @@ function ServiceJobDetail({
           <InfoTile label="Telefon" value={job.customer_tel_link ? <a className="text-base font-semibold text-blue-700 hover:underline" href={job.customer_tel_link}>{job.customer_phone ?? 'Ara'}</a> : job.customer_phone ?? '-'} />
           <InfoTile label="Adres" value={job.address_summary ?? '-'} />
           <InfoTile label="Harita" value={job.maps_link ? <a className="font-semibold text-blue-700 hover:underline" href={job.maps_link} target="_blank" rel="noreferrer">Google Maps aç</a> : '-'} />
-          <InfoTile label="Ürün" value={[job.product_name, job.model].filter(Boolean).join(' / ') || '-'} />
-          <InfoTile label="Aktivasyon / seri" value={job.serial_no ?? '-'} />
+          <InfoTile label="Ürün" value={serviceJobProductLabel(job)} />
+          <InfoTile label="Aktivasyon / seri" value={serviceJobSerialLabel(job)} />
           <InfoTile label="Km / yol bilgisi" value={job.route_distance_summary ?? '-'} />
           <InfoTile label="Konum" value={[job.city, job.district].filter(Boolean).join(' / ') || '-'} />
         </div>

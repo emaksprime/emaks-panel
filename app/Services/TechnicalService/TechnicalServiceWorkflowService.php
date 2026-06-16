@@ -31,6 +31,11 @@ class TechnicalServiceWorkflowService
         'warranty_document_photo' => 'Garanti Belgesi',
     ];
 
+    private const OPS_EXTRA_DOCUMENT_TYPES = [
+        'ops_extra_photo' => 'OPS Ek Görsel',
+        'ops_additional_document' => 'OPS Ek Belge',
+    ];
+
     private const CUSTOMER_DOOR_PHOTO_FIELDS = [
         'door_front_photo',
         'door_side_photo',
@@ -3321,7 +3326,9 @@ class TechnicalServiceWorkflowService
             });
 
         if (! $onlyPrevious && ! $includePrevious) {
-            $documents = $this->currentFieldCompletionDocuments($request)->values();
+            $documents = $this->currentFieldCompletionDocuments($request)
+                ->values()
+                ->concat($this->currentOpsExtraDocuments($request)->values());
         }
 
         return $documents
@@ -3336,7 +3343,9 @@ class TechnicalServiceWorkflowService
                 return [
                     'id' => $upload->id,
                     'field_code' => $fieldCode,
-                    'label' => self::FIELD_COMPLETION_DOCUMENT_TYPES[$fieldCode] ?? $upload->original_name,
+                    'label' => self::FIELD_COMPLETION_DOCUMENT_TYPES[$fieldCode]
+                        ?? self::OPS_EXTRA_DOCUMENT_TYPES[$fieldCode]
+                        ?? $upload->original_name,
                     'category' => $upload->category,
                     'original_name' => $upload->original_name,
                     'mime' => $upload->mime,
@@ -3379,8 +3388,34 @@ class TechnicalServiceWorkflowService
             ]);
     }
 
+    /**
+     * @return Collection<int, TechnicalServiceRequestUpload>
+     */
+    private function currentOpsExtraDocuments(TechnicalServiceRequest $request): Collection
+    {
+        $request->loadMissing('uploads');
+
+        return $request->uploads
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT
+                && ! $this->fieldDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
+            ->sort(function (TechnicalServiceRequestUpload $left, TechnicalServiceRequestUpload $right): int {
+                $createdAtCompare = ($right->created_at?->getTimestamp() ?? 0) <=> ($left->created_at?->getTimestamp() ?? 0);
+
+                if ($createdAtCompare !== 0) {
+                    return $createdAtCompare;
+                }
+
+                return ((int) $right->id) <=> ((int) $left->id);
+            })
+            ->values();
+    }
+
     private function isFieldCompletionDocument(TechnicalServiceRequestUpload $upload): bool
     {
+        if ($upload->category === TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT) {
+            return true;
+        }
+
         if ($upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT) {
             return true;
         }
@@ -3656,15 +3691,15 @@ class TechnicalServiceWorkflowService
             ->map(function ($event): array {
                 $row = $event->toArray();
                 $eventType = (string) ($event->event_type ?? '');
+                $title = TechnicalServiceUiLabelService::cleanDisplayText($event->title);
+                $eventTypeLabel = TechnicalServiceUiLabelService::actionLabel($eventType);
 
                 return [
                     ...$row,
-                    'title' => TechnicalServiceUiLabelService::cleanDisplayText($event->title),
+                    'title' => $title,
                     'note' => TechnicalServiceUiLabelService::cleanDisplayText($event->note),
-                    'event_type_label' => TechnicalServiceUiLabelService::actionLabel($eventType),
-                    'title_label' => filled($event->title)
-                        ? TechnicalServiceUiLabelService::actionLabel($eventType)
-                        : TechnicalServiceUiLabelService::actionLabel($eventType),
+                    'event_type_label' => $eventTypeLabel,
+                    'title_label' => filled($title) ? $title : $eventTypeLabel,
                     'from_status_label' => TechnicalServiceUiLabelService::statusLabel($event->from_status),
                     'to_status_label' => TechnicalServiceUiLabelService::statusLabel($event->to_status),
                 ];

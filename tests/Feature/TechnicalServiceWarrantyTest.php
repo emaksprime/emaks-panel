@@ -112,6 +112,27 @@ class TechnicalServiceWarrantyTest extends TestCase
         $this->assertSame('2026-05-05', $event->metadata['technical_service_completed_at']);
     }
 
+    public function test_warranty_start_uses_ops_approval_timestamp(): void
+    {
+        $this->mockLatestSale($this->salePayload('SN-WARRANTY-TIME', 'time-fp', '2026-03-01'));
+        $this->technicalServiceRequest([
+            'mrn' => 'MRN-WARRANTY-TIME',
+            'serial_number' => 'SN-WARRANTY-TIME',
+            'service_type' => 'Montaj',
+            'status' => 'Tamamlandı',
+            'completed_at' => '2026-06-16 14:37:00',
+            'installation_completed_at' => '2026-06-16 14:37:00',
+        ]);
+
+        $result = app(WarrantyService::class)->statusForSerial('SN-WARRANTY-TIME');
+        $startedAt = CarbonImmutable::parse((string) $result['warranty_started_at_datetime']);
+
+        $this->assertSame('2026-06-16', $result['warranty_started_at']);
+        $this->assertSame('2026-06-16 14:37', $startedAt->format('Y-m-d H:i'));
+        $this->assertSame('2026-06-16 14:37', CarbonImmutable::parse((string) $result['installation']['completed_at_datetime'])->format('Y-m-d H:i'));
+        $this->assertNotSame('03:00', $startedAt->format('H:i'));
+    }
+
     public function test_warranty_status_uses_completed_mount_date_when_mikro_unavailable(): void
     {
         $this->mockLatestSale(null);

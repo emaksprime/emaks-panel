@@ -987,6 +987,76 @@ class TechnicalServiceController extends Controller
         ]);
     }
 
+    public function uploadOpsExtraDocuments(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        $validated = $request->validate([
+            'ops_extra_documents' => ['required', 'array', 'min:1', 'max:6'],
+            'ops_extra_documents.*' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,gif,heic,heif', 'max:10240'],
+            'note' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $files = $request->file('ops_extra_documents', []);
+        $note = trim((string) ($validated['note'] ?? ''));
+
+        $uploads = DB::transaction(function () use ($technicalServiceRequest, $request, $files, $note) {
+            $created = [];
+
+            foreach ((array) $files as $file) {
+                $extension = $file->guessExtension() ?: $file->getClientOriginalExtension() ?: 'jpg';
+                $path = $file->storeAs(
+                    'technical-service/requests/'.$technicalServiceRequest->id.'/ops-extra-documents',
+                    (string) Str::uuid().'.'.$extension,
+                    'public',
+                );
+
+                $created[] = TechnicalServiceRequestUpload::query()->create([
+                    'technical_service_request_id' => $technicalServiceRequest->id,
+                    'field_code' => 'ops_extra_photo',
+                    'category' => TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT,
+                    'original_name' => $file->getClientOriginalName() ?: 'OPS ek görsel',
+                    'path' => $path,
+                    'mime' => $file->getMimeType(),
+                    'size' => $file->getSize(),
+                    'review_status' => 'accepted',
+                    'reviewed_by' => $request->user()?->id,
+                    'reviewed_at' => now(),
+                    'review_payload' => [
+                        'source' => 'technical_service_ops',
+                        'note' => $note !== '' ? $note : null,
+                        'uploaded_by_user_id' => $request->user()?->id,
+                    ],
+                ]);
+            }
+
+            $technicalServiceRequest->events()->create([
+                'event_type' => 'ops_extra_document_uploaded',
+                'title' => 'OPS ek görsel yüklendi',
+                'note' => $note !== '' ? $note : null,
+                'from_status' => $technicalServiceRequest->workflow_status,
+                'to_status' => $technicalServiceRequest->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'upload_ids' => array_map(fn (TechnicalServiceRequestUpload $upload): int => (int) $upload->id, $created),
+                    'field_code' => 'ops_extra_photo',
+                    'category' => TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT,
+                ],
+            ]);
+
+            return $created;
+        });
+
+        return response()->json([
+            'status' => 'ok',
+            'uploads' => array_map(fn (TechnicalServiceRequestUpload $upload): array => [
+                'id' => $upload->id,
+                'field_code' => $upload->field_code,
+                'category' => $upload->category,
+                'original_name' => $upload->original_name,
+            ], $uploads),
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
     private function isReviewableFieldCompletionDocument(TechnicalServiceRequestUpload $upload): bool
     {
         if (! in_array($upload->category, [

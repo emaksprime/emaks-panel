@@ -66,6 +66,50 @@ class TechnicalServicePartRequestService
     }
 
     /**
+     * @param  array<string, mixed>  $data
+     */
+    public function createFromOperations(TechnicalServiceRequest $request, ?User $user, array $data): TechnicalServicePartRequest
+    {
+        $request->loadMissing(['requestSerials', 'parentRequest']);
+        $serial = $this->primarySerial($request);
+        $partName = trim((string) ($data['part_name'] ?? $data['product_name'] ?? ''));
+
+        if ($partName === '') {
+            $partName = 'Yedek parça';
+        }
+
+        $note = trim((string) ($data['note'] ?? $data['description'] ?? ''));
+
+        $part = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'root_request_id' => $this->rootRequest($request)->id,
+            'request_serial_id' => $serial?->id,
+            'source_partner_action_id' => null,
+            'requested_by_user_id' => $user?->id,
+            'requested_by_technician_id' => $request->technical_service_technician_id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => $partName,
+            'part_code' => trim((string) ($data['part_code'] ?? '')) ?: null,
+            'quantity' => max(1, (int) ($data['quantity'] ?? 1)),
+            'reason' => $note !== '' ? $note : null,
+            'technician_note' => $note !== '' ? $note : null,
+            'metadata' => [
+                'source' => 'ops_part_request',
+                'request_mrn' => $request->mrn,
+                'serial_number' => $serial?->serial_number ?? $request->serial_number,
+                'created_by_user_id' => $user?->id,
+            ],
+        ]);
+
+        $this->recordEvent($request, 'part_request_created', 'Parça talebi oluşturuldu', $note !== '' ? $note : null, $user, [
+            'part_request_id' => $part->id,
+            'source' => 'ops_part_request',
+        ]);
+
+        return $part;
+    }
+
+    /**
      * @param  array<string, mixed>  $payload
      */
     public function transition(TechnicalServicePartRequest $partRequest, string $targetStatus, ?User $user, array $payload = []): TechnicalServicePartRequest

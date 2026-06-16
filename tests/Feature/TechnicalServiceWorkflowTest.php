@@ -1552,6 +1552,55 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertFalse($payload['assignment_blockers']['applies_to_assignment']);
         $this->assertFalse($payload['assignment_blockers']['payment_required_for_assignment']);
         $this->assertSame([], $payload['assignment_blockers']['messages']);
+        $this->assertSame('assign_technician', $payload['next_action_payload']['code']);
+        $this->assertSame('assign_technician', $payload['next_action_payload']['primary_action']);
+        $this->assertSame('Usta Ata', $payload['next_action_payload']['title']);
+        $this->assertStringNotContainsString('Kapı', $payload['next_action_payload']['title']);
+        $this->assertStringNotContainsString('Kapı', $payload['next_action_payload']['description']);
+    }
+
+    public function test_srv_history_uses_real_action_labels_not_generic_islem_kaydi(): void
+    {
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-HISTORY-LABEL',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+        ]);
+        $parent->events()->create([
+            'event_type' => 'legacy_custom_srv_note',
+            'title' => 'Parça sonrası servis oluşturuldu',
+            'note' => 'Ops parça akışından SRV açtı.',
+            'from_status' => 'Tamamlandı',
+            'to_status' => 'Tamamlandı',
+            'metadata' => [],
+        ]);
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-SRV-HISTORY-LABEL-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SRV-HISTORY-LABEL-001',
+            'service_visit_reason' => 'spare_part',
+            'service_type' => 'Servis',
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+        $event = $payload['service_visit_history']['parent_events'][0] ?? null;
+
+        $this->assertIsArray($event);
+        $this->assertSame('Parça sonrası servis oluşturuldu', $event['title_label']);
+        $this->assertSame('Ops parça akışından SRV açtı.', $event['note']);
+        $this->assertNotSame('İşlem kaydı', $event['title_label']);
+    }
+
+    public function test_visit_start_block_hidden_when_no_start_timestamp(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('const selectedHistoryStartTimestamp =', $source);
+        $this->assertStringContainsString('{selectedHistoryStartTimestamp ? (', $source);
+        $this->assertStringNotContainsString("dateTimeOrEmpty(selectedHistoryRecord.technician_arrived_at ?? selectedHistoryRecord.field_started_at, 'Kayıt yok')", $source);
     }
 
     public function test_srv_finance_summary_keeps_current_visit_and_root_totals_separate(): void
@@ -1973,9 +2022,82 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertStringContainsString('financeSummary: request.finance_summary ?? null', $source);
         $this->assertStringContainsString('const modalFinanceCustomerCollection = modalCurrentFinance?.customer_collection ?? null', $source);
+        $this->assertStringContainsString('const activeModalFinancePayout = modalFinancePayoutMatchesSelection ? modalFinancePayout : null', $source);
         $this->assertStringContainsString('modalFinanceCustomerCollection?.total_amount_label', $source);
         $this->assertStringNotContainsString('?? modalPayment.customerAmount', $source);
+        $this->assertStringNotContainsString('const assignmentTechnicianLaborAmount = typeof modalFinancePayout?.labor_amount', $source);
         $this->assertStringNotContainsString('Müşteriden alınan montaj ödemesi', $source);
+    }
+
+    public function test_selected_technician_change_recomputes_draft_payout_and_route_fee(): void
+    {
+        $panelSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $this->assertIsString($panelSource);
+        $this->assertIsString($detailSource);
+
+        $this->assertStringContainsString('resetAssignmentDraftForTechnicianChange', $panelSource);
+        $this->assertStringContainsString('routeQuoteAutoRequestSeq.current += 1', $panelSource);
+        $this->assertStringContainsString("setAssignOfferRouteFeeAmount('')", $panelSource);
+        $this->assertStringContainsString('const selectedTechnicianMatchesRequest = selectedTechnicianIdString', $detailSource);
+        $this->assertStringContainsString('const storedRouteCostMatchesSelection = selectedTechnicianMatchesRequest || assignmentOfferMatchesSelectedTechnician', $detailSource);
+        $this->assertStringContainsString('const activeFinanceLocksmithPayout = financePayoutMatchesSelectedTechnician ? financeLocksmithPayout : null', $detailSource);
+    }
+
+    public function test_unassigned_detail_does_not_promote_stale_assignment_offer_to_active_payout(): void
+    {
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $this->assertIsString($detailSource);
+
+        $this->assertStringContainsString(': requestTechnicianIdString', $detailSource);
+        $this->assertStringContainsString('? !assignmentOfferTechnicianIdString || assignmentOfferTechnicianIdString === requestTechnicianIdString', $detailSource);
+        $this->assertStringContainsString('? !financePayoutTechnicianIdString || financePayoutTechnicianIdString === requestTechnicianIdString', $detailSource);
+        $this->assertStringContainsString('const hasPayoutTechnicianContext = Boolean(selectedTechnician || requestTechnicianIdString || activeAssignmentOffer || activeFinanceLocksmithPayout)', $detailSource);
+        $this->assertStringContainsString("!hasPayoutTechnicianContext\n    ? 'Usta seçilmedi'", $detailSource);
+        $this->assertStringContainsString('const showFinanceCollectionMetrics = !hasAssignmentChange && Boolean(requestTechnicianIdString || activeFinanceLocksmithPayout || activeAssignmentOffer)', $detailSource);
+        $this->assertStringContainsString('{showFinanceCollectionMetrics && earningBreakdown?.root_total ? (', $detailSource);
+    }
+
+    public function test_stale_route_quote_for_previous_technician_is_ignored(): void
+    {
+        $panelSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $this->assertIsString($panelSource);
+        $this->assertIsString($detailSource);
+
+        $this->assertStringContainsString('routeQuoteLatestSelection.current.technicianId !== submittedTechnicianId', $panelSource);
+        $this->assertStringContainsString('routeQuoteActiveForSelection(modalRouteQuote, assignTechnicianOption, selectedAssignTechnicianRecord, modalRequest)', $panelSource);
+        $this->assertStringContainsString('routeQuoteStaleForSelectedTechnician', $detailSource);
+        $this->assertStringContainsString('Seçili usta değiştiği için yol hakedişi yeniden hesaplanmalı.', $detailSource);
+    }
+
+    public function test_partner_portal_refresh_reconciles_job_after_customer_approval(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString("window.addEventListener('focus', refreshVisibleJobs)", $source);
+        $this->assertStringContainsString("document.addEventListener('visibilitychange', refreshVisibleJobs)", $source);
+        $this->assertStringContainsString('refreshJobs(true, true)', $source);
+    }
+
+    public function test_activation_serial_context_is_exposed_to_ops_and_partner_payloads(): void
+    {
+        $workflowSource = file_get_contents(app_path('Services/TechnicalService/TechnicalServiceWorkflowService.php'));
+        $partnerSource = file_get_contents(app_path('Services/B2B/B2BPartnerPortalDataService.php'));
+        $portalSource = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $this->assertIsString($workflowSource);
+        $this->assertIsString($partnerSource);
+        $this->assertIsString($portalSource);
+        $this->assertIsString($detailSource);
+
+        $this->assertStringContainsString("'activation_code' => ".'$'."request->activation_code", $workflowSource);
+        $this->assertStringContainsString('private function serviceJobSerialContext', $partnerSource);
+        $this->assertStringContainsString("'activation_code' => ".'$'."this->firstFilled(".'$'."request->activation_code", $partnerSource);
+        $this->assertStringContainsString('const serviceJobSerialLabel = (job: ServiceJob): string =>', $portalSource);
+        $this->assertStringContainsString('Aktivasyon / seri', $portalSource);
+        $this->assertStringContainsString('Aktivasyon Kodu', $detailSource);
     }
 
     public function test_ops_finance_ui_labels_payout_as_cost_not_customer_payment(): void

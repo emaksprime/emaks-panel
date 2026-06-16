@@ -1054,6 +1054,16 @@ export function TechnicalServiceOperationCenter() {
   const [contactError, setContactError] = useState<string | null>(null)
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false)
   const [fieldAction, setFieldAction] = useState<string | null>(null)
+
+  const resetAssignmentDraftForTechnicianChange = useCallback(() => {
+    routeQuoteAutoRequestSeq.current += 1
+    routeQuoteLastAutoKey.current = ''
+    setAssignOfferLaborAmount('')
+    setAssignOfferRouteFeeAmount('')
+    setAssignmentConfirmDialogOpen(false)
+    setRouteQuoteError(null)
+    setRouteQuoteManualSaveError(null)
+  }, [])
   const [fieldNote, setFieldNote] = useState('')
   const [fieldIncompleteReason, setFieldIncompleteReason] = useState('')
   const [fieldIncompleteWorkflowStatus, setFieldIncompleteWorkflowStatus] = useState('Beklemede')
@@ -1807,6 +1817,24 @@ export function TechnicalServiceOperationCenter() {
   const modalFinanceCustomerCollection = modalCurrentFinance?.customer_collection ?? null
   const modalFinancePayout = modalCurrentFinance?.locksmith_payout ?? null
   const modalFinanceNetMargin = modalCurrentFinance?.net_margin ?? null
+  const selectedAssignmentTechnicianId = assignTechnicianOption && assignTechnicianOption !== 'other'
+    ? String(assignTechnicianOption)
+    : null
+  const modalRequestTechnicianId = modalRequest?.technicianId !== null && modalRequest?.technicianId !== undefined
+    ? String(modalRequest.technicianId)
+    : null
+  const modalFinancePayoutTechnicianId = modalFinancePayout?.technician_id !== null && modalFinancePayout?.technician_id !== undefined
+    ? String(modalFinancePayout.technician_id)
+    : null
+  const modalFinancePayoutMatchesSelection = Boolean(
+    modalFinancePayout
+    && selectedAssignmentTechnicianId
+    && (
+      modalFinancePayoutTechnicianId === selectedAssignmentTechnicianId
+      || (!modalFinancePayoutTechnicianId && modalRequestTechnicianId === selectedAssignmentTechnicianId)
+    ),
+  )
+  const activeModalFinancePayout = modalFinancePayoutMatchesSelection ? modalFinancePayout : null
   const assignmentRouteQuote = routeQuoteActiveForSelection(modalRouteQuote, assignTechnicianOption, selectedAssignTechnicianRecord, modalRequest)
     ? modalRouteQuote
     : null
@@ -1831,8 +1859,8 @@ export function TechnicalServiceOperationCenter() {
     assignmentRouteQuote?.fee_amount ?? null,
     assignmentRouteQuote?.billable_km ?? assignmentRouteQuote?.extra_km ?? null,
   )
-  const assignmentTechnicianLaborAmount = typeof modalFinancePayout?.labor_amount === 'number' && Number.isFinite(modalFinancePayout.labor_amount) && modalFinancePayout.labor_amount > 0
-    ? modalFinancePayout.labor_amount
+  const assignmentTechnicianLaborAmount = typeof activeModalFinancePayout?.labor_amount === 'number' && Number.isFinite(activeModalFinancePayout.labor_amount) && activeModalFinancePayout.labor_amount > 0
+    ? activeModalFinancePayout.labor_amount
     : typeof modalRequest?.technicianPaymentAmount === 'number' && Number.isFinite(modalRequest.technicianPaymentAmount)
     ? modalRequest.technicianPaymentAmount
     : assignPaymentPreview.customerAmount
@@ -1848,11 +1876,11 @@ export function TechnicalServiceOperationCenter() {
   const assignmentTotalTechnicianCostLabel = assignmentTotalTechnicianCostAmount !== null
     ? formatMoneyLabel(assignmentTotalTechnicianCostAmount)
     : 'Belirlenmedi'
-  const modalPayoutStatus = modalFinancePayout?.payout_status
-    ?? modalCurrentFinance?.payout_status
+  const modalPayoutStatus = activeModalFinancePayout?.payout_status
+    ?? (modalFinancePayoutMatchesSelection ? modalCurrentFinance?.payout_status : null)
     ?? (modalRequest?.assignmentOffer ? 'confirmed' : assignmentTotalTechnicianCostAmount !== null && assignmentTotalTechnicianCostAmount > 0 ? 'draft' : null)
-  const modalPayoutStatusLabel = modalFinancePayout?.payout_status_label
-    ?? modalCurrentFinance?.payout_status_label
+  const modalPayoutStatusLabel = activeModalFinancePayout?.payout_status_label
+    ?? (modalFinancePayoutMatchesSelection ? modalCurrentFinance?.payout_status_label : null)
     ?? (modalPayoutStatus === 'confirmed'
       ? 'Onaylanan usta hakedişi'
       : modalPayoutStatus === 'draft'
@@ -2391,6 +2419,8 @@ export function TechnicalServiceOperationCenter() {
   }, [selectedDetailRequest?.serialNumber])
 
   const handleAssignReset = () => {
+    routeQuoteAutoRequestSeq.current += 1
+    routeQuoteLastAutoKey.current = ''
     setAssignTechnicianOption(modalRequest?.technicianId ?? '')
     setAssignOtherTechnician('')
     setAssignNote('')
@@ -3244,6 +3274,34 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handlePartRequestCreate = async (
+    payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null },
+  ) => {
+    if (!selectedId) {
+      return
+    }
+
+    const response = await apiRequest(`/api/technical-service/requests/${selectedId}/part-requests`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+    if (updatedRequest) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+        setSelectedEvents(Array.isArray(response.request?.events) ? response.request.events : [])
+      })
+      await loadRequests({ silent: true, preserveSelection: true })
+    }
+  }
+
   const handlePartRequestServiceVisitCreate = async (
     partRequestId: number | string,
     payload?: { reason?: string | null },
@@ -3410,6 +3468,67 @@ export function TechnicalServiceOperationCenter() {
       setFieldDocumentReviewError(caught instanceof Error ? caught.message : 'Saha belgesi uygunluğu kaydedilemedi.')
     } finally {
       setFieldDocumentReviewLoading(null)
+    }
+  }
+
+  const handleOpsExtraDocumentUpload = async (payload: { files: File[], note?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    const formData = new FormData()
+    payload.files.forEach((file) => formData.append('ops_extra_documents[]', file))
+
+    if (payload.note) {
+      formData.append('note', payload.note)
+    }
+
+    const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
+    const response = await fetch(`/api/technical-service/requests/${selectedId}/ops-extra-documents`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { 'X-CSRF-TOKEN': token } : {}),
+      },
+      body: formData,
+    })
+
+    if (!response.ok) {
+      const detail = await response.text()
+      let message = 'OPS ek görsel yüklenemedi.'
+
+      try {
+        const parsed = JSON.parse(detail) as { message?: string, error?: string }
+        message = parsed.message || parsed.error || message
+      } catch {
+        // Keep proxy or HTML errors out of the panel message.
+      }
+
+      const error = new Error(message) as Error & { status?: number, detail?: string }
+      error.status = response.status
+      error.detail = detail
+
+      throw error
+    }
+
+    const responsePayload = await response.json()
+    const updatedRequest = responsePayload.request ? mapApiRequest(responsePayload.request) : null
+
+    if (updatedRequest) {
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+        setSelectedEvents(Array.isArray(responsePayload.request?.events) ? responsePayload.request.events : [])
+      })
+      await loadRequests({ silent: true, preserveSelection: true })
+    } else {
+      await loadRequestDetail(selectedId)
     }
   }
 
@@ -4258,9 +4377,8 @@ export function TechnicalServiceOperationCenter() {
                             value={match.technician.id}
                             checked={assignTechnicianOption === match.technician.id}
                             onChange={() => {
+                              resetAssignmentDraftForTechnicianChange()
                               setAssignTechnicianOption(match.technician.id)
-                              setRouteQuoteError(null)
-                              setRouteQuoteManualSaveError(null)
                               setTravelRoundTripKm('')
                               setShowNearbyTechnicians(false)
                             }}
@@ -4313,9 +4431,8 @@ export function TechnicalServiceOperationCenter() {
                         value="other"
                         checked={assignTechnicianOption === 'other'}
                         onChange={() => {
+                          resetAssignmentDraftForTechnicianChange()
                           setAssignTechnicianOption('other')
-                          setRouteQuoteError(null)
-                          setRouteQuoteManualSaveError(null)
                           setTravelRoundTripKm('')
                           setShowNearbyTechnicians(false)
                         }}
@@ -4417,25 +4534,21 @@ export function TechnicalServiceOperationCenter() {
                 </div>
 
                 <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-slate-600">Ücretsiz km</span>
-                    <span className="font-semibold text-slate-900">{assignPaymentPreview.freeKmLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-slate-600">Ücretli km</span>
-                    <span className="font-semibold text-slate-900">{assignPaymentPreview.billableKmLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-slate-600">Usta yol hakedişi</span>
-                    <span className="font-semibold text-slate-900">{assignmentTravelAmountLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
-                    <span className="font-medium text-slate-600">{assignmentPayoutSummaryLabel}</span>
-                    <span className="font-semibold text-slate-950">{assignmentTotalTechnicianCostLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
-                    <span className="font-medium text-slate-600">Müşteri tahsilatı</span>
-                    <span className="font-semibold text-slate-950">{modalCollectedPaymentLabel}</span>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl bg-white p-3">
+                      <p className="text-xs font-semibold text-slate-500">İşçilik / montaj hakedişi</p>
+                      <p className="mt-1 font-semibold text-slate-950">
+                        {assignmentTechnicianLaborAmount !== null ? formatMoneyLabel(assignmentTechnicianLaborAmount) : 'Belirlenmedi'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl bg-white p-3">
+                      <p className="text-xs font-semibold text-slate-500">Usta yol hakedişi</p>
+                      <p className="mt-1 font-semibold text-slate-950">{assignmentTravelAmountLabel}</p>
+                    </div>
+                    <div className="rounded-xl bg-white p-3">
+                      <p className="text-xs font-semibold text-slate-500">İşçilik + yol toplamı</p>
+                      <p className="mt-1 font-semibold text-slate-950">{assignmentTotalTechnicianCostLabel}</p>
+                    </div>
                   </div>
                   {modalCurrentFinance?.warranty_note ? (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
@@ -4443,14 +4556,6 @@ export function TechnicalServiceOperationCenter() {
                       {modalCurrentFinance.operation_cost_note ? ` · ${modalCurrentFinance.operation_cost_note}` : ''}
                     </div>
                   ) : null}
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-slate-600">{modalNetDifferenceLabel}</span>
-                    <span className="font-semibold text-slate-950">
-                      {modalCollectedPaymentAmount !== null && assignmentTotalTechnicianCostAmount !== null
-                        ? formatMoneyLabel(modalCollectedPaymentAmount - assignmentTotalTechnicianCostAmount)
-                        : '-'}
-                    </span>
-                  </div>
                 </div>
 
                 <div className="grid gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-950">
@@ -5304,9 +5409,8 @@ export function TechnicalServiceOperationCenter() {
                     onMountExclusionAcknowledgedChange={setAssignOverrideWithoutPayment}
                     onMountExclusionNoteChange={setAssignOverrideReason}
                     onTechnicianSelect={(technicianId) => {
+                      resetAssignmentDraftForTechnicianChange()
                       setAssignTechnicianOption(technicianId)
-                      setRouteQuoteError(null)
-                      setRouteQuoteManualSaveError(null)
                       setExtraPaymentCreateError(null)
                       setTechnicianEarningMessageError(null)
                       setTravelRoundTripKm('')
@@ -5319,10 +5423,12 @@ export function TechnicalServiceOperationCenter() {
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}
                     onPartnerCompletionApprove={handlePartnerCompletionApprove}
                     onRevisitServiceVisitCreate={handleRevisitServiceVisitCreate}
+                    onPartRequestCreate={handlePartRequestCreate}
                     onPartRequestTransition={handlePartRequestTransition}
                     onPartRequestServiceVisitCreate={handlePartRequestServiceVisitCreate}
                     onAssignmentOfferUpdate={handleAssignmentOfferUpdate}
                     onFieldDocumentReview={handleFieldDocumentReview}
+                    onOpsExtraDocumentUpload={handleOpsExtraDocumentUpload}
                     onCustomerApprovalResend={handleCustomerApprovalResend}
                     fieldDocumentReviewInFlight={fieldDocumentReviewLoading}
                     fieldDocumentReviewError={fieldDocumentReviewError}

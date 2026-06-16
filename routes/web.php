@@ -254,12 +254,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('requests/{technicalServiceRequest}/partner-revisits/{partnerJobAction}/service-visit', [TechnicalServicePartnerPortalOpsController::class, 'createServiceVisitFromRevisit'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.partner-revisits.service-visit');
+            Route::post('requests/{technicalServiceRequest}/part-requests', [TechnicalServicePartRequestController::class, 'store'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.part-requests.store');
             Route::patch('requests/{technicalServiceRequest}/part-requests/{partRequest}', [TechnicalServicePartRequestController::class, 'transition'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.part-requests.transition');
             Route::post('requests/{technicalServiceRequest}/part-requests/{partRequest}/service-visit', [TechnicalServicePartRequestController::class, 'createServiceVisit'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.part-requests.service-visit');
+            Route::post('requests/{technicalServiceRequest}/ops-extra-documents', [TechnicalServiceController::class, 'uploadOpsExtraDocuments'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.ops-extra-documents.store');
             Route::patch('requests/{technicalServiceRequest}/field-documents/{upload}/review', [TechnicalServiceController::class, 'reviewFieldDocument'])
                 ->middleware('panel.access:technical_service_manage')
                 ->name('api.technical-service.requests.field-documents.review');

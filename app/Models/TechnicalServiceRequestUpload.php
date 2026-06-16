@@ -9,6 +9,7 @@ class TechnicalServiceRequestUpload extends Model
 {
     public const CATEGORY_OPERATION_CONTROL_DOOR_PHOTO = 'operation_control_door_photo';
     public const CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT = 'partner_portal_field_document';
+    public const CATEGORY_OPS_EXTRA_DOCUMENT = 'ops_extra_document';
 
     protected $table = 'technical_service_request_uploads';
 

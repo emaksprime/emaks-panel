@@ -898,6 +898,7 @@ export type WarrantySerialResponse = {
   serial_no: string
   status: WarrantyStatus
   warranty_started_at?: string | null
+  warranty_started_at_datetime?: string | null
   warranty_ends_at?: string | null
   remaining_days?: number | null
   warranty_period_months: number
@@ -911,6 +912,7 @@ export type WarrantySerialResponse = {
   } | null
   installation: {
     completed_at?: string | null
+    completed_at_datetime?: string | null
     source?: string | null
   }
   warnings: string[]

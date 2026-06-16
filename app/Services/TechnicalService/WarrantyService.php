@@ -324,8 +324,11 @@ class WarrantyService
                         'mrn' => $request->mrn,
                         'serial_no' => $request->serial_number,
                         'completed_at' => $completedAt->toDateString(),
+                        'completed_at_datetime' => $completedAt->toIso8601String(),
                         'technical_service_completed_at' => $request->completed_at?->toDateString(),
+                        'technical_service_completed_at_datetime' => $request->completed_at?->toIso8601String(),
                         'installation_completed_at' => $completedAt->toDateString(),
+                        'installation_completed_at_datetime' => $completedAt->toIso8601String(),
                         'mikro_unavailable_fallback' => true,
                     ],
                     'author_user_id' => null,
@@ -397,8 +400,11 @@ class WarrantyService
                     'mrn' => $request->mrn,
                     'serial_no' => $request->serial_number,
                     'completed_at' => $completedAt->toDateString(),
+                    'completed_at_datetime' => $completedAt->toIso8601String(),
                     'technical_service_completed_at' => $request->completed_at?->toDateString(),
+                    'technical_service_completed_at_datetime' => $request->completed_at?->toIso8601String(),
                     'installation_completed_at' => $completedAt->toDateString(),
+                    'installation_completed_at_datetime' => $completedAt->toIso8601String(),
                     'used_completed_at_fallback' => $usedCompletedAtFallback,
                     'used_updated_at_fallback' => $usedUpdatedAtFallback,
                 ],
@@ -448,6 +454,51 @@ class WarrantyService
         $metadata = is_array($event->metadata) ? $event->metadata : [];
 
         return ! empty($metadata['revoked_at']);
+    }
+
+    private function completedInstallationTimestampForCard(WarrantyCard $card): ?CarbonImmutable
+    {
+        $event = $card->events()
+            ->where('event_type', 'warranty_started_from_completed_installation')
+            ->latest('id')
+            ->get()
+            ->first(fn ($event): bool => ! $this->warrantyStartEventIsRevoked($event));
+        $metadata = is_array($event?->metadata) ? $event->metadata : [];
+
+        foreach (['installation_completed_at_datetime', 'completed_at_datetime', 'technical_service_completed_at_datetime'] as $key) {
+            $parsed = $this->parseDateTimeOrNull($metadata[$key] ?? null);
+
+            if ($parsed instanceof CarbonImmutable) {
+                return $parsed;
+            }
+        }
+
+        $requestId = $metadata['technical_service_request_id'] ?? null;
+        if ($requestId !== null) {
+            $request = TechnicalServiceRequest::query()->find($requestId);
+            $timestamp = $request?->installation_completed_at
+                ?? $request?->completed_at
+                ?? $request?->updated_at;
+
+            if ($timestamp) {
+                return CarbonImmutable::parse($timestamp);
+            }
+        }
+
+        return $card->installation_completed_at?->toImmutable();
+    }
+
+    private function parseDateTimeOrNull(mixed $value): ?CarbonImmutable
+    {
+        if (blank($value)) {
+            return null;
+        }
+
+        try {
+            return CarbonImmutable::parse((string) $value);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
@@ -555,6 +606,9 @@ class WarrantyService
     private function response(string $serialNo, ?WarrantyCard $card, ?array $latestSale, array $warnings): array
     {
         $remainingDays = null;
+        $installationCompletedAt = $card instanceof WarrantyCard
+            ? $this->completedInstallationTimestampForCard($card)
+            : null;
 
         if ($card?->warranty_ends_at) {
             $today = CarbonImmutable::today();
@@ -566,6 +620,7 @@ class WarrantyService
             'serial_no' => $serialNo,
             'status' => $card?->status ?? self::STATUS_NOT_STARTED,
             'warranty_started_at' => $card?->warranty_started_at?->toDateString(),
+            'warranty_started_at_datetime' => $installationCompletedAt?->toIso8601String(),
             'warranty_ends_at' => $card?->warranty_ends_at?->toDateString(),
             'remaining_days' => $remainingDays,
             'warranty_period_months' => $card?->warranty_period_months ?? self::DEFAULT_PERIOD_MONTHS,
@@ -579,6 +634,7 @@ class WarrantyService
             ] : null,
             'installation' => [
                 'completed_at' => $card?->installation_completed_at?->toDateString(),
+                'completed_at_datetime' => $installationCompletedAt?->toIso8601String(),
                 'source' => $card?->installation_completed_at ? 'panel' : null,
             ],
             'warnings' => $warnings,
@@ -594,6 +650,7 @@ class WarrantyService
                 'last_sale_document_no' => $card->last_sale_document_no,
                 'last_sale_mikro_fingerprint' => $card->last_sale_mikro_fingerprint,
                 'installation_completed_at' => $card->installation_completed_at?->toDateString(),
+                'installation_completed_at_datetime' => $installationCompletedAt?->toIso8601String(),
                 'warranty_started_at' => $card->warranty_started_at?->toDateString(),
                 'warranty_ends_at' => $card->warranty_ends_at?->toDateString(),
                 'warranty_period_months' => $card->warranty_period_months,
