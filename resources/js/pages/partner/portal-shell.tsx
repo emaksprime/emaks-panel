@@ -87,6 +87,11 @@ type ServiceJob = {
   parent_request_id?: number | null
   root_mrn?: string | null
   service_code?: string | null
+  view_context?: 'active_current' | 'child_active' | 'completed_history' | 'completed_parent'
+  is_current_active_assignment?: boolean
+  is_completed_history_view?: boolean
+  should_show_completion_requirements?: boolean
+  should_show_current_actions?: boolean
   status_label: string | null
   service_stage_label: string | null
   customer_name: string | null
@@ -1417,7 +1422,14 @@ function ServiceJobDetail({
   const completionBlocked = completionMissingReasons.length > 0
   const completionReady = jobReadyForCompletionSubmit(job) && !completionBlocked
   const defaultOpenPartnerSections = getPartnerDefaultOpenSections(job, completionReady)
-  const showPhotoSection = Boolean(job.can_upload_photos || ['final_check', 'completed'].includes(job.kanban_column))
+  const showCompletionRequirements = job.should_show_completion_requirements ?? !job.is_completed_history_view
+  const readOnlyHistoryPhotos = showCompletionRequirements
+    ? []
+    : [...job.photos, ...(job.previous_photos ?? [])].filter((photo, index, photos) => (
+      photos.findIndex((candidate) => candidate.id === photo.id) === index
+    ))
+  const showPhotoSection = (showCompletionRequirements && Boolean(job.can_upload_photos || job.kanban_column === 'final_check'))
+    || Boolean(job.is_completed_history_view && readOnlyHistoryPhotos.length > 0)
   const photoStatuses = job.completion_requirements.photo_statuses ?? portalPhotoFields.map(([field, label]) => ({
     field,
     label,
@@ -1426,7 +1438,12 @@ function ServiceJobDetail({
       || (field === 'warranty_document_photo' && job.photo_counts.general > 0),
   }))
   const hasSelectedPhoto = Object.values(photoFiles).some((file) => file instanceof File)
-  const photoByField = (field: string) => job.current_field_documents?.[field] ?? job.photos.find((photo) => photo.field_code === field)
+  const photoByField = (field: string) => job.current_field_documents?.[field]
+    ?? job.photos.find((photo) => photo.field_code === field)
+    ?? readOnlyHistoryPhotos.find((photo) => photo.field_code === field)
+  const photoFieldsToRender = showCompletionRequirements
+    ? portalPhotoFields
+    : portalPhotoFields.filter(([field]) => Boolean(photoByField(field)))
   const appointmentSlotError = slotValidationMessage(appointmentSlots)
   const canAcceptAppointment = Boolean(job.can_accept)
   const canProposeAppointment = Boolean(job.can_propose_appointment ?? true)
@@ -1843,21 +1860,27 @@ function ServiceJobDetail({
           </PartnerDetailPanel>
         </div>
         {showPhotoSection && (
-          <PartnerDetailPanel key={`${job.id}-photos`} title="Fotoğraf / belge" summary="Öncesi, sonrası ve garanti belgesi" tone="slate" defaultOpen={defaultOpenPartnerSections.has('photos')} panelKey={`${job.id}-photos`} className="order-[35] mt-5">
-            <div className="mt-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
-              <p className="font-semibold">Tamamlama şartı</p>
-              <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} fotoğraf/belge yüklendi.</p>
-              <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri onayı bekliyor.'}</p>
-              <div className="mt-2 grid min-w-0 gap-1">
-                {photoStatuses.map((photo) => (
-                  <p key={photo.field} className={`${photo.uploaded ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'} min-w-0 [overflow-wrap:anywhere]`}>
-                    {photo.label}: {photo.uploaded ? 'yüklendi' : 'eksik'}
-                  </p>
-                ))}
+          <PartnerDetailPanel key={`${job.id}-photos`} title="Fotoğraf / belge" summary={showCompletionRequirements ? 'Öncesi, sonrası ve garanti belgesi' : 'Tamamlanan işe ait yüklenen görseller'} tone="slate" defaultOpen={defaultOpenPartnerSections.has('photos')} panelKey={`${job.id}-photos`} className="order-[35] mt-5">
+            {showCompletionRequirements ? (
+              <div className="mt-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                <p className="font-semibold">Tamamlama şartı</p>
+                <p className="mt-1">{job.completion_requirements.door_photos_uploaded}/{job.completion_requirements.door_photos_required} fotoğraf/belge yüklendi.</p>
+                <p className="mt-1">{job.completion_requirements.customer_confirmation_ready ? 'Müşteri onayı hazır.' : 'Müşteri onayı bekliyor.'}</p>
+                <div className="mt-2 grid min-w-0 gap-1">
+                  {photoStatuses.map((photo) => (
+                    <p key={photo.field} className={`${photo.uploaded ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'} min-w-0 [overflow-wrap:anywhere]`}>
+                      {photo.label}: {photo.uploaded ? 'yüklendi' : 'eksik'}
+                    </p>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                Bu tamamlanan işte yüklenen görseller read-only görüntülenir. Aktif SRV eksik fotoğraf şartları bu karta yansımaz.
+              </div>
+            )}
             <div className="mt-3 grid min-w-0 max-w-full gap-3 sm:grid-cols-3">
-              {portalPhotoFields.map(([field, label]) => {
+              {photoFieldsToRender.map(([field, label]) => {
                 const uploadedPhoto = photoByField(field)
                 const selectedFile = photoFiles[field]
                 const selectedPreviewUrl = photoPreviewUrls[field]
@@ -1946,7 +1969,7 @@ function ServiceJobDetail({
               </button>
             ) : null}
             </div>
-            {(job.previous_photos?.length ?? 0) > 0 ? (
+            {showCompletionRequirements && (job.previous_photos?.length ?? 0) > 0 ? (
               <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
                 <summary className="cursor-pointer font-semibold text-slate-800">Önceki ziyaret görselleri</summary>
                 <div className="mt-3 grid min-w-0 max-w-full gap-3 sm:grid-cols-3">

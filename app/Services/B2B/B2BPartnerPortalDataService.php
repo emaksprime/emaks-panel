@@ -504,6 +504,16 @@ class B2BPartnerPortalDataService
         $productName = $this->firstFilled($request->product_name, $serialContext['product_name'] ?? null);
         $productModel = $this->firstFilled($request->product_model, $serialContext['product_model'] ?? null);
         $productBrand = $this->firstFilled($request->brand, $serialContext['brand'] ?? null);
+        $viewContext = $this->partnerServiceJobViewContext($request, $partnerColumn);
+        $isCompletedHistoryView = in_array($viewContext, ['completed_history', 'completed_parent'], true);
+        $shouldShowCompletionRequirements = ! $isCompletedHistoryView;
+        $shouldShowCurrentActions = ! $isCompletedHistoryView && ! $isTerminal;
+        $effectiveCompletionRequirements = $isCompletedHistoryView
+            ? $this->completedHistoryCompletionRequirements()
+            : $completionRequirements;
+        $effectiveDisplayBadges = $isCompletedHistoryView
+            ? $this->completedHistoryBadges($displayBadges)
+            : $displayBadges;
 
         return [
             'id' => $request->id,
@@ -511,6 +521,11 @@ class B2BPartnerPortalDataService
             'parent_request_id' => $request->parent_request_id,
             'root_mrn' => $request->root_mrn,
             'service_code' => $request->service_code,
+            'view_context' => $viewContext,
+            'is_current_active_assignment' => ! $isCompletedHistoryView && ! $isTerminal,
+            'is_completed_history_view' => $isCompletedHistoryView,
+            'should_show_completion_requirements' => $shouldShowCompletionRequirements,
+            'should_show_current_actions' => $shouldShowCurrentActions,
             'status_label' => TechnicalServiceUiLabelService::cleanDisplayText($request->status),
             'service_stage_label' => TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status),
             'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->customer_name),
@@ -535,7 +550,7 @@ class B2BPartnerPortalDataService
             'status' => TechnicalServiceUiLabelService::cleanDisplayText($request->status),
             'workflow_status' => TechnicalServiceUiLabelService::cleanDisplayText($request->workflow_status),
             'next_action' => TechnicalServiceUiLabelService::cleanDisplayText($partnerNextActionLabel),
-            'field_action_hint' => $partnerColumn === 'appointment_confirmed'
+            'field_action_hint' => $shouldShowCompletionRequirements && $partnerColumn === 'appointment_confirmed'
                 ? $this->appointmentConfirmedPartnerHint($completionRequirements)
                 : null,
             'route_distance_summary' => $request->travel_round_trip_km !== null ? ((float) $request->travel_round_trip_km).' km' : null,
@@ -544,7 +559,11 @@ class B2BPartnerPortalDataService
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'checklist_status' => $request->checklist_status,
             'checklist_payload' => [],
-            'photo_counts' => [
+            'photo_counts' => $isCompletedHistoryView ? [
+                'before' => 0,
+                'after' => 0,
+                'general' => 0,
+            ] : [
                 'before' => in_array('before_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
                 'after' => in_array('after_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
                 'general' => in_array('warranty_document_photo', $photoReadiness['present_fields'], true) ? 1 : 0,
@@ -553,7 +572,7 @@ class B2BPartnerPortalDataService
                 ->map(fn (TechnicalServiceRequestUpload $upload): array => $this->portalPhotoPayload($request, $upload))
                 ->values()
                 ->all(),
-            'current_field_documents' => collect(self::requiredPortalPhotoFields())
+            'current_field_documents' => $isCompletedHistoryView ? $this->emptyPortalFieldDocuments() : collect(self::requiredPortalPhotoFields())
                 ->mapWithKeys(fn (string $label, string $field): array => [
                     $field => $currentPortalPhotoMap->has($field)
                         ? $this->portalPhotoPayload($request, $currentPortalPhotoMap->get($field))
@@ -669,8 +688,8 @@ class B2BPartnerPortalDataService
                 'related_mrns' => $earningSummary['related_mrns'],
             ],
             'earning_breakdown' => $earningBreakdown,
-            'completion_requirements' => $completionRequirements,
-            'badges' => $displayBadges,
+            'completion_requirements' => $effectiveCompletionRequirements,
+            'badges' => $effectiveDisplayBadges,
             'card_priority' => $completionReadyForSubmit
                 ? 4
                 : ($canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction)),
@@ -679,17 +698,17 @@ class B2BPartnerPortalDataService
             'operational_state' => $canonicalState,
             'service_visit_context' => $this->serviceVisitContext($request),
             'action_state' => $actionState,
-            'can_accept' => $canAcceptAppointment,
-            'can_propose_appointment' => $canProposeAppointment,
-            'can_request_appointment_change' => $canRequestAppointmentChange,
-            'can_request_revisit' => $canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit',
-            'can_request_support' => $canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit',
-            'can_request_customer_otp' => $canFieldActions,
-            'can_upload_photos' => $canFieldActions,
-            'can_submit_completion' => $completionReadyForSubmit,
-            'can_request_price_revision' => ! $isTerminal && ! $isRejectedInReview && $assignmentOffer !== null,
+            'can_accept' => $shouldShowCurrentActions && $canAcceptAppointment,
+            'can_propose_appointment' => $shouldShowCurrentActions && $canProposeAppointment,
+            'can_request_appointment_change' => $shouldShowCurrentActions && $canRequestAppointmentChange,
+            'can_request_revisit' => $shouldShowCurrentActions && ($canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit'),
+            'can_request_support' => $shouldShowCurrentActions && ($canFieldActions || $this->serviceJobColumn($request, $stateAction) === 'revisit'),
+            'can_request_customer_otp' => $shouldShowCurrentActions && $canFieldActions,
+            'can_upload_photos' => $shouldShowCurrentActions && $canFieldActions,
+            'can_submit_completion' => $shouldShowCurrentActions && $completionReadyForSubmit,
+            'can_request_price_revision' => $shouldShowCurrentActions && ! $isTerminal && ! $isRejectedInReview && $assignmentOffer !== null,
             'can_complete_directly' => false,
-            'can_reject' => ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview,
+            'can_reject' => $shouldShowCurrentActions && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview,
             'updated_at' => $request->updated_at?->toIso8601String(),
         ];
     }
@@ -716,6 +735,85 @@ class B2BPartnerPortalDataService
                 return ! in_array($visibility, ['ops_internal', 'internal_partner'], true);
             })
             ->values();
+    }
+
+    private function partnerServiceJobViewContext(TechnicalServiceRequest $request, string $partnerColumn): string
+    {
+        if (
+            $partnerColumn === 'completed'
+            || ($this->serviceJobScope->isCompletedHistoryJob($request) && ! $this->isActiveReopenedWork($request))
+        ) {
+            return $this->hasNonCancelledChildServiceVisit($request)
+                ? 'completed_parent'
+                : 'completed_history';
+        }
+
+        return $request->parent_request_id !== null || filled($request->service_code)
+            ? 'child_active'
+            : 'active_current';
+    }
+
+    private function hasNonCancelledChildServiceVisit(TechnicalServiceRequest $request): bool
+    {
+        if ($request->parent_request_id !== null) {
+            return false;
+        }
+
+        return $request->childRequests()
+            ->whereNull('cancelled_at')
+            ->whereNotIn('status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->whereNotIn('workflow_status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->exists();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completedHistoryCompletionRequirements(): array
+    {
+        return [
+            'door_photos_required' => 0,
+            'door_photos_uploaded' => 0,
+            'photos_ready' => true,
+            'customer_confirmation_ready' => true,
+            'part_request_clear' => true,
+            'part_request_status_label' => null,
+            'checklist_required' => false,
+            'ops_final_check_required' => false,
+            'required_photo_labels' => [],
+            'missing_photo_labels' => [],
+            'photo_statuses' => [],
+        ];
+    }
+
+    /**
+     * @return array<string, null>
+     */
+    private function emptyPortalFieldDocuments(): array
+    {
+        return collect(self::requiredPortalPhotoFields())
+            ->mapWithKeys(fn (string $label, string $field): array => [$field => null])
+            ->all();
+    }
+
+    /**
+     * @param  array<int, string>  $badges
+     * @return array<int, string>
+     */
+    private function completedHistoryBadges(array $badges): array
+    {
+        $filtered = collect($badges)
+            ->reject(fn (string $badge): bool => in_array($badge, [
+                'Fotoğraf bekliyor',
+                'Fotoğraflar yüklendi',
+                'Müşteri onayı bekleniyor',
+                'Müşteri onayı alındı',
+                'Tamamlamaya gönderilebilir',
+            ], true))
+            ->values()
+            ->all();
+
+        return $filtered === [] ? ['İş tamamlandı'] : $filtered;
     }
 
     /**

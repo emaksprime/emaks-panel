@@ -7742,6 +7742,22 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNotContains($child->mrn, $oldPartnerMrns);
         $oldPartnerCompletedJob = collect($oldPartnerJobs)->firstWhere('mrn', $parent->mrn);
         $this->assertSame('completed', $oldPartnerCompletedJob['kanban_column'] ?? null);
+        $this->assertSame('completed_parent', $oldPartnerCompletedJob['view_context'] ?? null);
+        $this->assertTrue((bool) ($oldPartnerCompletedJob['is_completed_history_view'] ?? false));
+        $this->assertFalse((bool) ($oldPartnerCompletedJob['is_current_active_assignment'] ?? true));
+        $this->assertFalse((bool) ($oldPartnerCompletedJob['should_show_completion_requirements'] ?? true));
+        $this->assertFalse((bool) ($oldPartnerCompletedJob['should_show_current_actions'] ?? true));
+        $this->assertFalse((bool) ($oldPartnerCompletedJob['can_upload_photos'] ?? true));
+        $this->assertFalse((bool) ($oldPartnerCompletedJob['can_submit_completion'] ?? true));
+        $this->assertSame(0, $oldPartnerCompletedJob['completion_requirements']['door_photos_required'] ?? null);
+        $this->assertSame(0, $oldPartnerCompletedJob['completion_requirements']['door_photos_uploaded'] ?? null);
+        $this->assertTrue((bool) ($oldPartnerCompletedJob['completion_requirements']['photos_ready'] ?? false));
+        $this->assertSame([], $oldPartnerCompletedJob['completion_requirements']['missing_photo_labels'] ?? null);
+        $this->assertSame([
+            'before_photo' => null,
+            'after_photo' => null,
+            'warranty_document_photo' => null,
+        ], $oldPartnerCompletedJob['current_field_documents'] ?? null);
         $this->assertEquals(1100.0, $oldPartnerCompletedJob['earning_summary']['total_amount'] ?? null);
         $this->assertSame([$parent->mrn], $oldPartnerCompletedJob['earning_summary']['related_mrns'] ?? null);
         $this->assertSame('Scope Usta B', $oldPartnerCompletedJob['earning_breakdown']['current_visit']['technician_name'] ?? null);
@@ -7781,6 +7797,138 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('Scope Usta A', $newPartnerChildJob['earning_breakdown']['current_visit']['technician_name'] ?? null);
     }
 
+    public function test_completed_parent_for_original_technician_hides_current_photo_requirements(): void
+    {
+        $scenario = $this->completedParentChildSrvPortalScenario();
+        $upload = $this->createPortalFieldDocument($scenario['parent'], 'before_photo');
+        $upload->forceFill([
+            'created_at' => now()->subMinutes(5),
+            'updated_at' => now()->subMinutes(5),
+        ])->save();
+        $scenario['parent']->forceFill([
+            'reopened_at' => now(),
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+        ])->save();
+
+        $oldPartnerCompletedJob = collect($this->actingAs($scenario['userB'])
+            ->getJson("/api/partner/service-jobs?partner_id={$scenario['partnerB']->id}")
+            ->assertOk()
+            ->json('jobs'))
+            ->firstWhere('mrn', $scenario['parent']->mrn);
+
+        $this->assertNotNull($oldPartnerCompletedJob);
+        $this->assertSame('completed_parent', $oldPartnerCompletedJob['view_context'] ?? null);
+        $this->assertTrue((bool) ($oldPartnerCompletedJob['is_completed_history_view'] ?? false));
+        $this->assertFalse((bool) ($oldPartnerCompletedJob['should_show_completion_requirements'] ?? true));
+        $this->assertSame(0, $oldPartnerCompletedJob['completion_requirements']['door_photos_required'] ?? null);
+        $this->assertSame([], $oldPartnerCompletedJob['completion_requirements']['missing_photo_labels'] ?? null);
+        $this->assertSame([
+            'before_photo' => null,
+            'after_photo' => null,
+            'warranty_document_photo' => null,
+        ], $oldPartnerCompletedJob['current_field_documents'] ?? null);
+        $this->assertCount(0, $oldPartnerCompletedJob['photos'] ?? []);
+        $this->assertCount(1, $oldPartnerCompletedJob['previous_photos'] ?? []);
+        $this->assertSame('before_photo', $oldPartnerCompletedJob['previous_photos'][0]['field_code'] ?? null);
+    }
+
+    public function test_original_technician_completed_card_does_not_show_child_srv_completion_gate(): void
+    {
+        $scenario = $this->completedParentChildSrvPortalScenario();
+
+        $response = $this->actingAs($scenario['userB'])
+            ->getJson("/api/partner/service-jobs/{$scenario['parent']->id}?partner_id={$scenario['partnerB']->id}")
+            ->assertOk();
+
+        $response
+            ->assertJsonPath('job.view_context', 'completed_parent')
+            ->assertJsonPath('job.should_show_completion_requirements', false)
+            ->assertJsonPath('job.should_show_current_actions', false)
+            ->assertJsonPath('job.can_upload_photos', false)
+            ->assertJsonPath('job.can_submit_completion', false)
+            ->assertJsonPath('job.completion_requirements.door_photos_uploaded', 0)
+            ->assertJsonPath('job.completion_requirements.photos_ready', true)
+            ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', true);
+    }
+
+    public function test_original_technician_does_not_see_child_srv_active_job_when_child_assigned_elsewhere(): void
+    {
+        $scenario = $this->completedParentChildSrvPortalScenario();
+
+        $oldPartnerJobs = $this->actingAs($scenario['userB'])
+            ->getJson("/api/partner/service-jobs?partner_id={$scenario['partnerB']->id}")
+            ->assertOk()
+            ->json('jobs');
+        $oldPartnerMrns = collect($oldPartnerJobs)->pluck('mrn')->all();
+
+        $this->assertContains($scenario['parent']->mrn, $oldPartnerMrns);
+        $this->assertNotContains($scenario['child']->mrn, $oldPartnerMrns);
+
+        $newPartnerJobs = $this->actingAs($scenario['userA'])
+            ->getJson("/api/partner/service-jobs?partner_id={$scenario['partnerA']->id}")
+            ->assertOk()
+            ->json('jobs');
+
+        $this->assertContains($scenario['child']->mrn, collect($newPartnerJobs)->pluck('mrn')->all());
+    }
+
+    public function test_child_srv_assigned_to_same_technician_shows_current_photo_requirements(): void
+    {
+        $scenario = $this->completedParentChildSrvPortalScenario(childAssignedToOriginal: true);
+
+        $oldPartnerJobs = $this->actingAs($scenario['userB'])
+            ->getJson("/api/partner/service-jobs?partner_id={$scenario['partnerB']->id}")
+            ->assertOk()
+            ->json('jobs');
+        $childJob = collect($oldPartnerJobs)->firstWhere('mrn', $scenario['child']->mrn);
+        $parentJob = collect($oldPartnerJobs)->firstWhere('mrn', $scenario['parent']->mrn);
+
+        $this->assertNotNull($childJob);
+        $this->assertSame('child_active', $childJob['view_context'] ?? null);
+        $this->assertTrue((bool) ($childJob['is_current_active_assignment'] ?? false));
+        $this->assertTrue((bool) ($childJob['should_show_completion_requirements'] ?? false));
+        $this->assertSame(3, $childJob['completion_requirements']['door_photos_required'] ?? null);
+        $this->assertSame(0, $childJob['completion_requirements']['door_photos_uploaded'] ?? null);
+        $this->assertFalse((bool) ($childJob['completion_requirements']['photos_ready'] ?? true));
+        $this->assertTrue((bool) ($childJob['can_upload_photos'] ?? false));
+
+        $this->assertNotNull($parentJob);
+        $this->assertSame('completed_parent', $parentJob['view_context'] ?? null);
+        $this->assertFalse((bool) ($parentJob['should_show_completion_requirements'] ?? true));
+    }
+
+    public function test_completed_history_view_hides_current_actions(): void
+    {
+        $scenario = $this->completedParentChildSrvPortalScenario();
+
+        $this->actingAs($scenario['userB'])
+            ->getJson("/api/partner/service-jobs/{$scenario['parent']->id}?partner_id={$scenario['partnerB']->id}")
+            ->assertOk()
+            ->assertJsonPath('job.view_context', 'completed_parent')
+            ->assertJsonPath('job.action_state', 'completed')
+            ->assertJsonPath('job.should_show_current_actions', false)
+            ->assertJsonPath('job.can_accept', false)
+            ->assertJsonPath('job.can_propose_appointment', false)
+            ->assertJsonPath('job.can_request_customer_otp', false)
+            ->assertJsonPath('job.can_reject', false);
+    }
+
+    public function test_partner_completed_payload_has_no_customer_profit_margin_leak(): void
+    {
+        $scenario = $this->completedParentChildSrvPortalScenario();
+
+        $payload = $this->actingAs($scenario['userB'])
+            ->getJson("/api/partner/service-jobs/{$scenario['parent']->id}?partner_id={$scenario['partnerB']->id}")
+            ->assertOk()
+            ->json('job');
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE);
+
+        foreach (['customer_collection', 'customer_payment_amount', 'profit', 'margin', 'net_operation_difference'] as $forbiddenFragment) {
+            $this->assertStringNotContainsString($forbiddenFragment, (string) $encoded);
+        }
+    }
+
     public function test_partner_portal_users_stay_out_of_internal_panel_routes(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -7815,6 +7963,16 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Aktivasyon:', $source);
         $this->assertStringContainsString('Seri:', $source);
         $this->assertStringNotContainsString('Stok:', $source);
+    }
+
+    public function test_partner_completed_history_ui_uses_previous_photos_read_only(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+
+        $this->assertStringContainsString('readOnlyHistoryPhotos', $source);
+        $this->assertStringContainsString('...(job.previous_photos ?? [])', $source);
+        $this->assertStringContainsString('job.is_completed_history_view && readOnlyHistoryPhotos.length > 0', $source);
+        $this->assertStringContainsString('Aktif SRV eksik fotoğraf şartları bu karta yansımaz.', $source);
     }
 
     /**
@@ -7910,6 +8068,52 @@ class B2BPartnerPanelAccessTest extends TestCase
             'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
             'sent_at' => now(),
         ]);
+    }
+
+    /**
+     * @return array{
+     *     partnerA: B2BPartner,
+     *     partnerB: B2BPartner,
+     *     technicianA: TechnicalServiceTechnician,
+     *     technicianB: TechnicalServiceTechnician,
+     *     parent: TechnicalServiceRequest,
+     *     child: TechnicalServiceRequest,
+     *     userA: User,
+     *     userB: User
+     * }
+     */
+    private function completedParentChildSrvPortalScenario(bool $childAssignedToOriginal = false): array
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $parent = $scope['completedJobB'];
+        $childTechnician = $childAssignedToOriginal ? $scope['technicianB'] : $scope['technicianA'];
+        $child = $this->serviceRequestForTechnician($childTechnician, 'SRV-SCOPE-COMPLETED-PARENT-001', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SCOPE-COMPLETED-PARENT-001',
+            'service_visit_reason' => 'part_service',
+            'service_type' => 'Montaj',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onaylandi',
+            'technician_approved_at' => now(),
+            'scheduled_at' => now()->addDay(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '10:00',
+        ]);
+        $this->partnerPortalAssignmentOffer($child, $childTechnician);
+
+        return [
+            'partnerA' => $scope['partnerA'],
+            'partnerB' => $scope['partnerB'],
+            'technicianA' => $scope['technicianA'],
+            'technicianB' => $scope['technicianB'],
+            'parent' => $parent,
+            'child' => $child,
+            'userA' => $scope['userA'],
+            'userB' => $scope['userB'],
+        ];
     }
 
     /**
