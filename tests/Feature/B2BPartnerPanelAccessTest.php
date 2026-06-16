@@ -4380,6 +4380,79 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $job->refresh()->mount_payment_status);
     }
 
+    public function test_chargeable_part_payment_records_amount_reference_and_paid_at_in_ops_payload_and_history(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Part Payment Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-PART-PAYMENT-REF', [
+            'serial_number' => 'SN-PART-PAYMENT-REF',
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+        ]);
+        $this->mountSessionForServiceRequest($job);
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $job->id,
+            'root_request_id' => $job->id,
+            'requested_by_user_id' => $admin->id,
+            'requested_by_technician_id' => $technician->id,
+            'status' => TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+            'part_name' => 'Ücretli barel',
+            'quantity' => 1,
+        ]);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/technical-service/requests/{$job->id}/part-requests/{$partRequest->id}", [
+                'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+                'charge_decision' => 'chargeable',
+                'service_amount' => 500,
+                'part_amount' => 1250,
+                'customer_message' => 'Servis/parça ödeme linki.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('customer_charge.total_amount', 1750);
+
+        $payment = TechnicalServiceMountPayment::query()
+            ->where('raw_payload->part_request_id', $partRequest->id)
+            ->firstOrFail();
+        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)
+            ->markPaid($payment, ['receipt_no' => 'DEKONT-PART-55']);
+        $child = $this->serviceRequestForTechnician($technician, 'SRV-PART-PAYMENT-REF-001', [
+            'parent_request_id' => $job->id,
+            'root_mrn' => $job->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-PART-PAYMENT-REF-001',
+            'service_visit_reason' => 'spare_part',
+            'service_type' => 'Servis',
+        ]);
+
+        $partRequest->refresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $partRequest->metadata['charge_status'] ?? null);
+        $this->assertSame('DEKONT-PART-55', $partRequest->metadata['payment_reference'] ?? null);
+        $this->assertSame(1750.0, (float) ($partRequest->metadata['paid_amount'] ?? 0));
+        $this->assertNotEmpty($partRequest->metadata['paid_at'] ?? null);
+
+        $response = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk();
+        $partPayload = collect($response->json('request.part_requests'))->firstWhere('id', $partRequest->id);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $partPayload['charge_status'] ?? null);
+        $this->assertSame('DEKONT-PART-55', $partPayload['payment_reference'] ?? null);
+        $this->assertSame('DEKONT-PART-55', data_get($partPayload, 'customer_charge.payment_reference'));
+        $this->assertNotEmpty($partPayload['paid_at'] ?? null);
+
+        $historyResponse = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$child->id}")
+            ->assertOk();
+        $historyTitles = collect($historyResponse->json('request.service_visit_history.parent_events') ?? [])
+            ->pluck('title_label')
+            ->all();
+        $this->assertContains('Parça ödemesi alındı', $historyTitles);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'part_request_payment_paid',
+            'title' => 'Parça ödemesi alındı',
+        ]);
+    }
+
     public function test_ops_can_create_free_and_chargeable_part_request_from_srv_detail(): void
     {
         $admin = $this->userWithRole('admin', true);
@@ -4537,6 +4610,131 @@ class B2BPartnerPanelAccessTest extends TestCase
             'event_type' => 'ops_extra_document_uploaded',
             'title' => 'OPS ek görsel yüklendi',
         ]);
+    }
+
+    public function test_ops_extra_photo_upload_supports_door_photo_and_invalid_ops_upload_returns_turkish_validation(): void
+    {
+        Storage::fake('public');
+
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Ops Door Doc Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-OPS-DOOR-DOC');
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/ops-extra-documents", [
+                'ops_extra_documents' => [
+                    UploadedFile::fake()->create('ops-door.jpg', 256, 'image/jpeg'),
+                ],
+                'document_type' => 'ops_door_photo',
+                'note' => 'Kapı görseli operasyon tarafından eklendi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('uploads.0.field_code', 'ops_door_photo');
+
+        $documents = $this->actingAs($admin)
+            ->getJson("/api/technical-service/requests/{$job->id}")
+            ->assertOk()
+            ->json('request.field_completion_documents');
+        $this->assertSame('OPS Kapı Görseli', collect($documents)->firstWhere('field_code', 'ops_door_photo')['label'] ?? null);
+
+        $invalid = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/ops-extra-documents", [
+                'ops_extra_documents' => [
+                    UploadedFile::fake()->create('not-image.txt', 1, 'text/plain'),
+                ],
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('ops_extra_documents.0');
+        $errorText = json_encode($invalid->json('errors'), JSON_UNESCAPED_UNICODE);
+        $this->assertIsString($errorText);
+        $this->assertStringContainsString('OPS görselleri', $errorText);
+        $this->assertStringNotContainsString('validation.mimes', $errorText);
+    }
+
+    public function test_final_control_multiple_srv_requires_per_visit_payout_selection_and_approve_selected_excluded_visit_is_removed_from_payout_total(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Final Çoklu SRV Partner',
+        ]);
+        $technician = $this->technician(['name' => 'Final Çoklu SRV Usta']);
+        $parent = $this->serviceRequestForTechnician($technician, 'MRN-FINAL-MULTI-SRV');
+        $firstSrv = $this->serviceRequestForTechnician($technician, 'SRV-FINAL-MULTI-SRV-001', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-FINAL-MULTI-SRV-001',
+            'service_visit_reason' => 'spare_part',
+            'service_type' => 'Servis',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'checklist_status' => 'tamamlandı',
+            'customer_closure_approval_status' => 'onaylandı',
+            'customer_closure_approved_at' => now(),
+        ]);
+        $secondSrv = $this->serviceRequestForTechnician($technician, 'SRV-FINAL-MULTI-SRV-002', [
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 2,
+            'service_code' => 'SRV-FINAL-MULTI-SRV-002',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+        ]);
+
+        foreach ([[$parent, 2000, 100], [$firstSrv, 1500, 300], [$secondSrv, 900, 200]] as [$request, $labor, $route]) {
+            TechnicalServiceAssignmentOffer::query()->create([
+                'technical_service_request_id' => $request->id,
+                'technical_service_technician_id' => $technician->id,
+                'labor_amount' => $labor,
+                'route_fee_amount' => $route,
+                'total_amount' => $labor + $route,
+                'currency' => 'TRY',
+                'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+                'sent_at' => now(),
+            ]);
+        }
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($firstSrv, $fieldCode)
+                ->forceFill(['review_status' => 'accepted', 'reviewed_at' => now(), 'reviewed_by' => $admin->id])
+                ->save();
+        }
+
+        $completionAction = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $firstSrv->id,
+            'partner_id' => $partner->id,
+            'user_id' => $admin->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'checklist_gate' => 'server_checked',
+                'checklist' => ['job_completed' => true],
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$firstSrv->id}/partner-completions/{$completionAction->id}/approve", [
+                'note' => 'Seçim yapılmadan çoklu SRV hakedişi kapanmamalı.',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('approved_visit_ids');
+
+        $response = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$firstSrv->id}/partner-completions/{$completionAction->id}/approve", [
+                'note' => 'İşaretli hakedişler onaylandı.',
+                'approved_visit_ids' => [$parent->id, $firstSrv->id],
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.earning_breakdown.root_total.total_amount', 3900)
+            ->assertJsonPath('request.earning_breakdown.root_total.excluded_job_count', 1);
+
+        $rows = collect($response->json('request.earning_breakdown.rows'));
+        $this->assertFalse($rows->firstWhere('id', $secondSrv->id)['payout_included']);
+        $this->assertSame('Hakedişten çıkarıldı', $rows->firstWhere('id', $secondSrv->id)['payout_approval_status_label']);
+        $this->assertSame([$parent->id, $firstSrv->id], $parent->refresh()->operation_control_payload['ops_final_payout_approval']['approved_request_ids'] ?? []);
     }
 
     public function test_revisit_request_creates_isolated_srv_child_without_parent_completion_state(): void

@@ -490,6 +490,14 @@ class TechnicalServicePartRequestService
             'charge_status' => $customerCharge['status'] ?? $metadata['charge_status'] ?? null,
             'payment_id' => $paymentId,
             'payment_url' => $forPartner ? null : ($customerCharge['payment_url'] ?? $metadata['payment_url'] ?? null),
+            'payment_reference' => $customerCharge['payment_reference'] ?? $metadata['payment_reference'] ?? $metadata['provider_reference'] ?? null,
+            'provider_reference' => $customerCharge['provider_reference'] ?? $metadata['provider_reference'] ?? null,
+            'payment_provider' => $customerCharge['provider'] ?? $metadata['payment_provider'] ?? null,
+            'paid_at' => $customerCharge['paid_at'] ?? $metadata['paid_at'] ?? null,
+            'paid_amount' => $customerCharge['total_amount'] ?? $metadata['paid_amount'] ?? null,
+            'paid_amount_label' => isset($customerCharge['total_amount'])
+                ? $this->moneyLabel((float) $customerCharge['total_amount'])
+                : (isset($metadata['paid_amount']) ? $this->moneyLabel((float) $metadata['paid_amount']) : null),
             'customer_charge' => $customerCharge,
             'metadata' => $forPartner ? [] : $metadata,
             'created_at' => $partRequest->created_at?->toIso8601String(),
@@ -589,6 +597,11 @@ class TechnicalServicePartRequestService
             'total_amount' => $totalAmount,
             'total_amount_label' => $this->moneyLabel($totalAmount),
             'payment_url' => $payment->payment_url,
+            'provider' => $payment->provider,
+            'provider_reference' => $payment->provider_reference,
+            'payment_reference' => $payment->provider_reference,
+            'paid_at' => $payment->paid_at?->toIso8601String(),
+            'currency' => $payment->currency,
         ];
     }
 

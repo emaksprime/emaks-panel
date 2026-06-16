@@ -42,6 +42,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -992,13 +993,34 @@ class TechnicalServiceController extends Controller
         $validated = $request->validate([
             'ops_extra_documents' => ['required', 'array', 'min:1', 'max:6'],
             'ops_extra_documents.*' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,gif,heic,heif', 'max:10240'],
+            'document_type' => ['nullable', 'string', Rule::in(['ops_extra_photo', 'ops_door_photo', 'ops_additional_document'])],
             'note' => ['nullable', 'string', 'max:1000'],
+        ], [
+            'ops_extra_documents.required' => 'Yüklenecek OPS görseli seçilmelidir.',
+            'ops_extra_documents.array' => 'OPS görselleri dosya listesi olarak gönderilmelidir.',
+            'ops_extra_documents.min' => 'En az bir OPS görseli seçilmelidir.',
+            'ops_extra_documents.max' => 'Tek seferde en fazla 6 OPS görseli yüklenebilir.',
+            'ops_extra_documents.*.required' => 'OPS görsel dosyası eksik.',
+            'ops_extra_documents.*.file' => 'OPS görseli geçerli bir dosya olmalıdır.',
+            'ops_extra_documents.*.mimes' => 'OPS görselleri jpg, jpeg, png, webp, gif, heic veya heif formatında olmalıdır.',
+            'ops_extra_documents.*.max' => 'OPS görseli en fazla 10 MB olabilir.',
+            'document_type.in' => 'OPS görsel türü geçersiz.',
+            'note.max' => 'OPS görsel notu en fazla 1000 karakter olabilir.',
+        ], [
+            'ops_extra_documents' => 'OPS görselleri',
+            'ops_extra_documents.*' => 'OPS görseli',
+            'document_type' => 'OPS görsel türü',
+            'note' => 'OPS görsel notu',
         ]);
 
         $files = $request->file('ops_extra_documents', []);
         $note = trim((string) ($validated['note'] ?? ''));
+        $fieldCode = (string) ($validated['document_type'] ?? 'ops_extra_photo');
+        $title = $fieldCode === 'ops_door_photo'
+            ? 'OPS kapı görseli yüklendi'
+            : ($fieldCode === 'ops_additional_document' ? 'OPS ek belge yüklendi' : 'OPS ek görsel yüklendi');
 
-        $uploads = DB::transaction(function () use ($technicalServiceRequest, $request, $files, $note) {
+        $uploads = DB::transaction(function () use ($technicalServiceRequest, $request, $files, $note, $fieldCode, $title) {
             $created = [];
 
             foreach ((array) $files as $file) {
@@ -1011,7 +1033,7 @@ class TechnicalServiceController extends Controller
 
                 $created[] = TechnicalServiceRequestUpload::query()->create([
                     'technical_service_request_id' => $technicalServiceRequest->id,
-                    'field_code' => 'ops_extra_photo',
+                    'field_code' => $fieldCode,
                     'category' => TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT,
                     'original_name' => $file->getClientOriginalName() ?: 'OPS ek görsel',
                     'path' => $path,
@@ -1030,14 +1052,14 @@ class TechnicalServiceController extends Controller
 
             $technicalServiceRequest->events()->create([
                 'event_type' => 'ops_extra_document_uploaded',
-                'title' => 'OPS ek görsel yüklendi',
+                'title' => $title,
                 'note' => $note !== '' ? $note : null,
                 'from_status' => $technicalServiceRequest->workflow_status,
                 'to_status' => $technicalServiceRequest->workflow_status,
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
                     'upload_ids' => array_map(fn (TechnicalServiceRequestUpload $upload): int => (int) $upload->id, $created),
-                    'field_code' => 'ops_extra_photo',
+                    'field_code' => $fieldCode,
                     'category' => TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT,
                 ],
             ]);

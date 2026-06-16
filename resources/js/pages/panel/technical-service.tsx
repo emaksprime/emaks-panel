@@ -3221,7 +3221,7 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handlePartnerCompletionApprove = async (actionId: number | string, payload?: { note?: string | null }) => {
+  const handlePartnerCompletionApprove = async (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string> }) => {
     if (!selectedId) {
       return
     }
@@ -3471,7 +3471,7 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
-  const handleOpsExtraDocumentUpload = async (payload: { files: File[], note?: string | null }) => {
+  const handleOpsExtraDocumentUpload = async (payload: { files: File[], note?: string | null, document_type?: string | null }) => {
     if (!selectedId) {
       return
     }
@@ -3481,6 +3481,10 @@ export function TechnicalServiceOperationCenter() {
 
     if (payload.note) {
       formData.append('note', payload.note)
+    }
+
+    if (payload.document_type) {
+      formData.append('document_type', payload.document_type)
     }
 
     const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')

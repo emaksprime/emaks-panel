@@ -33,6 +33,7 @@ class TechnicalServiceWorkflowService
 
     private const OPS_EXTRA_DOCUMENT_TYPES = [
         'ops_extra_photo' => 'OPS Ek Görsel',
+        'ops_door_photo' => 'OPS Kapı Görseli',
         'ops_additional_document' => 'OPS Ek Belge',
     ];
 
@@ -2160,13 +2161,20 @@ class TechnicalServiceWorkflowService
         $requests = $this->rootFinancialRequests($request)
             ->reject(fn (TechnicalServiceRequest $related): bool => $this->isCancelledRequest($related))
             ->values();
+        $payoutApproval = $this->finalPayoutApprovalPayload($request, $requests);
         $rows = $requests
-            ->map(fn (TechnicalServiceRequest $related): array => $this->earningBreakdownRow($request, $related))
+            ->map(fn (TechnicalServiceRequest $related): array => $this->earningBreakdownRow($request, $related, $payoutApproval))
             ->values();
         $current = $rows->firstWhere('id', $request->id);
-        $laborTotal = round((float) $rows->sum('labor_amount'), 2);
-        $routeTotal = round((float) $rows->sum('route_fee_amount'), 2);
-        $total = round((float) $rows->sum('total_amount'), 2);
+        $includedRows = $rows
+            ->filter(fn (array $row): bool => (bool) ($row['payout_included'] ?? true))
+            ->values();
+        if ($includedRows->isEmpty() && $rows->isNotEmpty() && ($payoutApproval['status'] ?? null) !== 'approved') {
+            $includedRows = $rows;
+        }
+        $laborTotal = round((float) $includedRows->sum('labor_amount'), 2);
+        $routeTotal = round((float) $includedRows->sum('route_fee_amount'), 2);
+        $total = round((float) $includedRows->sum('total_amount'), 2);
         $technicianNames = $rows
             ->pluck('technician_name')
             ->filter(fn (mixed $name): bool => filled($name))
@@ -2190,17 +2198,122 @@ class TechnicalServiceWorkflowService
                 'technician_count' => $technicianNames->count(),
                 'technician_names' => $technicianNames->all(),
                 'is_multi_technician' => $technicianNames->count() > 1,
+                'payout_approval_required' => (bool) ($payoutApproval['required'] ?? false),
+                'payout_approval_status' => $payoutApproval['status'] ?? 'not_required',
+                'payout_approval_status_label' => $payoutApproval['status_label'] ?? 'Tekil iş',
+                'included_job_count' => $includedRows->count(),
+                'approved_job_count' => count($payoutApproval['approved_request_ids'] ?? []),
+                'excluded_job_count' => count($payoutApproval['excluded_request_ids'] ?? []),
             ],
+        ];
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @return array<string, mixed>
+     */
+    private function finalPayoutApprovalPayload(TechnicalServiceRequest $request, Collection $requests): array
+    {
+        $requestIds = $requests
+            ->map(fn (TechnicalServiceRequest $related): int => (int) $related->id)
+            ->values();
+        $serviceVisitCount = $requests
+            ->filter(fn (TechnicalServiceRequest $related): bool => $related->parent_request_id !== null || filled($related->service_code))
+            ->count();
+        $required = $serviceVisitCount > 1;
+
+        if (! $required) {
+            return [
+                'required' => false,
+                'status' => 'not_required',
+                'status_label' => 'Tekil iş',
+                'approved_request_ids' => [],
+                'excluded_request_ids' => [],
+            ];
+        }
+
+        $root = $this->rootFinancialRequest($request) ?? $request;
+        $payloads = [
+            is_array($root->operation_control_payload) ? $root->operation_control_payload : [],
+            is_array($request->operation_control_payload) ? $request->operation_control_payload : [],
+        ];
+        $approval = null;
+        foreach ($payloads as $payload) {
+            if (is_array($payload['ops_final_payout_approval'] ?? null)) {
+                $approval = $payload['ops_final_payout_approval'];
+                break;
+            }
+        }
+
+        if (! is_array($approval)) {
+            return [
+                'required' => true,
+                'status' => 'pending',
+                'status_label' => 'İş bazlı onay bekliyor',
+                'approved_request_ids' => [],
+                'excluded_request_ids' => [],
+            ];
+        }
+
+        $approved = collect($approval['approved_request_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0 && $requestIds->contains($id))
+            ->unique()
+            ->values();
+        $excluded = $requestIds
+            ->reject(fn (int $id): bool => $approved->contains($id))
+            ->values();
+
+        return [
+            'required' => true,
+            'status' => 'approved',
+            'status_label' => 'İş bazlı onaylandı',
+            'approved_request_ids' => $approved->all(),
+            'excluded_request_ids' => $excluded->all(),
+            'approved_at' => $approval['approved_at'] ?? null,
+            'approved_by_user_id' => $approval['approved_by_user_id'] ?? null,
         ];
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function earningBreakdownRow(TechnicalServiceRequest $currentRequest, TechnicalServiceRequest $request): array
+    private function earningBreakdownApprovalFields(TechnicalServiceRequest $request, array $payoutApproval): array
+    {
+        if (! (bool) ($payoutApproval['required'] ?? false)) {
+            return [
+                'payout_included' => true,
+                'payout_approval_status' => 'not_required',
+                'payout_approval_status_label' => 'Tekil iş',
+            ];
+        }
+
+        if (($payoutApproval['status'] ?? null) !== 'approved') {
+            return [
+                'payout_included' => true,
+                'payout_approval_status' => 'pending',
+                'payout_approval_status_label' => 'Onay bekliyor',
+            ];
+        }
+
+        $approvedIds = collect($payoutApproval['approved_request_ids'] ?? [])->map(fn (mixed $id): int => (int) $id);
+        $included = $approvedIds->contains((int) $request->id);
+
+        return [
+            'payout_included' => $included,
+            'payout_approval_status' => $included ? 'approved' : 'excluded',
+            'payout_approval_status_label' => $included ? 'Onaylandı' : 'Hakedişten çıkarıldı',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function earningBreakdownRow(TechnicalServiceRequest $currentRequest, TechnicalServiceRequest $request, array $payoutApproval = []): array
     {
         $request->loadMissing(['latestAssignmentOffer.technician', 'technicianRecord']);
         $completedSnapshot = $this->completedEarningSnapshot($request);
+        $approvalFields = $this->earningBreakdownApprovalFields($request, $payoutApproval);
         if ($completedSnapshot !== null) {
             $laborAmount = round((float) ($completedSnapshot['labor_amount'] ?? 0), 2);
             $routeFeeAmount = round((float) ($completedSnapshot['route_fee_amount'] ?? 0), 2);
@@ -2239,6 +2352,7 @@ class TechnicalServiceWorkflowService
                 'paid_at' => $paymentStatus['paid_at'],
                 'is_confirmed' => $payoutStatus === 'confirmed',
                 'is_draft' => $payoutStatus === 'draft',
+                ...$approvalFields,
                 'source' => 'completed_earning_snapshot',
                 'completed_at' => $this->dateTimeString($request->completed_at),
             ];
@@ -2286,6 +2400,7 @@ class TechnicalServiceWorkflowService
             'paid_at' => $paymentStatus['paid_at'],
             'is_confirmed' => $payoutStatus === 'confirmed',
             'is_draft' => $payoutStatus === 'draft',
+            ...$approvalFields,
             'source' => $offer instanceof TechnicalServiceAssignmentOffer
                 ? 'assignment_offer'
                 : ($totalAmount > 0 ? 'request_default' : 'none'),
@@ -2584,6 +2699,12 @@ class TechnicalServiceWorkflowService
             'technician_count' => $rootTotal['technician_count'] ?? 0,
             'technician_names' => $rootTotal['technician_names'] ?? [],
             'is_multi_technician' => (bool) ($rootTotal['is_multi_technician'] ?? false),
+            'payout_approval_required' => (bool) ($rootTotal['payout_approval_required'] ?? false),
+            'payout_approval_status' => $rootTotal['payout_approval_status'] ?? 'not_required',
+            'payout_approval_status_label' => $rootTotal['payout_approval_status_label'] ?? 'Tekil iş',
+            'included_job_count' => $rootTotal['included_job_count'] ?? ($rootTotal['job_count'] ?? 0),
+            'approved_job_count' => $rootTotal['approved_job_count'] ?? 0,
+            'excluded_job_count' => $rootTotal['excluded_job_count'] ?? 0,
         ];
     }
 
@@ -3837,7 +3958,12 @@ class TechnicalServiceWorkflowService
 
         if ($root instanceof TechnicalServiceRequest && ! array_key_exists((int) $request->id, $this->rootFinancialRequestsCache)) {
             $siblings = TechnicalServiceRequest::query()
-                ->with(['technicianRecord', 'uploads', 'events' => fn ($query) => $query->latest()->limit(6)])
+                ->with([
+                    'technicianRecord',
+                    'uploads',
+                    'events' => fn ($query) => $query->latest()->limit(8),
+                    'partRequests' => fn ($query) => $query->latest()->limit(6),
+                ])
                 ->where(function ($query) use ($root, $rootMrn): void {
                     $query->where('parent_request_id', $root->id);
 
@@ -3857,6 +3983,12 @@ class TechnicalServiceWorkflowService
         }
 
         $partRequestSerializer = app(TechnicalServicePartRequestService::class);
+        $historyRequests = collect([$root])
+            ->filter(fn ($record): bool => $record instanceof TechnicalServiceRequest)
+            ->merge($siblings)
+            ->unique('id')
+            ->values();
+        $this->loadServiceVisitHistoryRelations($historyRequests);
 
         return [
             'root_mrn' => $rootMrn !== '' ? $rootMrn : null,
@@ -3864,24 +3996,20 @@ class TechnicalServiceWorkflowService
             'reason' => $request->service_visit_reason,
             'reason_label' => TechnicalServiceUiLabelService::serviceVisitReasonLabel($request->service_visit_reason),
             'parent_request' => $root instanceof TechnicalServiceRequest ? $this->serviceVisitRequestSummary($root) : null,
-            'parent_events' => $root instanceof TechnicalServiceRequest
-                ? array_slice($this->eventPayload($root->events), 0, 8)
-                : [],
-            'parent_part_requests' => $root instanceof TechnicalServiceRequest
-                ? $root->partRequests
-                    ->map(fn ($partRequest): array => $partRequestSerializer->serialize($partRequest))
-                    ->values()
-                    ->all()
-                : [],
+            'parent_events' => $this->serviceVisitTimelineEvents($historyRequests),
+            'parent_part_requests' => $historyRequests
+                ->flatMap(fn (TechnicalServiceRequest $record) => $record->partRequests)
+                ->sortByDesc('created_at')
+                ->take(12)
+                ->map(fn ($partRequest): array => $partRequestSerializer->serialize($partRequest))
+                ->values()
+                ->all(),
             'sibling_service_visits' => $siblings
                 ->reject(fn (TechnicalServiceRequest $sibling): bool => (int) $sibling->id === (int) $request->id)
                 ->map(fn (TechnicalServiceRequest $sibling): array => $this->serviceVisitRequestSummary($sibling))
                 ->values()
                 ->all(),
-            'history_records' => collect([$root])
-                ->filter(fn ($record): bool => $record instanceof TechnicalServiceRequest)
-                ->merge($siblings)
-                ->unique('id')
+            'history_records' => $historyRequests
                 ->map(fn (TechnicalServiceRequest $record): array => $this->serviceVisitHistoryRecord($record))
                 ->values()
                 ->all(),
@@ -3909,6 +4037,21 @@ class TechnicalServiceWorkflowService
             'events' => fn ($query) => $query->latest()->limit(8),
             'partRequests' => fn ($query) => $query->latest()->limit(6),
         ]);
+    }
+
+    /**
+     * @param Collection<int, TechnicalServiceRequest> $requests
+     * @return array<int, array<string, mixed>>
+     */
+    private function serviceVisitTimelineEvents(Collection $requests): array
+    {
+        $events = $requests
+            ->flatMap(fn (TechnicalServiceRequest $record) => $record->events)
+            ->sortByDesc('created_at')
+            ->take(12)
+            ->values();
+
+        return $this->eventPayload($events);
     }
 
     /**

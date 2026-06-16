@@ -1511,6 +1511,80 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(['Montaj', 'Servis'], collect($payload['earning_breakdown']['rows'])->pluck('kind_label')->all());
     }
 
+    public function test_multiple_srv_approve_selected_visits_excludes_unchecked_from_payout_total(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Çoklu SRV Onay Ustası',
+            'phone' => '+905551111128',
+            'city' => 'Ankara',
+            'active' => true,
+        ]);
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-MULTI-SRV-PAYOUT',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $firstSrv = $this->technicalServiceRequest([
+            'mrn' => 'SRV-MULTI-PAYOUT-001',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-MULTI-PAYOUT-001',
+            'service_visit_reason' => 'spare_part',
+            'service_type' => 'Servis',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $secondSrv = $this->technicalServiceRequest([
+            'mrn' => 'SRV-MULTI-PAYOUT-002',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => 2,
+            'service_code' => 'SRV-MULTI-PAYOUT-002',
+            'service_visit_reason' => 'revisit',
+            'service_type' => 'Servis',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+
+        foreach ([[$parent, 2000, 100], [$firstSrv, 1500, 300], [$secondSrv, 900, 200]] as [$request, $labor, $route]) {
+            TechnicalServiceAssignmentOffer::query()->create([
+                'technical_service_request_id' => $request->id,
+                'technical_service_technician_id' => $technician->id,
+                'labor_amount' => $labor,
+                'route_fee_amount' => $route,
+                'total_amount' => $labor + $route,
+                'currency' => 'TRY',
+                'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+                'sent_at' => now(),
+            ]);
+        }
+
+        $pendingPayload = app(TechnicalServiceWorkflowService::class)->serialize($firstSrv->fresh(), true);
+        $this->assertTrue($pendingPayload['earning_breakdown']['root_total']['payout_approval_required']);
+        $this->assertSame('pending', $pendingPayload['earning_breakdown']['root_total']['payout_approval_status']);
+        $this->assertSame(5000.0, $pendingPayload['earning_breakdown']['root_total']['total_amount']);
+
+        $parent->forceFill([
+            'operation_control_payload' => [
+                'ops_final_payout_approval' => [
+                    'approved_request_ids' => [$parent->id, $firstSrv->id],
+                    'excluded_request_ids' => [$secondSrv->id],
+                    'approved_at' => now()->toISOString(),
+                    'approved_by_user_id' => null,
+                ],
+            ],
+        ])->save();
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($firstSrv->fresh(), true);
+        $rows = collect($payload['earning_breakdown']['rows']);
+        $this->assertSame(3900.0, $payload['earning_breakdown']['root_total']['total_amount']);
+        $this->assertTrue($rows->firstWhere('id', $parent->id)['payout_included']);
+        $this->assertTrue($rows->firstWhere('id', $firstSrv->id)['payout_included']);
+        $this->assertFalse($rows->firstWhere('id', $secondSrv->id)['payout_included']);
+        $this->assertSame('Hakedişten çıkarıldı', $rows->firstWhere('id', $secondSrv->id)['payout_approval_status_label']);
+    }
+
     public function test_srv_assignment_does_not_require_parent_mount_or_door_checks(): void
     {
         $parent = $this->technicalServiceRequest([

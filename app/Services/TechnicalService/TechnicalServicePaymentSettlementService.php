@@ -4,6 +4,7 @@ namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 
@@ -16,9 +17,11 @@ class TechnicalServicePaymentSettlementService
     {
         $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $rawPayload['callback_payload'] = $payload;
+        $providerReference = $this->paymentReferenceFromPayload($payload) ?: $payment->provider_reference;
 
         $payment->forceFill([
             'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'provider_reference' => $providerReference,
             'paid_at' => $payment->paid_at ?? now(),
             'raw_payload' => $rawPayload,
         ])->save();
@@ -105,6 +108,41 @@ class TechnicalServicePaymentSettlementService
             return;
         }
 
+        $partRequest = null;
+        $partRequestId = $payload['part_request_id'] ?? null;
+        if (is_numeric($partRequestId)) {
+            $partRequest = TechnicalServicePartRequest::query()
+                ->whereKey((int) $partRequestId)
+                ->where('technical_service_request_id', $request->id)
+                ->first();
+        }
+
+        if ($partRequest instanceof TechnicalServicePartRequest) {
+            $metadata = is_array($partRequest->metadata) ? $partRequest->metadata : [];
+            $customerCharge = is_array($metadata['customer_charge'] ?? null) ? $metadata['customer_charge'] : [];
+            $paidAt = $payment->paid_at ?? now();
+            $metadata['charge_status'] = TechnicalServiceMountPayment::STATUS_PAID;
+            $metadata['payment_status'] = TechnicalServiceMountPayment::STATUS_PAID;
+            $metadata['paid_amount'] = round((float) $payment->amount, 2);
+            $metadata['paid_at'] = $paidAt->toISOString();
+            $metadata['payment_reference'] = $payment->provider_reference;
+            $metadata['provider_reference'] = $payment->provider_reference;
+            $metadata['payment_provider'] = $payment->provider;
+            $metadata['customer_charge'] = [
+                ...$customerCharge,
+                'id' => $payment->id,
+                'status' => TechnicalServiceMountPayment::STATUS_PAID,
+                'status_label' => 'Ödendi',
+                'total_amount' => round((float) $payment->amount, 2),
+                'total_amount_label' => number_format((float) $payment->amount, 0, ',', '.').' TL',
+                'provider' => $payment->provider,
+                'provider_reference' => $payment->provider_reference,
+                'payment_reference' => $payment->provider_reference,
+                'paid_at' => $paidAt->toIso8601String(),
+            ];
+            $partRequest->forceFill(['metadata' => $metadata])->save();
+        }
+
         $request->events()->create([
             'event_type' => 'customer_charge_paid',
             'title' => 'Müşteri servis/parça ödemesi alındı',
@@ -120,8 +158,47 @@ class TechnicalServicePaymentSettlementService
                 'part_amount' => (float) ($payload['part_amount'] ?? 0),
                 'amount' => (float) $payment->amount,
                 'currency' => $payment->currency,
+                'part_request_id' => $partRequest?->id,
+                'provider_reference' => $payment->provider_reference,
             ],
         ]);
+
+        if ($partRequest instanceof TechnicalServicePartRequest) {
+            $request->events()->create([
+                'event_type' => 'part_request_payment_paid',
+                'title' => 'Parça ödemesi alındı',
+                'note' => $payment->provider_reference
+                    ? 'Dekont / referans: '.$payment->provider_reference
+                    : 'Müşteri ödeme linki üzerinden parça tahsilatı onaylandı.',
+                'from_status' => $request->workflow_status,
+                'to_status' => $request->workflow_status,
+                'author_user_id' => null,
+                'metadata' => [
+                    'part_request_id' => $partRequest->id,
+                    'payment_id' => $payment->id,
+                    'provider' => $payment->provider,
+                    'provider_reference' => $payment->provider_reference,
+                    'amount' => (float) $payment->amount,
+                    'currency' => $payment->currency,
+                    'paid_at' => ($payment->paid_at ?? now())->toIso8601String(),
+                ],
+            ]);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function paymentReferenceFromPayload(array $payload): ?string
+    {
+        foreach (['provider_reference', 'payment_reference', 'reference', 'receipt_no', 'dekont_no', 'transaction_id'] as $key) {
+            $value = $payload[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return null;
     }
 
     /**

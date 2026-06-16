@@ -219,6 +219,9 @@ export type ServiceRequestEarningBreakdownRow = {
   total_amount_label?: string | null
   status?: string | null
   status_label?: string | null
+  payout_included?: boolean
+  payout_approval_status?: string | null
+  payout_approval_status_label?: string | null
   completed_at?: string | null
 }
 
@@ -238,6 +241,12 @@ export type ServiceRequestEarningBreakdown = {
     technician_count?: number
     technician_names?: string[]
     is_multi_technician?: boolean
+    payout_approval_required?: boolean
+    payout_approval_status?: string | null
+    payout_approval_status_label?: string | null
+    included_job_count?: number
+    approved_job_count?: number
+    excluded_job_count?: number
   }
 }
 
@@ -381,6 +390,12 @@ export type ServiceRequestPartRequest = {
   charge_status?: string | null
   payment_id?: number | string | null
   payment_url?: string | null
+  payment_reference?: string | null
+  provider_reference?: string | null
+  payment_provider?: string | null
+  paid_at?: string | null
+  paid_amount?: number | null
+  paid_amount_label?: string | null
   customer_charge?: {
     id?: number | string | null
     status?: string | null
@@ -392,6 +407,11 @@ export type ServiceRequestPartRequest = {
     total_amount?: number | null
     total_amount_label?: string | null
     payment_url?: string | null
+    provider?: string | null
+    provider_reference?: string | null
+    payment_reference?: string | null
+    paid_at?: string | null
+    currency?: string | null
   } | null
   created_at?: string | null
   updated_at?: string | null

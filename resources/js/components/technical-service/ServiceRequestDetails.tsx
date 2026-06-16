@@ -118,14 +118,14 @@ type ServiceRequestDetailsProps = {
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
   onPartnerAppointmentProposalReject?: (actionId: number | string, payload: { note: string, status?: string }) => void | Promise<void>
-  onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
+  onPartnerCompletionApprove?: (actionId: number | string, payload?: { note?: string | null, approved_visit_ids?: Array<number | string> }) => void | Promise<void>
   onRevisitServiceVisitCreate?: (actionId: number | string, payload?: { note?: string | null }) => void | Promise<void>
   onPartRequestCreate?: (payload: { part_name: string, part_code?: string | null, quantity?: number | null, charge_decision: 'free' | 'chargeable', service_amount?: number | null, part_amount?: number | null, note?: string | null, partner_message?: string | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestTransition?: (partRequestId: number | string, payload: { status: string, note?: string | null, partner_message?: string | null, shipment_provider?: string | null, tracking_no?: string | null, charge_decision?: string | null, service_amount?: number | null, part_amount?: number | null, customer_message?: string | null }) => void | Promise<void>
   onPartRequestServiceVisitCreate?: (partRequestId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onAssignmentOfferUpdate?: (offerId: number | string, payload: { labor_amount: number, route_fee_amount: number, total_amount?: number, note?: string | null }) => void | Promise<void>
   onFieldDocumentReview?: (uploadId: number | string, payload: { status: 'accepted' | 'rejected', note?: string | null }) => void | Promise<void>
-  onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null }) => void | Promise<void>
+  onOpsExtraDocumentUpload?: (payload: { files: File[], note?: string | null, document_type?: string | null }) => void | Promise<void>
   onCustomerApprovalResend?: (payload?: { note?: string | null }) => void | Promise<void>
   fieldDocumentReviewInFlight?: string | null
   fieldDocumentReviewError?: string | null
@@ -1443,6 +1443,7 @@ export function ServiceRequestDetails({
   const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
   const [appointmentSelectedSlotByAction, setAppointmentSelectedSlotByAction] = useState<Record<string, number>>({})
   const [completionReviewNote, setCompletionReviewNote] = useState('')
+  const [finalPayoutSelectionByRequest, setFinalPayoutSelectionByRequest] = useState<Record<string, string[]>>({})
   const [offerLaborInput, setOfferLaborInput] = useState('')
   const [offerRouteInput, setOfferRouteInput] = useState('')
   const [offerNoteInput, setOfferNoteInput] = useState('')
@@ -1467,6 +1468,7 @@ export function ServiceRequestDetails({
   const [partDecisionPartAmount, setPartDecisionPartAmount] = useState('')
   const [partDecisionMessage, setPartDecisionMessage] = useState('')
   const [opsExtraFiles, setOpsExtraFiles] = useState<File[]>([])
+  const [opsExtraDocumentType, setOpsExtraDocumentType] = useState<'ops_extra_photo' | 'ops_door_photo' | 'ops_additional_document'>('ops_extra_photo')
   const [opsExtraNote, setOpsExtraNote] = useState('')
   const [opsExtraUploading, setOpsExtraUploading] = useState(false)
   const [opsExtraMessage, setOpsExtraMessage] = useState<string | null>(null)
@@ -2848,6 +2850,7 @@ export function ServiceRequestDetails({
   const opsExtraFieldDocuments = fieldCompletionDocuments.filter((document) => (
     document.category === 'ops_extra_document'
     || document.field_code === 'ops_extra_photo'
+    || document.field_code === 'ops_door_photo'
     || document.field_code === 'ops_additional_document'
   ))
   const fieldCompletionDocumentStatuses = fieldCompletionDocumentTypes.map((type) => {
@@ -2905,6 +2908,30 @@ export function ServiceRequestDetails({
     ...(request.customerClosureApprovalStatus === 'onaylandı' ? [] : ['Müşteri onayı bekliyor']),
     ...(backendControlComplete ? [] : ['Backend kontrol eksik']),
   ]
+  const finalPayoutRows = earningBreakdown?.rows ?? []
+  const finalPayoutApprovalRequired = Boolean(earningBreakdown?.root_total?.payout_approval_required)
+  const defaultFinalPayoutSelection = finalPayoutRows
+    .filter((row) => row.payout_included !== false)
+    .map((row) => String(row.id))
+  const finalPayoutSelectionKey = String(request.id)
+  const finalPayoutSelectedIds = finalPayoutSelectionByRequest[finalPayoutSelectionKey] ?? defaultFinalPayoutSelection
+  const finalPayoutSelectedSet = new Set(finalPayoutSelectedIds)
+  const finalPayoutSelectedRows = finalPayoutRows.filter((row) => finalPayoutSelectedSet.has(String(row.id)))
+  const finalPayoutSelectedTotal = finalPayoutSelectedRows.reduce((total, row) => total + Number(row.total_amount ?? 0), 0)
+  const toggleFinalPayoutRow = (rowId: number | string) => {
+    const id = String(rowId)
+    setFinalPayoutSelectionByRequest((current) => {
+      const selected = current[finalPayoutSelectionKey] ?? defaultFinalPayoutSelection
+      const next = selected.includes(id)
+        ? selected.filter((item) => item !== id)
+        : [...selected, id]
+
+      return {
+        ...current,
+        [finalPayoutSelectionKey]: next,
+      }
+    })
+  }
   const reviewFieldDocumentsOverall = async (status: 'accepted' | 'rejected') => {
     if (! onFieldDocumentReview || reviewableFieldDocuments.length === 0) {
       return
@@ -2953,6 +2980,7 @@ export function ServiceRequestDetails({
       await onOpsExtraDocumentUpload({
         files: opsExtraFiles,
         note: opsExtraNote.trim() || null,
+        document_type: opsExtraDocumentType,
       })
       setOpsExtraFiles([])
       setOpsExtraNote('')
@@ -4089,6 +4117,12 @@ export function ServiceRequestDetails({
                               {partRequest.customer_charge?.status_label ? (
                                 <p>Ödeme: {partRequest.customer_charge.status_label}</p>
                               ) : null}
+                              {partRequest.customer_charge?.paid_at || partRequest.paid_at ? (
+                                <p>Ödeme tarihi: {dateTimeOrEmpty(partRequest.customer_charge?.paid_at ?? partRequest.paid_at, '-')}</p>
+                              ) : null}
+                              {partRequest.customer_charge?.payment_reference || partRequest.payment_reference || partRequest.provider_reference ? (
+                                <p>Referans: {displayOrEmpty(partRequest.customer_charge?.payment_reference ?? partRequest.payment_reference ?? partRequest.provider_reference, '-')}</p>
+                              ) : null}
                               {partRequest.payment_url ? (
                                 <div className="flex flex-wrap items-center gap-2">
                                   <a href={partRequest.payment_url} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
@@ -5098,6 +5132,46 @@ export function ServiceRequestDetails({
                     ))}
                   </div>
                 ) : null}
+                {finalPayoutApprovalRequired ? (
+                  <div className="grid gap-2 rounded-2xl border border-violet-200 bg-white p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-950">İş bazlı hakediş onayı</p>
+                        <p className="mt-1 text-xs text-slate-600">MRN altında birden fazla SRV var. Hakedişe dahil edilecek işleri işaretleyin.</p>
+                      </div>
+                      <Badge variant={finalPayoutSelectedRows.length > 0 ? 'secondary' : 'warning'}>
+                        {finalPayoutSelectedRows.length} iş seçili
+                      </Badge>
+                    </div>
+                    <div className="grid gap-2">
+                      {finalPayoutRows.map((row) => {
+                        const rowId = String(row.id)
+                        const checked = finalPayoutSelectedSet.has(rowId)
+
+                        return (
+                          <label key={`${row.id}-${row.mrn}`} className={`grid cursor-pointer gap-2 rounded-xl border px-3 py-2 text-xs sm:grid-cols-[auto_minmax(0,1fr)_90px_90px_100px] ${checked ? 'border-emerald-200 bg-emerald-50 text-emerald-950' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleFinalPayoutRow(row.id)}
+                              className="mt-1 h-4 w-4 rounded border-slate-300"
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate font-semibold">{row.kind_label ?? 'İş'} - {row.display_mrn ?? row.mrn}</span>
+                              <span className="block truncate text-[11px]">Usta: {displayOrEmpty(row.technician_name, 'Usta bilgisi yok')}</span>
+                            </span>
+                            <span>İşçilik: {row.labor_amount_label ?? formatMoneyValue(row.labor_amount)}</span>
+                            <span>Yol: {row.route_fee_amount_label ?? formatMoneyValue(row.route_fee_amount)}</span>
+                            <strong>Toplam: {row.total_amount_label ?? formatMoneyValue(row.total_amount)}</strong>
+                          </label>
+                        )
+                      })}
+                    </div>
+                    <p className="text-xs font-semibold text-violet-900">
+                      Onaylanacak hakediş toplamı: {formatMoneyValue(finalPayoutSelectedTotal)}
+                    </p>
+                  </div>
+                ) : null}
                 <label className="grid gap-1 text-xs font-semibold text-violet-900">
                   Son kontrol notu
                   <Input value={completionReviewNote} onChange={(event) => setCompletionReviewNote(event.target.value)} placeholder="Operasyon son kontrol notu" />
@@ -5227,7 +5301,19 @@ export function ServiceRequestDetails({
                   <p className="text-sm font-semibold text-blue-950">OPS ek görsel</p>
                   <p className="mt-1 text-xs text-blue-800">Bu görseller zorunlu üç saha belgesini değiştirmez; aynı önizleme yapısında ek kanıt olarak görünür.</p>
                 </div>
-                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+                <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+                  <label className="grid gap-1 text-xs font-semibold text-blue-900">
+                    Tür
+                    <select
+                      value={opsExtraDocumentType}
+                      onChange={(event) => setOpsExtraDocumentType(event.target.value as typeof opsExtraDocumentType)}
+                      className="h-10 rounded-md border border-blue-100 bg-white px-3 text-sm text-blue-950 outline-none transition focus:border-blue-300 focus:ring-blue-100/70 focus:ring-[3px]"
+                    >
+                      <option value="ops_extra_photo">OPS ek görsel</option>
+                      <option value="ops_door_photo">OPS kapı görseli</option>
+                      <option value="ops_additional_document">OPS ek belge</option>
+                    </select>
+                  </label>
                   <label className="grid gap-1 text-xs font-semibold text-blue-900">
                     Görseller
                     <Input
@@ -5384,11 +5470,14 @@ export function ServiceRequestDetails({
             <Button
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
               type="button"
-              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove}
-              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : undefined}
-              onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, { note: completionReviewNote || null })}
+              disabled={isActionDisabled || finalCompletionMissingReasons.length > 0 || !onPartnerCompletionApprove || (finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0)}
+              title={finalCompletionMissingReasons.length > 0 ? finalCompletionMissingReasons.join(' ') : finalPayoutApprovalRequired && finalPayoutSelectedRows.length === 0 ? 'Hakedişe dahil edilecek en az bir iş seçilmelidir.' : undefined}
+              onClick={() => void onPartnerCompletionApprove?.(finalCheckCompletionAction.id, {
+                note: completionReviewNote || null,
+                approved_visit_ids: finalPayoutApprovalRequired ? finalPayoutSelectedIds : undefined,
+              })}
             >
-              Son kontrolü tamamla
+              {finalPayoutApprovalRequired ? 'İşaretlileri onayla' : 'Son kontrolü tamamla'}
             </Button>
           ) : null}
           {canReassignAfterReview ? (

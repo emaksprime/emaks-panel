@@ -264,6 +264,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         $validated = $request->validate([
             'note' => ['nullable', 'string', 'max:2000'],
+            'approved_visit_ids' => ['nullable', 'array'],
+            'approved_visit_ids.*' => ['integer'],
         ]);
 
         $blockers = $this->completionApprovalBlockers($technicalServiceRequest->refresh(), $partnerJobAction);
@@ -272,8 +274,12 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'completion' => $blockers,
             ]);
         }
+        $payoutApproval = $this->completionPayoutApprovalContext(
+            $technicalServiceRequest->refresh(),
+            $validated['approved_visit_ids'] ?? null,
+        );
 
-        $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request): array {
+        $result = DB::transaction(function () use ($technicalServiceRequest, $partnerJobAction, $validated, $request, $payoutApproval): array {
             $from = $technicalServiceRequest->workflow_status;
             $technicalServiceRequest->forceFill([
                 'photo_status' => 'tamamlandı',
@@ -307,12 +313,19 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'completion_block_reason' => null,
             ])->save();
             $closedParent = $this->serviceVisits->closeParentIfChildCompleted($job->refresh(), $request->user());
+            if (($payoutApproval['required'] ?? false) === true) {
+                $this->persistOpsFinalPayoutApproval($job->refresh(), $payoutApproval, $request);
+            }
+            $storedPayoutApproval = $payoutApproval;
+            unset($storedPayoutApproval['rows']);
+
             $payload = is_array($partnerJobAction->payload) ? $partnerJobAction->payload : [];
             $payload['ops_final_check'] = [
                 'approved_at' => now()->toISOString(),
                 'approved_by_user_id' => $request->user()?->id,
                 'note' => $validated['note'] ?? null,
                 'closed_parent_request_id' => $closedParent?->id,
+                'payout_approval' => ($payoutApproval['required'] ?? false) === true ? $storedPayoutApproval : null,
             ];
             $partnerJobAction->forceFill([
                 'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
@@ -328,6 +341,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'author_user_id' => $request->user()?->id,
                 'metadata' => [
                     'partner_job_action_id' => $partnerJobAction->id,
+                    'payout_approval' => ($payoutApproval['required'] ?? false) === true ? $storedPayoutApproval : null,
                 ],
             ]);
 
@@ -370,6 +384,99 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         });
 
         return response()->json($result);
+    }
+
+    /**
+     * @param array<int, mixed>|null $approvedVisitIds
+     * @return array<string, mixed>
+     */
+    private function completionPayoutApprovalContext(TechnicalServiceRequest $request, ?array $approvedVisitIds): array
+    {
+        $payload = $this->workflow->serialize($request, true);
+        $breakdown = is_array($payload['earning_breakdown'] ?? null) ? $payload['earning_breakdown'] : [];
+        $rows = collect($breakdown['rows'] ?? [])
+            ->filter(fn (mixed $row): bool => is_array($row) && isset($row['id']))
+            ->values();
+        $serviceRows = $rows
+            ->filter(fn (array $row): bool => ($row['kind'] ?? null) === 'service')
+            ->values();
+        $required = $serviceRows->count() > 1;
+
+        if (! $required) {
+            return [
+                'required' => false,
+                'approved_request_ids' => [],
+                'excluded_request_ids' => [],
+                'rows' => $rows->all(),
+            ];
+        }
+
+        $validIds = $rows
+            ->pluck('id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+        $approved = collect($approvedVisitIds ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+
+        if ($approved->isEmpty()) {
+            throw ValidationException::withMessages([
+                'approved_visit_ids' => 'Birden fazla SRV varsa hakedişe dahil edilecek işler işaretlenmelidir.',
+            ]);
+        }
+
+        $invalid = $approved->reject(fn (int $id): bool => $validIds->contains($id))->values();
+        if ($invalid->isNotEmpty()) {
+            throw ValidationException::withMessages([
+                'approved_visit_ids' => 'Hakediş onayı bu MRN/SRV grubuna ait olmayan iş içeriyor.',
+            ]);
+        }
+
+        $excluded = $validIds
+            ->reject(fn (int $id): bool => $approved->contains($id))
+            ->values();
+
+        return [
+            'required' => true,
+            'root_request_id' => $breakdown['root_request_id'] ?? $request->id,
+            'root_mrn' => $breakdown['root_mrn'] ?? $request->root_mrn ?? $request->mrn,
+            'approved_request_ids' => $approved->all(),
+            'excluded_request_ids' => $excluded->all(),
+            'approved_at' => now()->toISOString(),
+            'approved_by_user_id' => request()->user()?->id,
+            'rows' => $rows->all(),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $approval
+     */
+    private function persistOpsFinalPayoutApproval(TechnicalServiceRequest $job, array $approval, Request $request): void
+    {
+        $targetIds = collect([$approval['root_request_id'] ?? null, $job->id])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+
+        TechnicalServiceRequest::query()
+            ->whereIn('id', $targetIds->all())
+            ->lockForUpdate()
+            ->get()
+            ->each(function (TechnicalServiceRequest $target) use ($approval, $request): void {
+                $operationPayload = is_array($target->operation_control_payload) ? $target->operation_control_payload : [];
+                $operationPayload['ops_final_payout_approval'] = [
+                    'approved_request_ids' => $approval['approved_request_ids'] ?? [],
+                    'excluded_request_ids' => $approval['excluded_request_ids'] ?? [],
+                    'approved_at' => $approval['approved_at'] ?? now()->toISOString(),
+                    'approved_by_user_id' => $approval['approved_by_user_id'] ?? $request->user()?->id,
+                ];
+                $target->forceFill(['operation_control_payload' => $operationPayload])->save();
+            });
     }
 
     public function updateAssignmentOffer(
