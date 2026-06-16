@@ -4560,7 +4560,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonValidationErrors('customer_message');
     }
 
-    public function test_ops_extra_document_upload_appears_in_same_preview_payload_without_replacing_partner_documents(): void
+    public function test_ops_extra_photo_and_ops_extra_completion_document_upload_appears_in_same_preview_payload_without_replacing_partner_documents(): void
     {
         Storage::fake('public');
 
@@ -4612,7 +4612,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
     }
 
-    public function test_ops_extra_photo_upload_supports_door_photo_and_invalid_ops_upload_returns_turkish_validation(): void
+    public function test_ops_can_upload_extra_door_photo_and_ops_uploaded_door_photo_appears_in_door_preview_payload(): void
     {
         Storage::fake('public');
 
@@ -4620,28 +4620,91 @@ class B2BPartnerPanelAccessTest extends TestCase
         $technician = $this->technician(['name' => 'Ops Door Doc Usta']);
         $job = $this->serviceRequestForTechnician($technician, 'MRN-OPS-DOOR-DOC');
 
-        $this->actingAs($admin)
+        $response = $this->actingAs($admin)
             ->postJson("/api/technical-service/requests/{$job->id}/ops-extra-documents", [
                 'ops_extra_documents' => [
-                    UploadedFile::fake()->create('ops-door.jpg', 256, 'image/jpeg'),
+                    UploadedFile::fake()->create('ops-door-front.jpg', 256, 'image/jpeg'),
                 ],
-                'document_type' => 'ops_door_photo',
+                'document_type' => 'ops_door_front_photo',
                 'note' => 'Kapı görseli operasyon tarafından eklendi.',
             ])
             ->assertOk()
-            ->assertJsonPath('uploads.0.field_code', 'ops_door_photo');
+            ->assertJsonPath('uploads.0.field_code', 'ops_door_front_photo');
 
-        $documents = $this->actingAs($admin)
-            ->getJson("/api/technical-service/requests/{$job->id}")
+        $doorPhotos = collect($response->json('request.door_photos'));
+        $this->assertCount(1, $doorPhotos);
+        $this->assertSame('ops_door_front_photo', $doorPhotos->first()['field_code'] ?? null);
+        $this->assertSame(TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT, $doorPhotos->first()['category'] ?? null);
+        $this->assertSame('OPS Kapı Ön Yüzü', $doorPhotos->first()['label'] ?? null);
+        $this->assertNotEmpty($doorPhotos->first()['preview_url'] ?? null);
+
+        $fieldDocuments = collect($response->json('request.field_completion_documents'));
+        $this->assertFalse($fieldDocuments->contains(fn (array $document): bool => ($document['field_code'] ?? null) === 'ops_door_front_photo'));
+
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'ops_extra_document_uploaded',
+            'title' => 'OPS kapı ön yüz görseli yüklendi',
+        ]);
+    }
+
+    public function test_ops_door_photo_does_not_replace_partner_required_documents_and_keeps_document_source_as_ops(): void
+    {
+        Storage::fake('public');
+
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Ops Door Scope Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-OPS-DOOR-SCOPE');
+
+        foreach (['before_photo', 'after_photo', 'warranty_document_photo'] as $fieldCode) {
+            $this->createPortalFieldDocument($job, $fieldCode);
+        }
+
+        $response = $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$job->id}/ops-extra-documents", [
+                'ops_extra_documents' => [
+                    UploadedFile::fake()->create('ops-door-side.jpg', 256, 'image/jpeg'),
+                ],
+                'document_type' => 'ops_door_side_photo',
+                'note' => 'Yan yüz kontrol görseli.',
+            ])
             ->assertOk()
-            ->json('request.field_completion_documents');
-        $this->assertSame('OPS Kapı Görseli', collect($documents)->firstWhere('field_code', 'ops_door_photo')['label'] ?? null);
+            ->assertJsonPath('status', 'ok');
+
+        $fieldDocuments = collect($response->json('request.field_completion_documents'));
+        $this->assertCount(3, $fieldDocuments);
+        $this->assertSame(
+            ['after_photo', 'before_photo', 'warranty_document_photo'],
+            $fieldDocuments->pluck('field_code')->sort()->values()->all()
+        );
+
+        $doorPhotos = collect($response->json('request.door_photos'));
+        $this->assertTrue($doorPhotos->contains(fn (array $document): bool => ($document['field_code'] ?? null) === 'ops_door_side_photo'));
+
+        $upload = TechnicalServiceRequestUpload::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('field_code', 'ops_door_side_photo')
+            ->first();
+
+        $this->assertNotNull($upload);
+        $this->assertSame(TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT, $upload->category);
+        $this->assertSame('technical_service_ops', $upload->review_payload['source'] ?? null);
+    }
+
+    public function test_ops_door_photo_upload_requires_valid_image_and_returns_turkish_validation(): void
+    {
+        Storage::fake('public');
+
+        $admin = $this->userWithRole('admin', true);
+        $technician = $this->technician(['name' => 'Ops Door Validation Usta']);
+        $job = $this->serviceRequestForTechnician($technician, 'MRN-OPS-DOOR-VALIDATION');
 
         $invalid = $this->actingAs($admin)
             ->postJson("/api/technical-service/requests/{$job->id}/ops-extra-documents", [
                 'ops_extra_documents' => [
                     UploadedFile::fake()->create('not-image.txt', 1, 'text/plain'),
                 ],
+                'document_type' => 'ops_door_back_photo',
             ])
             ->assertStatus(422)
             ->assertJsonValidationErrors('ops_extra_documents.0');
@@ -4649,6 +4712,9 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertIsString($errorText);
         $this->assertStringContainsString('OPS görselleri', $errorText);
         $this->assertStringNotContainsString('validation.mimes', $errorText);
+        $this->assertStringNotContainsString('validation.max.file', $errorText);
+        $this->assertStringNotContainsString('The file field', $errorText);
+        $this->assertStringNotContainsString('kilobytes', $errorText);
     }
 
     public function test_final_control_multiple_srv_requires_per_visit_payout_selection_and_approve_selected_excluded_visit_is_removed_from_payout_total(): void

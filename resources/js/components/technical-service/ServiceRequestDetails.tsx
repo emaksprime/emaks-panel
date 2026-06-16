@@ -8,6 +8,23 @@ import { Input } from '@/components/ui/input'
 import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
+type OpsDoorPhotoType = 'ops_door_front_photo' | 'ops_door_side_photo' | 'ops_door_back_photo' | 'ops_door_photo'
+type OpsExtraDocumentType = 'ops_extra_photo' | OpsDoorPhotoType | 'ops_additional_document'
+
+const OPS_DOOR_PHOTO_FIELD_CODES = new Set<string>([
+  'ops_door_front_photo',
+  'ops_door_side_photo',
+  'ops_door_back_photo',
+  'ops_door_photo',
+])
+
+const OPS_DOOR_PHOTO_OPTIONS: Array<{ value: OpsDoorPhotoType, label: string }> = [
+  { value: 'ops_door_front_photo', label: 'Kapı ön yüzü' },
+  { value: 'ops_door_side_photo', label: 'Kapı yan yüzü' },
+  { value: 'ops_door_back_photo', label: 'Kapı arka yüzü' },
+  { value: 'ops_door_photo', label: 'Ek kapı görseli' },
+]
+
 const statusVariant = (status: ServiceRequest['status']) => {
   switch (status) {
     case 'Yeni':
@@ -1002,6 +1019,14 @@ const doorPhotoLabel = (fieldCode: string | null | undefined): string => {
       return 'Kapı Yan Yüzü'
     case 'door_back_photo':
       return 'Kapı Arka Yüzü'
+    case 'ops_door_front_photo':
+      return 'OPS Kapı Ön Yüzü'
+    case 'ops_door_side_photo':
+      return 'OPS Kapı Yan Yüzü'
+    case 'ops_door_back_photo':
+      return 'OPS Kapı Arka Yüzü'
+    case 'ops_door_photo':
+      return 'OPS Ek Kapı Görseli'
     default:
       return 'Kapı görseli'
   }
@@ -1468,10 +1493,15 @@ export function ServiceRequestDetails({
   const [partDecisionPartAmount, setPartDecisionPartAmount] = useState('')
   const [partDecisionMessage, setPartDecisionMessage] = useState('')
   const [opsExtraFiles, setOpsExtraFiles] = useState<File[]>([])
-  const [opsExtraDocumentType, setOpsExtraDocumentType] = useState<'ops_extra_photo' | 'ops_door_photo' | 'ops_additional_document'>('ops_extra_photo')
+  const [opsExtraDocumentType, setOpsExtraDocumentType] = useState<OpsExtraDocumentType>('ops_extra_photo')
   const [opsExtraNote, setOpsExtraNote] = useState('')
   const [opsExtraUploading, setOpsExtraUploading] = useState(false)
   const [opsExtraMessage, setOpsExtraMessage] = useState<string | null>(null)
+  const [opsDoorPhotoFiles, setOpsDoorPhotoFiles] = useState<File[]>([])
+  const [opsDoorPhotoType, setOpsDoorPhotoType] = useState<OpsDoorPhotoType>('ops_door_photo')
+  const [opsDoorPhotoNote, setOpsDoorPhotoNote] = useState('')
+  const [opsDoorPhotoUploading, setOpsDoorPhotoUploading] = useState(false)
+  const [opsDoorPhotoMessage, setOpsDoorPhotoMessage] = useState<string | null>(null)
   const [historyRecordId, setHistoryRecordId] = useState<number | string | null>(null)
   const selectedPartDecisionRequest = partDecisionRequestId === null
     ? null
@@ -2848,10 +2878,12 @@ export function ServiceRequestDetails({
   const fieldCompletionDocuments = request.fieldCompletionDocuments ?? []
   const previousFieldCompletionDocuments = request.previousFieldCompletionDocuments ?? []
   const opsExtraFieldDocuments = fieldCompletionDocuments.filter((document) => (
-    document.category === 'ops_extra_document'
-    || document.field_code === 'ops_extra_photo'
-    || document.field_code === 'ops_door_photo'
-    || document.field_code === 'ops_additional_document'
+    !OPS_DOOR_PHOTO_FIELD_CODES.has(String(document.field_code ?? ''))
+    && (
+      document.category === 'ops_extra_document'
+      || document.field_code === 'ops_extra_photo'
+      || document.field_code === 'ops_additional_document'
+    )
   ))
   const fieldCompletionDocumentStatuses = fieldCompletionDocumentTypes.map((type) => {
     const document = fieldCompletionDocuments.find((item) => item.field_code === type.field)
@@ -2989,6 +3021,36 @@ export function ServiceRequestDetails({
       setOpsExtraMessage(caught instanceof Error ? caught.message : 'OPS ek görsel yüklenemedi.')
     } finally {
       setOpsExtraUploading(false)
+    }
+  }
+
+  const handleOpsDoorPhotoUpload = async () => {
+    if (!onOpsExtraDocumentUpload) {
+      return
+    }
+
+    if (opsDoorPhotoFiles.length === 0) {
+      setOpsDoorPhotoMessage('Yüklenecek kapı görseli seçilmedi.')
+
+      return
+    }
+
+    setOpsDoorPhotoUploading(true)
+    setOpsDoorPhotoMessage(null)
+
+    try {
+      await onOpsExtraDocumentUpload({
+        files: opsDoorPhotoFiles,
+        note: opsDoorPhotoNote.trim() || null,
+        document_type: opsDoorPhotoType,
+      })
+      setOpsDoorPhotoFiles([])
+      setOpsDoorPhotoNote('')
+      setOpsDoorPhotoMessage('Kapı görseli yüklendi.')
+    } catch (caught) {
+      setOpsDoorPhotoMessage(caught instanceof Error ? caught.message : 'Kapı görseli yüklenemedi.')
+    } finally {
+      setOpsDoorPhotoUploading(false)
     }
   }
 
@@ -3737,6 +3799,50 @@ export function ServiceRequestDetails({
                 })}
               </div>
             )}
+            {onOpsExtraDocumentUpload ? (
+              <div className="grid gap-3 rounded-2xl border border-blue-100 bg-white p-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Görsel ekle</p>
+                  <p className="mt-1 text-xs text-slate-500">OPS tarafından eklenen kapı görseli aynı kapı önizleme gridinde görünür; saha tamamlama belgelerini değiştirmez.</p>
+                </div>
+                <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Görsel tipi
+                    <select
+                      value={opsDoorPhotoType}
+                      onChange={(event) => setOpsDoorPhotoType(event.target.value as OpsDoorPhotoType)}
+                      className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-blue-300 focus:ring-blue-100/70 focus:ring-[3px]"
+                    >
+                      {OPS_DOOR_PHOTO_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Görsel
+                    <Input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(event) => setOpsDoorPhotoFiles(Array.from(event.target.files ?? []))}
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                    Not
+                    <Input value={opsDoorPhotoNote} onChange={(event) => setOpsDoorPhotoNote(event.target.value)} placeholder="Opsiyonel kapı görsel notu" />
+                  </label>
+                  <Button type="button" variant="outline" onClick={() => void handleOpsDoorPhotoUpload()} disabled={opsDoorPhotoUploading || opsDoorPhotoFiles.length === 0}>
+                    {opsDoorPhotoUploading ? 'Yükleniyor...' : 'Görsel ekle'}
+                  </Button>
+                </div>
+                {opsDoorPhotoFiles.length > 0 ? (
+                  <p className="text-xs font-semibold text-blue-800">{opsDoorPhotoFiles.length} dosya seçildi.</p>
+                ) : null}
+                {opsDoorPhotoMessage ? (
+                  <p className="text-xs font-semibold text-blue-800">{opsDoorPhotoMessage}</p>
+                ) : null}
+              </div>
+            ) : null}
             {doorPhotoControlMissing ? (
               <div className="rounded-xl border border-rose-200 bg-rose-50/80 px-3 py-2 text-sm font-semibold text-rose-800">
                 Kapı görseli kontrol edilmedi
@@ -5310,7 +5416,6 @@ export function ServiceRequestDetails({
                       className="h-10 rounded-md border border-blue-100 bg-white px-3 text-sm text-blue-950 outline-none transition focus:border-blue-300 focus:ring-blue-100/70 focus:ring-[3px]"
                     >
                       <option value="ops_extra_photo">OPS ek görsel</option>
-                      <option value="ops_door_photo">OPS kapı görseli</option>
                       <option value="ops_additional_document">OPS ek belge</option>
                     </select>
                   </label>

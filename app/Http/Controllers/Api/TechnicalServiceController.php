@@ -993,7 +993,14 @@ class TechnicalServiceController extends Controller
         $validated = $request->validate([
             'ops_extra_documents' => ['required', 'array', 'min:1', 'max:6'],
             'ops_extra_documents.*' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,gif,heic,heif', 'max:10240'],
-            'document_type' => ['nullable', 'string', Rule::in(['ops_extra_photo', 'ops_door_photo', 'ops_additional_document'])],
+            'document_type' => ['nullable', 'string', Rule::in([
+                'ops_extra_photo',
+                'ops_door_front_photo',
+                'ops_door_side_photo',
+                'ops_door_back_photo',
+                'ops_door_photo',
+                'ops_additional_document',
+            ])],
             'note' => ['nullable', 'string', 'max:1000'],
         ], [
             'ops_extra_documents.required' => 'Yüklenecek OPS görseli seçilmelidir.',
@@ -1016,9 +1023,14 @@ class TechnicalServiceController extends Controller
         $files = $request->file('ops_extra_documents', []);
         $note = trim((string) ($validated['note'] ?? ''));
         $fieldCode = (string) ($validated['document_type'] ?? 'ops_extra_photo');
-        $title = $fieldCode === 'ops_door_photo'
-            ? 'OPS kapı görseli yüklendi'
-            : ($fieldCode === 'ops_additional_document' ? 'OPS ek belge yüklendi' : 'OPS ek görsel yüklendi');
+        $title = match ($fieldCode) {
+            'ops_door_front_photo' => 'OPS kapı ön yüz görseli yüklendi',
+            'ops_door_side_photo' => 'OPS kapı yan yüz görseli yüklendi',
+            'ops_door_back_photo' => 'OPS kapı arka yüz görseli yüklendi',
+            'ops_door_photo' => 'OPS ek kapı görseli yüklendi',
+            'ops_additional_document' => 'OPS ek belge yüklendi',
+            default => 'OPS ek görsel yüklendi',
+        };
 
         $uploads = DB::transaction(function () use ($technicalServiceRequest, $request, $files, $note, $fieldCode, $title) {
             $created = [];

@@ -33,7 +33,10 @@ class TechnicalServiceWorkflowService
 
     private const OPS_EXTRA_DOCUMENT_TYPES = [
         'ops_extra_photo' => 'OPS Ek Görsel',
-        'ops_door_photo' => 'OPS Kapı Görseli',
+        'ops_door_front_photo' => 'OPS Kapı Ön Yüzü',
+        'ops_door_side_photo' => 'OPS Kapı Yan Yüzü',
+        'ops_door_back_photo' => 'OPS Kapı Arka Yüzü',
+        'ops_door_photo' => 'OPS Ek Kapı Görseli',
         'ops_additional_document' => 'OPS Ek Belge',
     ];
 
@@ -41,6 +44,13 @@ class TechnicalServiceWorkflowService
         'door_front_photo',
         'door_side_photo',
         'door_back_photo',
+    ];
+
+    private const OPS_DOOR_PHOTO_FIELDS = [
+        'ops_door_front_photo',
+        'ops_door_side_photo',
+        'ops_door_back_photo',
+        'ops_door_photo',
     ];
 
     public const WORKFLOW_STATUSES = [
@@ -3397,17 +3407,31 @@ class TechnicalServiceWorkflowService
     private function doorPhotoPayload(TechnicalServiceRequest $request): array
     {
         return $request->uploads
-            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
-                && in_array((string) $upload->field_code, self::CUSTOMER_DOOR_PHOTO_FIELDS, true))
+            ->filter(fn (TechnicalServiceRequestUpload $upload): bool => (
+                $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
+                && in_array((string) $upload->field_code, self::CUSTOMER_DOOR_PHOTO_FIELDS, true)
+            ) || $this->isOpsDoorPhotoUpload($upload))
+            ->sort(function (TechnicalServiceRequestUpload $left, TechnicalServiceRequestUpload $right): int {
+                $createdAtCompare = ($left->created_at?->getTimestamp() ?? 0) <=> ($right->created_at?->getTimestamp() ?? 0);
+
+                if ($createdAtCompare !== 0) {
+                    return $createdAtCompare;
+                }
+
+                return ((int) $left->id) <=> ((int) $right->id);
+            })
             ->map(function (TechnicalServiceRequestUpload $upload) use ($request): array {
                 $authenticatedUrl = route('api.technical-service.requests.uploads.show', [
                     'technicalServiceRequest' => $request->id,
                     'upload' => $upload->id,
                 ]);
 
+                $fieldCode = (string) $upload->field_code;
+
                 return [
                     'id' => $upload->id,
-                    'field_code' => $upload->field_code,
+                    'field_code' => $fieldCode,
+                    'label' => self::OPS_EXTRA_DOCUMENT_TYPES[$fieldCode] ?? $upload->original_name,
                     'category' => $upload->category,
                     'original_name' => $upload->original_name,
                     'mime' => $upload->mime,
@@ -3518,6 +3542,7 @@ class TechnicalServiceWorkflowService
 
         return $request->uploads
             ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT
+                && ! $this->isOpsDoorPhotoUpload($upload)
                 && ! $this->fieldDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
             ->sort(function (TechnicalServiceRequestUpload $left, TechnicalServiceRequestUpload $right): int {
                 $createdAtCompare = ($right->created_at?->getTimestamp() ?? 0) <=> ($left->created_at?->getTimestamp() ?? 0);
@@ -3534,7 +3559,7 @@ class TechnicalServiceWorkflowService
     private function isFieldCompletionDocument(TechnicalServiceRequestUpload $upload): bool
     {
         if ($upload->category === TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT) {
-            return true;
+            return ! $this->isOpsDoorPhotoUpload($upload);
         }
 
         if ($upload->category === TechnicalServiceRequestUpload::CATEGORY_PARTNER_PORTAL_FIELD_DOCUMENT) {
@@ -3543,6 +3568,12 @@ class TechnicalServiceWorkflowService
 
         return $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPERATION_CONTROL_DOOR_PHOTO
             && array_key_exists((string) $upload->field_code, self::FIELD_COMPLETION_DOCUMENT_TYPES);
+    }
+
+    private function isOpsDoorPhotoUpload(TechnicalServiceRequestUpload $upload): bool
+    {
+        return $upload->category === TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT
+            && in_array((string) $upload->field_code, self::OPS_DOOR_PHOTO_FIELDS, true);
     }
 
     /**
