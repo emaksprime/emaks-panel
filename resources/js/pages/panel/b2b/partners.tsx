@@ -172,6 +172,19 @@ type CariControlCandidate = {
   child_cari_accounts?: CariControlChildAccount[]
   matched_child_cari_codes?: string[]
   search_match?: 'parent' | 'child' | null
+  sync_preview?: CariControlSyncPreview
+}
+
+type CariControlSyncPreview = {
+  writes_enabled: boolean
+  role_model?: 'single_partner' | 'single_partner_multi_role'
+  partner_action: string
+  technician_action: string
+  link_action: string
+  partner_phone_matches?: { id: number, name: string | null }[]
+  technician_phone_matches?: { id: number, name: string | null }[]
+  duplicate_flags?: string[]
+  warnings?: string[]
 }
 
 type PartnerChildAccountDisplay = {
@@ -212,6 +225,14 @@ type CariControlState = {
   candidates?: CariControlCandidate[]
   items?: CariControlCandidate[]
   excluded_online_retail_count?: number
+  loaded_count?: number
+  filtered_total?: number
+  source_total?: number | null
+  source_total_known?: boolean
+  snapshot_total?: number
+  role_counts?: Partial<Record<PartnerType, number>>
+  filtered_role_counts?: Partial<Record<PartnerType, number>>
+  snapshot_counts?: Partial<Record<'new' | 'matched' | 'changed' | 'review_required', number>>
   source_used?: string | null
   existing_sources?: CariControlSource[]
   source_inventory?: CariControlSource[]
@@ -519,6 +540,21 @@ const candidateCapabilities = (candidate: CariControlCandidate): PartnerType[] =
   return capabilities.length > 0 ? capabilities : ['dealer']
 }
 
+const syncPreviewActionLabel = (action: string) => {
+  const labels: Record<string, string> = {
+    create_partner_preview: 'Partner oluşturma önizlemesi',
+    update_partner_preview: 'Partner güncelleme önizlemesi',
+    no_partner_change: 'Partner değişmez',
+    create_or_match_technician_preview: 'Teknisyen oluştur/eşleştir önizlemesi',
+    match_existing_technician: 'Mevcut teknisyen eşleşir',
+    not_applicable: 'Uygulanmaz',
+    ensure_partner_technician_link_preview: 'Partner-teknisyen bağı önizlemesi',
+    no_link_change: 'Bağ değişmez',
+  }
+
+  return labels[action] ?? action
+}
+
 const primaryPortalAdmin = (partner: Partner | null | undefined): PortalAdminUser | null => partner?.portal_admin_users?.[0] ?? null
 
 const portalAdminLabel = (partner: Partner | null | undefined): string => {
@@ -572,6 +608,16 @@ export default function B2BPartnersPage() {
   const sourceUsed = cariControl?.source_used ?? '-'
   const excludedOnlineRetailCount = cariControl?.excluded_online_retail_count ?? 0
   const actionsEnabled = Boolean(cariControl?.actions_enabled)
+  const loadedCount = cariControl?.loaded_count ?? cariCandidates.length
+  const filteredTotal = cariControl?.filtered_total ?? cariCandidates.length
+  const sourceTotal = cariControl?.source_total ?? null
+  const sourceTotalKnown = Boolean(cariControl?.source_total_known)
+  const snapshotTotal = cariControl?.snapshot_total ?? 0
+  const roleCounts = cariControl?.role_counts ?? {}
+  const filteredRoleCounts = cariControl?.filtered_role_counts ?? {}
+  const cariControlLimitLabel = sourceTotalKnown && sourceTotal !== null
+    ? `${loadedCount}/${sourceTotal} kaynak satır`
+    : `${loadedCount} yüklendi`
   const selectedCariItems = useMemo(
     () => selectedCariCodes.map((code) => selectedCariCandidates[code]).filter((candidate): candidate is CariControlCandidate => Boolean(candidate)),
     [selectedCariCandidates, selectedCariCodes],
@@ -761,7 +807,7 @@ export default function B2BPartnersPage() {
     setCariControlOpen(false)
   }, [])
 
-  const runCariControl = useCallback(async (options: { search?: string; resetSelection?: boolean } = {}) => {
+  const runCariControl = useCallback(async (options: { search?: string; resetSelection?: boolean; refresh?: boolean } = {}) => {
     const requestId = ++cariControlRequestId.current
     cariControlAbortController.current?.abort()
     const abortController = new AbortController()
@@ -796,6 +842,11 @@ export default function B2BPartnersPage() {
       }
 
       params.set('include_review_required', '1')
+      params.set('limit', '1000')
+
+      if (options.refresh ?? options.resetSelection) {
+        params.set('refresh', '1')
+      }
 
       const response = await fetch(`/api/b2b/cari-control${params.toString() ? `?${params.toString()}` : ''}`, {
         credentials: 'same-origin',
@@ -1315,7 +1366,7 @@ export default function B2BPartnersPage() {
                   <p className="mt-1 text-slate-600">Aday gelirse kullanıcı seçer; partner açma/güncelleme/rol ekleme otomatik çalışmaz.</p>
                 </div>
                 <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates()} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0}>
-                  Seçili adayları işle
+                  {actionsEnabled ? 'Seçili adayları işle' : 'Faz 1B’de işlenecek'}
                 </Button>
               </div>
 
@@ -1387,10 +1438,33 @@ export default function B2BPartnersPage() {
                 </Button>
               </form>
 
-              <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-600">
-                <span>Kaynak: {sourceUsed}</span>
-                <span>{cariCandidates.length} aday bulundu</span>
-                <span>Online perakende hariç: {excludedOnlineRetailCount}</span>
+              {!actionsEnabled && cariControlStatus === 'ok' && (
+                <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">
+                  Bu fazda gerçek partner/teknisyen/bağ yazımı kapalı; kartlarda sadece Faz 1B eşitleme önizlemesi gösterilir.
+                </div>
+              )}
+
+              <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                  <span className="block font-semibold text-slate-800">Kaynak</span>
+                  <span>{sourceUsed}</span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                  <span className="block font-semibold text-slate-800">Yüklenen / toplam</span>
+                  <span>{cariControlLimitLabel}</span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                  <span className="block font-semibold text-slate-800">Filtre sonucu</span>
+                  <span>{filteredTotal} aday · snapshot {snapshotTotal}</span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                  <span className="block font-semibold text-slate-800">Roller</span>
+                  <span>Bayi {filteredRoleCounts.dealer ?? roleCounts.dealer ?? 0} · Çilingir {filteredRoleCounts.locksmith ?? roleCounts.locksmith ?? 0}</span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 sm:col-span-2 xl:col-span-4">
+                  <span>Online perakende hariç: {excludedOnlineRetailCount}</span>
+                  {snapshotTotal > 100 && loadedCount > 100 ? <span className="ml-3 font-semibold text-emerald-700">Snapshot 100 ile sınırlı değil.</span> : null}
+                </div>
               </div>
 
               {cariChecking && (
@@ -1461,6 +1535,26 @@ export default function B2BPartnersPage() {
                         )}
                         {candidate.existing_partner_id && (
                           <span className="mt-2 inline-flex rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">Mevcut partner bulundu</span>
+                        )}
+                        {candidate.sync_preview && (
+                          <div className="mt-2 rounded-lg border border-emerald-100 bg-white px-3 py-2 text-xs text-slate-600">
+                            <div className="font-semibold text-emerald-800">Eşitleme önizleme · DB yazımı kapalı</div>
+                            <div className="mt-1 grid gap-1 sm:grid-cols-3">
+                              <span>{syncPreviewActionLabel(candidate.sync_preview.partner_action)}</span>
+                              <span>{syncPreviewActionLabel(candidate.sync_preview.technician_action)}</span>
+                              <span>{syncPreviewActionLabel(candidate.sync_preview.link_action)}</span>
+                            </div>
+                            {(candidate.sync_preview.duplicate_flags ?? []).length > 0 && (
+                              <div className="mt-1 text-amber-700">
+                                Eşleşme/duplikasyon: {(candidate.sync_preview.duplicate_flags ?? []).join(', ')}
+                              </div>
+                            )}
+                            {(candidate.sync_preview.warnings ?? []).length > 0 && (
+                              <div className="mt-1 text-rose-700">
+                                {(candidate.sync_preview.warnings ?? []).join(' ')}
+                              </div>
+                            )}
+                          </div>
                         )}
                         <div className="mt-2 grid gap-1 sm:grid-cols-4">
                           {(['dealer', 'locksmith', 'manufacturer', 'seller'] as const).map((capability) => (

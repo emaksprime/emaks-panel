@@ -436,8 +436,9 @@ class B2BPartnerController extends Controller
             'city' => ['nullable', 'string', 'max:128'],
             'include_review_required' => ['nullable', 'boolean'],
             'refresh' => ['nullable', 'boolean'],
-            'limit' => ['nullable', 'integer', 'min:1', 'max:250'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:1000'],
             'offset' => ['nullable', 'integer', 'min:0'],
+            'page' => ['nullable', 'integer', 'min:1'],
         ]);
 
         return response()->json($this->cariControlService->candidateResponse($filters));

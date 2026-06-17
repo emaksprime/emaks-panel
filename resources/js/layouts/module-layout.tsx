@@ -31,6 +31,12 @@ const moduleItems = [
         tone: 'cyan',
     },
     {
+        label: 'Bayi & Çilingir',
+        candidates: ['/panel/b2b', '/panel/b2b/partners', '/panel/b2b/users'],
+        match: ['/panel/b2b', '/panel/b2b/partners', '/panel/b2b/users'],
+        tone: 'violet',
+    },
+    {
         label: 'Teknik Servis',
         candidates: [
             '/technical-service',
@@ -94,6 +100,10 @@ const moduleToneClasses = {
     cyan: {
         active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
         idle: 'border-cyan-100 bg-cyan-50 text-cyan-800 hover:border-cyan-200 hover:bg-cyan-100',
+    },
+    violet: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-violet-100 bg-violet-50 text-violet-800 hover:border-violet-200 hover:bg-violet-100',
     },
     emerald: {
         active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',

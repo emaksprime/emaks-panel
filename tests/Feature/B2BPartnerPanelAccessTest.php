@@ -42,6 +42,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Http\UploadedFile;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
@@ -1433,6 +1434,255 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('candidates.0.address', 'Test Mahallesi');
     }
 
+    public function test_cari_control_requests_more_than_100_candidates_when_available(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+        $sent = [];
+        $rows = collect(range(1, 300))
+            ->map(fn (int $index): array => [
+                'musteri_kodu' => sprintf('320.ÇLG.%03d', $index),
+                'firma_unvani' => 'Çilingir Aday '.$index,
+                'grup' => 'ÇİLİNGİR',
+                'city' => 'Ankara',
+                'toplam_cari_sayisi' => 300,
+            ])
+            ->all();
+
+        Http::fake(function ($request) use (&$sent, $rows) {
+            $sent[] = $request->data();
+
+            return Http::response([
+                'ok' => true,
+                'rows' => $rows,
+                'meta' => ['total' => 300],
+            ]);
+        });
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonPath('loaded_count', 300)
+            ->assertJsonPath('source_total', 300)
+            ->assertJsonPath('source_total_known', true)
+            ->assertJsonPath('role_counts.locksmith', 300)
+            ->assertJsonPath('actions_enabled', false)
+            ->assertJsonCount(300, 'candidates');
+
+        $this->assertSame(1000, data_get($sent[0] ?? [], 'limit'));
+        $this->assertSame(1000, data_get($sent[0] ?? [], 'params.limit'));
+    }
+
+    public function test_cari_control_does_not_hard_cap_snapshot_at_100(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+
+        foreach (range(1, 180) as $index) {
+            B2BCariSnapshot::query()->create([
+                'source_code' => 'customers_list',
+                'base_mikro_cari_kodu' => sprintf('320.ÇLG.SNAP.%03d', $index),
+                'mikro_cari_kodu' => sprintf('320.ÇLG.SNAP.%03d', $index),
+                'mikro_cari_unvan' => 'Snapshot Çilingir '.$index,
+                'normalized_unvan' => 'SNAPSHOT CILINGIR '.$index,
+                'cari_grup_kodu' => 'ÇİLİNGİR',
+                'suggested_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'raw_payload' => ['raw_source' => ['toplam_cari_sayisi' => 180]],
+                'payload_hash' => hash('sha256', 'snapshot-'.$index),
+                'candidate_status' => 'new',
+                'last_seen_at' => now(),
+            ]);
+        }
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?include_review_required=1&limit=150')
+            ->assertOk()
+            ->assertJsonPath('snapshot_total', 180)
+            ->assertJsonPath('loaded_count', 150)
+            ->assertJsonPath('filtered_total', 180)
+            ->assertJsonPath('role_counts.locksmith', 180)
+            ->assertJsonCount(150, 'candidates');
+    }
+
+    public function test_cari_control_reports_loaded_count_and_role_counts(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['musteri_kodu' => '120.BAYI.101', 'firma_unvani' => 'Bayi Aday', 'grup' => 'BAYİ', 'toplam_cari_sayisi' => 3],
+                    ['musteri_kodu' => '320.CLG.101', 'firma_unvani' => 'Çilingir Aday', 'grup' => 'ÇİLİNGİR', 'toplam_cari_sayisi' => 3],
+                    ['musteri_kodu' => '320.CLG.102', 'firma_unvani' => 'Cilingir Aday', 'grup' => 'CILINGIR', 'toplam_cari_sayisi' => 3],
+                ],
+                'meta' => ['total' => 3],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonPath('loaded_count', 3)
+            ->assertJsonPath('source_total', 3)
+            ->assertJsonPath('role_counts.dealer', 1)
+            ->assertJsonPath('role_counts.locksmith', 2);
+    }
+
+    public function test_cari_control_normalizes_clg_and_turkish_cilingir_search(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['musteri_kodu' => '320.ÇLG.201', 'firma_unvani' => 'Türkçe Çilingir', 'grup' => 'ÇİLİNGİR'],
+                    ['musteri_kodu' => '120.BAYI.201', 'firma_unvani' => 'Normal Bayi', 'grup' => 'BAYİ'],
+                ],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk();
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=CLG&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '320.ÇLG.201')
+            ->assertJsonPath('candidates.0.suggested_capabilities.0', B2BPartner::TYPE_LOCKSMITH);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?search=CILINGIR&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '320.ÇLG.201');
+    }
+
+    public function test_cari_control_locksmith_candidate_builds_partner_technician_sync_preview(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+        $technician = $this->technician([
+            'name' => 'Mevcut Çilingir',
+            'mikro_cari_kodu' => '320.CLG.PREVIEW',
+            'cari_code' => '320.CLG.PREVIEW',
+            'phone' => '+905551110001',
+        ]);
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'musteri_kodu' => '320.CLG.PREVIEW',
+                    'firma_unvani' => 'Preview Çilingir',
+                    'grup' => 'ÇİLİNGİR',
+                    'phone' => '+905551110001',
+                    'city' => 'İstanbul',
+                    'address' => 'Servis adresi',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonPath('candidates.0.sync_preview.writes_enabled', false)
+            ->assertJsonPath('candidates.0.sync_preview.partner_action', 'create_partner_preview')
+            ->assertJsonPath('candidates.0.sync_preview.technician_action', 'match_existing_technician')
+            ->assertJsonPath('candidates.0.sync_preview.link_action', 'ensure_partner_technician_link_preview')
+            ->assertJsonPath('candidates.0.sync_preview.technician_phone_matches.0.id', $technician->id);
+    }
+
+    public function test_sync_preview_does_not_write_partner_technician_data(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+        $partnerCount = B2BPartner::query()->count();
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'musteri_kodu' => '320.CLG.NO-WRITE',
+                    'firma_unvani' => 'Yazmasız Çilingir',
+                    'grup' => 'ÇİLİNGİR',
+                    'city' => 'İstanbul',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonPath('actions_enabled', false)
+            ->assertJsonPath('candidates.0.sync_preview.writes_enabled', false);
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_bahattin_like_partner_can_have_dealer_and_locksmith_roles_in_preview(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'musteri_kodu' => '320.CLG.BAHATTIN',
+                    'firma_unvani' => 'Bahattin Bayi Çilingir',
+                    'grup' => 'BAYİ ÇİLİNGİR',
+                    'city' => 'Ankara',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonPath('candidates.0.suggested_capabilities.0', B2BPartner::TYPE_LOCKSMITH)
+            ->assertJsonPath('candidates.0.suggested_capabilities.1', B2BPartner::TYPE_DEALER)
+            ->assertJsonPath('candidates.0.sync_preview.role_model', 'single_partner_multi_role');
+    }
+
+    public function test_duplicate_phone_candidate_is_flagged_in_preview(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+        $partner = $this->partner([
+            'display_name' => 'Telefon Eşleşen Partner',
+            'phone' => '+905551234567',
+        ]);
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'musteri_kodu' => '320.CLG.PHONE',
+                    'firma_unvani' => 'Telefon Eşleşen Çilingir',
+                    'grup' => 'ÇİLİNGİR',
+                    'phone' => '+90 555 123 45 67',
+                    'city' => 'Bursa',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonPath('candidates.0.sync_preview.partner_phone_matches.0.id', $partner->id)
+            ->assertJsonPath('candidates.0.sync_preview.duplicate_flags.0', 'partner_phone_match');
+    }
+
     public function test_cari_apply_enriches_missing_contact_fields_from_detail_source_and_preserves_existing_values(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -1549,6 +1799,25 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Portal admin', $usersSource);
         $this->assertStringContainsString('grid gap-3 rounded-xl', $usersSource);
         $this->assertStringContainsString('Partner kullanıcı yetkileri güncellendi', $usersSource);
+    }
+
+    public function test_b2b_partner_management_is_accessible_as_separate_module(): void
+    {
+        $moduleLayout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
+
+        $this->assertStringContainsString("label: 'Bayi & Çilingir'", $moduleLayout);
+        $this->assertStringContainsString("'/panel/b2b/partners'", $moduleLayout);
+        $this->assertStringContainsString("'/panel/b2b/users'", $moduleLayout);
+        $this->assertStringContainsString("tone: 'violet'", $moduleLayout);
+    }
+
+    public function test_technical_service_navigation_does_not_absorb_b2b_partner_management(): void
+    {
+        $moduleLayout = file_get_contents(resource_path('js/layouts/module-layout.tsx')) ?: '';
+        $technicalServiceBlock = Str::between($moduleLayout, "label: 'Teknik Servis'", "label: 'Müşteri Yönetimi'");
+
+        $this->assertStringNotContainsString('/panel/b2b', $technicalServiceBlock);
+        $this->assertStringContainsString('/technical-service/technicians', $technicalServiceBlock);
     }
 
     public function test_cari_control_and_admin_role_preset_ui_contracts_exist(): void

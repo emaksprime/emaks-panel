@@ -5,6 +5,7 @@ namespace App\Services\B2B;
 use App\Models\B2B\B2BCariSnapshot;
 use App\Models\B2B\B2BCariSnapshotRun;
 use App\Models\B2B\B2BPartner;
+use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\DataSource;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\N8nPanelDataGateway;
@@ -46,6 +47,14 @@ class B2BCariControlService
         'TESHIR' => 'Teşhir cari',
         'PROJE' => 'Proje cari',
     ];
+
+    private const DEFAULT_SOURCE_LIMIT = 1000;
+
+    private const MAX_SOURCE_LIMIT = 1000;
+
+    private const DEFAULT_PAGE_LIMIT = 1000;
+
+    private const MAX_PAGE_LIMIT = 1000;
 
     public function __construct(
         private readonly N8nPanelDataGateway $gateway,
@@ -101,7 +110,7 @@ class B2BCariControlService
             ...$filters,
             'include_review_required' => true,
             'offset' => 0,
-            'limit' => max((int) ($filters['limit'] ?? 100), 250),
+            'limit' => $this->sourceLimit($filters),
         ];
         $normalized = $this->normalizeRows($result['rows'], $normalizationFilters, $source->code);
         $snapshotCounts = $this->persistSnapshots($normalized['candidates'], $source->code);
@@ -118,7 +127,14 @@ class B2BCariControlService
             ],
         ]);
 
-        $snapshot = $this->snapshotResponse($filters, $inventory, $source->code, $result['meta'], $run->id);
+        $snapshot = $this->snapshotResponse(
+            $filters,
+            $inventory,
+            $source->code,
+            $result['meta'],
+            $run->id,
+            $this->sourceTotalFromGateway($result['meta'], $result['rows'])
+        );
 
         return [
             ...$snapshot,
@@ -302,10 +318,34 @@ class B2BCariControlService
             'cari_filter' => $search,
             'scope_key' => 'all',
             'customer_scope_key' => 'bayi_proje',
-            'limit' => (int) ($filters['limit'] ?? 100),
-            'page' => 1,
+            'limit' => $this->sourceLimit($filters),
+            'page' => $this->page($filters),
             'bypass_cache' => true,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    private function sourceLimit(array $filters): int
+    {
+        return min(self::MAX_SOURCE_LIMIT, max(1, (int) ($filters['limit'] ?? self::DEFAULT_SOURCE_LIMIT)));
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    private function pageLimit(array $filters): int
+    {
+        return min(self::MAX_PAGE_LIMIT, max(1, (int) ($filters['limit'] ?? self::DEFAULT_PAGE_LIMIT)));
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     */
+    private function page(array $filters): int
+    {
+        return max(1, (int) ($filters['page'] ?? 1));
     }
 
     /**
@@ -317,6 +357,8 @@ class B2BCariControlService
     {
         $existingPartners = $this->existingPartnerMap();
         $techniciansByCari = $this->technicianCariMap();
+        $partnersByPhone = $this->partnerPhoneMap();
+        $techniciansByPhone = $this->technicianPhoneMap();
         $excludedOnlineRetailCount = 0;
         $includeReviewRequired = (bool) ($filters['include_review_required'] ?? false);
         $requestedCapability = $this->nullableString($filters['capability'] ?? null);
@@ -324,12 +366,12 @@ class B2BCariControlService
         $cityFilter = $this->normalizedText($filters['city'] ?? null);
         $search = $this->normalizedText($filters['search'] ?? null);
         $offset = max(0, (int) ($filters['offset'] ?? 0));
-        $limit = min(250, max(1, (int) ($filters['limit'] ?? 100)));
+        $limit = $this->pageLimit($filters);
 
         $normalizedRows = [];
 
         foreach ($rows as $row) {
-            $candidate = $this->normalizeRow($row, $sourceCode, $existingPartners, $techniciansByCari);
+            $candidate = $this->normalizeRow($row, $sourceCode, $existingPartners, $techniciansByCari, $partnersByPhone, $techniciansByPhone);
 
             if (! $candidate) {
                 continue;
@@ -365,6 +407,7 @@ class B2BCariControlService
             })
             ->map(fn (array $candidate): array => $this->annotateSearchMatch($candidate, $search))
             ->filter(fn (array $candidate): bool => $search === '' || ($candidate['search_match'] ?? null) !== null)
+            ->map(fn (array $candidate): array => $this->withCurrentSyncPreview($candidate, $existingPartners, $techniciansByCari, $partnersByPhone, $techniciansByPhone))
             ->slice($offset, $limit)
             ->values()
             ->all();
@@ -412,27 +455,30 @@ class B2BCariControlService
      * @param  array<string, mixed>  $gatewayMeta
      * @return array<string, mixed>
      */
-    private function snapshotResponse(array $filters, array $inventory, ?string $sourceCode = null, array $gatewayMeta = [], ?int $runId = null): array
+    private function snapshotResponse(array $filters, array $inventory, ?string $sourceCode = null, array $gatewayMeta = [], ?int $runId = null, ?int $sourceTotal = null): array
     {
         $requestedCapability = $this->nullableString($filters['capability'] ?? null);
         $requestedStatus = $this->nullableString($filters['status'] ?? null);
         $cityFilter = $this->normalizedText($filters['city'] ?? null);
         $search = $this->normalizedText($filters['search'] ?? null);
         $offset = max(0, (int) ($filters['offset'] ?? 0));
-        $limit = min(250, max(1, (int) ($filters['limit'] ?? 100)));
+        $limit = $this->pageLimit($filters);
         $existingPartners = $this->existingPartnerMap();
+        $techniciansByCari = $this->technicianCariMap();
+        $partnersByPhone = $this->partnerPhoneMap();
+        $techniciansByPhone = $this->technicianPhoneMap();
 
         $rows = B2BCariSnapshot::query()
             ->where('candidate_status', '!=', 'excluded')
             ->orderBy('base_mikro_cari_kodu')
-            ->limit(1000)
+            ->limit(self::MAX_PAGE_LIMIT)
             ->get()
-            ->map(fn (B2BCariSnapshot $snapshot): array => $this->candidateFromSnapshot($snapshot, $existingPartners))
+            ->map(fn (B2BCariSnapshot $snapshot): array => $this->candidateFromSnapshot($snapshot, $existingPartners, $techniciansByCari, $partnersByPhone, $techniciansByPhone))
             ->unique('mikro_cari_kodu')
             ->values();
 
         $snapshotTotal = $rows->count();
-        $filtered = $rows
+        $filteredRows = $rows
             ->filter(function (array $candidate) use ($requestedStatus): bool {
                 if ($requestedStatus === null) {
                     return ($candidate['existing_partner_id'] ?? null) === null;
@@ -456,12 +502,16 @@ class B2BCariControlService
                 return str_contains($this->normalizedText($candidate['city'] ?? null), $cityFilter);
             })
             ->map(fn (array $candidate): array => $this->annotateSearchMatch($candidate, $search))
-            ->filter(fn (array $candidate): bool => $search === '' || ($candidate['search_match'] ?? null) !== null)
+            ->filter(fn (array $candidate): bool => $search === '' || ($candidate['search_match'] ?? null) !== null);
+
+        $filteredTotal = $filteredRows->count();
+        $filtered = $filteredRows
             ->slice($offset, $limit)
             ->values()
             ->all();
 
         $latestRun = B2BCariSnapshotRun::query()->latest('id')->first();
+        $resolvedSourceTotal = $sourceTotal ?? $this->sourceTotalFromCandidates($rows->all());
 
         return [
             'status' => 'ok',
@@ -472,6 +522,12 @@ class B2BCariControlService
             'items' => $filtered,
             'excluded_online_retail_count' => (int) ($latestRun?->excluded_online_retail_count ?? 0),
             'source_used' => $sourceCode ?? $latestRun?->source_code ?? 'snapshot',
+            'loaded_count' => count($filtered),
+            'filtered_total' => $filteredTotal,
+            'source_total' => $resolvedSourceTotal,
+            'source_total_known' => $resolvedSourceTotal !== null,
+            'role_counts' => $this->capabilityCounts($rows->all()),
+            'filtered_role_counts' => $this->capabilityCounts($filteredRows->all()),
             'source_inventory' => $inventory,
             'existing_sources' => $inventory,
             'gateway_meta' => $gatewayMeta,
@@ -483,7 +539,7 @@ class B2BCariControlService
                 'changed' => $rows->where('status', 'changed')->count(),
                 'review_required' => $rows->where('status', 'review_required')->count(),
             ],
-            'actions_enabled' => true,
+            'actions_enabled' => false,
         ];
     }
 
@@ -567,7 +623,7 @@ class B2BCariControlService
      * @param  array<string, B2BPartner>  $existingPartners
      * @return array<string, mixed>
      */
-    private function candidateFromSnapshot(B2BCariSnapshot $snapshot, array $existingPartners): array
+    private function candidateFromSnapshot(B2BCariSnapshot $snapshot, array $existingPartners, array $techniciansByCari = [], array $partnersByPhone = [], array $techniciansByPhone = []): array
     {
         $candidate = [
             'mikro_cari_kodu' => $snapshot->base_mikro_cari_kodu,
@@ -604,6 +660,8 @@ class B2BCariControlService
         $candidate['review_required'] = $status === 'review_required';
         $candidate['matched_child_cari_codes'] = [];
         $candidate['search_match'] = null;
+        $technician = $techniciansByCari[$this->normalizedText($snapshot->base_mikro_cari_kodu)] ?? null;
+        $candidate['sync_preview'] = $this->syncPreviewForCandidate($candidate, $existingPartner, $technician, $partnersByPhone, $techniciansByPhone);
 
         return $this->withSourceFieldMissingMeta($candidate);
     }
@@ -1001,7 +1059,7 @@ class B2BCariControlService
      * @param  array<string, TechnicalServiceTechnician>  $techniciansByCari
      * @return array<string, mixed>|null
      */
-    private function normalizeRow(array $row, string $sourceCode, array $existingPartners = [], array $techniciansByCari = []): ?array
+    private function normalizeRow(array $row, string $sourceCode, array $existingPartners = [], array $techniciansByCari = [], array $partnersByPhone = [], array $techniciansByPhone = []): ?array
     {
         $code = $this->value($row, [
             'mikro_cari_kodu',
@@ -1069,7 +1127,7 @@ class B2BCariControlService
             $statusLabel = 'Kontrol gerekli';
         }
 
-        return [
+        $candidate = [
             'mikro_cari_kodu' => $code,
             'mikro_cari_unvan' => $title !== '' ? $title : null,
             'display_name' => $title !== '' ? $title : $code,
@@ -1103,6 +1161,10 @@ class B2BCariControlService
             ]) : [],
             'source_used' => $sourceCode,
         ];
+
+        $candidate['sync_preview'] = $this->syncPreviewForCandidate($candidate, $existingPartner, $technician, $partnersByPhone, $techniciansByPhone);
+
+        return $candidate;
     }
 
     /**
@@ -1200,6 +1262,241 @@ class B2BCariControlService
                     ->all();
             })
             ->all();
+    }
+
+    /**
+     * @return array<string, array<int, array{id: int, name: string|null}>>
+     */
+    private function partnerPhoneMap(): array
+    {
+        return B2BPartner::query()
+            ->whereNotNull('phone')
+            ->get(['id', 'display_name', 'phone'])
+            ->groupBy(fn (B2BPartner $partner): string => $this->normalizedPhone($partner->phone))
+            ->filter(fn ($items, string $phone): bool => $phone !== '')
+            ->map(fn ($items): array => $items
+                ->map(fn (B2BPartner $partner): array => [
+                    'id' => $partner->id,
+                    'name' => $partner->display_name,
+                ])
+                ->values()
+                ->all())
+            ->all();
+    }
+
+    /**
+     * @return array<string, array<int, array{id: int, name: string|null}>>
+     */
+    private function technicianPhoneMap(): array
+    {
+        return TechnicalServiceTechnician::query()
+            ->where('active', true)
+            ->whereNotNull('phone')
+            ->get(['id', 'name', 'phone'])
+            ->groupBy(fn (TechnicalServiceTechnician $technician): string => $this->normalizedPhone($technician->phone))
+            ->filter(fn ($items, string $phone): bool => $phone !== '')
+            ->map(fn ($items): array => $items
+                ->map(fn (TechnicalServiceTechnician $technician): array => [
+                    'id' => $technician->id,
+                    'name' => $technician->name,
+                ])
+                ->values()
+                ->all())
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, array<int, array{id: int, name: string|null}>>  $partnersByPhone
+     * @param  array<string, array<int, array{id: int, name: string|null}>>  $techniciansByPhone
+     * @return array<string, mixed>
+     */
+    private function syncPreviewForCandidate(array $candidate, ?B2BPartner $existingPartner, ?TechnicalServiceTechnician $technician, array $partnersByPhone = [], array $techniciansByPhone = []): array
+    {
+        $capabilities = $this->normalizeCapabilities($candidate['selected_capabilities'] ?? $candidate['capabilities'] ?? $candidate['suggested_capabilities'] ?? []);
+        $isLocksmith = in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true);
+        $phoneKey = $this->normalizedPhone($candidate['phone'] ?? null);
+        $partnerPhoneMatches = $phoneKey !== '' ? ($partnersByPhone[$phoneKey] ?? []) : [];
+        $technicianPhoneMatches = $phoneKey !== '' ? ($techniciansByPhone[$phoneKey] ?? []) : [];
+        $missing = $this->missingCandidateFields($candidate);
+        $warnings = [];
+
+        if (in_array('phone', $missing, true)) {
+            $warnings[] = 'Telefon eksik; otomatik teknisyen eşleşmesi zayıf olur.';
+        }
+
+        if (in_array('city', $missing, true) || in_array('address', $missing, true)) {
+            $warnings[] = 'Adres/şehir eksik; rota ve teknisyen uygunluğu manuel kontrol ister.';
+        }
+
+        if ($isLocksmith && $technician === null) {
+            $warnings[] = 'Çilingir adayı için teknisyen kaydı Faz 1B eşitlemesinde oluşturulacak veya eşleştirilecek.';
+        }
+
+        $duplicateFlags = [];
+
+        if ($existingPartner !== null) {
+            $duplicateFlags[] = 'partner_cari_match';
+        }
+
+        if ($technician !== null) {
+            $duplicateFlags[] = 'technician_cari_match';
+        }
+
+        if ($partnerPhoneMatches !== []) {
+            $duplicateFlags[] = 'partner_phone_match';
+        }
+
+        if ($technicianPhoneMatches !== []) {
+            $duplicateFlags[] = 'technician_phone_match';
+        }
+
+        $linkExists = $existingPartner !== null && $technician !== null
+            ? B2BPartnerTechnician::query()
+                ->where('partner_id', $existingPartner->id)
+                ->where('technical_service_technician_id', $technician->id)
+                ->where('active', true)
+                ->exists()
+            : false;
+
+        return [
+            'writes_enabled' => false,
+            'role_model' => count($capabilities) > 1 ? 'single_partner_multi_role' : 'single_partner',
+            'partner_action' => $existingPartner === null
+                ? 'create_partner_preview'
+                : ((count($candidate['difference_summary'] ?? []) > 0) ? 'update_partner_preview' : 'no_partner_change'),
+            'technician_action' => $isLocksmith
+                ? ($technician === null ? 'create_or_match_technician_preview' : 'match_existing_technician')
+                : 'not_applicable',
+            'link_action' => $isLocksmith
+                ? ($linkExists ? 'no_link_change' : 'ensure_partner_technician_link_preview')
+                : 'not_applicable',
+            'partner_phone_matches' => $partnerPhoneMatches,
+            'technician_phone_matches' => $technicianPhoneMatches,
+            'duplicate_flags' => array_values(array_unique($duplicateFlags)),
+            'warnings' => array_values(array_unique($warnings)),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, B2BPartner>  $existingPartners
+     * @param  array<string, TechnicalServiceTechnician>  $techniciansByCari
+     * @param  array<string, array<int, array{id: int, name: string|null}>>  $partnersByPhone
+     * @param  array<string, array<int, array{id: int, name: string|null}>>  $techniciansByPhone
+     * @return array<string, mixed>
+     */
+    private function withCurrentSyncPreview(array $candidate, array $existingPartners, array $techniciansByCari, array $partnersByPhone, array $techniciansByPhone): array
+    {
+        $code = $this->normalizedText($candidate['mikro_cari_kodu'] ?? null);
+        $existingPartner = $existingPartners[$code] ?? null;
+        $technician = $techniciansByCari[$code] ?? null;
+
+        if ($existingPartner !== null) {
+            $candidate['existing_partner_id'] = $existingPartner->id;
+            $candidate['difference_summary'] = $this->differenceSummary($existingPartner, [
+                'mikro_cari_unvan' => $candidate['mikro_cari_unvan'] ?? null,
+                'cari_grup_kodu' => $candidate['cari_grup_kodu'] ?? null,
+                'responsibility_code' => $candidate['responsibility_code'] ?? null,
+                'phone' => $candidate['phone'] ?? null,
+                'email' => $candidate['email'] ?? null,
+                'city' => $candidate['city'] ?? null,
+                'district' => $candidate['district'] ?? null,
+            ]);
+        }
+
+        $candidate['sync_preview'] = $this->syncPreviewForCandidate($candidate, $existingPartner, $technician, $partnersByPhone, $techniciansByPhone);
+
+        return $candidate;
+    }
+
+    private function normalizedPhone(mixed $phone): string
+    {
+        return preg_replace('/\D+/', '', (string) ($phone ?? '')) ?? '';
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $candidates
+     * @return array<string, int>
+     */
+    private function capabilityCounts(array $candidates): array
+    {
+        $counts = [
+            B2BPartner::TYPE_DEALER => 0,
+            B2BPartner::TYPE_LOCKSMITH => 0,
+            B2BPartner::TYPE_MANUFACTURER => 0,
+            B2BPartner::TYPE_SELLER => 0,
+        ];
+
+        foreach ($candidates as $candidate) {
+            foreach ($this->normalizeCapabilities($candidate['suggested_capabilities'] ?? $candidate['capabilities'] ?? []) as $capability) {
+                $counts[$capability] = ($counts[$capability] ?? 0) + 1;
+            }
+        }
+
+        return $counts;
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     * @param  array<int, array<string, mixed>>  $rows
+     */
+    private function sourceTotalFromGateway(array $meta, array $rows): ?int
+    {
+        foreach (['total', 'total_count', 'source_total', 'snapshot_total', 'row_count'] as $key) {
+            $value = data_get($meta, $key);
+
+            if (is_numeric($value)) {
+                return (int) $value;
+            }
+        }
+
+        return $this->sourceTotalFromRawRows($rows);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     */
+    private function sourceTotalFromRawRows(array $rows): ?int
+    {
+        foreach ($rows as $row) {
+            foreach (['toplam_cari_sayisi', 'total_cari_count', 'source_total', 'total_count'] as $key) {
+                $value = data_get($row, $key);
+
+                if (is_numeric($value)) {
+                    return (int) $value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $candidates
+     */
+    private function sourceTotalFromCandidates(array $candidates): ?int
+    {
+        foreach ($candidates as $candidate) {
+            foreach ([
+                'raw_source.raw_source.toplam_cari_sayisi',
+                'raw_source.raw_source.total_cari_count',
+                'raw_source.raw_source.source_total',
+                'raw_source.raw_source.total_count',
+                'raw_source.toplam_cari_sayisi',
+                'raw_source.total_cari_count',
+                'raw_source.source_total',
+                'raw_source.total_count',
+            ] as $key) {
+                $value = data_get($candidate, $key);
+
+                if (is_numeric($value)) {
+                    return (int) $value;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
