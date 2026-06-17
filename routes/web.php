@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\B2B\B2BDashboardController;
 use App\Http\Controllers\Api\B2B\B2BPartnerController;
 use App\Http\Controllers\Api\B2B\B2BPartnerUserController;
+use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\PageConfigController;
@@ -12,6 +13,7 @@ use App\Http\Controllers\Api\SalesMainConfigController;
 use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\StockCriticalSettingController;
 use App\Http\Controllers\Api\SupportActivationCodeSearchController;
+use App\Http\Controllers\Api\SupportManagementController;
 use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
@@ -63,6 +65,30 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::get('activation/search', SupportActivationCodeSearchController::class)
                 ->middleware(['panel.access:support', 'panel.access:support_activation_query'])
                 ->name('api.support.activation.search');
+            Route::middleware('panel.access:support_management')->prefix('management')->group(function () {
+                Route::get('activation-codes', [SupportManagementController::class, 'activationCodes'])
+                    ->name('api.support.management.activation-codes.index');
+                Route::post('activation-codes', [SupportManagementController::class, 'storeActivationCode'])
+                    ->name('api.support.management.activation-codes.store');
+                Route::patch('activation-codes/{supportActivationCode}', [SupportManagementController::class, 'updateActivationCode'])
+                    ->name('api.support.management.activation-codes.update');
+                Route::post('imports/preview', [SupportManagementController::class, 'previewImport'])
+                    ->name('api.support.management.imports.preview');
+                Route::post('imports/commit', [SupportManagementController::class, 'commitImport'])
+                    ->name('api.support.management.imports.commit');
+                Route::get('guides', [SupportManagementController::class, 'guides'])
+                    ->name('api.support.management.guides.index');
+                Route::post('guides', [SupportManagementController::class, 'storeGuide'])
+                    ->name('api.support.management.guides.store');
+                Route::patch('guides/{guide}', [SupportManagementController::class, 'updateGuide'])
+                    ->name('api.support.management.guides.update');
+                Route::post('guides/{guide}/duplicate', [SupportManagementController::class, 'duplicateGuide'])
+                    ->name('api.support.management.guides.duplicate');
+                Route::post('guides/{guide}/steps', [SupportManagementController::class, 'storeGuideStep'])
+                    ->name('api.support.management.guides.steps.store');
+                Route::patch('guides/{guide}/steps/{step}', [SupportManagementController::class, 'updateGuideStep'])
+                    ->name('api.support.management.guides.steps.update');
+            });
         });
 
         Route::prefix('b2b')
@@ -327,18 +353,18 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         });
 
         Route::middleware('panel.access:admin_panel')->prefix('admin')->group(function () {
-            Route::get('overview', [\App\Http\Controllers\Api\AdminController::class, 'overview']);
-            Route::get('users', [\App\Http\Controllers\Api\AdminController::class, 'users'])->middleware('panel.access:user_admin');
-            Route::post('users', [\App\Http\Controllers\Api\AdminController::class, 'saveUser'])->middleware('panel.access:user_admin');
-            Route::post('users/{user}/clone', [\App\Http\Controllers\Api\AdminController::class, 'cloneUser'])->middleware('panel.access:user_admin');
-            Route::get('pages', [\App\Http\Controllers\Api\AdminController::class, 'pages'])->middleware('panel.access:admin_pages');
-            Route::post('pages', [\App\Http\Controllers\Api\AdminController::class, 'savePage'])->middleware('panel.access:admin_pages');
-            Route::post('buttons', [\App\Http\Controllers\Api\AdminController::class, 'saveButton'])->middleware('panel.access:admin_pages');
-            Route::delete('pages/{page}', [\App\Http\Controllers\Api\AdminController::class, 'deletePage'])->middleware('panel.access:admin_pages');
-            Route::get('datasources', [\App\Http\Controllers\Api\AdminController::class, 'dataSources'])->middleware('panel.access:data_sources');
-            Route::post('datasources', [\App\Http\Controllers\Api\AdminController::class, 'saveDataSource'])->middleware('panel.access:data_sources');
-            Route::post('datasources/test', [\App\Http\Controllers\Api\AdminController::class, 'testDataSource'])->middleware('panel.access:data_sources');
-            Route::get('logs', [\App\Http\Controllers\Api\AdminController::class, 'logs'])->middleware('panel.access:admin_logs');
+            Route::get('overview', [AdminController::class, 'overview']);
+            Route::get('users', [AdminController::class, 'users'])->middleware('panel.access:user_admin');
+            Route::post('users', [AdminController::class, 'saveUser'])->middleware('panel.access:user_admin');
+            Route::post('users/{user}/clone', [AdminController::class, 'cloneUser'])->middleware('panel.access:user_admin');
+            Route::get('pages', [AdminController::class, 'pages'])->middleware('panel.access:admin_pages');
+            Route::post('pages', [AdminController::class, 'savePage'])->middleware('panel.access:admin_pages');
+            Route::post('buttons', [AdminController::class, 'saveButton'])->middleware('panel.access:admin_pages');
+            Route::delete('pages/{page}', [AdminController::class, 'deletePage'])->middleware('panel.access:admin_pages');
+            Route::get('datasources', [AdminController::class, 'dataSources'])->middleware('panel.access:data_sources');
+            Route::post('datasources', [AdminController::class, 'saveDataSource'])->middleware('panel.access:data_sources');
+            Route::post('datasources/test', [AdminController::class, 'testDataSource'])->middleware('panel.access:data_sources');
+            Route::get('logs', [AdminController::class, 'logs'])->middleware('panel.access:admin_logs');
         });
     });
 
@@ -366,6 +392,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::get('support/activation', [SupportController::class, 'activation'])
         ->middleware(['panel.access:support', 'panel.access:support_activation_query'])
         ->name('support.activation');
+    Route::get('support/management', [SupportController::class, 'management'])
+        ->middleware('panel.access:support_management')
+        ->name('support.management');
 
     Route::get('panel/b2b/partners', fn () => Inertia::render('panel/b2b/partners', [
         'page' => [

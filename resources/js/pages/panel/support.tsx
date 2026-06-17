@@ -35,7 +35,7 @@ type SupportGuideSection = {
 };
 
 type SupportGuideEntry = {
-    id: number;
+    id: number | string;
     code: string;
     sourceRow: number | null;
     devices: string[];
@@ -74,6 +74,7 @@ type SupportActivationItem = {
     search_code: string | null;
     activation_code: string | null;
     activation_link: string | null;
+    matching_guide?: SupportGuideEntry | null;
     metadata: Record<string, unknown>;
 };
 
@@ -303,6 +304,10 @@ function buildEntryContent(entry: SupportGuideEntry): {
         warnings: [...inlineWarnings, ...entry.warnings].filter(Boolean),
         extraNotes: entry.extraNotes.filter(Boolean),
     };
+}
+
+function entryHasGuideContent(entry: SupportGuideEntry): boolean {
+    return entry.sections.some((section) => section.steps.some((step) => step.trim() !== ''));
 }
 
 function FilterSelect({
@@ -675,6 +680,22 @@ function ActivationSearch({ totalRecords }: { totalRecords: number }) {
                                     ))}
                                 </div>
 
+                                {item.matching_guide && entryHasGuideContent(item.matching_guide) && (
+                                    <div className="grid gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-3 text-sm text-blue-950">
+                                        <p className="font-semibold">İlgili tuşlama rehberi: {item.matching_guide.guideType}</p>
+                                        <div className="grid gap-1">
+                                            {item.matching_guide.sections.slice(0, 3).map((section) => (
+                                                <div key={`${item.id}-${section.title}`} className="min-w-0">
+                                                    {section.title && <p className="font-medium">{section.title}</p>}
+                                                    {section.steps.slice(0, 2).map((step) => (
+                                                        <p key={step} className="break-words text-blue-900/80">{step}</p>
+                                                    ))}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {!activationCode && (
                                     <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
                                         Aktivasyon kodu alanı boş; arama kodu bu alanın yerine gösterilmedi.
@@ -775,7 +796,7 @@ export default function SupportPage({
             const matchesFormat = entryMatchesFormat(entry, filters.format);
             const matchesSearch = !searchNeedle || entrySearchText(entry).includes(searchNeedle);
 
-            return matchesDevice && matchesMethod && matchesFormat && matchesSearch;
+            return entryHasGuideContent(entry) && matchesDevice && matchesMethod && matchesFormat && matchesSearch;
         });
     }, [filters.device, filters.format, filters.method, hasQuery, searchNeedle, supportGuideEntries]);
 

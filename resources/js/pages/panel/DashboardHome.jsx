@@ -2,11 +2,13 @@ import { Head, Link, usePage } from '@inertiajs/react';
 import {
     ArrowRight,
     Boxes,
+    Calculator,
     ChartColumn,
     ClipboardList,
     ExternalLink,
     FileText,
     Headset,
+    LifeBuoy,
     UsersRound,
 } from 'lucide-react';
 
@@ -66,6 +68,21 @@ const moduleCards = [
         candidates: ['/proforma', '/proforma/create', '/proforma/detail', '/proforma/edit'],
         icon: FileText,
         tone: 'from-amber-600 to-orange-500',
+    },
+    {
+        title: 'Muhasebe / Finans',
+        description:
+            'Resmi stok, fiili stok ve muhasebe kontrol farklarını izleyin.',
+        candidates: ['/accounting-finance/resmi-stok-kontrol'],
+        icon: Calculator,
+        tone: 'from-teal-700 to-emerald-500',
+    },
+    {
+        title: 'Destek',
+        description: 'Kurulum, tuşlama ve aktivasyon bilgilerine hızlı erişin.',
+        candidates: ['/support', '/support/keypad-guide', '/support/activation'],
+        icon: LifeBuoy,
+        tone: 'from-rose-700 to-pink-500',
     },
 ];
 

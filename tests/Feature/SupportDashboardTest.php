@@ -93,7 +93,7 @@ class SupportDashboardTest extends TestCase
 
         $this->assertFileDoesNotExist($this->absolutePath('resources/js/data/support-keypad-guide.ts'));
         $this->assertStringContainsString('supportGuideData?.entries', $supportPage);
-        $this->assertStringNotContainsString("@/data/support-keypad-guide", $supportPage);
+        $this->assertStringNotContainsString('@/data/support-keypad-guide', $supportPage);
         $this->assertStringContainsString('supportPermissions', $supportPage);
         $this->assertStringContainsString('/support/keypad-guide', $supportPage);
         $this->assertStringContainsString('/support/activation', $supportPage);
@@ -103,8 +103,8 @@ class SupportDashboardTest extends TestCase
         $this->assertStringContainsString('/api/support/activation/search', $supportPage);
         $this->assertStringContainsString('Henüz aktarılmış aktivasyon kaydı yok', $supportPage);
         $this->assertStringNotContainsString('/activation-code-search', $supportPage);
-        $this->assertStringContainsString("candidates: ['/support', '/support/keypad-guide', '/support/activation']", $moduleLayout);
-        $this->assertStringContainsString("match: ['/support', '/support/keypad-guide', '/support/activation']", $moduleLayout);
+        $this->assertMatchesRegularExpression("/candidates:\s*\[\s*'\/support',\s*'\/support\/keypad-guide',\s*'\/support\/activation',?\s*\]/", $moduleLayout);
+        $this->assertMatchesRegularExpression("/match:\s*\[\s*'\/support',\s*'\/support\/keypad-guide',\s*'\/support\/activation',?\s*\]/", $moduleLayout);
         $this->assertStringNotContainsString('Belirtilmemiş?', $supportPage);
     }
 

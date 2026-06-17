@@ -44,7 +44,7 @@ class MikroInvoiceSerialsService
                 )),
                 'meta' => [
                     'status' => 'fixture',
-                    'message' => 'Fatura seri kontrolÃ¼ local fixture datasÄ±ndan okundu.',
+                    'message' => 'Fatura seri kontrolü local fixture datasından okundu.',
                     'fixture_path' => 'database/data/technical_service_invoice_serials_fixture.json',
                 ],
                 'request' => [

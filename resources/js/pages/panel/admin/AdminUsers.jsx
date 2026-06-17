@@ -34,6 +34,8 @@ const groupOrder = [
     'B2B',
     'Müşteri Yönetimi',
     'Proforma',
+    'Muhasebe / Finans',
+    'Destek',
     'Sistem Yönetimi',
     'Veri Kaynakları',
 ];

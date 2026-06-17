@@ -65,6 +65,12 @@ const moduleItems = [
         tone: 'amber',
     },
     {
+        label: 'Muhasebe / Finans',
+        candidates: ['/accounting-finance/resmi-stok-kontrol'],
+        match: ['/accounting-finance/resmi-stok-kontrol'],
+        tone: 'teal',
+    },
+    {
         label: 'Destek',
         candidates: ['/support', '/support/keypad-guide', '/support/activation'],
         match: ['/support', '/support/keypad-guide', '/support/activation'],
@@ -100,6 +106,10 @@ const moduleToneClasses = {
     amber: {
         active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
         idle: 'border-amber-100 bg-amber-50 text-amber-900 hover:border-amber-200 hover:bg-amber-100',
+    },
+    teal: {
+        active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
+        idle: 'border-teal-100 bg-teal-50 text-teal-800 hover:border-teal-200 hover:bg-teal-100',
     },
     rose: {
         active: 'border-slate-950 bg-slate-950 text-white shadow-slate-900/20',
