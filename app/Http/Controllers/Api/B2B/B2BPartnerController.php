@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\B2B\B2BCariControlService;
 use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerAdminProvisioningService;
+use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -337,6 +338,42 @@ class B2BPartnerController extends Controller
         ]);
     }
 
+    public function markPartnerTechnicianReviewed(Request $request, B2BPartner $partner, B2BPartnerTechnician $link): JsonResponse
+    {
+        $user = $request->user();
+        abort_unless($user && $this->access->canUpdatePartner($user, $partner), 403);
+        abort_unless((int) $link->partner_id === (int) $partner->id, 404);
+
+        $link->loadMissing('technician');
+        $technician = $link->technician;
+
+        if (! $technician
+            || $this->nullableString($technician->phone) === null
+            || $this->nullableString($link->service_city ?? $technician->city) === null
+            || ($this->nullableString($link->service_region_note ?? $technician->address ?? $technician->cari_address) === null)
+            || ! $this->technicianHasCoordinates($technician)) {
+            throw ValidationException::withMessages([
+                'mark_reviewed' => 'Kontrol kapatılamaz: telefon/adres/koordinat eksik.',
+            ]);
+        }
+
+        $oldValues = $this->partnerTechnicianAuditPayload($link);
+        $link->forceFill([
+            'needs_review' => false,
+            'review_reason' => null,
+            'review_reasons' => [],
+            'reviewed_at' => now(),
+            'reviewed_by' => $user->id,
+        ])->save();
+        $this->writeAuditLog($partner, $request, 'b2b.partner.technician_reviewed', $oldValues, $this->partnerTechnicianAuditPayload($link->fresh()), $user->id);
+
+        return response()->json([
+            'link' => $this->partnerTechnicianPayload($link->fresh()->loadMissing('technician')),
+            'items' => $this->partnerTechnicianItems($partner->fresh()),
+            'partner' => $this->partnerPayload($partner->fresh()->loadMissing(['technician', 'capabilities'])),
+        ]);
+    }
+
     public function destroyPartnerTechnician(Request $request, B2BPartner $partner, B2BPartnerTechnician $link): JsonResponse
     {
         $user = $request->user();
@@ -568,24 +605,45 @@ class B2BPartnerController extends Controller
             'selected_capabilities' => ['nullable', 'array'],
             'selected_capabilities.*' => ['required_with:selected_capabilities', 'string', Rule::in(B2BPartner::SUPPORTED_CAPABILITIES)],
             'existing_partner_id' => ['nullable', 'integer', Rule::exists((new B2BPartner)->getTable(), 'id')],
+            'dry_run' => ['nullable', 'boolean'],
+            'sync_technician' => ['nullable', 'boolean'],
+            'geocode_mode' => ['nullable', 'string', Rule::in(['none', 'dry_run', 'auto'])],
+            'override_existing_coordinates' => ['nullable', 'boolean'],
+            'update_existing' => ['nullable', 'boolean'],
+            'mark_reviewed' => ['nullable', 'boolean'],
         ]);
         $user = $request->user();
         abort_unless($user, 403);
 
-        $results = DB::transaction(function () use ($data, $request, $user): array {
+        $options = [
+            'dry_run' => (bool) ($data['dry_run'] ?? false),
+            'sync_technician' => (bool) ($data['sync_technician'] ?? true),
+            'geocode_mode' => $data['geocode_mode'] ?? 'none',
+            'override_existing_coordinates' => (bool) ($data['override_existing_coordinates'] ?? false),
+            'update_existing' => (bool) ($data['update_existing'] ?? true),
+            'mark_reviewed' => (bool) ($data['mark_reviewed'] ?? false),
+        ];
+
+        $work = function () use ($data, $request, $user, $options): array {
             return collect($data['candidates'])
-                ->map(function (array $item) use ($data, $request, $user): array {
+                ->map(function (array $item) use ($data, $request, $user, $options): array {
                     $candidate = $this->cariControlService->enrichCandidateForApply($item);
                     $capabilities = $this->candidateSelectedCapabilities($item, $data);
                     abort_unless($this->access->canManageCapabilities($user, $capabilities), 403);
 
-                    return $this->applyCariCandidate($data['action'], $candidate, $capabilities, $request, $user->id, $data['existing_partner_id'] ?? null);
+                    return $this->applyCariCandidate($data['action'], $candidate, $capabilities, $request, $user->id, $data['existing_partner_id'] ?? null, $options);
                 })
                 ->values()
                 ->all();
-        });
+        };
 
-        return response()->json(['items' => $results]);
+        $results = $options['dry_run'] ? $work() : DB::transaction($work);
+
+        return response()->json([
+            'dry_run' => $options['dry_run'],
+            'geocode_mode' => $options['geocode_mode'],
+            'items' => $results,
+        ]);
     }
 
     /**
@@ -593,7 +651,7 @@ class B2BPartnerController extends Controller
      * @param  array<int, string>  $capabilities
      * @return array<string, mixed>
      */
-    private function applyCariCandidate(string $action, array $candidate, array $capabilities, Request $request, int $userId, mixed $explicitPartnerId): array
+    private function applyCariCandidate(string $action, array $candidate, array $capabilities, Request $request, int $userId, mixed $explicitPartnerId, array $options = []): array
     {
         $mikroCode = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
 
@@ -604,6 +662,11 @@ class B2BPartnerController extends Controller
         }
 
         $partner = $this->candidatePartner($candidate, $explicitPartnerId);
+        $technician = $this->candidateTechnician($candidate);
+
+        if ((bool) ($options['dry_run'] ?? false)) {
+            return $this->cariApplyPlan($action, $candidate, $capabilities, $partner, $technician, $options);
+        }
 
         if ($action === 'create_partner') {
             $activePartner = B2BPartner::query()
@@ -619,11 +682,15 @@ class B2BPartnerController extends Controller
                 ], 409));
             }
 
-            return $this->createPartnerFromCari($candidate, $capabilities, $request, $userId);
+            $result = $this->createPartnerFromCari($candidate, $capabilities, $request, $userId);
+
+            return $this->withCariLocksmithSyncResult($result, $candidate, $capabilities, $request, $userId, $options);
         }
 
         if ($action === 'import' && ! $partner) {
-            return $this->createPartnerFromCari($candidate, $capabilities, $request, $userId);
+            $result = $this->createPartnerFromCari($candidate, $capabilities, $request, $userId);
+
+            return $this->withCariLocksmithSyncResult($result, $candidate, $capabilities, $request, $userId, $options);
         }
 
         if (! $partner) {
@@ -657,11 +724,13 @@ class B2BPartnerController extends Controller
             $this->writeAuditLog($partner, $request, 'b2b.partner.capability_added', $oldValues, $this->auditPayload($partner), $userId);
             $defaultUser = $this->ensureDefaultDealerUser($partner, $mergedCapabilities, $candidate, $request, $userId);
 
-            return array_filter([
+            $result = array_filter([
                 'partner_id' => $partner->id,
                 'status' => 'capability_added',
                 'default_user' => $defaultUser,
             ], fn (mixed $value): bool => $value !== null);
+
+            return $this->withCariLocksmithSyncResult($result, $candidate, $mergedCapabilities, $request, $userId, $options);
         }
 
         $oldValues = $this->auditPayload($partner);
@@ -683,11 +752,13 @@ class B2BPartnerController extends Controller
             ? $this->ensureDefaultDealerUser($partner, $partner->capabilityCodes(), $candidate, $request, $userId)
             : null;
 
-        return array_filter([
+        $result = array_filter([
             'partner_id' => $partner->id,
             'status' => 'updated',
             'default_user' => $defaultUser,
         ], fn (mixed $value): bool => $value !== null);
+
+        return $this->withCariLocksmithSyncResult($result, $candidate, $action === 'import' ? $partner->capabilityCodes() : $capabilities, $request, $userId, $options);
     }
 
     /**
@@ -719,6 +790,461 @@ class B2BPartnerController extends Controller
             'status' => 'created',
             'default_user' => $defaultUser,
         ], fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $baseResult
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, string>  $capabilities
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function withCariLocksmithSyncResult(array $baseResult, array $candidate, array $capabilities, Request $request, int $userId, array $options): array
+    {
+        if (! (bool) ($options['sync_technician'] ?? true) || ! in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true)) {
+            return [
+                ...$baseResult,
+                'technician_sync' => [
+                    'status' => 'not_applicable',
+                ],
+            ];
+        }
+
+        $partner = B2BPartner::query()->find($baseResult['partner_id'] ?? null);
+
+        if (! $partner) {
+            return [
+                ...$baseResult,
+                'technician_sync' => [
+                    'status' => 'partner_missing',
+                ],
+            ];
+        }
+
+        return [
+            ...$baseResult,
+            'technician_sync' => $this->syncCariLocksmithTechnician($partner, $candidate, $request, $userId, $options),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, string>  $capabilities
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function cariApplyPlan(string $action, array $candidate, array $capabilities, ?B2BPartner $partner, ?TechnicalServiceTechnician $technician, array $options): array
+    {
+        $isLocksmith = in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true);
+        $linkExists = $isLocksmith && $partner && $technician
+            ? B2BPartnerTechnician::query()
+                ->where('partner_id', $partner->id)
+                ->where('technical_service_technician_id', $technician->id)
+                ->where('active', true)
+                ->exists()
+            : false;
+
+        return [
+            'status' => 'dry_run',
+            'action' => $action,
+            'partner_action' => $partner ? ($action === 'add_capability' ? 'add_capability' : 'update_partner') : 'create_partner',
+            'partner_id' => $partner?->id,
+            'technician_action' => $isLocksmith ? ($technician ? 'update_or_use_existing_technician' : 'create_technician') : 'not_applicable',
+            'technician_id' => $technician?->id,
+            'link_action' => $isLocksmith ? ($linkExists ? 'no_link_change' : 'ensure_partner_technician_link') : 'not_applicable',
+            'geocode_plan' => $isLocksmith ? $this->candidateGeocodePlan($candidate, $technician, $options) : null,
+            'review_warnings' => $isLocksmith ? $this->reviewReasonsForCandidate($candidate, $technician) : [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function syncCariLocksmithTechnician(B2BPartner $partner, array $candidate, Request $request, int $userId, array $options): array
+    {
+        $technician = $this->candidateTechnician($candidate);
+        $created = false;
+        $updated = false;
+        $existingHadCoordinates = $technician ? $this->technicianHasCoordinates($technician) : false;
+        $payload = $this->technicianPayloadFromCariCandidate($candidate, $technician);
+
+        if ($technician) {
+            if ((bool) ($options['update_existing'] ?? true)) {
+                $technician->fill($payload);
+                $updated = $technician->isDirty();
+                $technician->save();
+            }
+        } else {
+            $technician = TechnicalServiceTechnician::query()->create($payload);
+            $created = true;
+        }
+
+        $geocode = $this->applyCandidateGeocode($technician, (string) ($options['geocode_mode'] ?? 'none'), (bool) ($options['override_existing_coordinates'] ?? false), $existingHadCoordinates);
+        $reviewReasons = $this->reviewReasonsForTechnician($technician->fresh(), $geocode);
+        $reviewCleared = false;
+
+        $reviewPayload = [
+            'needs_review' => $reviewReasons !== [],
+            'review_status' => $reviewReasons === [] ? 'ready' : 'review_required',
+            'review_reason' => $reviewReasons === [] ? null : implode(' ', $reviewReasons),
+            'review_reasons' => $reviewReasons,
+        ];
+
+        if ((bool) ($options['mark_reviewed'] ?? false) && $reviewReasons === []) {
+            $reviewPayload['needs_review'] = false;
+            $reviewPayload['review_status'] = 'reviewed';
+            $reviewPayload['reviewed_at'] = now();
+            $reviewPayload['reviewed_by'] = $userId;
+            $reviewCleared = true;
+        }
+
+        $technician->forceFill($reviewPayload)->save();
+        $technician->refresh();
+
+        $link = $this->upsertPartnerTechnicianLink(
+            $partner->fresh('capabilities'),
+            $technician,
+            $request,
+            $userId,
+            'field_technician',
+            false,
+            'cari_control',
+            $created ? 'cari_control_created_technician' : 'cari_control_matched_technician',
+            [
+                'service_city' => $this->nullableString($candidate['city'] ?? null) ?? $technician->city,
+                'service_district' => $this->nullableString($candidate['district'] ?? null) ?? $technician->district,
+                'service_region_note' => $this->nullableString($candidate['address'] ?? null),
+                'needs_review' => $reviewReasons !== [],
+                'review_reason' => $reviewReasons === [] ? null : implode(' ', $reviewReasons),
+                'review_reasons' => $reviewReasons,
+                'reviewed_at' => $reviewCleared ? now() : null,
+                'reviewed_by' => $reviewCleared ? $userId : null,
+                'candidate' => $candidate,
+            ],
+        );
+
+        $this->writeAuditLog($partner->fresh(), $request, 'b2b.partner.cari_locksmith_synced', null, [
+            'partner_id' => $partner->id,
+            'technician_id' => $technician->id,
+            'link_id' => $link->id,
+            'created_technician' => $created,
+            'updated_technician' => $updated,
+            'geocode' => collect($geocode)->except(['payload'])->all(),
+            'review_reasons' => $reviewReasons,
+        ], $userId);
+
+        return [
+            'status' => $created ? 'technician_created' : ($updated ? 'technician_updated' : 'technician_matched'),
+            'technician_id' => $technician->id,
+            'link_id' => $link->id,
+            'partner_id' => $partner->id,
+            'created' => $created,
+            'updated' => $updated,
+            'geocode' => $geocode,
+            'needs_review' => (bool) $technician->needs_review,
+            'review_reasons' => $reviewReasons,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateTechnician(array $candidate): ?TechnicalServiceTechnician
+    {
+        $code = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
+
+        if ($code !== null) {
+            $technician = TechnicalServiceTechnician::query()
+                ->where(function (Builder $query) use ($code): void {
+                    $query->where('mikro_cari_kodu', $code)
+                        ->orWhere('cari_code', $code);
+                })
+                ->first();
+
+            if ($technician) {
+                return $technician;
+            }
+        }
+
+        $phone = $this->normalizedPhone($candidate['phone'] ?? null);
+
+        if ($phone === '') {
+            return null;
+        }
+
+        $suffix = substr($phone, -10) ?: $phone;
+
+        return TechnicalServiceTechnician::query()
+            ->where(function (Builder $query) use ($suffix): void {
+                $query->where('phone', 'like', '%'.$suffix.'%')
+                    ->orWhere('phone_e164', 'like', '%'.$suffix.'%')
+                    ->orWhere('phone_display', 'like', '%'.$suffix.'%');
+            })
+            ->get()
+            ->first(fn (TechnicalServiceTechnician $technician): bool => in_array($phone, [
+                $this->normalizedPhone($technician->phone),
+                $this->normalizedPhone($technician->phone_e164),
+                $this->normalizedPhone($technician->phone_display),
+            ], true));
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function technicianPayloadFromCariCandidate(array $candidate, ?TechnicalServiceTechnician $technician = null): array
+    {
+        $displayName = $this->nullableString($candidate['display_name'] ?? null)
+            ?? $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
+            ?? $this->nullableString($candidate['mikro_cari_kodu'] ?? null)
+            ?? 'Çilingir';
+        $phone = $this->nullableString($candidate['phone'] ?? null);
+        $city = $this->nullableString($candidate['city'] ?? null);
+        $district = $this->nullableString($candidate['district'] ?? null);
+        $address = $this->nullableString($candidate['address'] ?? null);
+        $code = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
+        $title = $this->nullableString($candidate['mikro_cari_unvan'] ?? null) ?? $displayName;
+        $sourceKey = $code !== null
+            ? 'cari_control:'.$code
+            : ('cari_control:'.($phone ?? Str::uuid()->toString()));
+
+        return [
+            'name' => $technician?->name ?: $displayName,
+            'first_name' => $technician?->first_name ?: $displayName,
+            'last_name' => $technician?->last_name,
+            'display_name' => $displayName,
+            'technician_type' => 'locksmith',
+            'phone' => $phone ?? $technician?->phone,
+            'phone_e164' => $phone ?? $technician?->phone_e164,
+            'phone_display' => $phone ?? $technician?->phone_display,
+            'city' => $city ?? $technician?->city,
+            'district' => $district ?? $technician?->district,
+            'address' => $address ?? $technician?->address,
+            'default_start_address' => $address ?? $technician?->default_start_address,
+            'mikro_cari_kodu' => $code ?? $technician?->mikro_cari_kodu,
+            'mikro_cari_adi' => $title ?? $technician?->mikro_cari_adi,
+            'cari_code' => $code ?? $technician?->cari_code,
+            'cari_title' => $title ?? $technician?->cari_title,
+            'cari_address' => $address ?? $technician?->cari_address,
+            'cari_city_district_country' => implode(' / ', array_values(array_filter([$district, $city, 'Türkiye']))) ?: $technician?->cari_city_district_country,
+            'active' => true,
+            'import_status' => 'Cari Control',
+            'import_source' => 'b2b_cari_control',
+            'imported_at' => $technician?->imported_at ?? now(),
+            'source_key' => $technician?->source_key ?? $sourceKey,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function candidateGeocodePlan(array $candidate, ?TechnicalServiceTechnician $technician, array $options): array
+    {
+        $mode = (string) ($options['geocode_mode'] ?? 'none');
+
+        if ($technician && $this->technicianHasCoordinates($technician) && ! (bool) ($options['override_existing_coordinates'] ?? false)) {
+            return [
+                'mode' => $mode,
+                'status' => 'skipped_existing_coordinates',
+                'message' => 'Mevcut koordinat korunacak.',
+            ];
+        }
+
+        $plusCode = $this->nullableString($candidate['google_plus_code'] ?? $candidate['location_code'] ?? $candidate['plus_code'] ?? null);
+        $address = $this->nullableString($candidate['address'] ?? null);
+        $city = $this->nullableString($candidate['city'] ?? null);
+        $district = $this->nullableString($candidate['district'] ?? null);
+
+        if ($plusCode !== null) {
+            return ['mode' => $mode, 'status' => 'available', 'source' => 'plus_code', 'query' => $plusCode];
+        }
+
+        if ($address !== null && $city !== null) {
+            return ['mode' => $mode, 'status' => 'available', 'source' => 'mikro_address', 'query' => implode(', ', array_values(array_filter([$address, $district, $city, 'Türkiye'])))];
+        }
+
+        return ['mode' => $mode, 'status' => 'review_required', 'source' => 'missing_precise_address', 'query' => null, 'message' => 'Adres yetersiz; rota için gerçek koordinat yok.'];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function applyCandidateGeocode(TechnicalServiceTechnician $technician, string $mode, bool $overrideExisting, bool $existingHadCoordinates): array
+    {
+        if ($mode !== 'auto') {
+            $technician->forceFill([
+                'geocode_status' => $mode === 'dry_run' ? 'dry_run' : 'skipped',
+                'geocode_source' => null,
+                'geocode_confidence' => null,
+            ])->save();
+
+            return ['status' => $mode === 'dry_run' ? 'dry_run' : 'skipped', 'message' => 'Geocode uygulanmadı.'];
+        }
+
+        if ($existingHadCoordinates && ! $overrideExisting) {
+            $technician->forceFill([
+                'geocode_status' => 'skipped_existing_coordinates',
+                'geocode_source' => $technician->location_source,
+            ])->save();
+
+            return ['status' => 'skipped_existing_coordinates', 'message' => 'Mevcut koordinat korundu.'];
+        }
+
+        $result = app(TechnicianGeocodingService::class)->geocode($technician);
+        $payload = $this->geocodePersistencePayload($result);
+
+        if (($result['ok'] ?? false) === true) {
+            $technician->forceFill([
+                'latitude' => $result['latitude'],
+                'longitude' => $result['longitude'],
+                'start_latitude' => $result['latitude'],
+                'start_longitude' => $result['longitude'],
+                'google_formatted_address' => $this->nullableString($result['formatted_address'] ?? null) ?? $technician->google_formatted_address,
+                'location_source' => $result['provider'] ?? 'google_geocode',
+                'route_note' => $this->geocodeNoteFromResult($result),
+                ...$payload,
+            ])->save();
+        } else {
+            $technician->forceFill([
+                'needs_review' => true,
+                'route_note' => (string) ($result['error_message'] ?? 'Geocoding başarısız.'),
+                ...$payload,
+            ])->save();
+        }
+
+        return collect($result)
+            ->except(['geocode_payload'])
+            ->merge(['status' => $payload['geocode_status']])
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    private function geocodePersistencePayload(array $result): array
+    {
+        $ok = (bool) ($result['ok'] ?? false);
+        $source = $this->nullableString($result['source_type'] ?? null) ?? $this->nullableString($result['provider'] ?? null);
+
+        return [
+            'geocode_status' => $ok ? ((bool) ($result['needs_review'] ?? false) ? 'review_required' : 'ok') : ((string) ($result['status'] ?? 'failed')),
+            'geocode_source' => $source,
+            'geocode_confidence' => $this->geocodeConfidence($result),
+            'geocoded_at' => now(),
+            'geocode_payload' => collect($result)
+                ->only(['ok', 'status', 'provider', 'query', 'source_type', 'quality', 'needs_review', 'review_reason', 'location_type', 'latitude', 'longitude', 'formatted_address', 'error_message'])
+                ->all(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    private function geocodeConfidence(array $result): int
+    {
+        if (! (bool) ($result['ok'] ?? false)) {
+            return 0;
+        }
+
+        return match ((string) ($result['quality'] ?? '')) {
+            'exact_plus_code' => 95,
+            'formatted_address' => 88,
+            'address_fallback' => (bool) ($result['needs_review'] ?? false) ? 60 : 78,
+            default => (bool) ($result['needs_review'] ?? false) ? 50 : 70,
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    private function geocodeNoteFromResult(array $result): string
+    {
+        $source = trim((string) ($result['source_type'] ?? 'unknown'));
+        $formatted = trim((string) ($result['formatted_address'] ?? ''));
+        $note = "Geocoded from {$source}";
+
+        if ($formatted !== '') {
+            $note .= "; formatted: {$formatted}";
+        }
+
+        if ((bool) ($result['needs_review'] ?? false) && $this->nullableString($result['review_reason'] ?? null) !== null) {
+            $note .= '; '.$result['review_reason'];
+        }
+
+        return $note.'; at '.now()->toDateTimeString();
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<int, string>
+     */
+    private function reviewReasonsForCandidate(array $candidate, ?TechnicalServiceTechnician $technician = null): array
+    {
+        $phone = $this->nullableString($candidate['phone'] ?? null) ?? $technician?->phone;
+        $address = $this->nullableString($candidate['address'] ?? null) ?? $technician?->address ?? $technician?->cari_address;
+        $city = $this->nullableString($candidate['city'] ?? null) ?? $technician?->city;
+        $hasCoordinates = $technician ? $this->technicianHasCoordinates($technician) : false;
+        $reasons = [];
+
+        if ($phone === null) {
+            $reasons[] = 'Telefon eksik.';
+        }
+
+        if ($address === null || $city === null) {
+            $reasons[] = 'Adres/şehir eksik.';
+        }
+
+        if (! $hasCoordinates) {
+            $reasons[] = 'Koordinat eksik.';
+        }
+
+        return $reasons;
+    }
+
+    /**
+     * @param  array<string, mixed>  $geocode
+     * @return array<int, string>
+     */
+    private function reviewReasonsForTechnician(TechnicalServiceTechnician $technician, array $geocode = []): array
+    {
+        $reasons = [];
+
+        if ($this->nullableString($technician->phone) === null && $this->nullableString($technician->phone_e164) === null) {
+            $reasons[] = 'Telefon eksik.';
+        }
+
+        if (($this->nullableString($technician->address) === null
+            && $this->nullableString($technician->cari_address) === null
+            && $this->nullableString($technician->google_formatted_address) === null
+            && $this->nullableString($technician->default_start_address) === null)
+            || $this->nullableString($technician->city) === null) {
+            $reasons[] = 'Adres/şehir eksik.';
+        }
+
+        if (! $this->technicianHasCoordinates($technician)) {
+            $reasons[] = 'Koordinat eksik.';
+        }
+
+        if ((bool) ($geocode['needs_review'] ?? false) && $this->nullableString($geocode['review_reason'] ?? $geocode['error_message'] ?? null) !== null) {
+            $reasons[] = (string) ($geocode['review_reason'] ?? $geocode['error_message']);
+        }
+
+        return array_values(array_unique($reasons));
+    }
+
+    private function technicianHasCoordinates(TechnicalServiceTechnician $technician): bool
+    {
+        return app(TechnicianGeocodingService::class)->hasValidCoordinates($technician);
+    }
+
+    private function normalizedPhone(mixed $phone): string
+    {
+        return preg_replace('/\D+/', '', (string) ($phone ?? '')) ?? '';
     }
 
     /**
@@ -1311,6 +1837,15 @@ class B2BPartnerController extends Controller
             'active' => (bool) $link->active,
             'source' => $link->source,
             'match_reason' => $link->match_reason,
+            'service_city' => $link->service_city,
+            'service_district' => $link->service_district,
+            'service_region_note' => $link->service_region_note,
+            'priority' => $link->priority,
+            'needs_review' => (bool) $link->needs_review,
+            'review_reason' => $link->review_reason,
+            'review_reasons' => $link->review_reasons ?? [],
+            'reviewed_at' => $link->reviewed_at?->toIso8601String(),
+            'reviewed_by' => $link->reviewed_by,
             'metadata' => $link->metadata ?? [],
             'technician' => $technician ? [
                 'id' => $technician->id,
@@ -1323,6 +1858,11 @@ class B2BPartnerController extends Controller
                 'mikro_cari_kodu' => $technician->mikro_cari_kodu ?? $technician->cari_code,
                 'mikro_cari_adi' => $technician->mikro_cari_adi ?? $technician->cari_title,
                 'technician_type' => $technician->technician_type,
+                'needs_review' => (bool) $technician->needs_review,
+                'review_reason' => $technician->review_reason,
+                'review_reasons' => $technician->review_reasons ?? [],
+                'geocode_status' => $technician->geocode_status,
+                'location_source' => $technician->location_source,
                 'active' => (bool) $technician->active,
             ] : null,
         ];
@@ -1360,6 +1900,7 @@ class B2BPartnerController extends Controller
         bool $isPrimary = false,
         ?string $source = null,
         ?string $matchReason = null,
+        array $context = [],
     ): B2BPartnerTechnician {
         $this->ensurePartnerCanLinkTechnician($partner, $technician);
         $hasActiveLinks = $partner->activePartnerTechnicians()->exists();
@@ -1380,8 +1921,18 @@ class B2BPartnerController extends Controller
                 'active' => true,
                 'source' => $source,
                 'match_reason' => $matchReason,
+                'service_city' => $this->nullableString($context['service_city'] ?? null) ?? $technician->city,
+                'service_district' => $this->nullableString($context['service_district'] ?? null) ?? $technician->district,
+                'service_region_note' => $this->nullableString($context['service_region_note'] ?? null),
+                'priority' => (int) ($context['priority'] ?? 1),
+                'needs_review' => (bool) ($context['needs_review'] ?? false),
+                'review_reason' => $this->nullableString($context['review_reason'] ?? null),
+                'review_reasons' => is_array($context['review_reasons'] ?? null) ? $context['review_reasons'] : [],
+                'reviewed_at' => $context['reviewed_at'] ?? null,
+                'reviewed_by' => $context['reviewed_by'] ?? null,
                 'metadata' => [
                     'technician_snapshot' => $this->technicianMetadata($technician)['technician_snapshot'] ?? [],
+                    'candidate' => $context['candidate'] ?? null,
                     'linked_at' => now()->toIso8601String(),
                 ],
                 'created_by' => $userId,
@@ -1454,6 +2005,15 @@ class B2BPartnerController extends Controller
             'active' => (bool) $link->active,
             'source' => $link->source,
             'match_reason' => $link->match_reason,
+            'service_city' => $link->service_city,
+            'service_district' => $link->service_district,
+            'service_region_note' => $link->service_region_note,
+            'priority' => $link->priority,
+            'needs_review' => (bool) $link->needs_review,
+            'review_reason' => $link->review_reason,
+            'review_reasons' => $link->review_reasons ?? [],
+            'reviewed_at' => $link->reviewed_at?->toIso8601String(),
+            'reviewed_by' => $link->reviewed_by,
         ];
     }
 
@@ -1499,6 +2059,11 @@ class B2BPartnerController extends Controller
             'cari_title' => $technician->cari_title,
             'technician_type' => $technician->technician_type,
             'active' => (bool) $technician->active,
+            'needs_review' => (bool) $technician->needs_review,
+            'review_reason' => $technician->review_reason,
+            'review_reasons' => $technician->review_reasons ?? [],
+            'geocode_status' => $technician->geocode_status,
+            'location_source' => $technician->location_source,
             'source_key' => 'technical_service_technician:'.$technician->id,
             'match_reason' => $this->technicianMatchReason($technician, $filters),
             'requires_type_review' => $technician->technician_type === null,

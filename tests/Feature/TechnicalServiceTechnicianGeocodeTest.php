@@ -187,6 +187,13 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
         $this->assertSame('address_fallback', $fallback['quality'] ?? null);
         $this->assertStringContainsString('Türkiye', $fallback['query'] ?? '');
 
+        $cityOnlyTechnician = new TechnicalServiceTechnician([
+            'name' => 'Sadece Şehir Usta',
+            'city' => 'Ankara',
+            'district' => 'Çankaya',
+        ]);
+        $this->assertNull($service->bestQueryFor($cityOnlyTechnician));
+
         $this->assertNull($service->bestQueryFor(new TechnicalServiceTechnician(['name' => 'Boş Usta'])));
     }
 
@@ -399,6 +406,125 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             ->assertJsonPath('technician.latitude', '38.6190990')
             ->assertJsonPath('technician.longitude', '27.4289210')
             ->assertJsonPath('technician.needs_review', false);
+    }
+
+    public function test_technician_geocode_dry_run_does_not_write_coordinates(): void
+    {
+        Http::fake();
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Dry Run Endpoint Usta',
+            'first_name' => 'Dry Run',
+            'phone' => '+905555555561',
+            'city' => 'Manisa',
+            'district' => 'Yunusemre',
+            'address' => 'Organize Sanayi Bölgesi',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/technicians/{$technician->id}/geocode", [
+                'dry_run' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('plan.source_type', 'address');
+
+        $technician->refresh();
+        $this->assertNull($technician->latitude);
+        $this->assertNull($technician->longitude);
+        Http::assertNothingSent();
+    }
+
+    public function test_manual_location_fix_clears_review_when_complete(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Review Manual Usta',
+            'first_name' => 'Review',
+            'phone' => null,
+            'city' => null,
+            'needs_review' => true,
+            'review_status' => 'review_required',
+            'review_reason' => 'Telefon eksik. Adres/şehir eksik. Koordinat eksik.',
+            'review_reasons' => ['Telefon eksik.', 'Adres/şehir eksik.', 'Koordinat eksik.'],
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/technicians/{$technician->id}/location-review", [
+                'phone' => '+905555555562',
+                'city' => 'İzmir',
+                'district' => 'Konak',
+                'address' => 'Manuel Mahallesi No:1',
+                'latitude' => 38.423734,
+                'longitude' => 27.142826,
+                'start_latitude' => 38.423734,
+                'start_longitude' => 27.142826,
+                'mark_reviewed' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('technician.needs_review', false)
+            ->assertJsonPath('technician.review_status', 'reviewed');
+
+        $technician->refresh();
+        $this->assertFalse((bool) $technician->needs_review);
+        $this->assertSame('reviewed', $technician->review_status);
+        $this->assertSame([], $technician->review_reasons);
+        $this->assertSame($user->id, $technician->reviewed_by);
+        $this->assertNotNull($technician->reviewed_at);
+    }
+
+    public function test_mark_reviewed_fails_if_required_fields_missing(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Eksik Kontrol Usta',
+            'first_name' => 'Eksik',
+            'phone' => '+905555555563',
+            'city' => 'İstanbul',
+            'needs_review' => true,
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/technicians/{$technician->id}/mark-reviewed")
+            ->assertStatus(422)
+            ->assertJsonPath('errors.mark_reviewed.0', 'Kontrol kapatılamaz: telefon/adres/koordinat eksik.');
+
+        $this->assertTrue((bool) $technician->refresh()->needs_review);
+    }
+
+    public function test_mark_reviewed_sets_reviewed_at_and_reviewed_by(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Tam Kontrol Usta',
+            'first_name' => 'Tam',
+            'phone' => '+905555555564',
+            'city' => 'İstanbul',
+            'address' => 'Tam Mahallesi No:1',
+            'latitude' => '41.0082376',
+            'longitude' => '28.9783589',
+            'start_latitude' => '41.0082376',
+            'start_longitude' => '28.9783589',
+            'needs_review' => true,
+            'review_status' => 'review_required',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/technicians/{$technician->id}/mark-reviewed")
+            ->assertOk()
+            ->assertJsonPath('technician.needs_review', false)
+            ->assertJsonPath('technician.review_status', 'reviewed');
+
+        $technician->refresh();
+        $this->assertFalse((bool) $technician->needs_review);
+        $this->assertSame('reviewed', $technician->review_status);
+        $this->assertSame($user->id, $technician->reviewed_by);
+        $this->assertNotNull($technician->reviewed_at);
     }
 
     public function test_coordinate_validation_command_keeps_reviewable_city_mismatch_coordinates(): void

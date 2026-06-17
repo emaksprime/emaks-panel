@@ -132,15 +132,53 @@ class TechnicalServiceTechnicianController extends Controller
     }
 
     public function geocode(
+        Request $request,
         TechnicalServiceTechnician $technician,
         TechnicianGeocodingService $geocodingService,
     ): JsonResponse {
+        $options = $request->validate([
+            'dry_run' => ['nullable', 'boolean'],
+            'apply' => ['nullable', 'boolean'],
+            'override_existing_coordinates' => ['nullable', 'boolean'],
+        ]);
+        $dryRun = (bool) ($options['dry_run'] ?? false);
+        $apply = array_key_exists('apply', $options) ? (bool) $options['apply'] : ! $dryRun;
+        $overrideExisting = (bool) ($options['override_existing_coordinates'] ?? false);
+        $plan = $geocodingService->bestQueryFor($technician);
+
+        if ($dryRun || ! $apply) {
+            return response()->json([
+                'ok' => $plan !== null,
+                'dry_run' => true,
+                'message' => $plan ? 'Geocode planı hazır.' : 'Adres veya Plus Code bulunamadı.',
+                'plan' => $plan,
+                'technician' => $this->technicianResponsePayload($technician),
+            ], $plan ? 200 : 422);
+        }
+
+        if ($this->hasStoredCoordinates($technician) && ! $overrideExisting) {
+            return response()->json([
+                'ok' => true,
+                'message' => 'Mevcut koordinat korundu.',
+                'result' => [
+                    'status' => 'skipped_existing_coordinates',
+                    'needs_review' => (bool) $technician->needs_review,
+                ],
+                'technician' => $this->technicianResponsePayload($technician),
+            ]);
+        }
+
         $result = $geocodingService->geocode($technician);
 
         if (! ($result['ok'] ?? false)) {
+            $reviewReasons = $this->technicianReviewReasons($technician, $result);
             $technician->forceFill([
                 'needs_review' => true,
+                'review_status' => 'review_required',
+                'review_reason' => implode(' ', $reviewReasons),
+                'review_reasons' => $reviewReasons,
                 'route_note' => (string) ($result['error_message'] ?? 'Geocoding başarısız.'),
+                ...$this->geocodePersistencePayload($result),
             ])->save();
 
             return response()->json([
@@ -156,15 +194,93 @@ class TechnicalServiceTechnicianController extends Controller
             'longitude' => $result['longitude'],
             'start_latitude' => $result['latitude'],
             'start_longitude' => $result['longitude'],
+            'google_formatted_address' => $this->blankToNull($result['formatted_address'] ?? null) ?? $technician->google_formatted_address,
             'location_source' => $result['provider'] ?? 'google_geocode',
             'route_note' => $this->geocodeRouteNote($result),
-            'needs_review' => (bool) ($result['needs_review'] ?? false),
+            ...$this->geocodePersistencePayload($result),
+        ])->save();
+        $reviewReasons = $this->technicianReviewReasons($technician->fresh(), $result);
+        $technician->forceFill([
+            'needs_review' => $reviewReasons !== [],
+            'review_status' => $reviewReasons === [] ? 'ready' : 'review_required',
+            'review_reason' => $reviewReasons === [] ? null : implode(' ', $reviewReasons),
+            'review_reasons' => $reviewReasons,
         ])->save();
 
         return response()->json([
             'ok' => true,
             'message' => 'Koordinat Google ile güncellendi.',
             'result' => $result,
+            'technician' => $this->technicianResponsePayload($technician->fresh()),
+        ]);
+    }
+
+    public function locationReview(Request $request, TechnicalServiceTechnician $technician): JsonResponse
+    {
+        $data = $request->validate([
+            'phone' => ['nullable', 'string', 'max:64'],
+            'city' => ['nullable', 'string', 'max:128'],
+            'district' => ['nullable', 'string', 'max:128'],
+            'address' => ['nullable', 'string', 'max:2000'],
+            'google_plus_code' => ['nullable', 'string', 'max:255'],
+            'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            'default_start_address' => ['nullable', 'string', 'max:2000'],
+            'start_latitude' => ['nullable', 'numeric', 'between:-90,90'],
+            'start_longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            'note' => ['nullable', 'string', 'max:2000'],
+            'mark_reviewed' => ['nullable', 'boolean'],
+        ]);
+
+        $payload = collect($data)
+            ->except(['mark_reviewed'])
+            ->filter(fn (mixed $value): bool => $value !== '')
+            ->all();
+        $coordinateChanged = $this->payloadCoordinatePairChanged($technician, $payload);
+        $this->applyManualCoordinateState($payload, $coordinateChanged);
+        $technician->fill($payload);
+        $reviewReasons = $this->technicianReviewReasons($technician);
+
+        if ((bool) ($data['mark_reviewed'] ?? false) && $reviewReasons !== []) {
+            throw ValidationException::withMessages([
+                'mark_reviewed' => 'Kontrol kapatılamaz: telefon/adres/koordinat eksik.',
+            ]);
+        }
+
+        $technician->forceFill([
+            'needs_review' => $reviewReasons !== [],
+            'review_status' => $reviewReasons === [] ? ((bool) ($data['mark_reviewed'] ?? false) ? 'reviewed' : 'ready') : 'review_required',
+            'review_reason' => $reviewReasons === [] ? null : implode(' ', $reviewReasons),
+            'review_reasons' => $reviewReasons,
+            'reviewed_at' => ((bool) ($data['mark_reviewed'] ?? false) && $reviewReasons === []) ? now() : $technician->reviewed_at,
+            'reviewed_by' => ((bool) ($data['mark_reviewed'] ?? false) && $reviewReasons === []) ? $request->user()?->id : $technician->reviewed_by,
+        ])->save();
+
+        return response()->json([
+            'technician' => $this->technicianResponsePayload($technician->fresh()),
+        ]);
+    }
+
+    public function markReviewed(Request $request, TechnicalServiceTechnician $technician): JsonResponse
+    {
+        $reviewReasons = $this->technicianReviewReasons($technician);
+
+        if ($reviewReasons !== []) {
+            throw ValidationException::withMessages([
+                'mark_reviewed' => 'Kontrol kapatılamaz: telefon/adres/koordinat eksik.',
+            ]);
+        }
+
+        $technician->forceFill([
+            'needs_review' => false,
+            'review_status' => 'reviewed',
+            'review_reason' => null,
+            'review_reasons' => [],
+            'reviewed_at' => now(),
+            'reviewed_by' => $request->user()?->id,
+        ])->save();
+
+        return response()->json([
             'technician' => $this->technicianResponsePayload($technician->fresh()),
         ]);
     }
@@ -513,6 +629,74 @@ class TechnicalServiceTechnicianController extends Controller
     {
         return app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->latitude, $technician->longitude) !== null
             || app(TechnicalServiceGeocodingService::class)->validCoordinatePair($technician->start_latitude, $technician->start_longitude) !== null;
+    }
+
+    /**
+     * @param array<string, mixed> $geocodeResult
+     * @return array<int, string>
+     */
+    private function technicianReviewReasons(TechnicalServiceTechnician $technician, array $geocodeResult = []): array
+    {
+        $reasons = [];
+
+        if ($this->blankToNull($technician->phone) === null && $this->blankToNull($technician->phone_e164) === null) {
+            $reasons[] = 'Telefon eksik.';
+        }
+
+        if (($this->blankToNull($technician->address) === null
+            && $this->blankToNull($technician->cari_address) === null
+            && $this->blankToNull($technician->google_formatted_address) === null
+            && $this->blankToNull($technician->default_start_address) === null)
+            || $this->blankToNull($technician->city) === null) {
+            $reasons[] = 'Adres/şehir eksik.';
+        }
+
+        if (! $this->hasStoredCoordinates($technician)) {
+            $reasons[] = 'Koordinat eksik.';
+        }
+
+        $geocodeReason = $this->blankToNull($geocodeResult['review_reason'] ?? $geocodeResult['error_message'] ?? null);
+        if ((bool) ($geocodeResult['needs_review'] ?? false) && $geocodeReason !== null) {
+            $reasons[] = $geocodeReason;
+        }
+
+        return array_values(array_unique($reasons));
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @return array<string, mixed>
+     */
+    private function geocodePersistencePayload(array $result): array
+    {
+        $ok = (bool) ($result['ok'] ?? false);
+
+        return [
+            'geocode_status' => $ok ? ((bool) ($result['needs_review'] ?? false) ? 'review_required' : 'ok') : ((string) ($result['status'] ?? 'failed')),
+            'geocode_source' => $this->blankToNull($result['source_type'] ?? null) ?? $this->blankToNull($result['provider'] ?? null),
+            'geocode_confidence' => $this->geocodeConfidence($result),
+            'geocoded_at' => now(),
+            'geocode_payload' => collect($result)
+                ->only(['ok', 'status', 'provider', 'query', 'source_type', 'quality', 'needs_review', 'review_reason', 'location_type', 'latitude', 'longitude', 'formatted_address', 'error_message'])
+                ->all(),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private function geocodeConfidence(array $result): int
+    {
+        if (! (bool) ($result['ok'] ?? false)) {
+            return 0;
+        }
+
+        return match ((string) ($result['quality'] ?? '')) {
+            'exact_plus_code' => 95,
+            'formatted_address' => 88,
+            'address_fallback' => (bool) ($result['needs_review'] ?? false) ? 60 : 78,
+            default => (bool) ($result['needs_review'] ?? false) ? 50 : 70,
+        };
     }
 
     /**

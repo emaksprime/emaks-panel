@@ -82,6 +82,13 @@ type PartnerTechnicianLink = {
   active: boolean
   source?: string | null
   match_reason?: string | null
+  service_city?: string | null
+  service_district?: string | null
+  service_region_note?: string | null
+  priority?: number | string | null
+  needs_review?: boolean | null
+  review_reason?: string | null
+  review_reasons?: string[] | null
   technician: {
     id: number
     name: string
@@ -93,6 +100,11 @@ type PartnerTechnicianLink = {
     mikro_cari_kodu?: string | null
     mikro_cari_adi?: string | null
     technician_type?: string | null
+    needs_review?: boolean | null
+    review_reason?: string | null
+    review_reasons?: string[] | null
+    geocode_status?: string | null
+    location_source?: string | null
     active?: boolean
   } | null
 }
@@ -186,6 +198,14 @@ type CariControlSyncPreview = {
   partner_action: string
   technician_action: string
   link_action: string
+  geocode_plan?: {
+    mode?: string
+    status?: string
+    source?: string | null
+    query?: string | null
+    message?: string | null
+    review_required?: boolean
+  } | null
   partner_phone_matches?: { id: number, name: string | null }[]
   technician_phone_matches?: { id: number, name: string | null }[]
   duplicate_flags?: string[]
@@ -586,7 +606,13 @@ const syncPreviewActionLabel = (action: string) => {
     match_existing_technician: 'Mevcut teknisyen eşleşir',
     not_applicable: 'Uygulanmaz',
     ensure_partner_technician_link_preview: 'Partner-teknisyen bağı önizlemesi',
+    ensure_partner_technician_link: 'Partner-teknisyen bağı kurulacak',
     no_link_change: 'Bağ değişmez',
+    create_technician: 'Teknisyen oluşturulacak',
+    update_or_use_existing_technician: 'Teknisyen güncellenecek/eşleşecek',
+    create_partner: 'Partner oluşturulacak',
+    update_partner: 'Partner güncellenecek',
+    add_capability: 'Rol eklenecek',
   }
 
   return labels[action] ?? action
@@ -618,6 +644,7 @@ export default function B2BPartnersPage() {
   const [cariChecking, setCariChecking] = useState(false)
   const [locksmithSyncing, setLocksmithSyncing] = useState(false)
   const [adminProvisioning, setAdminProvisioning] = useState(false)
+  const [cariGeocodeMode, setCariGeocodeMode] = useState<'none' | 'auto'>('none')
   const [provisionResults, setProvisionResults] = useState<ProvisionResult[] | null>(null)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
   const [cariControlOpen, setCariControlOpen] = useState(false)
@@ -1009,7 +1036,7 @@ export default function B2BPartnersPage() {
     })
   }
 
-  const importSelectedCariCandidates = async () => {
+  const importSelectedCariCandidates = async (dryRun = false) => {
     const candidates = selectedCariItems
 
     if (candidates.length === 0) {
@@ -1027,25 +1054,36 @@ export default function B2BPartnersPage() {
         method: 'POST',
         body: JSON.stringify({
           action: 'import',
+          dry_run: dryRun,
+          sync_technician: true,
+          geocode_mode: dryRun && cariGeocodeMode === 'auto' ? 'dry_run' : cariGeocodeMode,
+          update_existing: true,
+          override_existing_coordinates: false,
           candidates: candidates.map((candidate) => ({
             ...candidate,
             selected_capabilities: candidateCapabilitySelections[candidate.mikro_cari_kodu] ?? candidateCapabilities(candidate),
           })),
         }),
       })
-      setSelectedCariCodes([])
-      setSelectedCariCandidates({})
-      setMessage(`${payload.items?.length ?? candidates.length} cari adayı işlendi.`)
+
+      if (!dryRun) {
+        setSelectedCariCodes([])
+        setSelectedCariCandidates({})
+      }
+
+      setMessage(dryRun ? `${payload.items?.length ?? candidates.length} cari adayı için dry-run tamamlandı.` : `${payload.items?.length ?? candidates.length} cari adayı işlendi.`)
 
       const defaultUsers = (payload.items ?? [])
         .map((item: { default_user?: { username?: string; default_password?: string } }) => item.default_user)
         .filter((user: { username?: string; default_password?: string } | undefined): user is { username?: string; default_password?: string } => Boolean(user?.username))
 
-      if (defaultUsers.length > 0) {
+      if (!dryRun && defaultUsers.length > 0) {
         setMessage(`${payload.items?.length ?? candidates.length} cari adayi islendi. Bayi kullanicisi olusturuldu: ${defaultUsers.map((user) => user.username).join(', ')}. Varsayilan sifre: 12345678`)
       }
 
-      await loadPartners()
+      if (!dryRun) {
+        await loadPartners()
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Cari adayları işlenemedi.')
     } finally {
@@ -1400,11 +1438,24 @@ export default function B2BPartnersPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">Cari adayları</div>
-                  <p className="mt-1 text-slate-600">Aday gelirse kullanıcı seçer; partner açma/güncelleme/rol ekleme otomatik çalışmaz.</p>
+                  <p className="mt-1 text-slate-600">Aday gelirse kullanıcı seçer; sadece seçili adaylar partner/teknisyen/bağ olarak işlenir.</p>
                 </div>
-                <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates()} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0}>
-                  {actionsEnabled ? 'Seçili adayları işle' : 'Faz 1B’de işlenecek'}
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                    value={cariGeocodeMode}
+                    onChange={(event) => setCariGeocodeMode(event.target.value as 'none' | 'auto')}
+                  >
+                    <option value="none">Geocode yapma</option>
+                    <option value="auto">Adres varsa otomatik çöz</option>
+                  </select>
+                  <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates(true)} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0}>
+                    Dry-run önizle
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates(false)} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0}>
+                    Seçili adayları işle
+                  </Button>
+                </div>
               </div>
 
               {cariControlStatus === 'error' && (
@@ -1475,9 +1526,9 @@ export default function B2BPartnersPage() {
                 </Button>
               </form>
 
-              {!actionsEnabled && cariControlStatus === 'ok' && (
-                <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">
-                  Bu fazda gerçek partner/teknisyen/bağ yazımı kapalı; kartlarda sadece Faz 1B eşitleme önizlemesi gösterilir.
+              {actionsEnabled && cariControlStatus === 'ok' && (
+                <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                  Faz 1B aktif: DB yazımı sadece işaretlenen adaylar ve açık onayla yapılır.
                 </div>
               )}
 
@@ -1578,12 +1629,17 @@ export default function B2BPartnersPage() {
                         )}
                         {candidate.sync_preview && (
                           <div className="mt-2 rounded-lg border border-emerald-100 bg-white px-3 py-2 text-xs text-slate-600">
-                            <div className="font-semibold text-emerald-800">Eşitleme önizleme · DB yazımı kapalı</div>
+                            <div className="font-semibold text-emerald-800">Eşitleme önizleme</div>
                             <div className="mt-1 grid gap-1 sm:grid-cols-3">
                               <span>{syncPreviewActionLabel(candidate.sync_preview.partner_action)}</span>
                               <span>{syncPreviewActionLabel(candidate.sync_preview.technician_action)}</span>
                               <span>{syncPreviewActionLabel(candidate.sync_preview.link_action)}</span>
                             </div>
+                            {candidate.sync_preview.geocode_plan ? (
+                              <div className="mt-1 text-sky-700">
+                                Geocode: {candidate.sync_preview.geocode_plan.message ?? candidate.sync_preview.geocode_plan.status ?? 'Plan hazır'}
+                              </div>
+                            ) : null}
                             {(candidate.sync_preview.duplicate_flags ?? []).length > 0 && (
                               <div className="mt-1 text-amber-700">
                                 Eşleşme/duplikasyon: {(candidate.sync_preview.duplicate_flags ?? []).join(', ')}
@@ -1907,6 +1963,23 @@ export default function B2BPartnersPage() {
                           <div className="mt-1 text-xs text-slate-500">
                             {[link.technician?.phone, locationLabel(link.technician?.city ?? null, link.technician?.district ?? null), link.technician?.mikro_cari_kodu].filter(Boolean).join(' · ')}
                           </div>
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {(link.service_city || link.service_district) && (
+                              <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-700">
+                                Servis kapsamı: {locationLabel(link.service_city ?? null, link.service_district ?? null)}
+                              </span>
+                            )}
+                            {link.priority ? <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">Öncelik {link.priority}</span> : null}
+                            {link.needs_review || link.technician?.needs_review ? (
+                              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Kontrol gerekli</span>
+                            ) : null}
+                            {link.technician?.geocode_status ? (
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">Geocode: {link.technician.geocode_status}</span>
+                            ) : null}
+                          </div>
+                          {(link.review_reason || link.technician?.review_reason) ? (
+                            <div className="mt-1 text-xs text-amber-700">{link.review_reason ?? link.technician?.review_reason}</div>
+                          ) : null}
                           {formMode !== 'detail' && (
                             <div className="mt-2 flex flex-wrap gap-2">
                               {!link.is_primary && link.active && (

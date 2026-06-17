@@ -53,20 +53,35 @@ class TechnicalServiceTechnician extends Model
         'import_status',
         'import_note',
         'needs_review',
+        'review_status',
+        'review_reason',
+        'review_reasons',
+        'reviewed_at',
+        'reviewed_by',
         'import_source',
         'imported_at',
         'source_key',
+        'geocode_status',
+        'geocode_source',
+        'geocode_confidence',
+        'geocoded_at',
+        'geocode_payload',
     ];
 
     protected $casts = [
         'active' => 'boolean',
         'priority' => 'integer',
         'needs_review' => 'boolean',
+        'review_reasons' => 'array',
+        'reviewed_at' => 'datetime',
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
         'start_latitude' => 'decimal:7',
         'start_longitude' => 'decimal:7',
         'imported_at' => 'datetime',
+        'geocode_confidence' => 'integer',
+        'geocoded_at' => 'datetime',
+        'geocode_payload' => 'array',
     ];
 
     public function requests(): HasMany
@@ -87,7 +102,7 @@ class TechnicalServiceTechnician extends Model
             'technical_service_technician_id',
             'partner_id',
         )
-            ->withPivot(['id', 'relationship_type', 'is_primary', 'active', 'source', 'match_reason', 'metadata', 'created_by'])
+            ->withPivot(['id', 'relationship_type', 'is_primary', 'active', 'source', 'match_reason', 'service_city', 'service_district', 'service_region_note', 'priority', 'needs_review', 'review_reason', 'review_reasons', 'reviewed_at', 'reviewed_by', 'metadata', 'created_by'])
             ->withTimestamps();
     }
 }

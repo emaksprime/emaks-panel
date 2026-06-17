@@ -1626,7 +1626,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('source_total', 300)
             ->assertJsonPath('source_total_known', true)
             ->assertJsonPath('role_counts.locksmith', 300)
-            ->assertJsonPath('actions_enabled', false)
+            ->assertJsonPath('actions_enabled', true)
             ->assertJsonCount(300, 'candidates');
 
         $this->assertSame(1000, data_get($sent[0] ?? [], 'limit'));
@@ -1780,7 +1780,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($admin)
             ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
             ->assertOk()
-            ->assertJsonPath('actions_enabled', false)
+            ->assertJsonPath('actions_enabled', true)
             ->assertJsonPath('candidates.0.sync_preview.writes_enabled', false);
 
         $this->assertSame($partnerCount, B2BPartner::query()->count());
@@ -1918,6 +1918,253 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('detail@example.test', $partner->email);
         $this->assertSame('Ankara', $partner->city);
         $this->assertSame('Cankaya', $partner->district);
+    }
+
+    public function test_cari_control_locksmith_apply_creates_partner_technician_and_link(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.CLG.FAZ1B.001',
+                    'display_name' => 'Faz 1B Çilingir',
+                    'mikro_cari_unvan' => 'Faz 1B Çilingir',
+                    'phone' => '+905551234000',
+                    'city' => 'Manisa',
+                    'district' => 'Yunusemre',
+                    'address' => 'Test Mahallesi No:1',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('dry_run', false)
+            ->assertJsonPath('items.0.status', 'created')
+            ->assertJsonPath('items.0.technician_sync.status', 'technician_created')
+            ->assertJsonPath('items.0.technician_sync.geocode.status', 'skipped');
+
+        $partner = B2BPartner::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.001')->firstOrFail();
+        $technician = TechnicalServiceTechnician::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.001')->firstOrFail();
+        $link = B2BPartnerTechnician::query()
+            ->where('partner_id', $partner->id)
+            ->where('technical_service_technician_id', $technician->id)
+            ->firstOrFail();
+
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->capabilityCodes());
+        $this->assertSame('locksmith', $technician->technician_type);
+        $this->assertSame('Manisa', $technician->city);
+        $this->assertTrue((bool) $technician->needs_review);
+        $this->assertSame('review_required', $technician->review_status);
+        $this->assertContains('Koordinat eksik.', $technician->review_reasons);
+        $this->assertSame('Manisa', $link->service_city);
+        $this->assertSame('Yunusemre', $link->service_district);
+        $this->assertTrue((bool) $link->needs_review);
+    }
+
+    public function test_sync_apply_does_not_write_when_dry_run(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partnerCount = B2BPartner::query()->count();
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => true,
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.CLG.FAZ1B.DRY',
+                    'display_name' => 'Dry Run Çilingir',
+                    'phone' => '+905551234001',
+                    'city' => 'İstanbul',
+                    'address' => 'Dry Run Mahallesi No:1',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('geocode_mode', 'auto')
+            ->assertJsonPath('items.0.partner_action', 'create_partner')
+            ->assertJsonPath('items.0.technician_action', 'create_technician')
+            ->assertJsonPath('items.0.link_action', 'ensure_partner_technician_link')
+            ->assertJsonPath('items.0.geocode_plan.status', 'available');
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_cari_control_apply_is_idempotent_by_cari_code_and_phone(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $payload = [
+            'action' => 'import',
+            'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'sync_technician' => true,
+            'geocode_mode' => 'none',
+            'candidates' => [[
+                'mikro_cari_kodu' => '320.CLG.FAZ1B.IDEMPOTENT',
+                'display_name' => 'Idempotent Çilingir',
+                'phone' => '+905551234002',
+                'city' => 'Ankara',
+                'district' => 'Çankaya',
+                'address' => 'İdempotent Sokak No:2',
+            ]],
+        ];
+
+        $this->actingAs($admin)->postJson('/api/b2b/cari-control/apply', $payload)->assertOk();
+        $this->actingAs($admin)->postJson('/api/b2b/cari-control/apply', $payload)->assertOk();
+
+        $this->assertSame(1, B2BPartner::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.IDEMPOTENT')->count());
+        $this->assertSame(1, TechnicalServiceTechnician::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.IDEMPOTENT')->count());
+
+        $partner = B2BPartner::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.IDEMPOTENT')->firstOrFail();
+        $technician = TechnicalServiceTechnician::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.IDEMPOTENT')->firstOrFail();
+
+        $this->assertSame(1, B2BPartnerTechnician::query()
+            ->where('partner_id', $partner->id)
+            ->where('technical_service_technician_id', $technician->id)
+            ->count());
+    }
+
+    public function test_apply_auto_geocode_writes_lat_lng_when_quality_ok(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Manisa Organize Sanayi Bölgesi, Yunusemre/Manisa, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.619099, 'lng' => 27.428921],
+                    ],
+                ]],
+            ], 200),
+        ]);
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.CLG.FAZ1B.GEO',
+                    'display_name' => 'Geocode Çilingir',
+                    'phone' => '+905551234003',
+                    'city' => 'Manisa',
+                    'district' => 'Yunusemre',
+                    'address' => 'Organize Sanayi Bölgesi',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.technician_sync.geocode.status', 'ok')
+            ->assertJsonPath('items.0.technician_sync.needs_review', false);
+
+        $technician = TechnicalServiceTechnician::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.GEO')->firstOrFail();
+        $this->assertEquals('38.6190990', $technician->latitude);
+        $this->assertEquals('27.4289210', $technician->longitude);
+        $this->assertEquals('38.6190990', $technician->start_latitude);
+        $this->assertEquals('27.4289210', $technician->start_longitude);
+        $this->assertSame('google_geocode', $technician->location_source);
+        $this->assertSame('ok', $technician->geocode_status);
+        $this->assertFalse((bool) $technician->needs_review);
+    }
+
+    public function test_city_only_address_keeps_needs_review(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.CLG.FAZ1B.CITY',
+                    'display_name' => 'Şehir Çilingir',
+                    'phone' => '+905551234004',
+                    'city' => 'Bursa',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.technician_sync.needs_review', true);
+
+        $technician = TechnicalServiceTechnician::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.CITY')->firstOrFail();
+        $this->assertTrue((bool) $technician->needs_review);
+        $this->assertContains('Adres/şehir eksik.', $technician->review_reasons);
+        $this->assertContains('Koordinat eksik.', $technician->review_reasons);
+        $this->assertNull($technician->latitude);
+    }
+
+    public function test_existing_manual_coordinates_not_overwritten_without_override(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Farklı Adres, Manisa, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.619099, 'lng' => 27.428921],
+                    ],
+                ]],
+            ], 200),
+        ]);
+        $admin = $this->userWithRole('admin', true);
+        TechnicalServiceTechnician::query()->create([
+            'name' => 'Manuel Koordinatlı',
+            'technician_type' => 'locksmith',
+            'phone' => '+905551234005',
+            'city' => 'Manisa',
+            'address' => 'Eski adres',
+            'mikro_cari_kodu' => '320.CLG.FAZ1B.MANUAL',
+            'cari_code' => '320.CLG.FAZ1B.MANUAL',
+            'latitude' => '38.5000000',
+            'longitude' => '27.1000000',
+            'start_latitude' => '38.5000000',
+            'start_longitude' => '27.1000000',
+            'location_source' => 'manual',
+            'active' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'override_existing_coordinates' => false,
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.CLG.FAZ1B.MANUAL',
+                    'display_name' => 'Manuel Koordinatlı',
+                    'phone' => '+905551234005',
+                    'city' => 'Manisa',
+                    'address' => 'Yeni adres',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.technician_sync.geocode.status', 'skipped_existing_coordinates');
+
+        $technician = TechnicalServiceTechnician::query()->where('mikro_cari_kodu', '320.CLG.FAZ1B.MANUAL')->firstOrFail();
+        $this->assertEquals('38.5000000', $technician->latitude);
+        $this->assertEquals('27.1000000', $technician->longitude);
+        $this->assertSame('manual', $technician->location_source);
     }
 
     public function test_cari_control_query_contract_doc_contains_select_only_discovery_contract(): void

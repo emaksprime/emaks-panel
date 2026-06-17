@@ -147,7 +147,7 @@ class B2BPartner extends Model
             'partner_id',
             'technical_service_technician_id',
         )
-            ->withPivot(['id', 'relationship_type', 'is_primary', 'active', 'source', 'match_reason', 'metadata', 'created_by'])
+            ->withPivot(['id', 'relationship_type', 'is_primary', 'active', 'source', 'match_reason', 'service_city', 'service_district', 'service_region_note', 'priority', 'needs_review', 'review_reason', 'review_reasons', 'reviewed_at', 'reviewed_by', 'metadata', 'created_by'])
             ->withTimestamps();
     }
 

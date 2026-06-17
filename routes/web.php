@@ -142,6 +142,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::patch('partners/{partner}/technicians/{link}', [B2BPartnerController::class, 'updatePartnerTechnician'])
                     ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partner-technicians.update');
+                Route::post('partners/{partner}/technicians/{link}/mark-reviewed', [B2BPartnerController::class, 'markPartnerTechnicianReviewed'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partner-technicians.mark-reviewed');
                 Route::delete('partners/{partner}/technicians/{link}', [B2BPartnerController::class, 'destroyPartnerTechnician'])
                     ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
                     ->name('api.b2b.partner-technicians.destroy');
@@ -238,9 +241,15 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::patch('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'update'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.update');
+            Route::patch('technicians/{technician}/location-review', [TechnicalServiceTechnicianController::class, 'locationReview'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.location-review');
             Route::post('technicians/{technician}/geocode', [TechnicalServiceTechnicianController::class, 'geocode'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.geocode');
+            Route::post('technicians/{technician}/mark-reviewed', [TechnicalServiceTechnicianController::class, 'markReviewed'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.mark-reviewed');
             Route::delete('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'destroy'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.destroy');

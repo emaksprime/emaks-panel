@@ -155,6 +155,12 @@ const hasAddressInfo = (technician: ServiceTechnician) => [
   technician.cari_city_district_country,
 ].some((value) => typeof value === 'string' && value.trim() !== '')
 
+const reviewReasonText = (technician: ServiceTechnician) => {
+  const reasons = Array.isArray(technician.review_reasons) ? technician.review_reasons.filter(Boolean) : []
+
+  return reasons.length > 0 ? reasons.join(' ') : (technician.review_reason ?? technician.import_note ?? null)
+}
+
 const activeB2BPartnerLinks = (technician: ServiceTechnician) => (technician.b2b_partner_links ?? [])
   .filter((link) => link.active !== false && link.partner)
 
@@ -417,7 +423,23 @@ export default function TechnicalServiceTechnicians() {
     await loadTechnicians()
   }
 
-  const geocodeTechnician = async () => {
+  const markTechnicianReviewed = async (technician: ServiceTechnician) => {
+    try {
+      const response = await apiRequest(`/api/technical-service/technicians/${technician.id}/mark-reviewed`, {
+        method: 'POST',
+      })
+      setMessageFromTechnicianResponse(response.technician as ServiceTechnician, 'Kontrol uyarısı kapatıldı.')
+      await loadTechnicians()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Kontrol kapatılamadı.')
+    }
+  }
+
+  const setMessageFromTechnicianResponse = (technician: ServiceTechnician, fallback: string) => {
+    setGeocodeMessage(`${displayName(technician)}: ${fallback}`)
+  }
+
+  const geocodeTechnician = async (dryRun = false) => {
     if (!editing) {
       setGeocodeMessage('Önce kayıt oluşturun, sonra Google ile koordinatı güncelleyin.')
 
@@ -431,7 +453,19 @@ export default function TechnicalServiceTechnicians() {
     try {
       const response = await apiRequest(`/api/technical-service/technicians/${editing.id}/geocode`, {
         method: 'POST',
+        body: JSON.stringify({
+          dry_run: dryRun,
+          apply: !dryRun,
+          override_existing_coordinates: false,
+        }),
       })
+
+      if (dryRun) {
+        setGeocodeMessage(response.plan?.query ? `Geocode dry-run: ${response.plan.query}` : (response.message ?? 'Geocode dry-run tamamlandı.'))
+
+        return
+      }
+
       const technician = response.technician as ServiceTechnician
       const city = normalizeFormCity(technician.city)
       const district = normalizeFormDistrict(city, technician.district)
@@ -647,19 +681,23 @@ export default function TechnicalServiceTechnicians() {
                         </span>
                         {hasPlusCodeInfo(technician) ? <span className="inline-flex rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">Plus Code var</span> : null}
                         {hasAddressInfo(technician) ? <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">Adres var</span> : null}
+                        {technician.geocode_status ? <span className="inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">Geocode: {technician.geocode_status}</span> : null}
                         {technician.needs_review && hasRealCoordinates(technician) ? <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">Koordinat kontrol gerekli</span> : null}
                       </div>
                     </div>
-                    {technician.import_note ? (
+                    {reviewReasonText(technician) ? (
                       <div className="min-w-0 sm:col-span-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Durum / Kontrol Notu</p>
-                        <p className="line-clamp-2 break-words">{technician.import_note}</p>
+                        <p className="line-clamp-2 break-words">{reviewReasonText(technician)}</p>
                       </div>
                     ) : null}
                   </div>
 
                   <div className="flex flex-wrap justify-end gap-2">
                     <Button type="button" variant="secondary" onClick={() => openEdit(technician)}>Düzenle</Button>
+                    {technician.needs_review ? (
+                      <Button type="button" variant="outline" onClick={() => void markTechnicianReviewed(technician)}>Kontrol edildi</Button>
+                    ) : null}
                     {technician.active ? (
                       <Button type="button" variant="destructive" onClick={() => void disableTechnician(technician)}>Pasifleştir</Button>
                     ) : null}
@@ -730,9 +768,10 @@ export default function TechnicalServiceTechnicians() {
                         </span>
                         {hasPlusCodeInfo(technician) ? <span className="inline-flex rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">Plus Code var</span> : null}
                         {hasAddressInfo(technician) ? <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">Adres var</span> : null}
+                        {technician.geocode_status ? <span className="inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">Geocode: {technician.geocode_status}</span> : null}
                         {technician.needs_review && hasRealCoordinates(technician) ? <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">Koordinat kontrol gerekli</span> : null}
                       </div>
-                      {technician.import_note ? <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{technician.import_note}</p> : null}
+                      {reviewReasonText(technician) ? <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{reviewReasonText(technician)}</p> : null}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
@@ -750,6 +789,9 @@ export default function TechnicalServiceTechnicians() {
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap justify-end gap-2">
                         <Button type="button" variant="secondary" onClick={() => openEdit(technician)}>Düzenle</Button>
+                        {technician.needs_review ? (
+                          <Button type="button" variant="outline" onClick={() => void markTechnicianReviewed(technician)}>Kontrol edildi</Button>
+                        ) : null}
                         {technician.active ? (
                           <Button type="button" variant="destructive" onClick={() => void disableTechnician(technician)}>Pasifleştir</Button>
                         ) : null}
@@ -933,9 +975,17 @@ export default function TechnicalServiceTechnicians() {
                 </p>
               ) : null}
               <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="outline" onClick={() => void geocodeTechnician()} disabled={!editing || geocoding}>
+                <Button type="button" variant="outline" onClick={() => void geocodeTechnician(true)} disabled={!editing || geocoding}>
+                  Geocode dry-run
+                </Button>
+                <Button type="button" variant="outline" onClick={() => void geocodeTechnician(false)} disabled={!editing || geocoding}>
                   {geocoding ? 'Google ile güncelleniyor...' : 'Google ile koordinatı güncelle'}
                 </Button>
+                {editing?.needs_review ? (
+                  <Button type="button" variant="outline" onClick={() => void markTechnicianReviewed(editing)} disabled={saving}>
+                    Kontrol edildi
+                  </Button>
+                ) : null}
                 {!editing ? <span className="text-xs text-slate-500">Önce kaydı oluşturun.</span> : null}
               </div>
             </section>

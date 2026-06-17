@@ -820,6 +820,15 @@ export type ServiceTechnician = {
   import_status?: string | null
   import_note?: string | null
   needs_review?: boolean | null
+  review_status?: string | null
+  review_reason?: string | null
+  review_reasons?: string[] | null
+  reviewed_at?: string | null
+  reviewed_by?: number | string | null
+  geocode_status?: string | null
+  geocode_source?: string | null
+  geocode_confidence?: number | string | null
+  geocoded_at?: string | null
   source_key?: string | null
   b2b_partner_links?: Array<{
     id: number | string
@@ -827,6 +836,13 @@ export type ServiceTechnician = {
     relationship_type?: string | null
     is_primary?: boolean | null
     active?: boolean | null
+    service_city?: string | null
+    service_district?: string | null
+    service_region_note?: string | null
+    priority?: number | string | null
+    needs_review?: boolean | null
+    review_reason?: string | null
+    review_reasons?: string[] | null
     partner?: {
       id: number | string
       display_name?: string | null

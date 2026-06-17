@@ -532,7 +532,7 @@ class B2BCariControlService
                 'changed' => $rows->where('status', 'changed')->count(),
                 'review_required' => $rows->where('status', 'review_required')->count(),
             ],
-            'actions_enabled' => false,
+            'actions_enabled' => true,
         ];
     }
 
@@ -1412,10 +1412,61 @@ class B2BCariControlService
             'link_action' => $isLocksmith
                 ? ($linkExists ? 'no_link_change' : 'ensure_partner_technician_link_preview')
                 : 'not_applicable',
+            'geocode_plan' => $isLocksmith ? $this->geocodePlanForCandidate($candidate) : null,
             'partner_phone_matches' => $partnerPhoneMatches,
             'technician_phone_matches' => $technicianPhoneMatches,
             'duplicate_flags' => array_values(array_unique($duplicateFlags)),
             'warnings' => array_values(array_unique($warnings)),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>
+     */
+    private function geocodePlanForCandidate(array $candidate): array
+    {
+        $plusCode = $this->nullableString($candidate['google_plus_code'] ?? $candidate['location_code'] ?? $candidate['plus_code'] ?? null);
+        $address = $this->nullableString($candidate['address'] ?? null);
+        $city = $this->nullableString($candidate['city'] ?? null);
+        $district = $this->nullableString($candidate['district'] ?? null);
+
+        if ($plusCode !== null) {
+            return [
+                'mode' => 'auto_available',
+                'source' => 'plus_code',
+                'query' => $plusCode,
+                'review_required' => false,
+                'message' => 'Plus Code ile koordinat çözülebilir.',
+            ];
+        }
+
+        if ($address !== null && $city !== null) {
+            return [
+                'mode' => 'auto_available',
+                'source' => 'mikro_address',
+                'query' => implode(', ', array_values(array_filter([$address, $district, $city, 'Türkiye']))),
+                'review_required' => false,
+                'message' => 'Mikro adresi ile koordinat çözülebilir.',
+            ];
+        }
+
+        if ($city !== null || $district !== null) {
+            return [
+                'mode' => 'review_required',
+                'source' => 'city_only',
+                'query' => implode(', ', array_values(array_filter([$district, $city, 'Türkiye']))),
+                'review_required' => true,
+                'message' => 'Adres yetersiz; rota için gerçek koordinat yok.',
+            ];
+        }
+
+        return [
+            'mode' => 'review_required',
+            'source' => 'missing_location',
+            'query' => null,
+            'review_required' => true,
+            'message' => 'Adres/konum eksik.',
         ];
     }
 

@@ -20,6 +20,15 @@ class B2BPartnerTechnician extends Model
         'active',
         'source',
         'match_reason',
+        'service_city',
+        'service_district',
+        'service_region_note',
+        'priority',
+        'needs_review',
+        'review_reason',
+        'review_reasons',
+        'reviewed_at',
+        'reviewed_by',
         'metadata',
         'created_by',
     ];
@@ -29,6 +38,10 @@ class B2BPartnerTechnician extends Model
         return [
             'is_primary' => 'boolean',
             'active' => 'boolean',
+            'priority' => 'integer',
+            'needs_review' => 'boolean',
+            'review_reasons' => 'array',
+            'reviewed_at' => 'datetime',
             'metadata' => 'array',
         ];
     }
