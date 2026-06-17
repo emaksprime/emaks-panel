@@ -114,6 +114,10 @@ type PartnerTechnicianLink = {
     city: string | null
     district: string | null
     address?: string | null
+    latitude?: string | number | null
+    longitude?: string | number | null
+    start_latitude?: string | number | null
+    start_longitude?: string | number | null
     mikro_cari_kodu?: string | null
     mikro_cari_adi?: string | null
     technician_type?: string | null
@@ -253,6 +257,7 @@ type CariApplyResultItem = {
   address?: string | null
   address_source?: string | null
   partner_action?: string
+  role_changes?: string[]
   technician_action?: string
   link_action?: string
   partner_geocode_plan?: GeocodePlan | null
@@ -726,11 +731,13 @@ const syncPreviewActionLabel = (action: string) => {
     create_or_match_technician_preview: 'Teknisyen oluştur/eşleştir önizlemesi',
     match_existing_technician: 'Mevcut teknisyen eşleşir',
     not_applicable: 'Uygulanmaz',
+    not_requested: 'Teknisyen sync istenmedi',
     ensure_partner_technician_link_preview: 'Partner-teknisyen bağı önizlemesi',
     ensure_partner_technician_link: 'Partner-teknisyen bağı kurulacak',
     no_link_change: 'Bağ değişmez',
     create_technician: 'Teknisyen oluşturulacak',
     update_or_use_existing_technician: 'Teknisyen güncellenecek/eşleşecek',
+    preserve_existing_linked_technician: 'Bağlı farklı usta korunacak',
     create_partner: 'Partner oluşturulacak',
     update_partner: 'Partner güncellenecek',
     add_capability: 'Rol eklenecek',
@@ -873,6 +880,7 @@ export default function B2BPartnersPage() {
   const [locksmithSyncing, setLocksmithSyncing] = useState(false)
   const [adminProvisioning, setAdminProvisioning] = useState(false)
   const [cariGeocodeMode, setCariGeocodeMode] = useState<'none' | 'auto'>('none')
+  const [cariSyncTechnician, setCariSyncTechnician] = useState(false)
   const [provisionResults, setProvisionResults] = useState<ProvisionResult[] | null>(null)
   const [cariControl, setCariControl] = useState<CariControlState | null>(null)
   const [cariControlOpen, setCariControlOpen] = useState(false)
@@ -928,11 +936,12 @@ export default function B2BPartnersPage() {
   const currentIneligibleCariCount = Math.max(0, cariCandidates.length - currentSelectableCariCandidates.length)
   const selectedCariSignature = useMemo(() => JSON.stringify({
     geocode_mode: cariGeocodeMode,
+    sync_technician: cariSyncTechnician,
     candidates: selectedCariCodes.map((code) => ({
       code,
       capabilities: candidateCapabilitySelections[code] ?? candidateCapabilities(selectedCariCandidates[code] ?? { mikro_cari_kodu: code }),
     })),
-  }), [candidateCapabilitySelections, cariGeocodeMode, selectedCariCandidates, selectedCariCodes])
+  }), [candidateCapabilitySelections, cariGeocodeMode, cariSyncTechnician, selectedCariCandidates, selectedCariCodes])
   const dryRunIsCurrent = cariDryRunResult?.signature === selectedCariSignature
   const selectedCariChipItems = selectedCariItems.slice(0, SELECTED_CARI_CHIP_LIMIT)
   const selectedCariOverflowCount = Math.max(0, selectedCariItems.length - selectedCariChipItems.length)
@@ -1362,7 +1371,8 @@ export default function B2BPartnersPage() {
 
     if (!dryRun) {
       const bulkWarning = candidates.length > 10 ? '\n\nToplu işlem yapıyorsun. Önce dry-run sonucunu kontrol et.' : ''
-      const confirmed = window.confirm(`${candidates.length} aday işlenecek. Partner/teknisyen/link değişiklikleri yapılacak. Devam edilsin mi?${bulkWarning}`)
+      const operationScope = cariSyncTechnician ? 'Partner/teknisyen/link değişiklikleri yapılacak.' : 'Partner rol ve cari bilgisi değişiklikleri yapılacak; teknisyen oluşturulmayacak.'
+      const confirmed = window.confirm(`${candidates.length} aday işlenecek. ${operationScope} Devam edilsin mi?${bulkWarning}`)
 
       if (!confirmed) {
         return
@@ -1379,7 +1389,7 @@ export default function B2BPartnersPage() {
         body: JSON.stringify({
           action: 'import',
           dry_run: dryRun,
-          sync_technician: true,
+          sync_technician: cariSyncTechnician,
           geocode_mode: cariGeocodeMode,
           update_existing: true,
           override_existing_coordinates: false,
@@ -1818,6 +1828,17 @@ export default function B2BPartnersPage() {
                     <option value="none">Geocode yapma</option>
                     <option value="auto">Adres varsa otomatik çöz</option>
                   </select>
+                  <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={cariSyncTechnician}
+                      onChange={(event) => {
+                        setCariSyncTechnician(event.target.checked)
+                        setCariDryRunResult(null)
+                      }}
+                    />
+                    Bu partner için ayrıca teknisyen oluştur/eşleştir
+                  </label>
                   <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates(true)} disabled={saving || !canRunCariDryRun}>
                     Dry-run önizle
                   </Button>
@@ -2022,6 +2043,9 @@ export default function B2BPartnersPage() {
                       return (
                         <div key={`${item.cari_code ?? 'candidate'}-${index}`} className="rounded-lg bg-white px-3 py-2 text-slate-700">
                           <div className="font-semibold">{item.cari_code ?? `Aday ${index + 1}`}</div>
+                          {(item.role_changes ?? []).length > 0 && (
+                            <div className="mt-1 font-semibold text-emerald-700">Rol değişimi: {(item.role_changes ?? []).join(', ')}</div>
+                          )}
                           <div className="mt-1 grid gap-1 sm:grid-cols-2">
                             <div>
                               <div className="font-semibold text-sky-800">Partner geocode: {geocodePlanStatusLabel(partnerPlan?.status)}</div>
@@ -2102,8 +2126,8 @@ export default function B2BPartnersPage() {
                             <div className="font-semibold text-emerald-800">Eşitleme önizleme</div>
                             <div className="mt-1 grid gap-1 sm:grid-cols-3">
                               <span>{syncPreviewActionLabel(candidate.sync_preview.partner_action)}</span>
-                              <span>{syncPreviewActionLabel(candidate.sync_preview.technician_action)}</span>
-                              <span>{syncPreviewActionLabel(candidate.sync_preview.link_action)}</span>
+                              <span>{syncPreviewActionLabel(cariSyncTechnician ? candidate.sync_preview.technician_action : 'not_requested')}</span>
+                              <span>{syncPreviewActionLabel(cariSyncTechnician ? candidate.sync_preview.link_action : 'not_requested')}</span>
                             </div>
                             {(candidate.sync_preview.partner_geocode_plan || candidate.sync_preview.technician_geocode_plan) ? (
                               <div className="mt-1 grid gap-1 text-sky-700 sm:grid-cols-2">
@@ -2112,8 +2136,10 @@ export default function B2BPartnersPage() {
                                     ?? geocodePlanStatusLabel(candidate.sync_preview.partner_geocode_plan?.status)}
                                 </span>
                                 <span>
-                                  Teknisyen geocode: {candidate.sync_preview.technician_geocode_plan?.message
-                                    ?? geocodePlanStatusLabel(candidate.sync_preview.technician_geocode_plan?.status)}
+                                  Teknisyen geocode: {cariSyncTechnician
+                                    ? (candidate.sync_preview.technician_geocode_plan?.message
+                                      ?? geocodePlanStatusLabel(candidate.sync_preview.technician_geocode_plan?.status))
+                                    : 'Teknisyen oluştur/eşleştir seçilmedi.'}
                                 </span>
                               </div>
                             ) : null}
@@ -2522,6 +2548,13 @@ export default function B2BPartnersPage() {
                           <div className="mt-1 text-xs text-slate-500">
                             {[link.technician?.phone, locationLabel(link.technician?.city ?? null, link.technician?.district ?? null), link.technician?.mikro_cari_kodu].filter(Boolean).join(' · ')}
                           </div>
+                          <div className="mt-1 grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
+                            <span>Partner koordinatı: {coordinateLabel(form.latitude, form.longitude)}</span>
+                            <span>Usta koordinatı: {coordinateLabel(link.technician?.latitude, link.technician?.longitude)}</span>
+                          </div>
+                          {coordinateLabel(form.latitude, form.longitude) === 'Yok' && coordinateLabel(link.technician?.latitude, link.technician?.longitude) !== 'Yok' ? (
+                            <div className="mt-1 text-xs font-semibold text-emerald-700">Partner koordinatı eksik; bağlı usta koordinatı var.</div>
+                          ) : null}
                           <div className="mt-2 flex flex-wrap gap-1">
                             {(link.service_city || link.service_district) && (
                               <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-700">

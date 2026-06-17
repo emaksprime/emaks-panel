@@ -683,7 +683,7 @@ class B2BPartnerController extends Controller
 
         $options = [
             'dry_run' => $isDryRun,
-            'sync_technician' => (bool) ($data['sync_technician'] ?? true),
+            'sync_technician' => (bool) ($data['sync_technician'] ?? false),
             'geocode_mode' => $data['geocode_mode'] ?? 'none',
             'override_existing_coordinates' => (bool) ($data['override_existing_coordinates'] ?? false),
             'update_existing' => (bool) ($data['update_existing'] ?? true),
@@ -732,10 +732,11 @@ class B2BPartnerController extends Controller
         }
 
         $partner = $this->candidatePartner($candidate, $explicitPartnerId);
-        $technician = $this->candidateTechnician($candidate);
+        $technicianMatch = $this->candidateTechnicianSyncMatch($candidate, $partner);
+        $technician = $technicianMatch['technician'];
 
         if ((bool) ($options['dry_run'] ?? false)) {
-            return $this->cariApplyPlan($action, $candidate, $capabilities, $partner, $technician, $options);
+            return $this->cariApplyPlan($action, $candidate, $capabilities, $partner, $technician, $options, $technicianMatch);
         }
 
         if ($action === 'create_partner') {
@@ -785,6 +786,7 @@ class B2BPartnerController extends Controller
 
         if ($action === 'add_capability') {
             $oldCapabilities = $partner->capabilityCodes();
+            $roleChanges = $this->cariRoleChanges($partner, $capabilities);
             $mergedCapabilities = collect($oldCapabilities)->merge($capabilities)->unique()->values()->all();
             $oldValues = $this->auditPayload($partner);
             $partner->forceFill(['partner_type' => $this->primaryPartnerType($mergedCapabilities)])->save();
@@ -797,6 +799,7 @@ class B2BPartnerController extends Controller
             $result = array_filter([
                 'partner_id' => $partner->id,
                 'status' => 'capability_added',
+                'role_changes' => $roleChanges,
                 'default_user' => $defaultUser,
             ], fn (mixed $value): bool => $value !== null);
 
@@ -809,6 +812,7 @@ class B2BPartnerController extends Controller
 
         if ($action === 'import') {
             $oldCapabilities = $partner->capabilityCodes();
+            $roleChanges = $this->cariRoleChanges($partner, $capabilities);
             $mergedCapabilities = collect($oldCapabilities)->merge($capabilities)->unique()->values()->all();
             $partner->partner_type = $this->primaryPartnerType($mergedCapabilities);
             $this->syncCapabilities($partner, $mergedCapabilities, $request, $userId, $oldCapabilities);
@@ -825,6 +829,7 @@ class B2BPartnerController extends Controller
         $result = array_filter([
             'partner_id' => $partner->id,
             'status' => 'updated',
+            'role_changes' => $roleChanges ?? [],
             'default_user' => $defaultUser,
         ], fn (mixed $value): bool => $value !== null);
 
@@ -891,7 +896,10 @@ class B2BPartnerController extends Controller
             'partner_geocode' => $partnerGeocode,
         ];
 
-        if (! (bool) ($options['sync_technician'] ?? true) || ! in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true)) {
+        $isLocksmith = in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true);
+        $syncTechnician = (bool) ($options['sync_technician'] ?? false);
+
+        if (! $isLocksmith) {
             return [
                 ...$baseResult,
                 'technician_sync' => [
@@ -900,6 +908,21 @@ class B2BPartnerController extends Controller
                 'technician_geocode' => [
                     'status' => 'not_applicable',
                     'message' => 'Çilingir/teknisyen seçilmedi.',
+                ],
+            ];
+        }
+
+        if (! $syncTechnician) {
+            return [
+                ...$baseResult,
+                'technician_sync' => [
+                    'status' => 'not_requested',
+                    'message' => 'Teknisyen oluştur/eşleştir seçilmedi.',
+                ],
+                'technician_geocode' => [
+                    'status' => 'not_applicable',
+                    'reason' => 'Teknisyen oluştur/eşleştir seçilmedi',
+                    'message' => 'Teknisyen oluştur/eşleştir seçilmedi.',
                 ],
             ];
         }
@@ -919,9 +942,10 @@ class B2BPartnerController extends Controller
      * @param  array<string, mixed>  $options
      * @return array<string, mixed>
      */
-    private function cariApplyPlan(string $action, array $candidate, array $capabilities, ?B2BPartner $partner, ?TechnicalServiceTechnician $technician, array $options): array
+    private function cariApplyPlan(string $action, array $candidate, array $capabilities, ?B2BPartner $partner, ?TechnicalServiceTechnician $technician, array $options, array $technicianMatch = []): array
     {
         $isLocksmith = in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true);
+        $syncTechnician = (bool) ($options['sync_technician'] ?? false);
         $linkExists = $isLocksmith && $partner && $technician
             ? B2BPartnerTechnician::query()
                 ->where('partner_id', $partner->id)
@@ -932,6 +956,16 @@ class B2BPartnerController extends Controller
 
         $partnerGeocodePlan = $this->candidatePartnerGeocodePlan($candidate, $options);
         $technicianGeocodePlan = $this->candidateTechnicianGeocodePlan($candidate, $technician, $options, $isLocksmith);
+        $technicianAction = 'not_applicable';
+        $linkAction = 'not_applicable';
+
+        if ($isLocksmith && ! $syncTechnician) {
+            $technicianAction = 'not_requested';
+            $linkAction = 'not_requested';
+        } elseif ($isLocksmith) {
+            $technicianAction = $technician ? 'update_or_use_existing_technician' : 'create_technician';
+            $linkAction = $linkExists ? 'no_link_change' : 'ensure_partner_technician_link';
+        }
 
         return [
             'status' => 'dry_run',
@@ -949,14 +983,36 @@ class B2BPartnerController extends Controller
             'district' => $this->candidateDistrictValue($candidate),
             'plus_code' => $this->candidatePlusCodeValue($candidate),
             'partner_action' => $partner ? ($action === 'add_capability' ? 'add_capability' : 'update_partner') : 'create_partner',
+            'role_changes' => $this->cariRoleChanges($partner, $capabilities),
             'partner_id' => $partner?->id,
-            'technician_action' => $isLocksmith ? ($technician ? 'update_or_use_existing_technician' : 'create_technician') : 'not_applicable',
+            'technician_action' => $technicianAction,
             'technician_id' => $technician?->id,
-            'link_action' => $isLocksmith ? ($linkExists ? 'no_link_change' : 'ensure_partner_technician_link') : 'not_applicable',
+            'ignored_technician_id' => $technicianMatch['ignored_technician']?->id ?? null,
+            'ignored_technician_reason' => $technicianMatch['ignore_reason'] ?? null,
+            'link_action' => $linkAction,
             'partner_geocode_plan' => $partnerGeocodePlan,
             'technician_geocode_plan' => $technicianGeocodePlan,
-            'review_warnings' => $isLocksmith ? $this->reviewReasonsForCandidate($candidate, $technician) : [],
+            'review_warnings' => $isLocksmith && $syncTechnician ? $this->reviewReasonsForCandidate($candidate, $technician) : [],
         ];
+    }
+
+    /**
+     * @param  array<int, string>  $capabilities
+     * @return array<int, string>
+     */
+    private function cariRoleChanges(?B2BPartner $partner, array $capabilities): array
+    {
+        if (! $partner) {
+            return [];
+        }
+
+        $currentCapabilities = $partner->capabilityCodes();
+
+        return collect($capabilities)
+            ->diff($currentCapabilities)
+            ->map(fn (string $capability): string => $capability.'_added')
+            ->values()
+            ->all();
     }
 
     /**
@@ -1067,6 +1123,7 @@ class B2BPartnerController extends Controller
                 'district' => $result['district'] ?? null,
                 'plus_code' => $result['plus_code'] ?? null,
                 'partner_action' => $result['partner_action'] ?? null,
+                'role_changes' => $result['role_changes'] ?? [],
                 'technician_action' => $result['technician_action'] ?? null,
                 'link_action' => $result['link_action'] ?? null,
                 'partner_geocode_plan' => $result['partner_geocode_plan'] ?? null,
@@ -1083,9 +1140,67 @@ class B2BPartnerController extends Controller
      */
     private function syncCariLocksmithTechnician(B2BPartner $partner, array $candidate, Request $request, int $userId, array $options, ?array $reusableGeocode = null): array
     {
-        $technician = $this->candidateTechnician($candidate);
+        $technicianMatch = $this->candidateTechnicianSyncMatch($candidate, $partner);
+        $technician = $technicianMatch['technician'];
+        $matchedExistingPartnerLink = ($technicianMatch['match_type'] ?? null) === 'existing_partner_link';
+        $ignoredTechnician = $technicianMatch['ignored_technician'] ?? null;
+        $ignoredTechnicianReason = $technicianMatch['ignore_reason'] ?? null;
+
         $created = false;
         $updated = false;
+
+        if ($matchedExistingPartnerLink && $technician) {
+            $link = $this->activeTechnicianLinkForPartner($partner, $technician->id);
+
+            if (! $link) {
+                $link = $this->upsertPartnerTechnicianLink(
+                    $partner->fresh('capabilities'),
+                    $technician,
+                    $request,
+                    $userId,
+                    'field_technician',
+                    false,
+                    'cari_control',
+                    'cari_control_existing_partner_technician',
+                    [
+                        'service_city' => $technician->city,
+                        'service_district' => $technician->district,
+                        'service_region_note' => $technician->address,
+                    ],
+                );
+            }
+
+            $geocode = [
+                'status' => 'skipped_existing_partner_link',
+                'message' => 'Mevcut bağlı teknisyen korundu.',
+            ];
+
+            $this->writeAuditLog($partner->fresh(), $request, 'b2b.partner.cari_locksmith_synced', null, [
+                'partner_id' => $partner->id,
+                'technician_id' => $technician->id,
+                'link_id' => $link->id,
+                'created_technician' => false,
+                'updated_technician' => false,
+                'matched_existing_partner_link' => true,
+                'ignored_technician_id' => $ignoredTechnician?->id,
+                'ignored_technician_reason' => $ignoredTechnicianReason,
+                'geocode' => $geocode,
+                'review_reasons' => $this->reviewReasonsForTechnician($technician),
+            ], $userId);
+
+            return [
+                'status' => 'technician_matched_existing_link',
+                'technician_id' => $technician->id,
+                'link_id' => $link->id,
+                'partner_id' => $partner->id,
+                'created' => false,
+                'updated' => false,
+                'geocode' => $geocode,
+                'needs_review' => (bool) $technician->needs_review,
+                'review_reasons' => $this->reviewReasonsForTechnician($technician),
+            ];
+        }
+
         $existingHadCoordinates = $technician ? $this->technicianHasCoordinates($technician) : false;
         $payload = $this->technicianPayloadFromCariCandidate($candidate, $technician);
 
@@ -1150,6 +1265,8 @@ class B2BPartnerController extends Controller
             'link_id' => $link->id,
             'created_technician' => $created,
             'updated_technician' => $updated,
+            'ignored_technician_id' => $ignoredTechnician?->id,
+            'ignored_technician_reason' => $ignoredTechnicianReason,
             'geocode' => collect($geocode)->except(['payload'])->all(),
             'review_reasons' => $reviewReasons,
         ], $userId);
@@ -1161,9 +1278,67 @@ class B2BPartnerController extends Controller
             'partner_id' => $partner->id,
             'created' => $created,
             'updated' => $updated,
+            'ignored_technician_id' => $ignoredTechnician?->id,
+            'ignored_technician_reason' => $ignoredTechnicianReason,
             'geocode' => $geocode,
             'needs_review' => (bool) $technician->needs_review,
             'review_reasons' => $reviewReasons,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array{technician: TechnicalServiceTechnician|null, match_type: string|null, ignored_technician: TechnicalServiceTechnician|null, ignore_reason: string|null}
+     */
+    private function candidateTechnicianSyncMatch(array $candidate, ?B2BPartner $partner): array
+    {
+        $technician = $this->candidateTechnician($candidate);
+
+        if ($technician) {
+            if ($this->technicianIdentityDiffersFromCandidate($technician, $candidate)) {
+                return [
+                    'technician' => null,
+                    'match_type' => null,
+                    'ignored_technician' => $technician,
+                    'ignore_reason' => 'different_person_same_cari_or_phone',
+                ];
+            }
+
+            return [
+                'technician' => $technician,
+                'match_type' => 'cari_or_phone',
+                'ignored_technician' => null,
+                'ignore_reason' => null,
+            ];
+        }
+
+        if ($partner) {
+            $linkedTechnician = $this->candidatePartnerLinkedTechnician($partner);
+
+            if ($linkedTechnician) {
+                if ($this->technicianIdentityDiffersFromCandidate($linkedTechnician, $candidate)) {
+                    return [
+                        'technician' => null,
+                        'match_type' => null,
+                        'ignored_technician' => $linkedTechnician,
+                        'ignore_reason' => 'different_linked_person',
+                    ];
+                }
+
+                return [
+                    'technician' => $linkedTechnician,
+                    'match_type' => 'existing_partner_link',
+                    'ignored_technician' => null,
+                    'ignore_reason' => null,
+                ];
+            }
+        }
+
+        return [
+            'technician' => null,
+            'match_type' => null,
+            'ignored_technician' => null,
+            'ignore_reason' => null,
         ];
     }
 
@@ -1207,6 +1382,48 @@ class B2BPartnerController extends Controller
                 $this->normalizedPhone($technician->phone_e164),
                 $this->normalizedPhone($technician->phone_display),
             ], true));
+    }
+
+    private function candidatePartnerLinkedTechnician(B2BPartner $partner): ?TechnicalServiceTechnician
+    {
+        $link = $partner->activePartnerTechnicians()
+            ->with('technician')
+            ->orderByDesc('is_primary')
+            ->orderBy('priority')
+            ->orderBy('id')
+            ->first();
+
+        return $link?->technician;
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function technicianIdentityDiffersFromCandidate(TechnicalServiceTechnician $technician, array $candidate): bool
+    {
+        $candidateName = $this->candidateTechnicianIdentityName($candidate);
+        $technicianName = $this->technicianIdentityName($technician);
+
+        return $candidateName !== null
+            && $technicianName !== null
+            && $this->normalizedText($candidateName) !== $this->normalizedText($technicianName);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateTechnicianIdentityName(array $candidate): ?string
+    {
+        return $this->nullableString($candidate['contact_or_service_name'] ?? null)
+            ?? $this->nullableString($candidate['display_name'] ?? null)
+            ?? $this->nullableString($candidate['mikro_cari_unvan'] ?? null);
+    }
+
+    private function technicianIdentityName(TechnicalServiceTechnician $technician): ?string
+    {
+        return $this->nullableString($technician->name)
+            ?? $this->nullableString(trim(implode(' ', array_filter([$technician->first_name, $technician->last_name]))))
+            ?? $this->nullableString($technician->display_name);
     }
 
     /**
@@ -1283,7 +1500,7 @@ class B2BPartnerController extends Controller
         return $this->candidateLocationGeocodePlan(
             candidate: $candidate,
             options: $options,
-            applicable: $isLocksmith && (bool) ($options['sync_technician'] ?? true),
+            applicable: $isLocksmith && (bool) ($options['sync_technician'] ?? false),
             notApplicableReason: 'Teknisyen oluşmayacağı için geocode uygulanmaz',
             notApplicableMessage: 'Teknisyen oluşmayacağı için geocode uygulanmaz.',
             existingCoordinates: $technician && $this->technicianHasCoordinates($technician) && ! (bool) ($options['override_existing_coordinates'] ?? false),
@@ -2439,6 +2656,10 @@ class B2BPartnerController extends Controller
                 'city' => $technician->city,
                 'district' => $technician->district,
                 'address' => $technician->address ?? $technician->cari_address,
+                'latitude' => $technician->latitude,
+                'longitude' => $technician->longitude,
+                'start_latitude' => $technician->start_latitude,
+                'start_longitude' => $technician->start_longitude,
                 'mikro_cari_kodu' => $technician->mikro_cari_kodu ?? $technician->cari_code,
                 'mikro_cari_adi' => $technician->mikro_cari_adi ?? $technician->cari_title,
                 'technician_type' => $technician->technician_type,
@@ -3110,6 +3331,11 @@ class B2BPartnerController extends Controller
         $string = trim((string) $value);
 
         return $string === '' ? null : $string;
+    }
+
+    private function normalizedText(mixed $value): string
+    {
+        return trim(strtoupper(Str::ascii((string) ($value ?? ''))));
     }
 
     /**

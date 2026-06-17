@@ -57,6 +57,337 @@ class B2BCariControlTest extends TestCase
         $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
     }
 
+    public function test_cari_control_existing_partner_locksmith_checkbox_generates_role_update_preview(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $partner = $this->partner([
+            'display_name' => 'Bahattin Özbek',
+            'mikro_cari_kodu' => '320.BAYI.BAHATTIN',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => true,
+                'sync_technician' => false,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'existing_partner_id' => $partner->id,
+                    'mikro_cari_kodu' => '320.BAYI.BAHATTIN',
+                    'display_name' => 'Bahattin Özbek',
+                    'city' => 'Ankara',
+                    'address' => 'Partner adresi',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('writes_performed', false)
+            ->assertJsonPath('items.0.partner_action', 'update_partner')
+            ->assertJsonPath('items.0.role_changes.0', 'locksmith_added')
+            ->assertJsonPath('items.0.technician_action', 'not_requested')
+            ->assertJsonPath('items.0.link_action', 'not_requested')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'not_applicable');
+
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER], $partner->fresh()->capabilityCodes());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_cari_control_existing_partner_apply_adds_locksmith_role_idempotently_without_default_technician_sync(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $partner = $this->partner([
+            'display_name' => 'Bahattin Özbek',
+            'mikro_cari_kodu' => '320.BAYI.BAHATTIN.IDEMPOTENT',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $partnerCount = B2BPartner::query()->count();
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+        $payload = [
+            'action' => 'import',
+            'dry_run' => false,
+            'geocode_mode' => 'none',
+            'candidates' => [[
+                'existing_partner_id' => $partner->id,
+                'mikro_cari_kodu' => '320.BAYI.BAHATTIN.IDEMPOTENT',
+                'display_name' => 'Bahattin Özbek',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+            ]],
+        ];
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', $payload)
+            ->assertOk()
+            ->assertJsonPath('items.0.status', 'updated')
+            ->assertJsonPath('items.0.role_changes.0', 'locksmith_added')
+            ->assertJsonPath('items.0.technician_sync.status', 'not_requested');
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->fresh()->capabilityCodes());
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.capability_added',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', $payload)
+            ->assertOk()
+            ->assertJsonPath('items.0.role_changes', []);
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_existing_partner_can_add_locksmith_role(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $partner = $this->partner([
+            'mikro_cari_kodu' => '320.BAYI.ADD-LOCKSMITH',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'sync_technician' => false,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'existing_partner_id' => $partner->id,
+                    'mikro_cari_kodu' => '320.BAYI.ADD-LOCKSMITH',
+                    'display_name' => 'Role Add Partner',
+                    'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.role_changes.0', 'locksmith_added');
+
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->fresh()->capabilityCodes());
+    }
+
+    public function test_existing_dealer_partner_can_become_dealer_and_locksmith(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'mikro_cari_kodu' => '320.BAYI.MULTI-ROLE',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'existing_partner_id' => $partner->id,
+                    'mikro_cari_kodu' => '320.BAYI.MULTI-ROLE',
+                    'display_name' => 'Dealer Multi Role',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk();
+
+        $partner->refresh();
+        $this->assertSame(B2BPartner::TYPE_DEALER, $partner->partner_type);
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->capabilityCodes());
+    }
+
+    public function test_adding_locksmith_role_does_not_duplicate_partner(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $partner = $this->partner([
+            'mikro_cari_kodu' => '320.BAYI.NO-DUP',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.BAYI.NO-DUP',
+                    'display_name' => 'No Duplicate Partner',
+                    'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.partner_id', $partner->id);
+
+        $this->assertSame(1, B2BPartner::query()->where('mikro_cari_kodu', '320.BAYI.NO-DUP')->count());
+    }
+
+    public function test_adding_locksmith_role_does_not_create_technician_unless_requested(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $partner = $this->partner([
+            'mikro_cari_kodu' => '320.BAYI.NO-TECH',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'existing_partner_id' => $partner->id,
+                    'mikro_cari_kodu' => '320.BAYI.NO-TECH',
+                    'display_name' => 'No Technician Partner',
+                    'city' => 'Ankara',
+                    'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.technician_sync.status', 'not_requested');
+
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_bahattin_add_locksmith_role_preserves_berkay_link_and_izmir_location(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $partner = $this->partner([
+            'display_name' => 'Bahattin Özbek',
+            'mikro_cari_kodu' => '320.BAYI.BAHATTIN.BERKAY',
+            'city' => 'Ankara',
+            'address' => 'Bahattin partner adresi',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $berkay = TechnicalServiceTechnician::query()->create([
+            'name' => 'Berkay Atlas',
+            'display_name' => 'Berkay Atlas',
+            'technician_type' => 'locksmith',
+            'phone' => '+905551230909',
+            'city' => 'İzmir',
+            'district' => 'Konak',
+            'address' => 'İzmir usta adresi',
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $berkay->id,
+            'relationship_type' => 'field_technician',
+            'is_primary' => true,
+            'active' => true,
+            'source' => 'test',
+            'service_city' => 'İzmir',
+            'service_district' => 'Konak',
+        ]);
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'sync_technician' => false,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'existing_partner_id' => $partner->id,
+                    'mikro_cari_kodu' => '320.BAYI.BAHATTIN.BERKAY',
+                    'display_name' => 'Bahattin Özbek',
+                    'city' => 'Ankara',
+                    'address' => 'Bahattin partner adresi',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.role_changes.0', 'locksmith_added')
+            ->assertJsonPath('items.0.technician_sync.status', 'not_requested');
+
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->fresh()->capabilityCodes());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+        $this->assertSame('İzmir', $berkay->fresh()->city);
+        $this->assertSame('Konak', $berkay->fresh()->district);
+    }
+
+    public function test_explicit_technician_sync_creates_separate_bahattin_technician_without_moving_berkay(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $partner = $this->partner([
+            'display_name' => 'Bahattin Özbek',
+            'mikro_cari_kodu' => '320.BAYI.BAHATTIN.SYNC',
+            'city' => 'Ankara',
+            'address' => 'Bahattin partner adresi',
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+        ]);
+        $berkay = TechnicalServiceTechnician::query()->create([
+            'name' => 'Berkay Atlas',
+            'display_name' => 'Berkay Atlas',
+            'technician_type' => 'locksmith',
+            'phone' => '+905551230910',
+            'city' => 'İzmir',
+            'district' => 'Konak',
+            'address' => 'İzmir usta adresi',
+            'active' => true,
+        ]);
+        $link = B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $berkay->id,
+            'relationship_type' => 'field_technician',
+            'is_primary' => true,
+            'active' => true,
+            'source' => 'test',
+            'service_city' => 'İzmir',
+            'service_district' => 'Konak',
+        ]);
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'sync_technician' => true,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'existing_partner_id' => $partner->id,
+                    'mikro_cari_kodu' => '320.BAYI.BAHATTIN.SYNC',
+                    'display_name' => 'Bahattin Özbek',
+                    'city' => 'Ankara',
+                    'address' => 'Bahattin partner adresi',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.technician_sync.status', 'technician_created')
+            ->assertJsonPath('items.0.technician_sync.ignored_technician_id', $berkay->id)
+            ->assertJsonPath('items.0.technician_sync.ignored_technician_reason', 'different_linked_person')
+            ->assertJsonPath('items.0.technician_geocode.status', 'skipped');
+
+        $this->assertSame($technicianCount + 1, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount + 1, B2BPartnerTechnician::query()->count());
+        $this->assertSame('İzmir', $berkay->fresh()->city);
+        $this->assertSame('Konak', $berkay->fresh()->district);
+        $this->assertDatabaseHas('technical_service_technicians', [
+            'name' => 'Bahattin Özbek',
+            'city' => 'Ankara',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_technicians', [
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $link->technical_service_technician_id,
+            'service_city' => 'İzmir',
+        ]);
+    }
+
     public function test_dry_run_locksmith_candidate_with_address_has_geocode_ready_plan(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -731,8 +1062,24 @@ class B2BCariControlTest extends TestCase
         $source = $this->b2bPartnersPageSource();
 
         $this->assertStringContainsString('window.confirm', $source);
-        $this->assertStringContainsString('aday işlenecek. Partner/teknisyen/link değişiklikleri yapılacak. Devam edilsin mi?', $source);
+        $this->assertStringContainsString('const operationScope = cariSyncTechnician', $source);
+        $this->assertStringContainsString('Partner/teknisyen/link değişiklikleri yapılacak.', $source);
+        $this->assertStringContainsString('Partner rol ve cari bilgisi değişiklikleri yapılacak; teknisyen oluşturulmayacak.', $source);
         $this->assertStringContainsString('Toplu işlem yapıyorsun. Önce dry-run sonucunu kontrol et.', $source);
+    }
+
+    public function test_cari_control_ui_separates_role_update_from_technician_sync(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString("const [cariSyncTechnician, setCariSyncTechnician] = useState(false)", $source);
+        $this->assertStringContainsString('sync_technician: cariSyncTechnician', $source);
+        $this->assertStringContainsString('Teknisyen oluştur/eşleştir', $source);
+        $this->assertStringContainsString('sync_technician: cariSyncTechnician', $source);
+        $this->assertStringContainsString('Rol değişimi: {(item.role_changes ?? []).join', $source);
+        $this->assertStringContainsString("syncPreviewActionLabel(cariSyncTechnician ? candidate.sync_preview.technician_action : 'not_requested')", $source);
+        $this->assertStringContainsString("cariSyncTechnician\n                                    ? (candidate.sync_preview.technician_geocode_plan?.message", $source);
+        $this->assertStringNotContainsString('sync_technician: true,', $source);
     }
 
     public function test_selected_chip_area_collapses_when_many_selected(): void
@@ -846,6 +1193,36 @@ class B2BCariControlTest extends TestCase
             'geocode_mode' => $geocodeMode,
             'candidates' => $candidates,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function partner(array $attributes = []): B2BPartner
+    {
+        $sequence = B2BPartner::query()->count() + 1;
+        $type = $attributes['partner_type'] ?? B2BPartner::TYPE_DEALER;
+        $capabilities = $attributes['capabilities'] ?? [$type];
+        unset($attributes['capabilities']);
+
+        $partner = B2BPartner::query()->create(array_merge([
+            'partner_type' => $type,
+            'partner_code' => sprintf('B2B-CARI-%03d', $sequence),
+            'display_name' => 'Cari Test Partner '.$sequence,
+            'mikro_cari_kodu' => 'CR-CARI-'.$sequence,
+            'city' => 'İstanbul',
+            'district' => 'Kadıköy',
+            'active' => true,
+        ], $attributes));
+
+        foreach (array_unique($capabilities) as $capability) {
+            $partner->capabilities()->create([
+                'capability' => $capability,
+                'active' => true,
+            ]);
+        }
+
+        return $partner->load('capabilities');
     }
 
     private function admin(): User

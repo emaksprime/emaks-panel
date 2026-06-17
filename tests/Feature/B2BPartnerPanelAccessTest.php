@@ -804,6 +804,48 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
     }
 
+    public function test_partner_edit_roles_can_add_locksmith_without_creating_technician(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'partner_code' => 'BAHATTIN-EDIT',
+            'display_name' => 'Bahattin Özbek',
+            'mikro_cari_kodu' => '320.BAYI.BAHATTIN.EDIT',
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+        ]);
+        $partnerCount = B2BPartner::query()->count();
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        $this->actingAs($admin)
+            ->patchJson("/api/b2b/partners/{$partner->id}", $this->partnerPayload([
+                'partner_type' => B2BPartner::TYPE_DEALER,
+                'partner_code' => 'BAHATTIN-EDIT',
+                'display_name' => 'Bahattin Özbek',
+                'mikro_cari_kodu' => '320.BAYI.BAHATTIN.EDIT',
+                'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                'technical_service_technician_id' => null,
+            ]))
+            ->assertOk()
+            ->assertJsonPath('partner.id', $partner->id)
+            ->assertJsonPath('partner.capabilities.0', B2BPartner::TYPE_DEALER)
+            ->assertJsonPath('partner.capabilities.1', B2BPartner::TYPE_LOCKSMITH);
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+        $this->assertEqualsCanonicalizing([B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH], $partner->fresh()->capabilityCodes());
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.capability_added',
+        ]);
+        $this->assertDatabaseHas('b2b_partner_audit_logs', [
+            'partner_id' => $partner->id,
+            'action' => 'b2b.partner.updated',
+        ]);
+    }
+
     public function test_partner_requires_at_least_one_capability(): void
     {
         $admin = $this->userWithRole('admin', true);
@@ -2166,6 +2208,159 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertEquals('38.5000000', $technician->latitude);
         $this->assertEquals('27.1000000', $technician->longitude);
         $this->assertSame('manual', $technician->location_source);
+    }
+
+    public function test_bahattin_technician_creation_does_not_reuse_or_move_berkay(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'BAHATTİN ÖZBEK',
+            'mikro_cari_kodu' => '320.ÇLG.06.002',
+            'mikro_cari_unvan' => 'BAHATTİN ÖZBEK',
+            'city' => 'ANKARA',
+            'district' => 'ÇANKAYA',
+        ]);
+        $berkay = $this->technician([
+            'name' => 'BERKAY ATLAS',
+            'display_name' => 'BERKAY ATLAS',
+            'first_name' => 'BERKAY',
+            'last_name' => 'ATLAS',
+            'phone' => '+905071838038',
+            'city' => 'İzmir',
+            'district' => null,
+            'address' => null,
+            'mikro_cari_kodu' => '320.ÇLG.06.002',
+            'cari_code' => '320.ÇLG.06.002',
+            'latitude' => '38.4237340',
+            'longitude' => '27.1428260',
+            'start_latitude' => '38.4237340',
+            'start_longitude' => '27.1428260',
+            'location_source' => 'manual',
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $berkay->id,
+            'relationship_type' => 'field_technician',
+            'is_primary' => true,
+            'active' => true,
+            'source' => 'manual',
+            'match_reason' => 'partner_form',
+        ]);
+
+        $partnerCount = B2BPartner::query()->count();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.ÇLG.06.002',
+                    'display_name' => 'BAHATTİN ÖZBEK',
+                    'mikro_cari_unvan' => 'BAHATTİN ÖZBEK',
+                    'phone' => '+905551112233',
+                    'city' => 'ANKARA',
+                    'district' => 'ÇANKAYA',
+                    'address' => 'KAVAKLIDERE MAH. ESAT CD NO 59',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.technician_sync.status', 'technician_created')
+            ->assertJsonPath('items.0.technician_sync.ignored_technician_id', $berkay->id)
+            ->assertJsonPath('items.0.technician_sync.ignored_technician_reason', 'different_person_same_cari_or_phone');
+
+        $berkay->refresh();
+        $this->assertSame('BERKAY ATLAS', $berkay->name);
+        $this->assertSame('BERKAY ATLAS', $berkay->display_name);
+        $this->assertSame('İzmir', $berkay->city);
+        $this->assertNull($berkay->address);
+        $this->assertEquals('38.4237340', $berkay->latitude);
+        $this->assertEquals('27.1428260', $berkay->longitude);
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+
+        $bahattinTechnician = TechnicalServiceTechnician::query()
+            ->where('name', 'BAHATTİN ÖZBEK')
+            ->firstOrFail();
+
+        $this->assertNotSame($berkay->id, $bahattinTechnician->id);
+        $this->assertSame('ANKARA', $bahattinTechnician->city);
+        $this->assertSame(2, B2BPartnerTechnician::query()
+            ->where('partner_id', $partner->id)
+            ->where('active', true)
+            ->count());
+
+        $links = $this->actingAs($admin)
+            ->getJson("/api/b2b/partners/{$partner->id}/technicians")
+            ->assertOk()
+            ->json('items');
+        $berkayPayload = collect($links)->firstWhere('technical_service_technician_id', $berkay->id);
+        $this->assertSame('BERKAY ATLAS', data_get($berkayPayload, 'technician.name'));
+        $this->assertSame('İzmir', data_get($berkayPayload, 'technician.city'));
+        $this->assertEquals('38.4237340', data_get($berkayPayload, 'technician.latitude'));
+
+        $searchItems = $this->actingAs($admin)
+            ->getJson('/api/b2b/locksmith-technicians?search=Berkay')
+            ->assertOk()
+            ->json('items');
+
+        $this->assertNotNull(collect($searchItems)->firstWhere('id', $berkay->id));
+    }
+
+    public function test_cari_control_existing_partner_preview_does_not_target_different_linked_technician(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'display_name' => 'BAHATTİN ÖZBEK',
+            'mikro_cari_kodu' => '320.ÇLG.06.002',
+        ]);
+        $berkay = $this->technician([
+            'name' => 'BERKAY ATLAS',
+            'display_name' => 'BERKAY ATLAS',
+            'phone' => '+905071838038',
+            'city' => 'İzmir',
+            'mikro_cari_kodu' => '320.ÇLG.06.002',
+            'cari_code' => '320.ÇLG.06.002',
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $berkay->id,
+            'relationship_type' => 'field_technician',
+            'is_primary' => true,
+            'active' => true,
+            'source' => 'manual',
+            'match_reason' => 'partner_form',
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => true,
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'none',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.ÇLG.06.002',
+                    'display_name' => 'BAHATTİN ÖZBEK',
+                    'mikro_cari_unvan' => 'BAHATTİN ÖZBEK',
+                    'city' => 'ANKARA',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('items.0.partner_action', 'update_partner')
+            ->assertJsonPath('items.0.role_changes.0', B2BPartner::TYPE_LOCKSMITH.'_added')
+            ->assertJsonPath('items.0.technician_action', 'create_technician')
+            ->assertJsonPath('items.0.ignored_technician_id', $berkay->id)
+            ->assertJsonPath('items.0.ignored_technician_reason', 'different_person_same_cari_or_phone');
+
+        $this->assertSame('BERKAY ATLAS', $berkay->fresh()->name);
+        $this->assertSame('İzmir', $berkay->fresh()->city);
     }
 
     public function test_cari_control_query_contract_doc_contains_select_only_discovery_contract(): void
