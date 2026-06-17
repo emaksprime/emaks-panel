@@ -1994,7 +1994,8 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('items.0.partner_action', 'create_partner')
             ->assertJsonPath('items.0.technician_action', 'create_technician')
             ->assertJsonPath('items.0.link_action', 'ensure_partner_technician_link')
-            ->assertJsonPath('items.0.geocode_plan.status', 'available');
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'ready');
 
         $this->assertSame($partnerCount, B2BPartner::query()->count());
         $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());

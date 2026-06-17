@@ -8,6 +8,9 @@ import { apiRequest } from '@/lib/api'
 type PartnerType = 'dealer' | 'locksmith' | 'manufacturer' | 'seller'
 type FormMode = 'create' | 'edit' | 'detail'
 type CariControlStatusFilter = '' | 'new' | 'existing' | 'changed' | 'review_required'
+const CARI_CONTROL_DRY_RUN_LIMIT = 250
+const CARI_CONTROL_APPLY_LIMIT = 50
+const SELECTED_CARI_CHIP_LIMIT = 10
 
 type Partner = {
   id: number
@@ -24,8 +27,22 @@ type Partner = {
   city: string | null
   district: string | null
   address?: string | null
+  tax_number?: string | null
   tax_no?: string | null
   tax_office?: string | null
+  tax_identity_type?: string | null
+  latitude?: string | number | null
+  longitude?: string | number | null
+  google_formatted_address?: string | null
+  google_plus_code?: string | null
+  location_source?: string | null
+  geocode_status?: string | null
+  geocode_source?: string | null
+  geocode_confidence?: string | number | null
+  geocoded_at?: string | null
+  needs_review?: boolean | null
+  review_reason?: string | null
+  review_reasons?: string[] | null
   invoice_profile?: Record<string, string | null>
   shipping_profile?: Record<string, string | null>
   source_field_missing?: string[]
@@ -148,6 +165,17 @@ type PartnerForm = {
   city: string
   district: string
   address: string
+  tax_number: string
+  tax_office: string
+  tax_identity_type: string
+  latitude: string
+  longitude: string
+  google_formatted_address: string
+  google_plus_code: string
+  location_source: string
+  geocode_status: string
+  needs_review: boolean
+  review_reason: string
   active: boolean
   technical_service_technician_id: string
 }
@@ -176,6 +204,7 @@ type CariControlCandidate = {
   address?: string | null
   address_source?: string | null
   source_field_missing?: string[]
+  tax_number?: string | null
   tax_no?: string | null
   tax_office?: string | null
   suggested_capabilities?: PartnerType[]
@@ -198,18 +227,43 @@ type CariControlSyncPreview = {
   partner_action: string
   technician_action: string
   link_action: string
-  geocode_plan?: {
-    mode?: string
-    status?: string
-    source?: string | null
-    query?: string | null
-    message?: string | null
-    review_required?: boolean
-  } | null
+  partner_geocode_plan?: GeocodePlan | null
+  technician_geocode_plan?: GeocodePlan | null
+  geocode_plan?: GeocodePlan | null
   partner_phone_matches?: { id: number, name: string | null }[]
   technician_phone_matches?: { id: number, name: string | null }[]
   duplicate_flags?: string[]
   warnings?: string[]
+}
+
+type GeocodePlan = {
+    mode?: string
+    status?: string
+    source?: string | null
+    reason?: string | null
+    query?: string | null
+    message?: string | null
+    review_required?: boolean
+    will_call_provider_on_apply?: boolean
+}
+
+type CariApplyResultItem = {
+  status?: string
+  cari_code?: string | null
+  address?: string | null
+  address_source?: string | null
+  partner_action?: string
+  technician_action?: string
+  link_action?: string
+  partner_geocode_plan?: GeocodePlan | null
+  technician_geocode_plan?: GeocodePlan | null
+  geocode_plan?: GeocodePlan | null
+  review_warnings?: string[]
+}
+
+type CariDryRunResult = {
+  signature: string
+  items: CariApplyResultItem[]
 }
 
 type PartnerChildAccountDisplay = {
@@ -283,6 +337,17 @@ const emptyForm: PartnerForm = {
   city: '',
   district: '',
   address: '',
+  tax_number: '',
+  tax_office: '',
+  tax_identity_type: '',
+  latitude: '',
+  longitude: '',
+  google_formatted_address: '',
+  google_plus_code: '',
+  location_source: '',
+  geocode_status: '',
+  needs_review: false,
+  review_reason: '',
   active: true,
   technical_service_technician_id: '',
 }
@@ -454,6 +519,17 @@ const partnerToFormValues = (partner: Partner): PartnerForm => {
     city: partner.city ?? '',
     district: partner.district ?? '',
     address: partner.address ?? '',
+    tax_number: partner.tax_number ?? partner.tax_no ?? '',
+    tax_office: partner.tax_office ?? '',
+    tax_identity_type: partner.tax_identity_type ?? '',
+    latitude: partner.latitude === null || partner.latitude === undefined ? '' : String(partner.latitude),
+    longitude: partner.longitude === null || partner.longitude === undefined ? '' : String(partner.longitude),
+    google_formatted_address: partner.google_formatted_address ?? '',
+    google_plus_code: partner.google_plus_code ?? '',
+    location_source: partner.location_source ?? '',
+    geocode_status: partner.geocode_status ?? '',
+    needs_review: Boolean(partner.needs_review),
+    review_reason: partner.review_reason ?? '',
     active: partner.active,
     technical_service_technician_id: primaryTechnicianId ? String(primaryTechnicianId) : '',
   }
@@ -478,6 +554,23 @@ const locationLabel = (city: string | null, district: string | null) => {
   const parts = [city, district].filter(Boolean)
 
   return parts.length > 0 ? parts.join(' / ') : '-'
+}
+
+const partnerTaxNumber = (partner: Partner) => partner.tax_number ?? partner.tax_no ?? null
+
+const coordinateLabel = (latitude: string | number | null | undefined, longitude: string | number | null | undefined) => {
+  if (latitude === null || latitude === undefined || latitude === '' || longitude === null || longitude === undefined || longitude === '') {
+    return 'Koordinat yok'
+  }
+
+  return `${latitude}, ${longitude}`
+}
+
+const candidateTaxLabel = (candidate: CariControlCandidate) => {
+  const taxNumber = candidate.tax_number ?? candidate.tax_no
+  const parts = [taxNumber, candidate.tax_office].filter(Boolean)
+
+  return parts.length > 0 ? parts.join(' · ') : 'Mikro kaynağında vergi bilgisi yok'
 }
 
 const sameText = (first: string | null | undefined, second: string | null | undefined) => {
@@ -511,6 +604,30 @@ const candidateAddressLabel = (candidate: CariControlCandidate) => {
     ? `${candidate.address} · ${candidate.address_source}`
     : candidate.address
 }
+
+const cariCandidateApplyPayload = (candidate: CariControlCandidate, selectedCapabilities: PartnerType[]) => ({
+  mikro_cari_kodu: candidate.mikro_cari_kodu,
+  display_name: candidateDisplayName(candidate),
+  mikro_cari_unvan: candidate.mikro_cari_unvan ?? candidate.legal_name ?? null,
+  legal_name: candidate.legal_name ?? null,
+  contact_or_service_name: candidateContactName(candidate),
+  cari_grup_kodu: candidate.cari_grup_kodu ?? null,
+  responsibility_code: candidate.responsibility_code ?? null,
+  phone: candidate.phone ?? null,
+  phone_source: candidate.phone_source ?? null,
+  email: candidate.email ?? null,
+  city: candidate.city ?? null,
+  district: candidate.district ?? null,
+  address: candidate.address ?? null,
+  address_source: candidate.address_source ?? null,
+  tax_number: candidate.tax_number ?? candidate.tax_no ?? null,
+  tax_no: candidate.tax_no ?? candidate.tax_number ?? null,
+  tax_office: candidate.tax_office ?? null,
+  suggested_capabilities: candidate.suggested_capabilities ?? candidate.capabilities ?? [],
+  existing_partner_id: candidate.existing_partner_id ?? null,
+  status: candidate.status ?? null,
+  selected_capabilities: selectedCapabilities,
+})
 
 const selectedTechnician = (technicians: TechnicianOption[], id: string) => technicians.find((item) => String(item.id) === id) ?? null
 
@@ -597,6 +714,10 @@ const candidateCapabilities = (candidate: CariControlCandidate): PartnerType[] =
   return capabilities.length > 0 ? capabilities : ['dealer']
 }
 
+const candidateIsSelectable = (candidate: CariControlCandidate): boolean => {
+  return candidate.mikro_cari_kodu.trim() !== '' && candidateCapabilities(candidate).length > 0
+}
+
 const syncPreviewActionLabel = (action: string) => {
   const labels: Record<string, string> = {
     create_partner_preview: 'Partner oluşturma önizlemesi',
@@ -616,6 +737,113 @@ const syncPreviewActionLabel = (action: string) => {
   }
 
   return labels[action] ?? action
+}
+
+const summarizeDryRunItems = (items: CariApplyResultItem[]) => {
+  const summary = {
+    partnerCreate: 0,
+    partnerUpdate: 0,
+    partnerSkip: 0,
+    technicianCreate: 0,
+    technicianUpdate: 0,
+    technicianSkip: 0,
+    linkCreate: 0,
+    linkSkip: 0,
+    partnerGeocodeReady: 0,
+    partnerGeocodeWarning: 0,
+    partnerGeocodeSkipped: 0,
+    technicianGeocodeReady: 0,
+    technicianGeocodeWarning: 0,
+    technicianGeocodeNotApplicable: 0,
+    technicianGeocodeSkipped: 0,
+    geocodeReady: 0,
+    geocodeWarning: 0,
+    geocodeNotApplicable: 0,
+    geocodeSkipped: 0,
+    warningCount: 0,
+    errorCount: 0,
+  }
+
+  items.forEach((item) => {
+    const partnerAction = item.partner_action ?? ''
+    const technicianAction = item.technician_action ?? ''
+    const linkAction = item.link_action ?? ''
+    const partnerGeocodeStatus = item.partner_geocode_plan?.status ?? ''
+    const technicianGeocodeStatus = item.technician_geocode_plan?.status ?? ''
+
+    if (partnerAction.includes('create')) {
+      summary.partnerCreate += 1
+    } else if (partnerAction.includes('update') || partnerAction.includes('add_capability')) {
+      summary.partnerUpdate += 1
+    } else {
+      summary.partnerSkip += 1
+    }
+
+    if (technicianAction.includes('create')) {
+      summary.technicianCreate += 1
+    } else if (technicianAction.includes('update') || technicianAction.includes('existing') || technicianAction.includes('match')) {
+      summary.technicianUpdate += 1
+    } else {
+      summary.technicianSkip += 1
+    }
+
+    if (linkAction.includes('ensure')) {
+      summary.linkCreate += 1
+    } else {
+      summary.linkSkip += 1
+    }
+
+    if (partnerGeocodeStatus === 'ready' || partnerGeocodeStatus === 'available') {
+      summary.partnerGeocodeReady += 1
+    } else if (partnerGeocodeStatus === 'warning' || partnerGeocodeStatus === 'review_required') {
+      summary.partnerGeocodeWarning += 1
+    } else if (partnerGeocodeStatus === 'skipped' || partnerGeocodeStatus === 'skipped_existing_coordinates') {
+      summary.partnerGeocodeSkipped += 1
+    }
+
+    if (technicianGeocodeStatus === 'ready' || technicianGeocodeStatus === 'available') {
+      summary.technicianGeocodeReady += 1
+    } else if (technicianGeocodeStatus === 'warning' || technicianGeocodeStatus === 'review_required') {
+      summary.technicianGeocodeWarning += 1
+    } else if (technicianGeocodeStatus === 'not_applicable') {
+      summary.technicianGeocodeNotApplicable += 1
+    } else if (technicianGeocodeStatus === 'skipped' || technicianGeocodeStatus === 'skipped_existing_coordinates') {
+      summary.technicianGeocodeSkipped += 1
+    }
+
+    summary.geocodeReady = summary.partnerGeocodeReady + summary.technicianGeocodeReady
+    summary.geocodeWarning = summary.partnerGeocodeWarning + summary.technicianGeocodeWarning
+    summary.geocodeNotApplicable = summary.technicianGeocodeNotApplicable
+    summary.geocodeSkipped = summary.partnerGeocodeSkipped + summary.technicianGeocodeSkipped
+
+    summary.warningCount += item.review_warnings?.length ?? 0
+
+    if (item.status === 'error') {
+      summary.errorCount += 1
+    }
+  })
+
+  return summary
+}
+
+const geocodePlanStatusLabel = (status: string | null | undefined): string => {
+  if (status === 'ready' || status === 'available') {
+    return 'Hazır'
+  }
+
+  if (status === 'warning' || status === 'review_required') {
+    return 'Uyarı'
+  }
+
+  if (status === 'not_applicable') {
+    return 'Uygulanmaz'
+  }
+
+  if (status === 'skipped' || status === 'skipped_existing_coordinates') {
+    return 'Atlandı'
+  }
+
+  return 'Plan yok'
 }
 
 const primaryPortalAdmin = (partner: Partner | null | undefined): PortalAdminUser | null => partner?.portal_admin_users?.[0] ?? null
@@ -654,6 +882,7 @@ export default function B2BPartnersPage() {
   const [selectedCariCodes, setSelectedCariCodes] = useState<string[]>([])
   const [selectedCariCandidates, setSelectedCariCandidates] = useState<Record<string, CariControlCandidate>>({})
   const [candidateCapabilitySelections, setCandidateCapabilitySelections] = useState<Record<string, PartnerType[]>>({})
+  const [cariDryRunResult, setCariDryRunResult] = useState<CariDryRunResult | null>(null)
   const skipNextCariSearchEffect = useRef(false)
   const cariControlRequestId = useRef(0)
   const cariControlAbortController = useRef<AbortController | null>(null)
@@ -661,7 +890,7 @@ export default function B2BPartnersPage() {
   const [message, setMessage] = useState<string | null>(null)
 
   const hasLocksmithForm = form.capabilities.includes('locksmith')
-  const hasMikroForm = form.capabilities.some((capability) => ['dealer', 'manufacturer', 'seller'].includes(capability))
+  const hasMikroForm = form.capabilities.length > 0
   const showTechnicianLinks = form.capabilities.length > 0
   const showLegacyTechnicianSelect = false
   const cariCandidates = useMemo(() => cariControl?.candidates ?? cariControl?.items ?? [], [cariControl])
@@ -682,10 +911,39 @@ export default function B2BPartnersPage() {
   const cariControlLimitLabel = sourceTotalKnown && sourceTotal !== null
     ? `${loadedCount}/${sourceTotal} kaynak satır`
     : `${loadedCount} yüklendi`
-  const selectedCariItems = useMemo(
-    () => selectedCariCodes.map((code) => selectedCariCandidates[code]).filter((candidate): candidate is CariControlCandidate => Boolean(candidate)),
-    [selectedCariCandidates, selectedCariCodes],
+  const cariCandidateByCode = useMemo(
+    () => Object.fromEntries(cariCandidates.map((candidate) => [candidate.mikro_cari_kodu, candidate])),
+    [cariCandidates],
   )
+  const selectedCariItems = useMemo(
+    () => selectedCariCodes
+      .map((code) => selectedCariCandidates[code] ?? cariCandidateByCode[code])
+      .filter((candidate): candidate is CariControlCandidate => Boolean(candidate)),
+    [cariCandidateByCode, selectedCariCandidates, selectedCariCodes],
+  )
+  const currentSelectableCariCandidates = useMemo(
+    () => cariCandidates.filter(candidateIsSelectable),
+    [cariCandidates],
+  )
+  const currentIneligibleCariCount = Math.max(0, cariCandidates.length - currentSelectableCariCandidates.length)
+  const selectedCariSignature = useMemo(() => JSON.stringify({
+    geocode_mode: cariGeocodeMode,
+    candidates: selectedCariCodes.map((code) => ({
+      code,
+      capabilities: candidateCapabilitySelections[code] ?? candidateCapabilities(selectedCariCandidates[code] ?? { mikro_cari_kodu: code }),
+    })),
+  }), [candidateCapabilitySelections, cariGeocodeMode, selectedCariCandidates, selectedCariCodes])
+  const dryRunIsCurrent = cariDryRunResult?.signature === selectedCariSignature
+  const selectedCariChipItems = selectedCariItems.slice(0, SELECTED_CARI_CHIP_LIMIT)
+  const selectedCariOverflowCount = Math.max(0, selectedCariItems.length - selectedCariChipItems.length)
+  const dryRunSummary = useMemo(
+    () => (cariDryRunResult ? summarizeDryRunItems(cariDryRunResult.items) : null),
+    [cariDryRunResult],
+  )
+  const selectedCariCandidatesResolved = selectedCariItems.length === selectedCariCodes.length
+  const canRunCariDryRun = actionsEnabled
+    && selectedCariItems.length > 0
+    && selectedCariCandidatesResolved
   const activeFilterText = useMemo(() => {
     if (filters.partner_type === 'dealer') {
       return 'Bayiler'
@@ -883,6 +1141,7 @@ export default function B2BPartnersPage() {
       setSelectedCariCodes([])
       setSelectedCariCandidates({})
       setCandidateCapabilitySelections({})
+      setCariDryRunResult(null)
     }
 
     setCariControlOpen(true)
@@ -908,7 +1167,7 @@ export default function B2BPartnersPage() {
       params.set('include_review_required', '1')
       params.set('limit', '1000')
 
-      if (options.refresh ?? options.resetSelection) {
+      if (options.refresh === true) {
         params.set('refresh', '1')
       }
 
@@ -939,6 +1198,13 @@ export default function B2BPartnersPage() {
         nextCandidates.map((candidate: CariControlCandidate) => [candidate.mikro_cari_kodu, candidateCapabilities(candidate)]),
       )
       setCandidateCapabilitySelections((current) => ({ ...nextSelections, ...current }))
+      setSelectedCariCodes((current) => current.filter((code) => nextCandidates.some((candidate: CariControlCandidate) => candidate.mikro_cari_kodu === code)))
+      setSelectedCariCandidates((current) => Object.fromEntries(
+        nextCandidates
+          .filter((candidate: CariControlCandidate) => current[candidate.mikro_cari_kodu])
+          .map((candidate: CariControlCandidate) => [candidate.mikro_cari_kodu, candidate]),
+      ))
+      setCariDryRunResult(null)
       setCariControl(nextControl)
     } catch (searchError) {
       if (searchError instanceof DOMException && searchError.name === 'AbortError') {
@@ -1002,6 +1268,29 @@ export default function B2BPartnersPage() {
     }
   }, [cariControlOpen, closeCariControlModal])
 
+  const clearCariSelection = () => {
+    setSelectedCariCodes([])
+    setSelectedCariCandidates({})
+    setCariDryRunResult(null)
+  }
+
+  const selectAllCurrentCariCandidates = () => {
+    const nextCandidates = currentSelectableCariCandidates
+    setSelectedCariCodes(nextCandidates.map((candidate) => candidate.mikro_cari_kodu))
+    setSelectedCariCandidates(Object.fromEntries(nextCandidates.map((candidate) => [candidate.mikro_cari_kodu, candidate])))
+    setCandidateCapabilitySelections((current) => {
+      const next = { ...current }
+      nextCandidates.forEach((candidate) => {
+        if (!next[candidate.mikro_cari_kodu]) {
+          next[candidate.mikro_cari_kodu] = candidateCapabilities(candidate)
+        }
+      })
+
+      return next
+    })
+    setCariDryRunResult(null)
+  }
+
   const toggleCariCandidate = (candidate: CariControlCandidate) => {
     const mikroCariKodu = candidate.mikro_cari_kodu
 
@@ -1020,6 +1309,7 @@ export default function B2BPartnersPage() {
 
       return { ...current, [mikroCariKodu]: candidate }
     })
+    setCariDryRunResult(null)
   }
 
   const toggleCandidateCapability = (mikroCariKodu: string, capability: PartnerType) => {
@@ -1034,6 +1324,7 @@ export default function B2BPartnersPage() {
         [mikroCariKodu]: nextCapabilities.length > 0 ? nextCapabilities : currentCapabilities,
       }
     })
+    setCariDryRunResult(null)
   }
 
   const importSelectedCariCandidates = async (dryRun = false) => {
@@ -1043,6 +1334,39 @@ export default function B2BPartnersPage() {
       setError('Partner oluşturmak veya güncellemek için en az bir cari adayı seçin.')
 
       return
+    }
+
+    if (candidates.length !== selectedCariCodes.length) {
+      setError('Seçili aday listesi güncel değil. Tümünü kaldırıp filtreyi yeniden seçin.')
+
+      return
+    }
+
+    if (dryRun && candidates.length > CARI_CONTROL_DRY_RUN_LIMIT) {
+      setError(`Tek seferde en fazla ${CARI_CONTROL_DRY_RUN_LIMIT} aday için dry-run yapılabilir. Filtreyi daraltın veya parça parça ilerleyin.`)
+
+      return
+    }
+
+    if (!dryRun && candidates.length > CARI_CONTROL_APPLY_LIMIT) {
+      setError('Tek seferde en fazla 50 aday işlenebilir. Filtreyi daraltın veya parça parça ilerleyin.')
+
+      return
+    }
+
+    if (!dryRun && !dryRunIsCurrent) {
+      setError('Önce seçili adaylar için dry-run önizlemesi çalıştırın.')
+
+      return
+    }
+
+    if (!dryRun) {
+      const bulkWarning = candidates.length > 10 ? '\n\nToplu işlem yapıyorsun. Önce dry-run sonucunu kontrol et.' : ''
+      const confirmed = window.confirm(`${candidates.length} aday işlenecek. Partner/teknisyen/link değişiklikleri yapılacak. Devam edilsin mi?${bulkWarning}`)
+
+      if (!confirmed) {
+        return
+      }
     }
 
     setSaving(true)
@@ -1056,22 +1380,30 @@ export default function B2BPartnersPage() {
           action: 'import',
           dry_run: dryRun,
           sync_technician: true,
-          geocode_mode: dryRun && cariGeocodeMode === 'auto' ? 'dry_run' : cariGeocodeMode,
+          geocode_mode: cariGeocodeMode,
           update_existing: true,
           override_existing_coordinates: false,
-          candidates: candidates.map((candidate) => ({
-            ...candidate,
-            selected_capabilities: candidateCapabilitySelections[candidate.mikro_cari_kodu] ?? candidateCapabilities(candidate),
-          })),
+          candidates: candidates.map((candidate) => cariCandidateApplyPayload(
+            candidate,
+            candidateCapabilitySelections[candidate.mikro_cari_kodu] ?? candidateCapabilities(candidate),
+          )),
         }),
       })
 
       if (!dryRun) {
         setSelectedCariCodes([])
         setSelectedCariCandidates({})
+        setCariDryRunResult(null)
       }
 
       setMessage(dryRun ? `${payload.items?.length ?? candidates.length} cari adayı için dry-run tamamlandı.` : `${payload.items?.length ?? candidates.length} cari adayı işlendi.`)
+
+      if (dryRun) {
+        setCariDryRunResult({
+          signature: selectedCariSignature,
+          items: payload.items ?? [],
+        })
+      }
 
       const defaultUsers = (payload.items ?? [])
         .map((item: { default_user?: { username?: string; default_password?: string } }) => item.default_user)
@@ -1290,6 +1622,40 @@ export default function B2BPartnersPage() {
     }
   }
 
+  const geocodePartnerLocation = async () => {
+    if (!editingPartner) {
+      setError('Geocode için önce partner kaydını seçin.')
+
+      return
+    }
+
+    const confirmed = window.confirm('Partner adresi Google ile çözülecek ve koordinat local DB’ye yazılacak. Devam edilsin mi?')
+
+    if (!confirmed) {
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+    setMessage(null)
+
+    try {
+      const response = await apiRequest(`/api/b2b/partners/${editingPartner.id}/geocode`, {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: false, override_existing_coordinates: false }),
+      })
+      const updatedPartner = response.partner as Partner
+      setPartners((current) => current.map((partner) => (partner.id === updatedPartner.id ? updatedPartner : partner)))
+      setEditingPartner(updatedPartner)
+      setForm(partnerToFormValues(updatedPartner))
+      setMessage(response.partner_geocode?.status === 'skipped_existing_coordinates' ? 'Mevcut koordinat korundu.' : 'Partner koordinatı güncellendi.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Partner geocode güncellenemedi.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const toggleActive = async (partner: Partner) => {
     setSaving(true)
     setError(null)
@@ -1444,15 +1810,18 @@ export default function B2BPartnersPage() {
                   <select
                     className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700"
                     value={cariGeocodeMode}
-                    onChange={(event) => setCariGeocodeMode(event.target.value as 'none' | 'auto')}
+                    onChange={(event) => {
+                      setCariGeocodeMode(event.target.value as 'none' | 'auto')
+                      setCariDryRunResult(null)
+                    }}
                   >
                     <option value="none">Geocode yapma</option>
                     <option value="auto">Adres varsa otomatik çöz</option>
                   </select>
-                  <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates(true)} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0}>
+                  <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates(true)} disabled={saving || !canRunCariDryRun}>
                     Dry-run önizle
                   </Button>
-                  <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates(false)} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0}>
+                  <Button type="button" variant="outline" onClick={() => void importSelectedCariCandidates(false)} disabled={saving || !actionsEnabled || selectedCariCodes.length === 0 || !dryRunIsCurrent}>
                     Seçili adayları işle
                   </Button>
                 </div>
@@ -1472,7 +1841,7 @@ export default function B2BPartnersPage() {
               ) : null}
 
               <form
-                className="mt-3 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_auto_auto]"
+                className="mt-3 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:grid-cols-[minmax(0,1fr)_160px_160px_auto_auto_auto]"
                 onSubmit={(event) => {
                   event.preventDefault()
                   const search = cariSearch.trim()
@@ -1484,13 +1853,19 @@ export default function B2BPartnersPage() {
               >
                 <Input
                   value={cariSearch}
-                  onChange={(event) => setCariSearch(event.target.value)}
+                  onChange={(event) => {
+                    setCariSearch(event.target.value)
+                    clearCariSelection()
+                  }}
                   placeholder="Cari kodu, ünvan, telefon, şehir, grup veya alt cari ara"
                 />
                 <select
                   className="h-10 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
                   value={cariCapabilityFilter}
-                  onChange={(event) => setCariCapabilityFilter(event.target.value as '' | PartnerType)}
+                  onChange={(event) => {
+                    setCariCapabilityFilter(event.target.value as '' | PartnerType)
+                    clearCariSelection()
+                  }}
                 >
                   <option value="">Tüm roller</option>
                   <option value="dealer">Bayi</option>
@@ -1501,7 +1876,10 @@ export default function B2BPartnersPage() {
                 <select
                   className="h-10 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
                   value={cariStatusFilter}
-                  onChange={(event) => setCariStatusFilter(event.target.value as CariControlStatusFilter)}
+                  onChange={(event) => {
+                    setCariStatusFilter(event.target.value as CariControlStatusFilter)
+                    clearCariSelection()
+                  }}
                 >
                   <option value="">Tüm durumlar</option>
                   <option value="new">Yeni</option>
@@ -1516,9 +1894,24 @@ export default function B2BPartnersPage() {
                   type="button"
                   variant="outline"
                   onClick={() => {
+                    const search = cariSearch.trim()
+
+                    if (search === '' || search.length >= 2) {
+                      void runCariControl({ search, refresh: true })
+                    }
+                  }}
+                  disabled={cariChecking || (cariSearch.trim() !== '' && cariSearch.trim().length < 2)}
+                >
+                  Yeniden yükle
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
                     setCariSearch('')
                     setCariCapabilityFilter('')
                     setCariStatusFilter('')
+                    clearCariSelection()
                   }}
                   disabled={cariChecking}
                 >
@@ -1531,6 +1924,29 @@ export default function B2BPartnersPage() {
                   Faz 1B aktif: DB yazımı sadece işaretlenen adaylar ve açık onayla yapılır.
                 </div>
               )}
+
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <Button type="button" variant="outline" onClick={selectAllCurrentCariCandidates} disabled={saving || !actionsEnabled || currentSelectableCariCandidates.length === 0}>
+                  Tümünü seç
+                </Button>
+                <Button type="button" variant="outline" onClick={clearCariSelection} disabled={saving || selectedCariCodes.length === 0}>
+                  Tümünü kaldır
+                </Button>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">Seçili: {selectedCariCodes.length}</span>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">Uygun olmayan: {currentIneligibleCariCount}</span>
+                {selectedCariCodes.length > 10 && (
+                  <span className="text-xs font-semibold text-amber-700">Toplu işlem yapıyorsun. Önce dry-run sonucunu kontrol et.</span>
+                )}
+                {selectedCariItems.length > CARI_CONTROL_DRY_RUN_LIMIT && (
+                  <span className="text-xs font-semibold text-rose-700">Dry-run için en fazla {CARI_CONTROL_DRY_RUN_LIMIT} aday seçilebilir.</span>
+                )}
+                {selectedCariCodes.length > 0 && !selectedCariCandidatesResolved && (
+                  <span className="text-xs font-semibold text-rose-700">Seçili aday listesi güncel değil. Filtreyi yeniden çalıştırın.</span>
+                )}
+                {selectedCariCodes.length > 0 && !dryRunIsCurrent && (
+                  <span className="text-xs font-semibold text-sky-700">Apply için güncel dry-run gerekli.</span>
+                )}
+              </div>
 
               <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
@@ -1565,7 +1981,7 @@ export default function B2BPartnersPage() {
                 <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
                   <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Seçilenler</div>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {selectedCariItems.map((candidate) => (
+                    {selectedCariChipItems.map((candidate) => (
                       <span key={candidate.mikro_cari_kodu} className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-emerald-800">
                         {candidate.mikro_cari_kodu}
                         <button type="button" className="text-emerald-500 hover:text-emerald-800" onClick={() => toggleCariCandidate(candidate)}>
@@ -1573,6 +1989,57 @@ export default function B2BPartnersPage() {
                         </button>
                       </span>
                     ))}
+                    {selectedCariOverflowCount > 0 && (
+                      <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-semibold text-emerald-800">
+                        +{selectedCariOverflowCount} aday daha
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {dryRunSummary && (
+                <div className="mt-3 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+                  <div className="font-semibold">Dry-run sonucu</div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    <span>Partner: {dryRunSummary.partnerCreate} oluştur / {dryRunSummary.partnerUpdate} güncelle / {dryRunSummary.partnerSkip} skip</span>
+                    <span>Teknisyen: {dryRunSummary.technicianCreate} oluştur / {dryRunSummary.technicianUpdate} güncelle / {dryRunSummary.technicianSkip} skip</span>
+                    <span>Bağ: {dryRunSummary.linkCreate} oluştur-güncelle / {dryRunSummary.linkSkip} skip</span>
+                    <span>Partner geocode: Hazır {dryRunSummary.partnerGeocodeReady} · Uyarı {dryRunSummary.partnerGeocodeWarning} · Atlandı {dryRunSummary.partnerGeocodeSkipped}</span>
+                    <span>Teknisyen geocode: Hazır {dryRunSummary.technicianGeocodeReady} · Uyarı {dryRunSummary.technicianGeocodeWarning} · Uygulanmaz {dryRunSummary.technicianGeocodeNotApplicable} · Atlandı {dryRunSummary.technicianGeocodeSkipped}</span>
+                  </div>
+                  {cariGeocodeMode === 'none' && (
+                    <div className="mt-2 rounded-lg bg-white px-3 py-2 font-semibold text-slate-700">Geocode yapılmayacak.</div>
+                  )}
+                  {(dryRunSummary.warningCount > 0 || dryRunSummary.errorCount > 0) && (
+                    <div className="mt-2 text-amber-700">Uyarı: {dryRunSummary.warningCount} · Hata: {dryRunSummary.errorCount}</div>
+                  )}
+                  <div className="mt-2 grid gap-1">
+                    {cariDryRunResult.items.slice(0, 10).map((item, index) => {
+                      const partnerPlan = item.partner_geocode_plan
+                      const technicianPlan = item.technician_geocode_plan
+
+                      return (
+                        <div key={`${item.cari_code ?? 'candidate'}-${index}`} className="rounded-lg bg-white px-3 py-2 text-slate-700">
+                          <div className="font-semibold">{item.cari_code ?? `Aday ${index + 1}`}</div>
+                          <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                            <div>
+                              <div className="font-semibold text-sky-800">Partner geocode: {geocodePlanStatusLabel(partnerPlan?.status)}</div>
+                              <div className="text-slate-600">{partnerPlan?.reason ?? partnerPlan?.message ?? 'Plan detayı yok.'}</div>
+                              {partnerPlan?.query ? <div className="text-sky-700">Sorgu: {partnerPlan.query}</div> : null}
+                            </div>
+                            <div>
+                              <div className="font-semibold text-sky-800">Teknisyen geocode: {geocodePlanStatusLabel(technicianPlan?.status)}</div>
+                              <div className="text-slate-600">{technicianPlan?.reason ?? technicianPlan?.message ?? 'Plan detayı yok.'}</div>
+                              {technicianPlan?.query ? <div className="text-sky-700">Sorgu: {technicianPlan.query}</div> : null}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {cariDryRunResult.items.length > 10 && (
+                      <div className="rounded-lg bg-white px-3 py-2 font-semibold text-slate-700">+{cariDryRunResult.items.length - 10} aday daha</div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1596,7 +2063,7 @@ export default function B2BPartnersPage() {
                         className="mt-1"
                         checked={selectedCariCodes.includes(candidate.mikro_cari_kodu)}
                         onChange={() => toggleCariCandidate(candidate)}
-                        disabled={!actionsEnabled}
+                        disabled={!actionsEnabled || !candidateIsSelectable(candidate)}
                       />
                       <div className="min-w-0 flex-1">
                         <span className="block font-semibold text-slate-900">{candidateDisplayName(candidate)}</span>
@@ -1608,6 +2075,9 @@ export default function B2BPartnersPage() {
                         </span>
                         <span className="mt-1 block text-xs text-slate-500">
                           Tel: {candidate.phone ?? 'Mikro kaynağında telefon yok'} · E-posta: {candidate.email ?? '-'} · Adres: {candidateAddressLabel(candidate)}
+                        </span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                          Vergi: {candidateTaxLabel(candidate)}
                         </span>
                         {(candidate.child_cari_accounts ?? []).length > 0 && (
                           <div className="mt-2 grid gap-1">
@@ -1635,9 +2105,16 @@ export default function B2BPartnersPage() {
                               <span>{syncPreviewActionLabel(candidate.sync_preview.technician_action)}</span>
                               <span>{syncPreviewActionLabel(candidate.sync_preview.link_action)}</span>
                             </div>
-                            {candidate.sync_preview.geocode_plan ? (
-                              <div className="mt-1 text-sky-700">
-                                Geocode: {candidate.sync_preview.geocode_plan.message ?? candidate.sync_preview.geocode_plan.status ?? 'Plan hazır'}
+                            {(candidate.sync_preview.partner_geocode_plan || candidate.sync_preview.technician_geocode_plan) ? (
+                              <div className="mt-1 grid gap-1 text-sky-700 sm:grid-cols-2">
+                                <span>
+                                  Partner geocode: {candidate.sync_preview.partner_geocode_plan?.message
+                                    ?? geocodePlanStatusLabel(candidate.sync_preview.partner_geocode_plan?.status)}
+                                </span>
+                                <span>
+                                  Teknisyen geocode: {candidate.sync_preview.technician_geocode_plan?.message
+                                    ?? geocodePlanStatusLabel(candidate.sync_preview.technician_geocode_plan?.status)}
+                                </span>
                               </div>
                             ) : null}
                             {(candidate.sync_preview.duplicate_flags ?? []).length > 0 && (
@@ -1756,6 +2233,8 @@ export default function B2BPartnersPage() {
                             <span><strong className="text-slate-800">Telefon:</strong> {partner.phone ?? '-'}</span>
                             <span><strong className="text-slate-800">E-posta:</strong> {partner.email ?? '-'}</span>
                             <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
+                            <span><strong className="text-slate-800">Vergi:</strong> {partnerTaxNumber(partner) ?? '-'}</span>
+                            <span><strong className="text-slate-800">Koordinat:</strong> {coordinateLabel(partner.latitude, partner.longitude)}</span>
                             <span><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
                             <span><strong className="text-slate-800">Portal admin:</strong> {partner.has_portal_admin ? portalAdminLabel(partner) : 'Yok'}</span>
                           </div>
@@ -1932,8 +2411,88 @@ export default function B2BPartnersPage() {
                       <Input className="w-full min-w-0 max-w-full" value={form.responsibility_code} onChange={(event) => updateForm('responsibility_code', event.target.value)} disabled={formMode === 'detail'} />
                     </label>
                   </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                      Vergi no
+                      <Input className="w-full min-w-0 max-w-full" value={form.tax_number} onChange={(event) => updateForm('tax_number', event.target.value)} disabled={formMode === 'detail'} />
+                    </label>
+                    <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                      Vergi dairesi
+                      <Input className="w-full min-w-0 max-w-full" value={form.tax_office} onChange={(event) => updateForm('tax_office', event.target.value)} disabled={formMode === 'detail'} />
+                    </label>
+                  </div>
                 </section>
               )}
+
+              <section className="grid gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold text-indigo-900">Konum / geocode</div>
+                    <p className="mt-1 text-xs text-indigo-700">Partner koordinatı rota ve servis eşleştirme için ayrı tutulur; Mikro kaynağına yazılmaz.</p>
+                  </div>
+                  {editingPartner && formMode !== 'detail' && (
+                    <Button type="button" variant="outline" onClick={() => void geocodePartnerLocation()} disabled={saving}>
+                      Google ile koordinatı güncelle
+                    </Button>
+                  )}
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Latitude
+                    <Input className="w-full min-w-0 max-w-full" value={form.latitude} onChange={(event) => updateForm('latitude', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Longitude
+                    <Input className="w-full min-w-0 max-w-full" value={form.longitude} onChange={(event) => updateForm('longitude', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Plus code
+                    <Input className="w-full min-w-0 max-w-full" value={form.google_plus_code} onChange={(event) => updateForm('google_plus_code', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Konum kaynağı
+                    <Input className="w-full min-w-0 max-w-full" value={form.location_source} onChange={(event) => updateForm('location_source', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                </div>
+                <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                  Google formatlı adres
+                  <textarea
+                    className="min-h-[64px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-normal outline-none transition focus:border-slate-400"
+                    value={form.google_formatted_address}
+                    onChange={(event) => updateForm('google_formatted_address', event.target.value)}
+                    disabled={formMode === 'detail'}
+                  />
+                </label>
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Geocode durumu
+                    <Input className="w-full min-w-0 max-w-full" value={form.geocode_status} onChange={(event) => updateForm('geocode_status', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
+                  {formMode !== 'detail' && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="self-end"
+                      onClick={() => {
+                        updateForm('needs_review', false)
+                        updateForm('review_reason', '')
+                      }}
+                    >
+                      Kontrol edildi
+                    </Button>
+                  )}
+                </div>
+                <label className="flex items-center gap-2 rounded-xl border border-indigo-100 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={form.needs_review} onChange={(event) => updateForm('needs_review', event.target.checked)} disabled={formMode === 'detail'} />
+                  Kontrol gerekli
+                </label>
+                <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                  Kontrol notu
+                  <Input className="w-full min-w-0 max-w-full" value={form.review_reason} onChange={(event) => updateForm('review_reason', event.target.value)} disabled={formMode === 'detail'} />
+                </label>
+              </section>
 
               {showTechnicianLinks && (
                 <section className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">

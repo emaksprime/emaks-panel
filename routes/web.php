@@ -159,6 +159,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('partners/{partner}/provision-admin-user', [B2BPartnerController::class, 'provisionAdminUser'])
                     ->middleware('panel.access:b2b.manage,b2b.partner_users.manage')
                     ->name('api.b2b.partners.provision-admin-user');
+                Route::post('partners/{partner}/geocode', [B2BPartnerController::class, 'geocodePartner'])
+                    ->middleware('panel.access:b2b.manage,b2b.dealers.manage,b2b.locksmiths.manage,b2b.manufacturers.manage,b2b.sellers.manage')
+                    ->name('api.b2b.partners.geocode');
                 Route::get('partners/{partner}', [B2BPartnerController::class, 'show'])
                     ->name('api.b2b.partners.show');
                 Route::patch('partners/{partner}/active', [B2BPartnerController::class, 'updateActive'])

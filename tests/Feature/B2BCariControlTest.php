@@ -4,11 +4,13 @@ namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerTechnician;
+use App\Models\B2B\B2BCariSnapshot;
 use App\Models\Role;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class B2BCariControlTest extends TestCase
@@ -43,11 +45,807 @@ class B2BCariControlTest extends TestCase
             ->assertJsonPath('items.0.partner_action', 'create_partner')
             ->assertJsonPath('items.0.technician_action', 'create_technician')
             ->assertJsonPath('items.0.link_action', 'ensure_partner_technician_link')
-            ->assertJsonPath('items.0.geocode_plan.status', 'available');
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'ready')
+            ->assertJsonPath('summary.selected_count', 1)
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1)
+            ->assertJsonPath('writes_performed', false);
 
         $this->assertSame($partnerCount, B2BPartner::query()->count());
         $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
         $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_dry_run_locksmith_candidate_with_address_has_geocode_ready_plan(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.CLG.GEO.READY',
+                'display_name' => 'Adresli Çilingir',
+                'phone' => '+905551235100',
+                'city' => 'İstanbul',
+                'district' => 'Kadıköy',
+                'address' => 'Bağdat Caddesi No:1',
+                'address_source' => 'Mikro cari adresi',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('writes_performed', false)
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_not_applicable', 0)
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.query', 'Bağdat Caddesi No:1, Kadıköy, İstanbul, Türkiye')
+            ->assertJsonPath('candidates.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('candidates.0.technician_geocode_plan.status', 'ready');
+    }
+
+    public function test_dry_run_locksmith_candidate_with_plus_code_has_geocode_ready_plan(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.CLG.GEO.PLUS',
+                'display_name' => 'Plus Code Çilingir',
+                'phone' => '+905551235101',
+                'plus_code' => '8G9F+5W İstanbul',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1)
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.source', 'plus_code')
+            ->assertJsonPath('items.0.technician_geocode_plan.query', '8G9F+5W İstanbul');
+    }
+
+    public function test_dry_run_locksmith_candidate_without_address_has_geocode_warning(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.CLG.GEO.WARNING',
+                'display_name' => 'Adres Eksik Çilingir',
+                'phone' => '+905551235102',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_ready', 0)
+            ->assertJsonPath('summary.partner_geocode_warning', 1)
+            ->assertJsonPath('summary.technician_geocode_warning', 1)
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'warning')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'warning')
+            ->assertJsonPath('items.0.technician_geocode_plan.reason', 'Adres/konum eksik');
+    }
+
+    public function test_dry_run_dealer_only_candidate_with_address_is_geocode_not_applicable(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.BAYI.GEO.NA',
+                'display_name' => 'Adresli Bayi',
+                'phone' => '+905551235103',
+                'city' => 'Ankara',
+                'address' => 'Tunali Hilmi Caddesi No:1',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_not_applicable', 1)
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'not_applicable')
+            ->assertJsonPath('items.0.technician_geocode_plan.reason', 'Teknisyen oluşmayacağı için geocode uygulanmaz');
+    }
+
+    public function test_dry_run_dealer_candidate_without_address_has_partner_geocode_warning(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.BAYI.GEO.WARNING',
+                'display_name' => 'Adres Eksik Bayi',
+                'phone' => '+905551235203',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_warning', 1)
+            ->assertJsonPath('summary.technician_geocode_not_applicable', 1)
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'warning')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'not_applicable');
+    }
+
+    public function test_dry_run_bayi_and_locksmith_candidate_with_address_has_both_partner_and_technician_geocode_ready(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.BAYI.CLG.GEO.READY',
+                'display_name' => 'Bayi Çilingir Hazır',
+                'phone' => '+905551235204',
+                'city' => 'İzmir',
+                'district' => 'Konak',
+                'address' => 'Kıbrıs Şehitleri Caddesi No:1',
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1)
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'ready');
+    }
+
+    public function test_dry_run_geocode_mode_none_marks_plan_skipped(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.CLG.GEO.SKIP',
+                'display_name' => 'Geocode Kapalı Çilingir',
+                'phone' => '+905551235104',
+                'city' => 'İzmir',
+                'address' => 'Alsancak Mahallesi No:1',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ]], 'none'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_skipped', 1)
+            ->assertJsonPath('summary.technician_geocode_skipped', 1)
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'skipped')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'skipped')
+            ->assertJsonPath('items.0.technician_geocode_plan.reason', 'Geocode modu kapalı');
+    }
+
+    public function test_dry_run_uses_selected_role_checkbox_not_only_classifier(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.BAYI.SELECTED.CLG',
+                'display_name' => 'Bayi Sınıflı Çilingir Seçimi',
+                'phone' => '+905551235105',
+                'city' => 'Bursa',
+                'address' => 'Nilüfer Caddesi No:1',
+                'suggested_capabilities' => [B2BPartner::TYPE_DEALER],
+                'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('items.0.roles.locksmith', true)
+            ->assertJsonPath('items.0.technician_action', 'create_technician')
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1);
+    }
+
+    public function test_address_source_first_address_card_is_geocodeable(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.CLG.GEO.FIRSTADDR',
+                'display_name' => 'İlk Adres Kartı',
+                'phone' => '+905551235106',
+                'city' => 'Eskişehir',
+                'full_address' => 'Yeni Mahalle No:46',
+                'address_source' => 'ilk adres kartı',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1)
+            ->assertJsonPath('items.0.address_source', 'ilk adres kartı')
+            ->assertJsonPath('items.0.partner_geocode_plan.status', 'ready')
+            ->assertJsonPath('items.0.technician_geocode_plan.status', 'ready');
+    }
+
+    public function test_dry_run_does_not_call_real_geocoder(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        Http::fake();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.CLG.GEO.NOHTTP',
+                'display_name' => 'HTTP Yok Çilingir',
+                'phone' => '+905551235107',
+                'email' => 'no-http@example.test',
+                'city' => 'İstanbul',
+                'district' => 'Kadıköy',
+                'address' => 'Test Sokak No:1',
+                'tax_no' => '1234567890',
+                'tax_office' => 'Kadıköy',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.partner_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_dry_run_does_not_write_business_data(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $partnerCount = B2BPartner::query()->count();
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([[
+                'mikro_cari_kodu' => '320.CLG.GEO.NOWRITE',
+                'display_name' => 'Write Yok Çilingir',
+                'phone' => '+905551235108',
+                'city' => 'İstanbul',
+                'address' => 'No Write Sokak No:1',
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ]], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('writes_performed', false);
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_apply_partner_geocode_writes_partner_lat_lng_with_fake_geocoder(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Bağdat Caddesi, Kadıköy/İstanbul, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 40.982253, 'lng' => 29.057621],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.BAYI.GEO.APPLY',
+                    'display_name' => 'Apply Bayi',
+                    'phone' => '+905551235300',
+                    'email' => 'apply-bayi@example.test',
+                    'city' => 'İstanbul',
+                    'district' => 'Kadıköy',
+                    'address' => 'Bağdat Caddesi No:1',
+                    'tax_no' => '1111111111',
+                    'tax_office' => 'Kadıköy',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('writes_performed', true)
+            ->assertJsonPath('items.0.partner_geocode.status', 'ok')
+            ->assertJsonPath('items.0.technician_sync.status', 'not_applicable');
+
+        $partner = B2BPartner::query()->where('mikro_cari_kodu', '320.BAYI.GEO.APPLY')->firstOrFail();
+        $this->assertSame('1111111111', $partner->tax_number);
+        $this->assertSame('Kadıköy', $partner->tax_office);
+        $this->assertSame('vkn', $partner->tax_identity_type);
+        $this->assertSame('ok', $partner->geocode_status);
+        $this->assertSame('mikro_address', $partner->location_source);
+        $this->assertEqualsWithDelta(40.982253, (float) $partner->latitude, 0.000001);
+        $this->assertEqualsWithDelta(29.057621, (float) $partner->longitude, 0.000001);
+        $this->assertSame('ok', data_get($partner->metadata, 'geocode.status'));
+        $this->assertSame(40.982253, data_get($partner->metadata, 'geocode.latitude'));
+        $this->assertSame(29.057621, data_get($partner->metadata, 'geocode.longitude'));
+    }
+
+    public function test_apply_both_partner_and_technician_reuses_same_address_geocode_result(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        $geocodeCalls = 0;
+        Http::fake(function () use (&$geocodeCalls) {
+            $geocodeCalls++;
+
+            return Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Alsancak, Konak/İzmir, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.439987, 'lng' => 27.143457],
+                    ],
+                ]],
+            ], 200);
+        });
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.BAYI.CLG.GEO.REUSE',
+                    'display_name' => 'Reuse Bayi Çilingir',
+                    'phone' => '+905551235301',
+                    'email' => 'reuse@example.test',
+                    'city' => 'İzmir',
+                    'district' => 'Konak',
+                    'address' => 'Alsancak Mahallesi No:1',
+                    'tax_no' => '2222222222',
+                    'tax_office' => 'Konak',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.partner_geocode.status', 'ok')
+            ->assertJsonPath('items.0.technician_geocode.status', 'ok');
+
+        $this->assertSame(1, $geocodeCalls);
+        $this->assertSame(1, B2BPartner::query()->where('mikro_cari_kodu', '320.BAYI.CLG.GEO.REUSE')->count());
+        $this->assertSame(1, TechnicalServiceTechnician::query()->where('mikro_cari_kodu', '320.BAYI.CLG.GEO.REUSE')->count());
+    }
+
+    public function test_low_quality_partner_geocode_keeps_review_required(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Türkiye',
+                    'geometry' => [
+                        'location_type' => 'APPROXIMATE',
+                        'location' => ['lat' => 39.0, 'lng' => 35.0],
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'mikro_cari_kodu' => '320.BAYI.GEO.LOW',
+                    'display_name' => 'Low Quality Bayi',
+                    'phone' => '+905551235302',
+                    'email' => 'low@example.test',
+                    'city' => 'İstanbul',
+                    'district' => 'Kadıköy',
+                    'address' => 'Belirsiz Adres',
+                    'tax_no' => '3333333333',
+                    'tax_office' => 'Kadıköy',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                ]],
+            ])
+            ->assertOk();
+
+        $partner = B2BPartner::query()->where('mikro_cari_kodu', '320.BAYI.GEO.LOW')->firstOrFail();
+        $this->assertSame('3333333333', $partner->tax_number);
+        $this->assertSame('Kadıköy', $partner->tax_office);
+        $this->assertSame('review_required', $partner->geocode_status);
+        $this->assertTrue((bool) $partner->needs_review);
+        $this->assertSame('review_required', data_get($partner->metadata, 'geocode.status'));
+        $this->assertTrue((bool) data_get($partner->metadata, 'geocode.needs_review'));
+    }
+
+    public function test_existing_partner_tax_and_coordinates_are_not_overwritten_without_override(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake();
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'partner_code' => 'EXISTING-TAX-GEO',
+            'display_name' => 'Mevcut Vergi Partner',
+            'mikro_cari_kodu' => '320.BAYI.GEO.EXISTING',
+            'tax_number' => '9999999999',
+            'tax_office' => 'Manuel VD',
+            'latitude' => 41.1,
+            'longitude' => 29.2,
+            'location_source' => 'manual',
+            'active' => true,
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => [[
+                    'existing_partner_id' => $partner->id,
+                    'mikro_cari_kodu' => '320.BAYI.GEO.EXISTING',
+                    'display_name' => 'Mevcut Vergi Partner',
+                    'city' => 'İstanbul',
+                    'address' => 'Yeni Adres No:1',
+                    'tax_no' => '1111111111',
+                    'tax_office' => 'Yeni VD',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('items.0.partner_geocode.status', 'skipped_existing_coordinates');
+
+        $partner->refresh();
+        $this->assertSame('9999999999', $partner->tax_number);
+        $this->assertSame('Manuel VD', $partner->tax_office);
+        $this->assertEqualsWithDelta(41.1, (float) $partner->latitude, 0.000001);
+        $this->assertEqualsWithDelta(29.2, (float) $partner->longitude, 0.000001);
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'maps.googleapis.com/maps/api/geocode'));
+    }
+
+    public function test_bulk_select_geocode_summary_counts_all_selected_candidates(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/b2b/cari-control/apply', $this->dryRunPayload([
+                [
+                    'mikro_cari_kodu' => '320.CLG.GEO.BULKREADY',
+                    'display_name' => 'Bulk Hazır',
+                    'city' => 'İstanbul',
+                    'address' => 'Hazır Sokak No:1',
+                    'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                ],
+                [
+                    'mikro_cari_kodu' => '320.CLG.GEO.BULKWARN',
+                    'display_name' => 'Bulk Uyarı',
+                    'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                ],
+                [
+                    'mikro_cari_kodu' => '320.BAYI.GEO.BULKNA',
+                    'display_name' => 'Bulk Bayi',
+                    'city' => 'Ankara',
+                    'address' => 'Bayi Sokak No:1',
+                    'selected_capabilities' => [B2BPartner::TYPE_DEALER],
+                ],
+            ], 'auto'))
+            ->assertOk()
+            ->assertJsonPath('summary.selected_count', 3)
+            ->assertJsonPath('summary.partner_geocode_ready', 2)
+            ->assertJsonPath('summary.partner_geocode_warning', 1)
+            ->assertJsonPath('summary.technician_geocode_ready', 1)
+            ->assertJsonPath('summary.technician_geocode_warning', 1)
+            ->assertJsonPath('summary.technician_geocode_not_applicable', 1)
+            ->assertJsonPath('summary.technician_geocode_skipped', 0);
+    }
+
+    public function test_dry_run_handles_current_filtered_locksmith_batch_under_limit(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $partnerCount = B2BPartner::query()->count();
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+        $candidates = collect(range(1, 67))
+            ->map(fn (int $index): array => [
+                'mikro_cari_kodu' => sprintf('320.CLG.FILTERED.%03d', $index),
+                'display_name' => 'Filtreli Çilingir '.$index,
+                'phone' => '+90555125'.str_pad((string) $index, 4, '0', STR_PAD_LEFT),
+                'city' => 'İstanbul',
+                'district' => 'Kadıköy',
+                'address' => 'Filtreli Mahallesi No:'.$index,
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ])
+            ->all();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => true,
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => $candidates,
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.selected_count', 67)
+            ->assertJsonPath('summary.partner_geocode_ready', 67)
+            ->assertJsonPath('summary.technician_geocode_ready', 67)
+            ->assertJsonPath('summary.technician_geocode_warning', 0)
+            ->assertJsonPath('summary.technician_geocode_not_applicable', 0)
+            ->assertJsonPath('writes_performed', false);
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_dry_run_uses_snapshot_for_code_only_select_all_payload(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $partnerCount = B2BPartner::query()->count();
+        $technicianCount = TechnicalServiceTechnician::query()->count();
+        $linkCount = B2BPartnerTechnician::query()->count();
+
+        collect(range(1, 67))->each(function (int $index): void {
+            B2BCariSnapshot::query()->create([
+                'source_code' => 'customers_list',
+                'base_mikro_cari_kodu' => sprintf('320.CLG.SNAPSHOT.%03d', $index),
+                'mikro_cari_kodu' => sprintf('320.CLG.SNAPSHOT.%03d', $index),
+                'mikro_cari_unvan' => 'Snapshot Çilingir '.$index,
+                'normalized_unvan' => 'SNAPSHOT CILINGIR '.$index,
+                'phone' => '+90555126'.str_pad((string) $index, 4, '0', STR_PAD_LEFT),
+                'city' => 'İstanbul',
+                'district' => 'Kadıköy',
+                'address' => 'Snapshot Mahallesi No:'.$index,
+                'suggested_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'candidate_status' => 'new',
+                'last_seen_at' => now(),
+                'payload_hash' => hash('sha256', 'snapshot-'.$index),
+                'raw_payload' => [
+                    'address_source' => 'ilk adres kartı',
+                ],
+            ]);
+        });
+
+        $candidates = collect(range(1, 67))
+            ->map(fn (int $index): array => [
+                'mikro_cari_kodu' => sprintf('320.CLG.SNAPSHOT.%03d', $index),
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            ])
+            ->all();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => true,
+                'sync_technician' => true,
+                'geocode_mode' => 'auto',
+                'candidates' => $candidates,
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.selected_count', 67)
+            ->assertJsonPath('summary.partner_geocode_ready', 67)
+            ->assertJsonPath('summary.technician_geocode_ready', 67)
+            ->assertJsonPath('writes_performed', false);
+
+        $this->assertSame($partnerCount, B2BPartner::query()->count());
+        $this->assertSame($technicianCount, TechnicalServiceTechnician::query()->count());
+        $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
+    }
+
+    public function test_apply_blocks_over_safe_batch_limit(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->admin();
+        $candidates = collect(range(1, 51))
+            ->map(fn (int $index): array => [
+                'mikro_cari_kodu' => sprintf('320.CLG.BULK.%03d', $index),
+                'display_name' => 'Toplu Çilingir '.$index,
+                'phone' => '+90555124'.str_pad((string) $index, 4, '0', STR_PAD_LEFT),
+                'city' => 'İstanbul',
+                'address' => 'Toplu Mahallesi No:'.$index,
+            ])
+            ->all();
+
+        $this->actingAs($admin)
+            ->postJson('/api/b2b/cari-control/apply', [
+                'action' => 'import',
+                'dry_run' => false,
+                'selected_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+                'sync_technician' => true,
+                'geocode_mode' => 'none',
+                'candidates' => $candidates,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.candidates.0', 'Tek seferde en fazla 50 aday işlenebilir. Filtreyi daraltın veya parça parça ilerleyin.');
+
+        $this->assertSame(0, B2BPartner::query()->where('mikro_cari_kodu', 'like', '320.CLG.BULK.%')->count());
+        $this->assertSame(0, TechnicalServiceTechnician::query()->where('mikro_cari_kodu', 'like', '320.CLG.BULK.%')->count());
+    }
+
+    public function test_select_all_selects_current_filtered_candidates(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('const CARI_CONTROL_DRY_RUN_LIMIT = 250', $source);
+        $this->assertStringContainsString('const CARI_CONTROL_APPLY_LIMIT = 50', $source);
+        $this->assertStringContainsString('selectAllCurrentCariCandidates', $source);
+        $this->assertStringContainsString('currentSelectableCariCandidates', $source);
+        $this->assertStringContainsString('const nextCandidates = currentSelectableCariCandidates', $source);
+        $this->assertStringContainsString('setSelectedCariCodes(nextCandidates.map', $source);
+        $this->assertStringContainsString('Tümünü seç', $source);
+    }
+
+    public function test_select_all_does_not_select_ineligible_candidates(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('const candidateIsSelectable = (candidate: CariControlCandidate): boolean', $source);
+        $this->assertStringContainsString('cariCandidates.filter(candidateIsSelectable)', $source);
+        $this->assertStringContainsString('currentIneligibleCariCount', $source);
+        $this->assertStringContainsString('disabled={!actionsEnabled || !candidateIsSelectable(candidate)}', $source);
+        $this->assertStringContainsString('Uygun olmayan: {currentIneligibleCariCount}', $source);
+    }
+
+    public function test_clear_selection_resets_selected_candidates_and_dry_run(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('const clearCariSelection = () => {', $source);
+        $this->assertStringContainsString('setSelectedCariCodes([])', $source);
+        $this->assertStringContainsString('setSelectedCariCandidates({})', $source);
+        $this->assertStringContainsString('setCariDryRunResult(null)', $source);
+        $this->assertStringContainsString('Tümünü kaldır', $source);
+    }
+
+    public function test_changing_filter_invalidates_selection_or_reconciles_safely(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('setSelectedCariCodes((current) => current.filter', $source);
+        $this->assertStringContainsString('setSelectedCariCandidates((current) => Object.fromEntries', $source);
+        $this->assertStringContainsString('setCariSearch(event.target.value)', $source);
+        $this->assertStringContainsString('setCariCapabilityFilter(event.target.value as', $source);
+        $this->assertStringContainsString('setCariStatusFilter(event.target.value as CariControlStatusFilter)', $source);
+        $this->assertStringContainsString('clearCariSelection()', $source);
+    }
+
+    public function test_dry_run_after_select_all_sends_all_selected_candidate_keys(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('const candidates = selectedCariItems', $source);
+        $this->assertStringContainsString('const cariCandidateApplyPayload = (candidate: CariControlCandidate, selectedCapabilities: PartnerType[]) => ({', $source);
+        $this->assertStringContainsString('candidates: candidates.map((candidate) => cariCandidateApplyPayload(', $source);
+        $this->assertStringContainsString('selected_capabilities: selectedCapabilities', $source);
+        $this->assertStringNotContainsString('...candidate', $source);
+        $this->assertStringContainsString('signature: selectedCariSignature', $source);
+    }
+
+    public function test_apply_stays_disabled_until_dry_run_after_select_all(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('!dryRunIsCurrent', $source);
+        $this->assertStringContainsString('Önce seçili adaylar için dry-run önizlemesi çalıştırın.', $source);
+        $this->assertStringContainsString('disabled={saving || !actionsEnabled || selectedCariCodes.length === 0 || !dryRunIsCurrent}', $source);
+        $this->assertStringContainsString('Apply için güncel dry-run gerekli.', $source);
+    }
+
+    public function test_apply_requires_confirmation_for_bulk_selection(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('window.confirm', $source);
+        $this->assertStringContainsString('aday işlenecek. Partner/teknisyen/link değişiklikleri yapılacak. Devam edilsin mi?', $source);
+        $this->assertStringContainsString('Toplu işlem yapıyorsun. Önce dry-run sonucunu kontrol et.', $source);
+    }
+
+    public function test_selected_chip_area_collapses_when_many_selected(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('const SELECTED_CARI_CHIP_LIMIT = 10', $source);
+        $this->assertStringContainsString('Seçili: {selectedCariCodes.length}', $source);
+        $this->assertStringContainsString('selectedCariChipItems', $source);
+        $this->assertStringContainsString('selectedCariItems.slice(0, SELECTED_CARI_CHIP_LIMIT)', $source);
+        $this->assertStringContainsString('+{selectedCariOverflowCount} aday daha', $source);
+    }
+
+    public function test_select_all_no_db_write(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+        preg_match('/const selectAllCurrentCariCandidates = \(\) => \{(?<body>.*?)\n  \}/s', $source, $matches);
+
+        $this->assertNotEmpty($matches['body'] ?? null);
+        $this->assertStringNotContainsString('apiRequest', $matches['body']);
+        $this->assertStringNotContainsString('fetch(', $matches['body']);
+        $this->assertStringContainsString('setSelectedCariCodes(nextCandidates.map', $matches['body']);
+        $this->assertStringContainsString('setCariDryRunResult(null)', $source);
+    }
+
+    public function test_dry_run_summary_counts_are_visible_after_select_all_preview(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('Dry-run sonucu', $source);
+        $this->assertStringContainsString('Partner:', $source);
+        $this->assertStringContainsString('Teknisyen:', $source);
+        $this->assertStringContainsString('Bağ:', $source);
+        $this->assertStringContainsString('Partner geocode: Hazır {dryRunSummary.partnerGeocodeReady}', $source);
+        $this->assertStringContainsString('Teknisyen geocode: Hazır {dryRunSummary.technicianGeocodeReady}', $source);
+        $this->assertStringContainsString('Uygulanmaz {dryRunSummary.technicianGeocodeNotApplicable}', $source);
+        $this->assertStringContainsString('Atlandı {dryRunSummary.technicianGeocodeSkipped}', $source);
+        $this->assertStringContainsString('Geocode yapılmayacak.', $source);
+    }
+
+    public function test_old_single_geocode_uygulanmaz_not_shown_when_partner_ready(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringNotContainsString('Geocode plan: Hazır', $source);
+        $this->assertStringNotContainsString('Geocode: {candidate.sync_preview.geocode_plan', $source);
+        $this->assertStringContainsString('Partner geocode: {geocodePlanStatusLabel(partnerPlan?.status)}', $source);
+        $this->assertStringContainsString('Teknisyen geocode: {geocodePlanStatusLabel(technicianPlan?.status)}', $source);
+    }
+
+    public function test_select_all_dry_run_button_uses_resolved_selected_candidates(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('selectedCariCandidates[code] ?? cariCandidateByCode[code]', $source);
+        $this->assertStringContainsString('const canRunCariDryRun = actionsEnabled', $source);
+        $this->assertStringContainsString('disabled={saving || !canRunCariDryRun}', $source);
+        $this->assertStringNotContainsString('&& selectedCariItems.length <= CARI_CONTROL_DRY_RUN_LIMIT', $source);
+        $this->assertStringContainsString('Tek seferde en fazla ${CARI_CONTROL_DRY_RUN_LIMIT} aday için dry-run yapılabilir.', $source);
+        $this->assertStringContainsString('geocode_mode: cariGeocodeMode', $source);
+        $this->assertStringNotContainsString("geocode_mode: dryRun && cariGeocodeMode === 'auto' ? 'dry_run' : cariGeocodeMode", $source);
+    }
+
+    public function test_changing_role_invalidates_previous_dry_run(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('const toggleCandidateCapability = (mikroCariKodu: string, capability: PartnerType) => {', $source);
+        $this->assertStringContainsString('setCariDryRunResult(null)', $source);
+    }
+
+    public function test_cari_control_open_uses_snapshot_without_forced_refresh(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString("void runCariControl({ search: nextSearch, resetSelection: true })", $source);
+        $this->assertStringContainsString('if (options.refresh === true)', $source);
+        $this->assertStringNotContainsString('options.refresh ?? options.resetSelection', $source);
+        $this->assertStringContainsString('Yeniden yükle', $source);
+        $this->assertStringContainsString("void runCariControl({ search, refresh: true })", $source);
+    }
+
+    public function test_partner_tax_and_geocode_fields_are_visible_in_partner_ui(): void
+    {
+        $source = $this->b2bPartnersPageSource();
+
+        $this->assertStringContainsString('Vergi no', $source);
+        $this->assertStringContainsString('Vergi dairesi', $source);
+        $this->assertStringContainsString('Konum / geocode', $source);
+        $this->assertStringContainsString('Google ile koordinatı güncelle', $source);
+        $this->assertStringContainsString('Kontrol edildi', $source);
+        $this->assertStringContainsString('coordinateLabel(partner.latitude, partner.longitude)', $source);
+        $this->assertStringContainsString('candidateTaxLabel(candidate)', $source);
+    }
+
+    private function b2bPartnersPageSource(): string
+    {
+        return file_get_contents(resource_path('js/pages/panel/b2b/partners.tsx')) ?: '';
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $candidates
+     * @return array<string, mixed>
+     */
+    private function dryRunPayload(array $candidates, string $geocodeMode): array
+    {
+        return [
+            'action' => 'import',
+            'dry_run' => true,
+            'sync_technician' => true,
+            'geocode_mode' => $geocodeMode,
+            'candidates' => $candidates,
+        ];
     }
 
     private function admin(): User

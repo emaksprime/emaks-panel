@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\B2B\B2BCariControlService;
 use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerAdminProvisioningService;
+use App\Services\TechnicalService\TechnicalServiceGeocodingService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -28,6 +29,9 @@ use Illuminate\Validation\ValidationException;
 
 class B2BPartnerController extends Controller
 {
+    private const CARI_CONTROL_DRY_RUN_LIMIT = 250;
+    private const CARI_CONTROL_APPLY_LIMIT = 50;
+
     public function __construct(
         private readonly B2BPartnerAccessService $access,
         private readonly B2BCariControlService $cariControlService,
@@ -183,6 +187,54 @@ class B2BPartnerController extends Controller
 
         return response()->json([
             'partner' => $this->partnerPayload($partner->loadMissing(['technician', 'capabilities'])),
+        ]);
+    }
+
+    public function geocodePartner(Request $request, B2BPartner $partner): JsonResponse
+    {
+        $user = $request->user();
+        abort_unless($user && $this->access->canManagePartner($user, $partner), 403);
+
+        $data = $request->validate([
+            'dry_run' => ['sometimes', 'boolean'],
+            'override_existing_coordinates' => ['sometimes', 'boolean'],
+        ]);
+
+        $candidate = $this->partnerAsCariCandidate($partner);
+        $plan = $this->candidatePartnerGeocodePlan($candidate, ['geocode_mode' => 'auto']);
+
+        if ((bool) ($data['dry_run'] ?? false)) {
+            return response()->json([
+                'ok' => true,
+                'dry_run' => true,
+                'writes_performed' => false,
+                'partner_geocode_plan' => $plan,
+                'partner' => $this->partnerPayload($partner->fresh()->loadMissing(['technician', 'capabilities'])),
+            ]);
+        }
+
+        $oldValues = $this->auditPayload($partner);
+        $result = $this->applyPartnerGeocode($partner, $candidate, [
+            'geocode_mode' => 'auto',
+            'override_existing_coordinates' => (bool) ($data['override_existing_coordinates'] ?? false),
+        ]);
+        $partner = $partner->fresh()->loadMissing(['technician', 'capabilities']);
+
+        $this->writeAuditLog(
+            $partner,
+            $request,
+            'b2b.partner.geocode_updated',
+            $oldValues,
+            $this->auditPayload($partner),
+            $user->id,
+        );
+
+        return response()->json([
+            'ok' => true,
+            'dry_run' => false,
+            'writes_performed' => true,
+            'partner_geocode' => $result,
+            'partner' => $this->partnerPayload($partner),
         ]);
     }
 
@@ -614,9 +666,23 @@ class B2BPartnerController extends Controller
         ]);
         $user = $request->user();
         abort_unless($user, 403);
+        $candidateCount = count($data['candidates']);
+        $isDryRun = (bool) ($data['dry_run'] ?? false);
+
+        if ($isDryRun && $candidateCount > self::CARI_CONTROL_DRY_RUN_LIMIT) {
+            throw ValidationException::withMessages([
+                'candidates' => 'Tek seferde en fazla 250 aday için dry-run yapılabilir. Filtreyi daraltın veya parça parça ilerleyin.',
+            ]);
+        }
+
+        if (! $isDryRun && $candidateCount > self::CARI_CONTROL_APPLY_LIMIT) {
+            throw ValidationException::withMessages([
+                'candidates' => 'Tek seferde en fazla 50 aday işlenebilir. Filtreyi daraltın veya parça parça ilerleyin.',
+            ]);
+        }
 
         $options = [
-            'dry_run' => (bool) ($data['dry_run'] ?? false),
+            'dry_run' => $isDryRun,
             'sync_technician' => (bool) ($data['sync_technician'] ?? true),
             'geocode_mode' => $data['geocode_mode'] ?? 'none',
             'override_existing_coordinates' => (bool) ($data['override_existing_coordinates'] ?? false),
@@ -640,8 +706,12 @@ class B2BPartnerController extends Controller
         $results = $options['dry_run'] ? $work() : DB::transaction($work);
 
         return response()->json([
+            'ok' => true,
             'dry_run' => $options['dry_run'],
+            'writes_performed' => ! $options['dry_run'],
             'geocode_mode' => $options['geocode_mode'],
+            'summary' => $this->cariApplySummary($results),
+            'candidates' => $options['dry_run'] ? $this->cariDryRunCandidates($results) : [],
             'items' => $results,
         ]);
     }
@@ -801,29 +871,45 @@ class B2BPartnerController extends Controller
      */
     private function withCariLocksmithSyncResult(array $baseResult, array $candidate, array $capabilities, Request $request, int $userId, array $options): array
     {
-        if (! (bool) ($options['sync_technician'] ?? true) || ! in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true)) {
-            return [
-                ...$baseResult,
-                'technician_sync' => [
-                    'status' => 'not_applicable',
-                ],
-            ];
-        }
-
         $partner = B2BPartner::query()->find($baseResult['partner_id'] ?? null);
 
         if (! $partner) {
             return [
                 ...$baseResult,
+                'partner_geocode' => [
+                    'status' => 'partner_missing',
+                ],
                 'technician_sync' => [
                     'status' => 'partner_missing',
                 ],
             ];
         }
 
+        $partnerGeocode = $this->applyPartnerGeocode($partner, $candidate, $options);
+        $baseResult = [
+            ...$baseResult,
+            'partner_geocode' => $partnerGeocode,
+        ];
+
+        if (! (bool) ($options['sync_technician'] ?? true) || ! in_array(B2BPartner::TYPE_LOCKSMITH, $capabilities, true)) {
+            return [
+                ...$baseResult,
+                'technician_sync' => [
+                    'status' => 'not_applicable',
+                ],
+                'technician_geocode' => [
+                    'status' => 'not_applicable',
+                    'message' => 'Çilingir/teknisyen seçilmedi.',
+                ],
+            ];
+        }
+
+        $technicianSync = $this->syncCariLocksmithTechnician($partner, $candidate, $request, $userId, $options, $partnerGeocode);
+
         return [
             ...$baseResult,
-            'technician_sync' => $this->syncCariLocksmithTechnician($partner, $candidate, $request, $userId, $options),
+            'technician_sync' => $technicianSync,
+            'technician_geocode' => $technicianSync['geocode'] ?? null,
         ];
     }
 
@@ -844,17 +930,150 @@ class B2BPartnerController extends Controller
                 ->exists()
             : false;
 
+        $partnerGeocodePlan = $this->candidatePartnerGeocodePlan($candidate, $options);
+        $technicianGeocodePlan = $this->candidateTechnicianGeocodePlan($candidate, $technician, $options, $isLocksmith);
+
         return [
             'status' => 'dry_run',
             'action' => $action,
+            'cari_code' => $this->nullableString($candidate['mikro_cari_kodu'] ?? null),
+            'roles' => [
+                B2BPartner::TYPE_DEALER => in_array(B2BPartner::TYPE_DEALER, $capabilities, true),
+                B2BPartner::TYPE_LOCKSMITH => $isLocksmith,
+                B2BPartner::TYPE_MANUFACTURER => in_array(B2BPartner::TYPE_MANUFACTURER, $capabilities, true),
+                B2BPartner::TYPE_SELLER => in_array(B2BPartner::TYPE_SELLER, $capabilities, true),
+            ],
+            'address' => $this->candidateAddressValue($candidate),
+            'address_source' => $this->nullableString($candidate['address_source'] ?? null),
+            'city' => $this->candidateCityValue($candidate),
+            'district' => $this->candidateDistrictValue($candidate),
+            'plus_code' => $this->candidatePlusCodeValue($candidate),
             'partner_action' => $partner ? ($action === 'add_capability' ? 'add_capability' : 'update_partner') : 'create_partner',
             'partner_id' => $partner?->id,
             'technician_action' => $isLocksmith ? ($technician ? 'update_or_use_existing_technician' : 'create_technician') : 'not_applicable',
             'technician_id' => $technician?->id,
             'link_action' => $isLocksmith ? ($linkExists ? 'no_link_change' : 'ensure_partner_technician_link') : 'not_applicable',
-            'geocode_plan' => $isLocksmith ? $this->candidateGeocodePlan($candidate, $technician, $options) : null,
+            'partner_geocode_plan' => $partnerGeocodePlan,
+            'technician_geocode_plan' => $technicianGeocodePlan,
             'review_warnings' => $isLocksmith ? $this->reviewReasonsForCandidate($candidate, $technician) : [],
         ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $results
+     * @return array<string, int>
+     */
+    private function cariApplySummary(array $results): array
+    {
+        $summary = [
+            'selected_count' => count($results),
+            'partner_create' => 0,
+            'partner_update' => 0,
+            'partner_skip' => 0,
+            'technician_create' => 0,
+            'technician_update' => 0,
+            'technician_skip' => 0,
+            'link_create' => 0,
+            'link_update' => 0,
+            'link_skip' => 0,
+            'partner_geocode_ready' => 0,
+            'partner_geocode_warning' => 0,
+            'partner_geocode_skipped' => 0,
+            'technician_geocode_ready' => 0,
+            'technician_geocode_warning' => 0,
+            'technician_geocode_not_applicable' => 0,
+            'technician_geocode_skipped' => 0,
+            'geocode_ready' => 0,
+            'geocode_warning' => 0,
+            'geocode_not_applicable' => 0,
+            'geocode_skipped' => 0,
+            'warning_count' => 0,
+            'error_count' => 0,
+        ];
+
+        foreach ($results as $result) {
+            $partnerAction = (string) ($result['partner_action'] ?? '');
+            $technicianAction = (string) ($result['technician_action'] ?? '');
+            $linkAction = (string) ($result['link_action'] ?? '');
+            $partnerGeocodeStatus = (string) data_get($result, 'partner_geocode_plan.status', '');
+            $technicianGeocodeStatus = (string) data_get($result, 'technician_geocode_plan.status', '');
+
+            if (str_contains($partnerAction, 'create')) {
+                $summary['partner_create']++;
+            } elseif (str_contains($partnerAction, 'update') || str_contains($partnerAction, 'add_capability')) {
+                $summary['partner_update']++;
+            } else {
+                $summary['partner_skip']++;
+            }
+
+            if (str_contains($technicianAction, 'create')) {
+                $summary['technician_create']++;
+            } elseif (str_contains($technicianAction, 'update') || str_contains($technicianAction, 'existing') || str_contains($technicianAction, 'match')) {
+                $summary['technician_update']++;
+            } else {
+                $summary['technician_skip']++;
+            }
+
+            if (str_contains($linkAction, 'ensure')) {
+                $summary['link_create']++;
+            } elseif (str_contains($linkAction, 'update')) {
+                $summary['link_update']++;
+            } else {
+                $summary['link_skip']++;
+            }
+
+            match ($partnerGeocodeStatus) {
+                'ready' => $summary['partner_geocode_ready']++,
+                'warning' => $summary['partner_geocode_warning']++,
+                'skipped', 'skipped_existing_coordinates' => $summary['partner_geocode_skipped']++,
+                default => null,
+            };
+
+            match ($technicianGeocodeStatus) {
+                'ready' => $summary['technician_geocode_ready']++,
+                'warning' => $summary['technician_geocode_warning']++,
+                'not_applicable' => $summary['technician_geocode_not_applicable']++,
+                'skipped', 'skipped_existing_coordinates' => $summary['technician_geocode_skipped']++,
+                default => null,
+            };
+
+            $summary['geocode_ready'] = $summary['partner_geocode_ready'] + $summary['technician_geocode_ready'];
+            $summary['geocode_warning'] = $summary['partner_geocode_warning'] + $summary['technician_geocode_warning'];
+            $summary['geocode_not_applicable'] = $summary['technician_geocode_not_applicable'];
+            $summary['geocode_skipped'] = $summary['partner_geocode_skipped'] + $summary['technician_geocode_skipped'];
+
+            $summary['warning_count'] += count((array) ($result['review_warnings'] ?? []));
+            if (($result['status'] ?? null) === 'error') {
+                $summary['error_count']++;
+            }
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $results
+     * @return array<int, array<string, mixed>>
+     */
+    private function cariDryRunCandidates(array $results): array
+    {
+        return collect($results)
+            ->map(fn (array $result): array => [
+                'cari_code' => $result['cari_code'] ?? null,
+                'roles' => $result['roles'] ?? [],
+                'address' => $result['address'] ?? null,
+                'address_source' => $result['address_source'] ?? null,
+                'city' => $result['city'] ?? null,
+                'district' => $result['district'] ?? null,
+                'plus_code' => $result['plus_code'] ?? null,
+                'partner_action' => $result['partner_action'] ?? null,
+                'technician_action' => $result['technician_action'] ?? null,
+                'link_action' => $result['link_action'] ?? null,
+                'partner_geocode_plan' => $result['partner_geocode_plan'] ?? null,
+                'technician_geocode_plan' => $result['technician_geocode_plan'] ?? null,
+            ])
+            ->values()
+            ->all();
     }
 
     /**
@@ -862,7 +1081,7 @@ class B2BPartnerController extends Controller
      * @param  array<string, mixed>  $options
      * @return array<string, mixed>
      */
-    private function syncCariLocksmithTechnician(B2BPartner $partner, array $candidate, Request $request, int $userId, array $options): array
+    private function syncCariLocksmithTechnician(B2BPartner $partner, array $candidate, Request $request, int $userId, array $options, ?array $reusableGeocode = null): array
     {
         $technician = $this->candidateTechnician($candidate);
         $created = false;
@@ -881,7 +1100,7 @@ class B2BPartnerController extends Controller
             $created = true;
         }
 
-        $geocode = $this->applyCandidateGeocode($technician, (string) ($options['geocode_mode'] ?? 'none'), (bool) ($options['override_existing_coordinates'] ?? false), $existingHadCoordinates);
+        $geocode = $this->applyCandidateGeocode($technician, (string) ($options['geocode_mode'] ?? 'none'), (bool) ($options['override_existing_coordinates'] ?? false), $existingHadCoordinates, $reusableGeocode);
         $reviewReasons = $this->reviewReasonsForTechnician($technician->fresh(), $geocode);
         $reviewCleared = false;
 
@@ -1042,38 +1261,185 @@ class B2BPartnerController extends Controller
      * @param  array<string, mixed>  $options
      * @return array<string, mixed>
      */
-    private function candidateGeocodePlan(array $candidate, ?TechnicalServiceTechnician $technician, array $options): array
+    private function candidatePartnerGeocodePlan(array $candidate, array $options): array
+    {
+        return $this->candidateLocationGeocodePlan(
+            candidate: $candidate,
+            options: $options,
+            applicable: true,
+            notApplicableReason: null,
+            notApplicableMessage: null,
+            existingCoordinates: false,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function candidateTechnicianGeocodePlan(array $candidate, ?TechnicalServiceTechnician $technician, array $options, bool $isLocksmith): array
+    {
+        return $this->candidateLocationGeocodePlan(
+            candidate: $candidate,
+            options: $options,
+            applicable: $isLocksmith && (bool) ($options['sync_technician'] ?? true),
+            notApplicableReason: 'Teknisyen oluşmayacağı için geocode uygulanmaz',
+            notApplicableMessage: 'Teknisyen oluşmayacağı için geocode uygulanmaz.',
+            existingCoordinates: $technician && $this->technicianHasCoordinates($technician) && ! (bool) ($options['override_existing_coordinates'] ?? false),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function candidateLocationGeocodePlan(array $candidate, array $options, bool $applicable, ?string $notApplicableReason, ?string $notApplicableMessage, bool $existingCoordinates): array
     {
         $mode = (string) ($options['geocode_mode'] ?? 'none');
 
-        if ($technician && $this->technicianHasCoordinates($technician) && ! (bool) ($options['override_existing_coordinates'] ?? false)) {
+        if ($mode === 'none') {
             return [
                 'mode' => $mode,
-                'status' => 'skipped_existing_coordinates',
-                'message' => 'Mevcut koordinat korunacak.',
+                'status' => 'skipped',
+                'reason' => 'Geocode modu kapalı',
+                'message' => 'Geocode yapılmayacak.',
+                'query' => null,
+                'will_call_provider_on_apply' => false,
             ];
         }
 
-        $plusCode = $this->nullableString($candidate['google_plus_code'] ?? $candidate['location_code'] ?? $candidate['plus_code'] ?? null);
-        $address = $this->nullableString($candidate['address'] ?? null);
-        $city = $this->nullableString($candidate['city'] ?? null);
-        $district = $this->nullableString($candidate['district'] ?? null);
+        if (! $applicable) {
+            return [
+                'mode' => $mode,
+                'status' => 'not_applicable',
+                'reason' => $notApplicableReason,
+                'message' => $notApplicableMessage,
+                'query' => null,
+                'will_call_provider_on_apply' => false,
+            ];
+        }
+
+        if ($existingCoordinates) {
+            return [
+                'mode' => $mode,
+                'status' => 'skipped',
+                'source' => 'existing_coordinates',
+                'reason' => 'Mevcut koordinat korunacak',
+                'message' => 'Mevcut koordinat korunacak.',
+                'query' => null,
+                'will_call_provider_on_apply' => false,
+            ];
+        }
+
+        $plusCode = $this->candidatePlusCodeValue($candidate);
+        $address = $this->candidateAddressValue($candidate);
+        $city = $this->candidateCityValue($candidate);
+        $district = $this->candidateDistrictValue($candidate);
 
         if ($plusCode !== null) {
-            return ['mode' => $mode, 'status' => 'available', 'source' => 'plus_code', 'query' => $plusCode];
+            return [
+                'mode' => $mode,
+                'status' => 'ready',
+                'source' => 'plus_code',
+                'reason' => 'Plus Code ile koordinat çözülebilir',
+                'message' => 'Plus Code ile koordinat çözülebilir.',
+                'query' => $plusCode,
+                'will_call_provider_on_apply' => $mode === 'auto' || $mode === 'dry_run',
+            ];
         }
 
-        if ($address !== null && $city !== null) {
-            return ['mode' => $mode, 'status' => 'available', 'source' => 'mikro_address', 'query' => implode(', ', array_values(array_filter([$address, $district, $city, 'Türkiye'])))];
+        if ($address !== null) {
+            return [
+                'mode' => $mode,
+                'status' => 'ready',
+                'source' => $this->nullableString($candidate['address_source'] ?? null) ?? 'mikro_address',
+                'reason' => 'Adres ile koordinat çözülebilir',
+                'message' => 'Adres ile koordinat çözülebilir.',
+                'query' => implode(', ', array_values(array_filter([$address, $district, $city, 'Türkiye']))),
+                'will_call_provider_on_apply' => $mode === 'auto' || $mode === 'dry_run',
+            ];
         }
 
-        return ['mode' => $mode, 'status' => 'review_required', 'source' => 'missing_precise_address', 'query' => null, 'message' => 'Adres yetersiz; rota için gerçek koordinat yok.'];
+        if ($city !== null || $district !== null) {
+            return [
+                'mode' => $mode,
+                'status' => 'warning',
+                'source' => 'city_only',
+                'reason' => 'Adres yetersiz; rota için gerçek koordinat yok',
+                'message' => 'Adres yetersiz; rota için gerçek koordinat yok.',
+                'query' => implode(', ', array_values(array_filter([$district, $city, 'Türkiye']))),
+                'will_call_provider_on_apply' => false,
+            ];
+        }
+
+        return [
+            'mode' => $mode,
+            'status' => 'warning',
+            'source' => 'missing_location',
+            'reason' => 'Adres/konum eksik',
+            'message' => 'Adres/konum eksik.',
+            'query' => null,
+            'will_call_provider_on_apply' => false,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidatePlusCodeValue(array $candidate): ?string
+    {
+        return $this->candidateStringValue($candidate, ['plus_code', 'google_plus_code', 'location_code']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateAddressValue(array $candidate): ?string
+    {
+        return $this->candidateStringValue($candidate, ['full_address', 'formatted_address', 'address', 'address_line', 'google_formatted_address', 'default_start_address']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateCityValue(array $candidate): ?string
+    {
+        return $this->candidateStringValue($candidate, ['city', 'province', 'il']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateDistrictValue(array $candidate): ?string
+    {
+        return $this->candidateStringValue($candidate, ['district', 'ilce']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<int, string>  $keys
+     */
+    private function candidateStringValue(array $candidate, array $keys): ?string
+    {
+        $rawSource = is_array($candidate['raw_source'] ?? null) ? $candidate['raw_source'] : [];
+
+        foreach ($keys as $key) {
+            $value = $this->nullableString($candidate[$key] ?? null) ?? $this->nullableString($rawSource[$key] ?? null);
+
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function applyCandidateGeocode(TechnicalServiceTechnician $technician, string $mode, bool $overrideExisting, bool $existingHadCoordinates): array
+    private function applyCandidateGeocode(TechnicalServiceTechnician $technician, string $mode, bool $overrideExisting, bool $existingHadCoordinates, ?array $reusableGeocode = null): array
     {
         if ($mode !== 'auto') {
             $technician->forceFill([
@@ -1094,7 +1460,9 @@ class B2BPartnerController extends Controller
             return ['status' => 'skipped_existing_coordinates', 'message' => 'Mevcut koordinat korundu.'];
         }
 
-        $result = app(TechnicianGeocodingService::class)->geocode($technician);
+        $result = $this->usableReusableGeocode($reusableGeocode)
+            ? $reusableGeocode
+            : app(TechnicianGeocodingService::class)->geocode($technician);
         $payload = $this->geocodePersistencePayload($result);
 
         if (($result['ok'] ?? false) === true) {
@@ -1120,6 +1488,160 @@ class B2BPartnerController extends Controller
             ->except(['geocode_payload'])
             ->merge(['status' => $payload['geocode_status']])
             ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function applyPartnerGeocode(B2BPartner $partner, array $candidate, array $options): array
+    {
+        $mode = (string) ($options['geocode_mode'] ?? 'none');
+        $overrideExisting = (bool) ($options['override_existing_coordinates'] ?? false);
+
+        if ($mode !== 'auto') {
+            return ['status' => $mode === 'dry_run' ? 'dry_run' : 'skipped', 'message' => 'Partner geocode uygulanmadı.'];
+        }
+
+        if (! $overrideExisting && $this->partnerHasCoordinates($partner)) {
+            return [
+                'ok' => true,
+                'status' => 'skipped_existing_coordinates',
+                'message' => 'Mevcut partner koordinatı korundu.',
+                'latitude' => $partner->latitude,
+                'longitude' => $partner->longitude,
+                'formatted_address' => $partner->google_formatted_address,
+                'needs_review' => (bool) $partner->needs_review,
+                'review_reason' => $partner->review_reason,
+            ];
+        }
+
+        $plan = $this->candidatePartnerGeocodePlan($candidate, ['geocode_mode' => 'auto']);
+
+        if (($plan['status'] ?? null) !== 'ready') {
+            $result = [
+                'ok' => false,
+                'status' => 'review_required',
+                'quality' => 'failed',
+                'query' => $plan['query'] ?? null,
+                'source_type' => $plan['source'] ?? null,
+                'needs_review' => true,
+                'review_reason' => $plan['reason'] ?? 'Partner adresi geocode için yetersiz.',
+                'latitude' => null,
+                'longitude' => null,
+                'formatted_address' => null,
+                'error_message' => $plan['message'] ?? null,
+            ];
+
+            $this->persistPartnerGeocode($partner, $result);
+
+            return $result;
+        }
+
+        $result = app(TechnicalServiceGeocodingService::class)->geocodeText(
+            $plan['query'] ?? null,
+            $plan['source'] ?? 'partner_address',
+            [
+                'city' => $this->candidateCityValue($candidate),
+                'district' => $this->candidateDistrictValue($candidate),
+            ],
+        );
+
+        $this->persistPartnerGeocode($partner, $result);
+
+        return $result;
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    private function persistPartnerGeocode(B2BPartner $partner, array $result): void
+    {
+        $metadata = is_array($partner->metadata) ? $partner->metadata : [];
+        $payload = $this->geocodePersistencePayload($result);
+        $ok = (bool) ($result['ok'] ?? false);
+        $needsReview = (bool) ($result['needs_review'] ?? ! $ok);
+        $reviewReason = $this->nullableString($result['review_reason'] ?? $result['error_message'] ?? null);
+        $formattedAddress = $this->nullableString($result['formatted_address'] ?? null);
+        $metadata['geocode'] = [
+            'status' => $payload['geocode_status'],
+            'source' => $payload['geocode_source'],
+            'confidence' => $payload['geocode_confidence'],
+            'geocoded_at' => optional($payload['geocoded_at'])->toIso8601String(),
+            'latitude' => $result['latitude'] ?? null,
+            'longitude' => $result['longitude'] ?? null,
+            'formatted_address' => $formattedAddress,
+            'needs_review' => $needsReview,
+            'review_reason' => $reviewReason,
+            'payload' => $payload['geocode_payload'],
+        ];
+
+        $writePayload = [
+            'metadata' => $metadata,
+            'geocode_status' => $payload['geocode_status'],
+            'geocode_source' => $payload['geocode_source'],
+            'geocode_confidence' => $payload['geocode_confidence'],
+            'geocoded_at' => $payload['geocoded_at'],
+            'geocode_payload' => $payload['geocode_payload'],
+            'needs_review' => $needsReview,
+            'review_reason' => $reviewReason,
+            'review_reasons' => $reviewReason !== null ? [$reviewReason] : [],
+        ];
+
+        if ($ok && $this->nullableString($result['latitude'] ?? null) !== null && $this->nullableString($result['longitude'] ?? null) !== null) {
+            $writePayload['latitude'] = $result['latitude'];
+            $writePayload['longitude'] = $result['longitude'];
+        }
+
+        if ($formattedAddress !== null) {
+            $writePayload['google_formatted_address'] = $formattedAddress;
+        }
+
+        if ($payload['geocode_source'] !== null) {
+            $writePayload['location_source'] = $payload['geocode_source'];
+        }
+
+        $partner->forceFill($writePayload)->save();
+        $partner->refresh();
+    }
+
+    private function partnerHasCoordinates(B2BPartner $partner): bool
+    {
+        return app(TechnicalServiceGeocodingService::class)->validCoordinatePair($partner->latitude, $partner->longitude) !== null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function partnerAsCariCandidate(B2BPartner $partner): array
+    {
+        return [
+            'mikro_cari_kodu' => $partner->mikro_cari_kodu ?? $partner->partner_code,
+            'display_name' => $partner->display_name,
+            'mikro_cari_unvan' => $partner->mikro_cari_unvan,
+            'phone' => $partner->phone,
+            'email' => $partner->email,
+            'city' => $partner->city,
+            'district' => $partner->district,
+            'address' => $partner->address,
+            'google_plus_code' => $partner->google_plus_code,
+            'plus_code' => $partner->google_plus_code,
+            'tax_no' => $partner->tax_number,
+            'tax_number' => $partner->tax_number,
+            'tax_office' => $partner->tax_office,
+            'selected_capabilities' => $partner->capabilityCodes(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $geocode
+     */
+    private function usableReusableGeocode(?array $geocode): bool
+    {
+        return is_array($geocode)
+            && array_key_exists('ok', $geocode)
+            && array_key_exists('query', $geocode);
     }
 
     /**
@@ -1253,6 +1775,9 @@ class B2BPartnerController extends Controller
      */
     private function snapshotPayload(array $candidate, ?B2BPartner $partner = null): array
     {
+        $taxNumber = $this->candidateTaxNumber($candidate);
+        $taxOffice = $this->candidateTaxOffice($candidate);
+
         return [
             'display_name' => $this->nullableString($candidate['display_name'] ?? null)
                 ?? $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
@@ -1265,7 +1790,66 @@ class B2BPartnerController extends Controller
             'city' => $this->nullableString($candidate['city'] ?? null) ?? $partner?->city,
             'district' => $this->nullableString($candidate['district'] ?? null) ?? $partner?->district,
             'address' => $this->nullableString($candidate['address'] ?? null) ?? $partner?->address,
+            'tax_number' => $partner?->tax_number ?? $taxNumber,
+            'tax_office' => $partner?->tax_office ?? $taxOffice,
+            'tax_identity_type' => $partner?->tax_identity_type ?? $this->taxIdentityType($taxNumber),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateTaxNumber(array $candidate): ?string
+    {
+        foreach ([
+            'tax_number',
+            'tax_no',
+            'vergi_no',
+            'vkn',
+            'tckn',
+            'cari_vdaire_no',
+            'cari_VergiKimlikNo',
+        ] as $key) {
+            $value = $this->nullableString($candidate[$key] ?? null);
+
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateTaxOffice(array $candidate): ?string
+    {
+        foreach ([
+            'tax_office',
+            'vergi_dairesi',
+            'cari_vdaire_adi',
+        ] as $key) {
+            $value = $this->nullableString($candidate[$key] ?? null);
+
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function taxIdentityType(?string $taxNumber): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $taxNumber);
+
+        return match (strlen($digits ?? '')) {
+            10 => 'vkn',
+            11 => 'tckn',
+            0 => null,
+            default => 'unknown',
+        };
     }
 
     /**
@@ -1284,8 +1868,8 @@ class B2BPartnerController extends Controller
                 'confidence' => $candidate['confidence'] ?? null,
             ],
             'address' => $this->nullableString($candidate['address'] ?? null),
-            'tax_no' => $this->nullableString($candidate['tax_no'] ?? null),
-            'tax_office' => $this->nullableString($candidate['tax_office'] ?? null),
+            'tax_no' => $this->candidateTaxNumber($candidate),
+            'tax_office' => $this->candidateTaxOffice($candidate),
             'raw_source_summary' => $this->rawSourceSummary($candidate),
             'source_field_missing' => $candidate['source_field_missing'] ?? null,
             'child_cari_accounts' => $children,
@@ -1310,8 +1894,8 @@ class B2BPartnerController extends Controller
             'city_present' => $this->nullableString($candidate['city'] ?? null) !== null,
             'district_present' => $this->nullableString($candidate['district'] ?? null) !== null,
             'address_present' => $this->nullableString($candidate['address'] ?? null) !== null,
-            'tax_no_present' => $this->nullableString($candidate['tax_no'] ?? null) !== null,
-            'tax_office_present' => $this->nullableString($candidate['tax_office'] ?? null) !== null,
+            'tax_no_present' => $this->candidateTaxNumber($candidate) !== null,
+            'tax_office_present' => $this->candidateTaxOffice($candidate) !== null,
             'source_field_missing' => $candidate['source_field_missing'] ?? [],
         ];
     }
@@ -1326,8 +1910,8 @@ class B2BPartnerController extends Controller
             'cari_kodu' => $this->nullableString($candidate['mikro_cari_kodu'] ?? null),
             'cari_unvan' => $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
                 ?? $this->nullableString($candidate['display_name'] ?? null),
-            'tax_no' => $this->nullableString($candidate['tax_no'] ?? null),
-            'tax_office' => $this->nullableString($candidate['tax_office'] ?? null),
+            'tax_no' => $this->candidateTaxNumber($candidate),
+            'tax_office' => $this->candidateTaxOffice($candidate),
             'invoice_address' => $this->nullableString($candidate['address'] ?? null),
             'city' => $this->nullableString($candidate['city'] ?? null),
             'district' => $this->nullableString($candidate['district'] ?? null),
@@ -2292,6 +2876,18 @@ class B2BPartnerController extends Controller
             'city' => ['nullable', 'string', 'max:128'],
             'district' => ['nullable', 'string', 'max:128'],
             'address' => ['nullable', 'string', 'max:1024'],
+            'tax_number' => ['nullable', 'string', 'max:64'],
+            'tax_no' => ['nullable', 'string', 'max:64'],
+            'tax_office' => ['nullable', 'string', 'max:255'],
+            'tax_identity_type' => ['nullable', 'string', Rule::in(['vkn', 'tckn', 'unknown'])],
+            'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            'google_formatted_address' => ['nullable', 'string', 'max:2000'],
+            'google_plus_code' => ['nullable', 'string', 'max:255'],
+            'location_source' => ['nullable', 'string', 'max:64'],
+            'geocode_status' => ['nullable', 'string', 'max:64'],
+            'needs_review' => ['sometimes', 'boolean'],
+            'review_reason' => ['nullable', 'string', 'max:2000'],
             'active' => ['sometimes', 'boolean'],
             'technical_service_technician_id' => [
                 'nullable',
@@ -2299,6 +2895,10 @@ class B2BPartnerController extends Controller
                 Rule::exists((new TechnicalServiceTechnician)->getTable(), 'id'),
             ],
         ]);
+        if (array_key_exists('tax_number', $data) || array_key_exists('tax_no', $data)) {
+            $data['tax_number'] = $this->nullableString($data['tax_number'] ?? null) ?? $this->nullableString($data['tax_no'] ?? null);
+            $data['tax_identity_type'] = $data['tax_identity_type'] ?? $this->taxIdentityType($data['tax_number'] ?? null);
+        }
         $data['capabilities'] = $this->normalizeCapabilities($data);
         $data['partner_type'] = $data['partner_type'] ?? $this->primaryPartnerType($data['capabilities']);
         if ($this->activeMikroCariLinked($data['mikro_cari_kodu'] ?? null, $partner, array_key_exists('active', $data) ? (bool) $data['active'] : true)) {
@@ -2316,7 +2916,7 @@ class B2BPartnerController extends Controller
      */
     private function partnerWritePayload(array $data): array
     {
-        return [
+        $payload = [
             'partner_type' => $this->primaryPartnerType($data['capabilities']),
             'capabilities' => $data['capabilities'],
             'partner_code' => $this->nullableString($data['partner_code']),
@@ -2332,6 +2932,38 @@ class B2BPartnerController extends Controller
             'address' => $this->nullableString($data['address'] ?? null),
             'active' => array_key_exists('active', $data) ? (bool) $data['active'] : true,
         ];
+
+        foreach ([
+            'tax_number',
+            'tax_office',
+            'tax_identity_type',
+            'google_formatted_address',
+            'google_plus_code',
+            'location_source',
+            'geocode_status',
+            'review_reason',
+        ] as $field) {
+            if (array_key_exists($field, $data)) {
+                $payload[$field] = $this->nullableString($data[$field] ?? null);
+            }
+        }
+
+        foreach (['latitude', 'longitude'] as $field) {
+            if (array_key_exists($field, $data)) {
+                $payload[$field] = $data[$field] !== null && $data[$field] !== '' ? $data[$field] : null;
+            }
+        }
+
+        if (array_key_exists('needs_review', $data)) {
+            $payload['needs_review'] = (bool) $data['needs_review'];
+        }
+
+        if (array_key_exists('review_reason', $data)) {
+            $reviewReason = $this->nullableString($data['review_reason'] ?? null);
+            $payload['review_reasons'] = $reviewReason !== null ? [$reviewReason] : [];
+        }
+
+        return $payload;
     }
 
     /**
@@ -2501,6 +3133,21 @@ class B2BPartnerController extends Controller
                 'city',
                 'district',
                 'address',
+                'tax_number',
+                'tax_office',
+                'tax_identity_type',
+                'latitude',
+                'longitude',
+                'google_formatted_address',
+                'google_plus_code',
+                'location_source',
+                'geocode_status',
+                'geocode_source',
+                'geocode_confidence',
+                'geocoded_at',
+                'needs_review',
+                'review_reason',
+                'review_reasons',
                 'active',
                 'technical_service_technician_id',
             ]),
@@ -2577,6 +3224,10 @@ class B2BPartnerController extends Controller
             ->values()
             ->all();
 
+        $metadata = is_array($partner->metadata) ? $partner->metadata : [];
+        $taxNumber = $partner->tax_number ?? ($metadata['tax_no'] ?? data_get($metadata, 'invoice_profile.tax_no'));
+        $taxOffice = $partner->tax_office ?? ($metadata['tax_office'] ?? data_get($metadata, 'invoice_profile.tax_office'));
+
         return [
             'id' => $partner->id,
             'partner_type' => $partner->partner_type,
@@ -2599,14 +3250,28 @@ class B2BPartnerController extends Controller
             'linked_technician_phone' => $primaryTechnician?->phone,
             'linked_technician_city' => $primaryTechnician?->city,
             'linked_technician_mikro_cari_kodu' => $primaryTechnician?->mikro_cari_kodu ?? $primaryTechnician?->cari_code,
-            'address' => $partner->address ?? (is_array($partner->metadata) ? ($partner->metadata['address'] ?? null) : null),
-            'tax_no' => is_array($partner->metadata) ? ($partner->metadata['tax_no'] ?? null) : null,
-            'tax_office' => is_array($partner->metadata) ? ($partner->metadata['tax_office'] ?? null) : null,
-            'source_field_missing' => is_array($partner->metadata) ? ($partner->metadata['source_field_missing'] ?? []) : [],
-            'child_cari_accounts' => is_array($partner->metadata) ? ($partner->metadata['child_cari_accounts'] ?? []) : [],
-            'invoice_profile' => is_array($partner->metadata) ? ($partner->metadata['invoice_profile'] ?? []) : [],
-            'shipping_profile' => is_array($partner->metadata) ? ($partner->metadata['shipping_profile'] ?? []) : [],
-            'invoice_usage_note' => is_array($partner->metadata) ? ($partner->metadata['invoice_usage_note'] ?? null) : null,
+            'address' => $partner->address ?? ($metadata['address'] ?? null),
+            'tax_number' => $taxNumber,
+            'tax_no' => $taxNumber,
+            'tax_office' => $taxOffice,
+            'tax_identity_type' => $partner->tax_identity_type ?? $this->taxIdentityType($this->nullableString($taxNumber)),
+            'latitude' => $partner->latitude,
+            'longitude' => $partner->longitude,
+            'google_formatted_address' => $partner->google_formatted_address,
+            'google_plus_code' => $partner->google_plus_code,
+            'location_source' => $partner->location_source,
+            'geocode_status' => $partner->geocode_status,
+            'geocode_source' => $partner->geocode_source,
+            'geocode_confidence' => $partner->geocode_confidence,
+            'geocoded_at' => optional($partner->geocoded_at)->toIso8601String(),
+            'needs_review' => (bool) $partner->needs_review,
+            'review_reason' => $partner->review_reason,
+            'review_reasons' => $partner->review_reasons ?? [],
+            'source_field_missing' => $metadata['source_field_missing'] ?? [],
+            'child_cari_accounts' => $metadata['child_cari_accounts'] ?? [],
+            'invoice_profile' => $metadata['invoice_profile'] ?? [],
+            'shipping_profile' => $metadata['shipping_profile'] ?? [],
+            'invoice_usage_note' => $metadata['invoice_usage_note'] ?? null,
             'users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->count(),
             'active_users_count' => B2BPartnerUserProfile::query()->where('partner_id', $partner->id)->where('active', true)->count(),
             'portal_admin_users' => $this->adminProvisioning->portalAdminSummaries($partner),

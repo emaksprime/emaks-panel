@@ -186,8 +186,14 @@ class B2BCariControlService
     public function enrichCandidateForApply(array $candidate): array
     {
         $normalized = $this->normalizeCandidateInput($candidate);
+        $snapshotBacked = false;
 
-        if ($this->missingCandidateFields($normalized) !== []) {
+        if ($snapshotCandidate = $this->snapshotCandidateForApply($normalized)) {
+            $normalized = $this->mergeCandidateDetail($normalized, $snapshotCandidate);
+            $snapshotBacked = true;
+        }
+
+        if (! $snapshotBacked && $this->missingCandidateFields($normalized) !== []) {
             $detail = $this->detailCandidate($normalized);
 
             if ($detail !== null) {
@@ -196,6 +202,31 @@ class B2BCariControlService
         }
 
         return $this->withSourceFieldMissingMeta($normalized);
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @return array<string, mixed>|null
+     */
+    private function snapshotCandidateForApply(array $candidate): ?array
+    {
+        $code = $this->nullableString($candidate['mikro_cari_kodu'] ?? null);
+
+        if ($code === null) {
+            return null;
+        }
+
+        $snapshot = B2BCariSnapshot::query()
+            ->where('base_mikro_cari_kodu', $code)
+            ->orWhere('mikro_cari_kodu', $code)
+            ->latest('id')
+            ->first();
+
+        if (! $snapshot) {
+            return null;
+        }
+
+        return $this->candidateFromSnapshot($snapshot, []);
     }
 
     /**
@@ -1412,7 +1443,16 @@ class B2BCariControlService
             'link_action' => $isLocksmith
                 ? ($linkExists ? 'no_link_change' : 'ensure_partner_technician_link_preview')
                 : 'not_applicable',
-            'geocode_plan' => $isLocksmith ? $this->geocodePlanForCandidate($candidate) : null,
+            'partner_geocode_plan' => $this->geocodePlanForCandidate($candidate),
+            'technician_geocode_plan' => $isLocksmith
+                ? $this->geocodePlanForCandidate($candidate)
+                : [
+                    'status' => 'not_applicable',
+                    'source' => null,
+                    'query' => null,
+                    'review_required' => false,
+                    'message' => 'Teknisyen oluşmayacağı için geocode uygulanmaz.',
+                ],
             'partner_phone_matches' => $partnerPhoneMatches,
             'technician_phone_matches' => $technicianPhoneMatches,
             'duplicate_flags' => array_values(array_unique($duplicateFlags)),
@@ -1434,6 +1474,7 @@ class B2BCariControlService
         if ($plusCode !== null) {
             return [
                 'mode' => 'auto_available',
+                'status' => 'ready',
                 'source' => 'plus_code',
                 'query' => $plusCode,
                 'review_required' => false,
@@ -1444,6 +1485,7 @@ class B2BCariControlService
         if ($address !== null && $city !== null) {
             return [
                 'mode' => 'auto_available',
+                'status' => 'ready',
                 'source' => 'mikro_address',
                 'query' => implode(', ', array_values(array_filter([$address, $district, $city, 'Türkiye']))),
                 'review_required' => false,
@@ -1454,6 +1496,7 @@ class B2BCariControlService
         if ($city !== null || $district !== null) {
             return [
                 'mode' => 'review_required',
+                'status' => 'warning',
                 'source' => 'city_only',
                 'query' => implode(', ', array_values(array_filter([$district, $city, 'Türkiye']))),
                 'review_required' => true,
@@ -1463,6 +1506,7 @@ class B2BCariControlService
 
         return [
             'mode' => 'review_required',
+            'status' => 'warning',
             'source' => 'missing_location',
             'query' => null,
             'review_required' => true,
@@ -1816,15 +1860,37 @@ class B2BCariControlService
             'responsibility_code',
             'temsilci_kodu',
             'srm_merkezi',
+            'legal_name',
+            'contact_or_service_name',
             'phone',
+            'phone_source',
             'email',
             'city',
             'district',
             'address',
+            'address_source',
+            'tax_number',
             'tax_no',
             'tax_office',
+            'existing_partner_id',
+            'status',
+            'status_label',
+            'source_used',
         ] as $field) {
             if ($this->nullableString($candidate[$field] ?? null) === null && $this->nullableString($detail[$field] ?? null) !== null) {
+                $candidate[$field] = $detail[$field];
+            }
+        }
+
+        foreach ([
+            'suggested_capabilities',
+            'capabilities',
+            'child_cari_accounts',
+            'invoice_profile',
+            'shipping_profile',
+            'source_field_missing',
+        ] as $field) {
+            if (($candidate[$field] ?? []) === [] && ($detail[$field] ?? []) !== []) {
                 $candidate[$field] = $detail[$field];
             }
         }
