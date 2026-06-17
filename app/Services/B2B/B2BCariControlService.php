@@ -479,13 +479,6 @@ class B2BCariControlService
 
         $snapshotTotal = $rows->count();
         $filteredRows = $rows
-            ->filter(function (array $candidate) use ($requestedStatus): bool {
-                if ($requestedStatus === null) {
-                    return ($candidate['existing_partner_id'] ?? null) === null;
-                }
-
-                return true;
-            })
             ->filter(function (array $candidate) use ($requestedCapability): bool {
                 if ($requestedCapability === null) {
                     return true;
@@ -585,9 +578,9 @@ class B2BCariControlService
                 ],
                 [
                     'mikro_cari_kodu' => $code,
-                    'mikro_cari_unvan' => $this->nullableString($candidate['mikro_cari_unvan'] ?? null)
-                        ?? $this->nullableString($candidate['display_name'] ?? null),
-                    'normalized_unvan' => $this->normalizedText($candidate['mikro_cari_unvan'] ?? $candidate['display_name'] ?? null),
+                    'mikro_cari_unvan' => $this->cleanDisplayTitle($candidate['mikro_cari_unvan'] ?? null)
+                        ?? $this->cleanDisplayTitle($candidate['display_name'] ?? null),
+                    'normalized_unvan' => $this->normalizedText($this->cleanDisplayTitle($candidate['mikro_cari_unvan'] ?? $candidate['display_name'] ?? null)),
                     'cari_grup_kodu' => $this->nullableString($candidate['cari_grup_kodu'] ?? null),
                     'responsibility_code' => $this->nullableString($candidate['responsibility_code'] ?? null),
                     'temsilci_kodu' => $this->nullableString($candidate['temsilci_kodu'] ?? null),
@@ -625,10 +618,17 @@ class B2BCariControlService
      */
     private function candidateFromSnapshot(B2BCariSnapshot $snapshot, array $existingPartners, array $techniciansByCari = [], array $partnersByPhone = [], array $techniciansByPhone = []): array
     {
+        $displayName = $this->cleanDisplayTitle(data_get($snapshot->raw_payload, 'display_name') ?? $snapshot->mikro_cari_unvan)
+            ?? $snapshot->base_mikro_cari_kodu;
+        $legalName = $this->cleanDisplayTitle(data_get($snapshot->raw_payload, 'legal_name') ?? $snapshot->mikro_cari_unvan);
+        $contactName = $this->distinctDisplayValue(data_get($snapshot->raw_payload, 'contact_or_service_name'), $legalName);
+
         $candidate = [
             'mikro_cari_kodu' => $snapshot->base_mikro_cari_kodu,
-            'mikro_cari_unvan' => $snapshot->mikro_cari_unvan,
-            'display_name' => $snapshot->mikro_cari_unvan ?: $snapshot->base_mikro_cari_kodu,
+            'mikro_cari_unvan' => $legalName,
+            'display_name' => $displayName,
+            'legal_name' => $legalName,
+            'contact_or_service_name' => $contactName,
             'cari_grup_kodu' => $snapshot->cari_grup_kodu,
             'responsibility_code' => $snapshot->responsibility_code,
             'temsilci_kodu' => $snapshot->temsilci_kodu,
@@ -638,6 +638,8 @@ class B2BCariControlService
             'city' => $snapshot->city,
             'district' => $snapshot->district,
             'address' => $snapshot->address,
+            'address_source' => $this->nullableString(data_get($snapshot->raw_payload, 'address_source')),
+            'phone_source' => $this->nullableString(data_get($snapshot->raw_payload, 'phone_source')),
             'tax_no' => $snapshot->tax_no,
             'tax_office' => $snapshot->tax_office,
             'suggested_capabilities' => $snapshot->suggested_capabilities ?? [],
@@ -651,7 +653,16 @@ class B2BCariControlService
             'raw_source' => $snapshot->raw_payload,
         ];
         $existingPartner = $existingPartners[$this->normalizedText($snapshot->base_mikro_cari_kodu)] ?? null;
-        $differenceSummary = $existingPartner ? $this->differenceSummary($existingPartner, $candidate) : [];
+        $differenceSummary = $existingPartner ? $this->differenceSummary($existingPartner, [
+            'mikro_cari_unvan' => $candidate['mikro_cari_unvan'] ?? null,
+            'cari_grup_kodu' => $candidate['cari_grup_kodu'] ?? null,
+            'responsibility_code' => $candidate['responsibility_code'] ?? null,
+            'phone' => $candidate['phone'] ?? null,
+            'email' => $candidate['email'] ?? null,
+            'city' => $candidate['city'] ?? null,
+            'district' => $candidate['district'] ?? null,
+            'address' => $candidate['address'] ?? null,
+        ]) : [];
         $status = $this->snapshotStatus($candidate + ['status' => $snapshot->candidate_status], $existingPartner, $differenceSummary);
         $candidate['existing_partner_id'] = $existingPartner?->id ?? $snapshot->existing_partner_id;
         $candidate['difference_summary'] = $differenceSummary;
@@ -906,6 +917,24 @@ class B2BCariControlService
             $base['confidence'] = max((float) ($base['confidence'] ?? 0), (float) ($incoming['confidence'] ?? 0));
         }
 
+        foreach ([
+            'phone',
+            'email',
+            'city',
+            'district',
+            'address',
+            'address_source',
+            'phone_source',
+            'tax_no',
+            'tax_office',
+            'legal_name',
+            'contact_or_service_name',
+        ] as $field) {
+            if ($this->nullableString($base[$field] ?? null) === null && $this->nullableString($incoming[$field] ?? null) !== null) {
+                $base[$field] = $incoming[$field];
+            }
+        }
+
         if (($base['synthetic_parent'] ?? false) !== true && ($base['status'] ?? null) === 'review_required' && ($incoming['status'] ?? null) === 'candidate') {
             $base['status'] = 'candidate';
             $base['status_label'] = 'Aday';
@@ -1089,7 +1118,9 @@ class B2BCariControlService
             'FirmaUnvani',
         ]);
         $title2 = $this->value($row, ['cari_unvan2', 'firma_unvani_2', 'FirmaUnvani2']);
-        $title = trim(implode(' ', array_filter([$title1, $title2])));
+        $legalName = $this->cleanDisplayTitle($title1);
+        $contactName = $this->distinctDisplayValue($title2, $legalName);
+        $title = $legalName ?? $contactName ?? '';
         $groupCode = $this->value($row, ['cari_grup_kodu', 'grup_kodu', 'Cari Grup Kodu']);
         $groupName = $this->value($row, ['grup', 'Grup', 'cari_grup_adi', 'cari_grup']);
         $responsibility = $this->value($row, ['responsibility_code', 'sorumluluk_kodu', 'srm', 'srm_merkezi', 'Sorumluluk Kodu']);
@@ -1099,6 +1130,8 @@ class B2BCariControlService
         $city = $this->value($row, ['cari_il', 'il', 'city', 'sehir', 'şehir']);
         $district = $this->value($row, ['cari_ilce', 'ilce', 'ilçe', 'district']);
         $address = $this->value($row, ['cari_adres', 'cari_adres1', 'cari_adres2', 'adres', 'address']);
+        $addressSource = $this->value($row, ['address_source', 'adres_kaynak', 'AdresKaynak']);
+        $phoneSource = $phone !== null ? 'Mikro cari kaynağı' : null;
         $taxNo = $this->value($row, ['tax_no', 'vergi_no', 'vkn', 'tckn', 'cari_vdaire_no', 'cari_VergiKimlikNo', 'cari_VergiNo', 'vergi_kimlik_no', 'tc_kimlik_no']);
         $taxOffice = $this->value($row, ['tax_office', 'vergi_dairesi', 'cari_vdaire_adi', 'cari_VergiDairesi', 'vergi_daire']);
         $normalizedCode = $this->normalizedText($code);
@@ -1131,6 +1164,8 @@ class B2BCariControlService
             'mikro_cari_kodu' => $code,
             'mikro_cari_unvan' => $title !== '' ? $title : null,
             'display_name' => $title !== '' ? $title : $code,
+            'legal_name' => $legalName,
+            'contact_or_service_name' => $contactName,
             'cari_grup_kodu' => $groupCode ?? $groupName,
             'responsibility_code' => $responsibility,
             'temsilci_kodu' => $rep,
@@ -1140,6 +1175,8 @@ class B2BCariControlService
             'city' => $city,
             'district' => $district,
             'address' => $address,
+            'address_source' => $addressSource,
+            'phone_source' => $phoneSource,
             'tax_no' => $taxNo,
             'tax_office' => $taxOffice,
             'raw_source' => $row,
@@ -1321,12 +1358,16 @@ class B2BCariControlService
         $missing = $this->missingCandidateFields($candidate);
         $warnings = [];
 
-        if (in_array('phone', $missing, true)) {
-            $warnings[] = 'Telefon eksik; otomatik teknisyen eşleşmesi zayıf olur.';
+        if (in_array('phone', $missing, true) && $this->nullableString($existingPartner?->phone ?? null) === null && $this->nullableString($technician?->phone ?? null) === null) {
+            $warnings[] = 'Mikro kaynağında telefon yok; otomatik teknisyen eşleşmesi zayıf olur.';
         }
 
-        if (in_array('city', $missing, true) || in_array('address', $missing, true)) {
-            $warnings[] = 'Adres/şehir eksik; rota ve teknisyen uygunluğu manuel kontrol ister.';
+        if ((in_array('city', $missing, true) || in_array('address', $missing, true))
+            && $this->nullableString($existingPartner?->city ?? null) === null
+            && $this->nullableString($existingPartner?->address ?? null) === null
+            && $this->nullableString($technician?->city ?? null) === null
+            && $this->nullableString($technician?->address ?? null) === null) {
+            $warnings[] = 'Mikro kaynağında adres/şehir yok; rota ve teknisyen uygunluğu manuel kontrol ister.';
         }
 
         if ($isLocksmith && $technician === null) {
@@ -1549,6 +1590,52 @@ class B2BCariControlService
         $string = trim((string) $value);
 
         return $string === '' ? null : $string;
+    }
+
+    private function cleanDisplayTitle(mixed $value): ?string
+    {
+        $title = $this->nullableString($value);
+
+        if ($title === null) {
+            return null;
+        }
+
+        $words = preg_split('/\s+/', $title) ?: [];
+        $count = count($words);
+
+        if ($count > 0 && $count % 2 === 0) {
+            $half = (int) ($count / 2);
+            $left = implode(' ', array_slice($words, 0, $half));
+            $right = implode(' ', array_slice($words, $half));
+
+            if ($this->sameDisplayText($left, $right)) {
+                return $this->nullableString($left);
+            }
+        }
+
+        return $title;
+    }
+
+    private function distinctDisplayValue(mixed $value, mixed $existing): ?string
+    {
+        $candidate = $this->cleanDisplayTitle($value);
+        $existing = $this->cleanDisplayTitle($existing);
+
+        if ($candidate === null || ($existing !== null && $this->sameDisplayText($candidate, $existing))) {
+            return null;
+        }
+
+        return $candidate;
+    }
+
+    private function sameDisplayText(mixed $first, mixed $second): bool
+    {
+        $first = $this->nullableString($first);
+        $second = $this->nullableString($second);
+
+        return $first !== null
+            && $second !== null
+            && $this->normalizedText($first) === $this->normalizedText($second);
     }
 
     private function normalizedKey(string $key): string

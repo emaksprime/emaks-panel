@@ -152,13 +152,18 @@ type CariControlCandidate = {
   mikro_cari_kodu: string
   display_name?: string | null
   mikro_cari_unvan?: string | null
+  legal_name?: string | null
+  contact_or_service_name?: string | null
   cari_grup_kodu?: string | null
   responsibility_code?: string | null
   phone?: string | null
+  phone_source?: string | null
   email?: string | null
   city?: string | null
   district?: string | null
   address?: string | null
+  address_source?: string | null
+  source_field_missing?: string[]
   tax_no?: string | null
   tax_office?: string | null
   suggested_capabilities?: PartnerType[]
@@ -453,6 +458,38 @@ const locationLabel = (city: string | null, district: string | null) => {
   const parts = [city, district].filter(Boolean)
 
   return parts.length > 0 ? parts.join(' / ') : '-'
+}
+
+const sameText = (first: string | null | undefined, second: string | null | undefined) => {
+  if (!first || !second) {
+    return false
+  }
+
+  return normalizeText(first).trim().toLocaleUpperCase('tr-TR') === normalizeText(second).trim().toLocaleUpperCase('tr-TR')
+}
+
+const candidateDisplayName = (candidate: CariControlCandidate) => (
+  candidate.display_name
+  ?? candidate.legal_name
+  ?? candidate.mikro_cari_unvan
+  ?? candidate.mikro_cari_kodu
+)
+
+const candidateContactName = (candidate: CariControlCandidate) => {
+  const contact = candidate.contact_or_service_name
+  const title = candidateDisplayName(candidate)
+
+  return contact && !sameText(contact, title) ? contact : null
+}
+
+const candidateAddressLabel = (candidate: CariControlCandidate) => {
+  if (!candidate.address) {
+    return 'Mikro kaynağında adres yok'
+  }
+
+  return candidate.address_source && candidate.address_source !== 'kaynak yok'
+    ? `${candidate.address} · ${candidate.address_source}`
+    : candidate.address
 }
 
 const selectedTechnician = (technicians: TechnicianOption[], id: string) => technicians.find((item) => String(item.id) === id) ?? null
@@ -1511,12 +1548,15 @@ export default function B2BPartnersPage() {
                         disabled={!actionsEnabled}
                       />
                       <div className="min-w-0 flex-1">
-                        <span className="block font-semibold text-slate-900">{candidate.display_name ?? candidate.mikro_cari_unvan ?? candidate.mikro_cari_kodu}</span>
+                        <span className="block font-semibold text-slate-900">{candidateDisplayName(candidate)}</span>
+                        {candidateContactName(candidate) && (
+                          <span className="mt-0.5 block text-xs text-slate-500">Kişi/servis adı: {candidateContactName(candidate)}</span>
+                        )}
                         <span className="mt-1 block text-xs text-slate-500">
                           {candidate.mikro_cari_kodu} · {candidate.city ?? '-'} / {candidate.district ?? '-'} · {candidate.status_label ?? candidate.status ?? 'Kontrol gerekli'}
                         </span>
                         <span className="mt-1 block text-xs text-slate-500">
-                          Tel: {candidate.phone ?? '-'} · E-posta: {candidate.email ?? '-'} · Adres: {candidate.address ?? 'Mikro kaynağından gelmedi'}
+                          Tel: {candidate.phone ?? 'Mikro kaynağında telefon yok'} · E-posta: {candidate.email ?? '-'} · Adres: {candidateAddressLabel(candidate)}
                         </span>
                         {(candidate.child_cari_accounts ?? []).length > 0 && (
                           <div className="mt-2 grid gap-1">

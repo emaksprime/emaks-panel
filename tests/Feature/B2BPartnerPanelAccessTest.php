@@ -1434,6 +1434,165 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('candidates.0.address', 'Test Mahallesi');
     }
 
+    public function test_cari_candidate_title_does_not_duplicate_same_name(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'musteri_kodu' => '320.ÇLG.01.0001',
+                    'firma_unvani' => 'CENGİZ ÇETİN',
+                    'firma_unvani_2' => 'CENGİZ ÇETİN',
+                    'grup' => 'ÇİLİNGİR',
+                    'phone' => '5334491851',
+                    'city' => 'ADANA',
+                    'address' => 'GÜZELYALI MAH.',
+                    'address_source' => 'ilk adres kartı',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.display_name', 'CENGİZ ÇETİN')
+            ->assertJsonPath('candidates.0.mikro_cari_unvan', 'CENGİZ ÇETİN')
+            ->assertJsonPath('candidates.0.contact_or_service_name', null);
+    }
+
+    public function test_cari_candidate_identity_uses_cari_code_and_merges_same_code_rows(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    [
+                        'musteri_kodu' => '320.ÇLG.MERGE',
+                        'firma_unvani' => 'Birleşen Çilingir',
+                        'firma_unvani_2' => 'Birleşen Çilingir',
+                        'grup' => 'ÇİLİNGİR',
+                    ],
+                    [
+                        'musteri_kodu' => '320.ÇLG.MERGE',
+                        'firma_unvani' => 'Birleşen Çilingir',
+                        'grup' => 'ÇİLİNGİR',
+                        'phone' => '+905551112233',
+                        'city' => 'Ankara',
+                        'address' => 'Adres kartı',
+                    ],
+                ],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '320.ÇLG.MERGE')
+            ->assertJsonPath('candidates.0.display_name', 'Birleşen Çilingir')
+            ->assertJsonPath('candidates.0.phone', '+905551112233')
+            ->assertJsonPath('candidates.0.address', 'Adres kartı');
+    }
+
+    public function test_cari_candidate_keeps_distinct_cari_codes_with_same_name(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [
+                    ['musteri_kodu' => '320.ÇLG.SAME.001', 'firma_unvani' => 'Aynı İsim', 'grup' => 'ÇİLİNGİR'],
+                    ['musteri_kodu' => '320.ÇLG.SAME.002', 'firma_unvani' => 'Aynı İsim', 'grup' => 'ÇİLİNGİR'],
+                ],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonCount(2, 'candidates')
+            ->assertJsonPath('candidates.0.mikro_cari_kodu', '320.ÇLG.SAME.001')
+            ->assertJsonPath('candidates.1.mikro_cari_kodu', '320.ÇLG.SAME.002');
+    }
+
+    public function test_sync_preview_does_not_warn_phone_or_address_missing_when_source_has_them(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $this->dataSource('customers_list');
+
+        Http::fake([
+            'https://n8n.test/*' => Http::response([
+                'ok' => true,
+                'rows' => [[
+                    'musteri_kodu' => '320.ÇLG.COMPLETE',
+                    'firma_unvani' => 'Tam Kaynak Çilingir',
+                    'grup' => 'ÇİLİNGİR',
+                    'phone' => '+905551112233',
+                    'city' => 'Adana',
+                    'district' => 'Seyhan',
+                    'address' => 'Mikro cari adresi',
+                ]],
+            ]),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?refresh=1&include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonPath('candidates.0.source_field_missing', ['email', 'tax_no', 'tax_office'])
+            ->assertJsonPath('candidates.0.sync_preview.warnings.0', 'Çilingir adayı için teknisyen kaydı Faz 1B eşitlemesinde oluşturulacak veya eşleştirilecek.');
+    }
+
+    public function test_cari_control_default_snapshot_includes_existing_partner_candidates(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'display_name' => 'Mevcut Çilingir',
+            'mikro_cari_kodu' => '320.ÇLG.EXISTING',
+            'mikro_cari_unvan' => 'Mevcut Çilingir',
+            'cari_grup_kodu' => 'ÇİLİNGİR',
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'phone' => '+905551112233',
+            'city' => 'İstanbul',
+            'address' => 'Mevcut adres',
+        ]);
+
+        B2BCariSnapshot::query()->create([
+            'source_code' => 'customers_list',
+            'base_mikro_cari_kodu' => '320.ÇLG.EXISTING',
+            'mikro_cari_kodu' => '320.ÇLG.EXISTING',
+            'mikro_cari_unvan' => 'Mevcut Çilingir Mevcut Çilingir',
+            'normalized_unvan' => 'MEVCUT CILINGIR',
+            'cari_grup_kodu' => 'ÇİLİNGİR',
+            'phone' => '+905551112233',
+            'city' => 'İstanbul',
+            'address' => 'Mevcut adres',
+            'suggested_capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'raw_payload' => ['display_name' => 'Mevcut Çilingir Mevcut Çilingir'],
+            'payload_hash' => hash('sha256', 'existing-candidate'),
+            'existing_partner_id' => $partner->id,
+            'candidate_status' => 'matched',
+            'last_seen_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/cari-control?include_review_required=1&limit=1000')
+            ->assertOk()
+            ->assertJsonCount(1, 'candidates')
+            ->assertJsonPath('candidates.0.existing_partner_id', $partner->id)
+            ->assertJsonPath('candidates.0.display_name', 'Mevcut Çilingir')
+            ->assertJsonPath('candidates.0.status', 'matched');
+    }
+
     public function test_cari_control_requests_more_than_100_candidates_when_available(): void
     {
         $admin = $this->userWithRole('admin', true);
