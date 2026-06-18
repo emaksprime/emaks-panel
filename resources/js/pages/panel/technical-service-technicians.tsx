@@ -97,6 +97,7 @@ type ImportPreviewResult = {
   ok: boolean
   dry_run: boolean
   writes_performed: boolean
+  preview_hash: string
   file: {
     original_name: string
     extension: string
@@ -107,6 +108,46 @@ type ImportPreviewResult = {
   }
   summary: ImportPreviewSummary
   rows: ImportPreviewRow[]
+  message?: string
+}
+
+type ImportApplySummary = {
+  create_count: number
+  update_count: number
+  skip_count: number
+  error_count: number
+  warning_count: number
+  partner_link_create_count: number
+  partner_link_update_count: number
+  partner_link_skip_count: number
+  geocode_success_count: number
+  geocode_failed_count: number
+  preserved_coordinate_count: number
+  review_required_count: number
+}
+
+type ImportApplyRow = {
+  row_number: number
+  action: string
+  status: string
+  technician_id: number | string | null
+  partner_id: number | string | null
+  link_id: number | string | null
+  warnings: string[]
+  errors: string[]
+  geocode_result: {
+    status: string
+    latitude?: number
+    longitude?: number
+  }
+}
+
+type ImportApplyResult = {
+  ok: boolean
+  writes_performed: boolean
+  batch_id: number | string
+  summary: ImportApplySummary
+  rows: ImportApplyRow[]
   message?: string
 }
 
@@ -317,9 +358,14 @@ export default function TechnicalServiceTechnicians() {
   const [search, setSearch] = useState('')
   const [importFile, setImportFile] = useState<File | null>(null)
   const [previewingImport, setPreviewingImport] = useState(false)
+  const [applyingImport, setApplyingImport] = useState(false)
   const [importPreview, setImportPreview] = useState<ImportPreviewResult | null>(null)
+  const [importApplyResult, setImportApplyResult] = useState<ImportApplyResult | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
   const [importPreviewTab, setImportPreviewTab] = useState('all')
+  const [hideImportErrors, setHideImportErrors] = useState(false)
+  const [selectedImportRows, setSelectedImportRows] = useState<number[]>([])
+  const [importConfirmation, setImportConfirmation] = useState('')
   const [importUpdateExisting, setImportUpdateExisting] = useState(false)
   const [importPreserveCoordinates, setImportPreserveCoordinates] = useState(true)
   const [importLinkPartners, setImportLinkPartners] = useState(true)
@@ -402,25 +448,55 @@ export default function TechnicalServiceTechnicians() {
 
   const filteredImportRows = useMemo(() => {
     const rows = importPreview?.rows ?? []
+    const scopedRows = hideImportErrors ? rows.filter((row) => row.errors.length === 0) : rows
 
     if (importPreviewTab === 'create' || importPreviewTab === 'update') {
-      return rows.filter((row) => row.action === importPreviewTab)
+      return scopedRows.filter((row) => row.action === importPreviewTab)
     }
 
     if (importPreviewTab === 'error') {
-      return rows.filter((row) => row.errors.length > 0)
+      return scopedRows.filter((row) => row.errors.length > 0)
     }
 
     if (importPreviewTab === 'warning') {
-      return rows.filter((row) => row.warnings.length > 0)
+      return scopedRows.filter((row) => row.warnings.length > 0)
     }
 
     if (importPreviewTab === 'duplicate') {
-      return rows.filter((row) => row.duplicates.length > 0)
+      return scopedRows.filter((row) => row.duplicates.length > 0)
     }
 
-    return rows
-  }, [importPreview, importPreviewTab])
+    return scopedRows
+  }, [hideImportErrors, importPreview, importPreviewTab])
+
+  const validImportRows = useMemo(
+    () => (importPreview?.rows ?? []).filter((row) => row.errors.length === 0 && row.action !== 'error'),
+    [importPreview],
+  )
+  const selectedImportRowSet = useMemo(() => new Set(selectedImportRows), [selectedImportRows])
+  const selectedValidImportRows = useMemo(
+    () => validImportRows.filter((row) => selectedImportRowSet.has(row.row_number)),
+    [selectedImportRowSet, validImportRows],
+  )
+  const importApplyBlockedReason = useMemo(() => {
+    if (!importPreview || !importFile) {
+      return 'Önce dry-run alın.'
+    }
+
+    if (selectedValidImportRows.length === 0) {
+      return 'Geçerli satır seçin.'
+    }
+
+    if (selectedValidImportRows.length > 50) {
+      return 'Tek seferde en fazla 50 satır içe aktarılabilir.'
+    }
+
+    if (importConfirmation !== 'IMPORT APPLY ONAY') {
+      return 'Onay metnini girin.'
+    }
+
+    return null
+  }, [importConfirmation, importFile, importPreview, selectedValidImportRows.length])
 
   const openCreate = () => {
     setEditing(null)
@@ -630,8 +706,12 @@ export default function TechnicalServiceTechnicians() {
 
   const resetImportPreview = () => {
     setImportPreview(null)
+    setImportApplyResult(null)
     setImportError(null)
     setImportPreviewTab('all')
+    setHideImportErrors(false)
+    setSelectedImportRows([])
+    setImportConfirmation('')
   }
 
   const runImportPreview = async () => {
@@ -644,6 +724,9 @@ export default function TechnicalServiceTechnicians() {
     setPreviewingImport(true)
     setImportError(null)
     setImportPreview(null)
+    setImportApplyResult(null)
+    setSelectedImportRows([])
+    setImportConfirmation('')
 
     try {
       const formData = new FormData()
@@ -676,6 +759,84 @@ export default function TechnicalServiceTechnicians() {
       setImportError(caught instanceof Error ? caught.message : 'İçe aktarma önizlemesi alınamadı.')
     } finally {
       setPreviewingImport(false)
+    }
+  }
+
+  const toggleImportRowSelection = (rowNumber: number, checked: boolean) => {
+    setImportApplyResult(null)
+    setSelectedImportRows((current) => {
+      const next = new Set(current)
+
+      if (checked) {
+        next.add(rowNumber)
+      } else {
+        next.delete(rowNumber)
+      }
+
+      return Array.from(next).sort((a, b) => a - b)
+    })
+  }
+
+  const selectAllValidImportRows = () => {
+    setImportApplyResult(null)
+    setSelectedImportRows(validImportRows.slice(0, 50).map((row) => row.row_number))
+  }
+
+  const clearImportSelection = () => {
+    setImportApplyResult(null)
+    setSelectedImportRows([])
+    setImportConfirmation('')
+  }
+
+  const runImportApply = async () => {
+    if (!importPreview || !importFile || importApplyBlockedReason) {
+      setImportError(importApplyBlockedReason ?? 'Apply için güncel dry-run gerekli.')
+
+      return
+    }
+
+    setApplyingImport(true)
+    setImportError(null)
+    setImportApplyResult(null)
+
+    try {
+      const formData = new FormData()
+      formData.append('file', importFile)
+      formData.append('preview_hash', importPreview.preview_hash)
+      formData.append('update_existing', importUpdateExisting ? '1' : '0')
+      formData.append('override_existing_coordinates', importPreserveCoordinates ? '0' : '1')
+      formData.append('link_existing_partners', importLinkPartners ? '1' : '0')
+      formData.append('create_missing_partners', '0')
+      formData.append('geocode_mode', importGeocodeMode === 'none' ? 'none' : 'preserve_existing')
+      formData.append('confirmation_text', importConfirmation)
+      formData.append('max_rows', '50')
+      selectedValidImportRows.forEach((row) => {
+        formData.append('selected_row_numbers[]', String(row.row_number))
+      })
+
+      const response = await fetch('/api/technical-service/technicians/import-apply', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          ...(csrfToken() ? { 'X-CSRF-TOKEN': csrfToken() } : {}),
+        },
+        body: formData,
+      })
+      const result = await response.json().catch(() => null) as ImportApplyResult | null
+
+      if (!response.ok || !result?.ok) {
+        setImportError(result?.message ?? 'İçe aktarma apply işlemi başarısız oldu.')
+
+        return
+      }
+
+      setImportApplyResult(result)
+      await loadTechnicians()
+    } catch (caught) {
+      setImportError(caught instanceof Error ? caught.message : 'İçe aktarma apply işlemi başarısız oldu.')
+    } finally {
+      setApplyingImport(false)
     }
   }
 
@@ -949,7 +1110,7 @@ export default function TechnicalServiceTechnicians() {
           <div>
             <h2 className="text-lg font-semibold text-slate-950">CSV / Excel ile toplu içe aktarma</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Bu faz sadece önizleme yapar; usta, partner veya bağlantı kaydı yazmaz.
+              Önce dry-run alınır; yalnızca seçili geçerli satırlar onay metniyle local DB’ye yazılır. Mikro’ya yazılmaz.
             </p>
             <code className="mt-3 block overflow-x-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-700">
               {importColumns.join(', ')}
@@ -987,9 +1148,6 @@ export default function TechnicalServiceTechnicians() {
                 }}
               >
                 Sonucu temizle
-              </Button>
-              <Button type="button" disabled title="Apply Faz 2B'de açılacak">
-                Faz 2B’de aktif olacak
               </Button>
             </div>
           </div>
@@ -1057,6 +1215,81 @@ export default function TechnicalServiceTechnicians() {
                 </p>
               </div>
 
+              <div className="grid gap-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="secondary" onClick={selectAllValidImportRows} disabled={validImportRows.length === 0}>
+                    Geçerli satırları seç
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={clearImportSelection}>
+                    Seçimi temizle
+                  </Button>
+                  <Button type="button" variant={hideImportErrors ? 'default' : 'secondary'} onClick={() => setHideImportErrors((current) => !current)}>
+                    Hatalıları gizle
+                  </Button>
+                  <span className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-700">
+                    Seçili: {selectedValidImportRows.length}
+                  </span>
+                  {validImportRows.length > 50 ? (
+                    <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
+                      İlk 50 geçerli satır seçilir; daha fazlası için parçalı ilerleyin.
+                    </span>
+                  ) : null}
+                </div>
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                  <label className="grid gap-2 text-sm font-medium text-slate-700">
+                    Apply onayı
+                    <Input
+                      value={importConfirmation}
+                      onChange={(event) => {
+                        setImportConfirmation(event.target.value)
+                        setImportApplyResult(null)
+                      }}
+                      placeholder="IMPORT APPLY ONAY"
+                    />
+                  </label>
+                  <Button
+                    type="button"
+                    onClick={() => void runImportApply()}
+                    disabled={applyingImport || importApplyBlockedReason !== null}
+                    title={importApplyBlockedReason ?? 'Seçili geçerli satırları içe aktar'}
+                  >
+                    {applyingImport ? 'İçe aktarılıyor...' : 'Seçili geçerli satırları içe aktar'}
+                  </Button>
+                </div>
+                <p className="text-xs text-slate-600">
+                  Mevcut koordinatlar varsayılan olarak korunur. Partner bulunamazsa partner oluşturulmaz; satır review uyarısıyla kalır.
+                </p>
+              </div>
+
+              {importApplyResult ? (
+                <div className="grid gap-3 rounded-2xl border border-emerald-200 bg-white p-4">
+                  <div>
+                    <p className="text-sm font-semibold text-emerald-800">Apply tamamlandı. Batch #{importApplyResult.batch_id}</p>
+                    <p className="mt-1 text-xs text-slate-500">Fixture smoke sonrası oluşturulan test kayıtları prefix/source_key ile temizlenebilir.</p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+                    {[
+                      ['Yeni', importApplyResult.summary.create_count],
+                      ['Güncelleme', importApplyResult.summary.update_count],
+                      ['Skip', importApplyResult.summary.skip_count],
+                      ['Hata', importApplyResult.summary.error_count],
+                      ['Uyarı', importApplyResult.summary.warning_count],
+                      ['Link create', importApplyResult.summary.partner_link_create_count],
+                      ['Link skip', importApplyResult.summary.partner_link_skip_count],
+                      ['Geocode başarı', importApplyResult.summary.geocode_success_count],
+                      ['Geocode fail', importApplyResult.summary.geocode_failed_count],
+                      ['Koordinat korundu', importApplyResult.summary.preserved_coordinate_count],
+                      ['Review gerekli', importApplyResult.summary.review_required_count],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+                        <p className="mt-1 text-xl font-semibold text-slate-950">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
                 {[
                   ['Toplam', importPreview.summary.total_rows],
@@ -1106,8 +1339,9 @@ export default function TechnicalServiceTechnicians() {
                 <table className="w-full min-w-[1180px] table-fixed divide-y divide-slate-200 text-sm">
                   <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                     <tr>
+                      <th className="w-[5%] px-3 py-3">Seç</th>
                       <th className="w-[7%] px-3 py-3">Satır</th>
-                      <th className="w-[17%] px-3 py-3">Usta</th>
+                      <th className="w-[16%] px-3 py-3">Usta</th>
                       <th className="w-[12%] px-3 py-3">Telefon</th>
                       <th className="w-[15%] px-3 py-3">Şehir / Adres</th>
                       <th className="w-[10%] px-3 py-3">Aksiyon</th>
@@ -1119,6 +1353,15 @@ export default function TechnicalServiceTechnicians() {
                   <tbody className="divide-y divide-slate-100 bg-white">
                     {filteredImportRows.map((row) => (
                       <tr key={`${row.row_number}-${row.action}`}>
+                        <td className="px-3 py-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedImportRowSet.has(row.row_number)}
+                            disabled={row.errors.length > 0 || row.action === 'error'}
+                            onChange={(event) => toggleImportRowSelection(row.row_number, event.target.checked)}
+                            aria-label={`${row.row_number}. satırı seç`}
+                          />
+                        </td>
                         <td className="px-3 py-3 font-semibold text-slate-700">{row.row_number}</td>
                         <td className="min-w-0 px-3 py-3">
                           <p className="truncate font-semibold text-slate-950">{importRowDisplayName(row)}</p>
@@ -1160,7 +1403,7 @@ export default function TechnicalServiceTechnicians() {
                     ))}
                     {filteredImportRows.length === 0 ? (
                       <tr>
-                        <td className="px-4 py-8 text-center text-slate-500" colSpan={8}>Bu filtrede satır yok.</td>
+                        <td className="px-4 py-8 text-center text-slate-500" colSpan={9}>Bu filtrede satır yok.</td>
                       </tr>
                     ) : null}
                   </tbody>

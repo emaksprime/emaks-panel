@@ -255,7 +255,7 @@ class TechnicalServiceTechnicianImportPreviewTest extends TestCase
         $this->assertSame($linkCount, B2BPartnerTechnician::query()->count());
     }
 
-    public function test_technician_page_contains_import_preview_controls_and_disabled_apply(): void
+    public function test_technician_page_contains_import_preview_controls_and_guarded_apply(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/technical-service-technicians.tsx'));
         $importColumnBlock = Str::between($source, 'const importColumns = [', 'const emptyForm');
@@ -264,8 +264,11 @@ class TechnicalServiceTechnicianImportPreviewTest extends TestCase
         foreach ([
             'CSV / Excel ile toplu içe aktarma',
             'Önizle / Dry-run',
-            'Faz 2B’de aktif olacak',
+            'Geçerli satırları seç',
+            'IMPORT APPLY ONAY',
+            'Seçili geçerli satırları içe aktar',
             '/api/technical-service/technicians/import-preview',
+            '/api/technical-service/technicians/import-apply',
             'writes_performed',
             'Geocode hazır',
             'Partner eksik',

@@ -9,6 +9,7 @@ use App\Http\Requests\UpdateTechnicalServiceTechnicianRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\TechnicalService\TechnicalServiceGeocodingService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
+use App\Services\TechnicalService\TechnicianImportApplyService;
 use App\Services\TechnicalService\TechnicianImportPreviewService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Http\JsonResponse;
@@ -359,6 +360,58 @@ class TechnicalServiceTechnicianController extends Controller
             return response()->json([
                 'ok' => false,
                 'dry_run' => true,
+                'writes_performed' => false,
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+    }
+
+    public function importApply(Request $request, TechnicianImportApplyService $applyService): JsonResponse
+    {
+        $data = $request->validate([
+            'file' => ['required', 'file', 'max:8192'],
+            'sheet_name' => ['nullable', 'string', 'max:128'],
+            'preview_hash' => ['required', 'string', 'size:64'],
+            'update_existing' => ['nullable', 'boolean'],
+            'override_existing_coordinates' => ['nullable', 'boolean'],
+            'link_existing_partners' => ['nullable', 'boolean'],
+            'create_missing_partners' => ['nullable', 'boolean'],
+            'geocode_mode' => ['nullable', 'string', 'in:none,preserve_existing,apply_address'],
+            'confirmation_text' => ['required', 'string', 'max:64'],
+            'max_rows' => ['nullable', 'integer', 'min:1', 'max:50'],
+            'selected_row_numbers' => ['required', 'array', 'min:1'],
+            'selected_row_numbers.*' => ['integer', 'min:1'],
+        ], [
+            'file.required' => 'Import dosyası zorunlu.',
+            'file.file' => 'Import dosyası yüklenemedi.',
+            'file.max' => 'Import dosyası en fazla 8 MB olabilir.',
+            'preview_hash.required' => 'Güncel dry-run önizlemesi olmadan içe aktarma yapılamaz.',
+            'preview_hash.size' => 'Dry-run önizleme anahtarı geçersiz.',
+            'confirmation_text.required' => 'Onay metni zorunlu.',
+            'selected_row_numbers.required' => 'İçe aktarılacak satır seçin.',
+            'selected_row_numbers.array' => 'İçe aktarılacak satır seçimi geçersiz.',
+            'selected_row_numbers.min' => 'İçe aktarılacak satır seçin.',
+            'selected_row_numbers.*.integer' => 'Seçili satır numarası geçersiz.',
+            'max_rows.max' => 'Tek seferde en fazla 50 satır içe aktarılabilir.',
+            'geocode_mode.in' => 'Geocode modu geçersiz.',
+        ]);
+
+        try {
+            return response()->json($applyService->apply($request->file('file'), [
+                'sheet_name' => $data['sheet_name'] ?? null,
+                'preview_hash' => $data['preview_hash'],
+                'update_existing' => (bool) ($data['update_existing'] ?? false),
+                'override_existing_coordinates' => (bool) ($data['override_existing_coordinates'] ?? false),
+                'link_existing_partners' => ! array_key_exists('link_existing_partners', $data) || (bool) $data['link_existing_partners'],
+                'create_missing_partners' => (bool) ($data['create_missing_partners'] ?? false),
+                'geocode_mode' => $data['geocode_mode'] ?? 'preserve_existing',
+                'confirmation_text' => $data['confirmation_text'] ?? '',
+                'max_rows' => $data['max_rows'] ?? 50,
+                'selected_row_numbers' => $data['selected_row_numbers'] ?? [],
+            ], $request->user()?->id));
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'ok' => false,
                 'writes_performed' => false,
                 'message' => $exception->getMessage(),
             ], 422);

@@ -141,6 +141,7 @@ class TechnicianImportPreviewService
         $previewRows = [];
         $seenPhones = [];
         $seenCariCodes = [];
+        $previewOptions = $this->normalizedPreviewOptions($options);
 
         foreach ($rows as $row) {
             $preview = $this->previewRow(
@@ -148,12 +149,7 @@ class TechnicianImportPreviewService
                 $row['data'],
                 $seenPhones,
                 $seenCariCodes,
-                [
-                    'update_existing' => (bool) ($options['update_existing'] ?? false),
-                    'override_existing_coordinates' => (bool) ($options['override_existing_coordinates'] ?? false),
-                    'link_existing_partners' => ! array_key_exists('link_existing_partners', $options) || (bool) $options['link_existing_partners'],
-                    'geocode_mode' => (string) ($options['geocode_mode'] ?? 'plan_only'),
-                ],
+                $previewOptions,
             );
             $previewRows[] = $preview;
             $this->countRow($summary, $preview);
@@ -164,22 +160,83 @@ class TechnicianImportPreviewService
         $summary['error_count'] = count(array_filter($previewRows, fn (array $row): bool => $row['errors'] !== []));
         $summary['warning_count'] = array_sum(array_map(fn (array $row): int => count($row['warnings']), $previewRows));
 
+        $filePayload = [
+            'original_name' => $file->getClientOriginalName(),
+            'extension' => $extension,
+            'sheet_name' => $parsed['sheet_name'],
+            'available_sheets' => $parsed['available_sheets'],
+            'detected_header_row' => $parsed['detected_header_row'],
+            'row_count' => count($parsed['rows']),
+            'file_hash' => $fileHash,
+        ];
+        $previewHash = $this->previewHashFor($filePayload, $previewOptions, $previewRows);
+
         return [
             'ok' => true,
             'dry_run' => true,
             'writes_performed' => false,
-            'file' => [
-                'original_name' => $file->getClientOriginalName(),
-                'extension' => $extension,
-                'sheet_name' => $parsed['sheet_name'],
-                'available_sheets' => $parsed['available_sheets'],
-                'detected_header_row' => $parsed['detected_header_row'],
-                'row_count' => count($parsed['rows']),
-                'file_hash' => $fileHash,
-            ],
+            'preview_hash' => $previewHash,
+            'file' => $filePayload,
             'summary' => $summary,
             'rows' => $previewRows,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function normalizedPreviewOptions(array $options): array
+    {
+        $geocodeMode = (string) ($options['geocode_mode'] ?? 'plan_only');
+
+        return [
+            'sheet_name' => $this->blankToNull($options['sheet_name'] ?? null),
+            'dry_run' => true,
+            'update_existing' => (bool) ($options['update_existing'] ?? false),
+            'override_existing_coordinates' => (bool) ($options['override_existing_coordinates'] ?? false),
+            'link_existing_partners' => ! array_key_exists('link_existing_partners', $options) || (bool) $options['link_existing_partners'],
+            'geocode_mode' => $geocodeMode === 'none' ? 'none' : 'plan_only',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $file
+     * @param array<string, mixed> $options
+     * @param array<int, array<string, mixed>> $rows
+     */
+    public function previewHashFor(array $file, array $options, array $rows): string
+    {
+        $rowPayload = array_map(
+            fn (array $row): array => [
+                'row_number' => $row['row_number'] ?? null,
+                'action' => $row['action'] ?? null,
+                'confidence' => $row['confidence'] ?? null,
+                'normalized' => $row['normalized'] ?? [],
+                'existing_match' => $row['existing_match'] ?? null,
+                'partner_match' => $row['partner_match'] ?? null,
+                'link_plan' => $row['link_plan'] ?? null,
+                'geocode_plan' => $row['geocode_plan'] ?? null,
+                'warnings' => $row['warnings'] ?? [],
+                'errors' => $row['errors'] ?? [],
+                'duplicates' => $row['duplicates'] ?? [],
+                'changed_fields' => $row['changed_fields'] ?? [],
+            ],
+            $rows,
+        );
+
+        $payload = [
+            'version' => 1,
+            'file_hash' => $file['file_hash'] ?? null,
+            'extension' => $file['extension'] ?? null,
+            'sheet_name' => $file['sheet_name'] ?? null,
+            'detected_header_row' => $file['detected_header_row'] ?? null,
+            'row_count' => $file['row_count'] ?? null,
+            'options' => $options,
+            'rows' => $rowPayload,
+        ];
+
+        return hash('sha256', json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     }
 
     /**
