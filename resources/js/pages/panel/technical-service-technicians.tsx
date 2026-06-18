@@ -1119,7 +1119,7 @@ export default function TechnicalServiceTechnicians() {
               CSV için virgül, noktalı virgül ve tab ayracı desteklenir. Excel dosyasında “Tam Liste” sayfası varsa otomatik kullanılır.
             </p>
             <p className="mt-1 text-xs font-medium text-slate-600">
-              Başlangıç adresi ana adresle aynı kabul edilir; eski dosyalardaki başlangıç kolonları geriye dönük okunur.
+              Ana adres aynı zamanda başlangıç adresi kabul edilir.
             </p>
           </div>
 

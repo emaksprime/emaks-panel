@@ -272,11 +272,12 @@ class TechnicalServiceTechnicianImportPreviewTest extends TestCase
             'writes_performed',
             'Geocode hazır',
             'Partner eksik',
-            'Başlangıç adresi ana adresle aynı kabul edilir',
+            'Ana adres aynı zamanda başlangıç adresi kabul edilir',
         ] as $expected) {
             $this->assertStringContainsString($expected, $source);
         }
 
+        $this->assertStringNotContainsString('eski dosyalardaki başlangıç kolonları', $source);
         $this->assertStringNotContainsString('default_start_address', $importColumnBlock);
         $this->assertStringNotContainsString('default_start_plus_code', $importColumnBlock);
         $this->assertStringNotContainsString('start_latitude', $importColumnBlock);
