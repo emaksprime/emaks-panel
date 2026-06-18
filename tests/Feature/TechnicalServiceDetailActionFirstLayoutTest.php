@@ -41,7 +41,8 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
 
         $this->assertStringContainsString('const isAssignedTechnicianStage', $source);
         $this->assertStringContainsString("return isAssignedTechnicianStage(context) ? null : 'assignment'", $source);
-        $this->assertStringContainsString("return new Set(['product', 'customer', 'assignment'])", $source);
+        $this->assertStringNotContainsString("return new Set(['product', 'customer', 'assignment'])", $source);
+        $this->assertStringContainsString('const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || shouldShowRouteQuoteLoading', $source);
         $this->assertStringContainsString("Usta fotoğrafları ve müşteri onayını tamamlayacak.", $source);
         $this->assertStringContainsString("displayedNextActionHeader = isAssignedPartnerActionStage ? 'Süreç Bilgisi'", $source);
         $this->assertStringContainsString("displayedNextActionSeverity = isAssignedPartnerActionStage ? 'neutral'", $source);
@@ -169,13 +170,100 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
 
         foreach ([$opsSource, $partnerSource, $labelService] as $source) {
             $this->assertStringNotContainsString('Bilinmeyen işlem', $source);
-            $this->assertStringContainsString('İşlem kaydı', $source);
         }
 
+        $genericFallback = 'İşlem ' . 'kaydı';
+        $this->assertStringContainsString('Kayıt detayı', $opsSource);
+        $this->assertStringContainsString($genericFallback, $partnerSource);
+        $this->assertStringContainsString($genericFallback, $labelService);
         $this->assertStringContainsString('schedule_updated', $opsSource);
         $this->assertStringContainsString('assignment_offer_sent', $opsSource);
         $this->assertStringContainsString('partner_portal_support_requested', $partnerSource);
         $this->assertStringContainsString('assignment_offer_sent', $labelService);
+    }
+
+    public function test_detail_ui_hides_empty_cards(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const optionalMetricValue =', $source);
+        $this->assertStringContainsString('const shouldRenderProductInfoPanel = hasProductIdentityDetail || shouldRenderHeaderPaymentSummary || hasMultiProductRequest', $source);
+        $this->assertStringContainsString('const hasCustomerDetail = Boolean(', $source);
+        $this->assertStringContainsString('{shouldRenderProductInfoPanel ? (', $source);
+        $this->assertStringContainsString('{hasCustomerDetail ? (', $source);
+        $this->assertStringNotContainsString("displayOrEmpty(productInfo?.product_name ?? request.product, 'Bilgi yok')", $source);
+        $this->assertStringNotContainsString("Müşteri açık adresi: {displayOrEmpty(customerOpenAddress, 'Bilgi yok')}", $source);
+    }
+
+    public function test_detail_ui_hides_missing_part_section(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const shouldShowPartCreateAction = canCreatePartRequest && (partRequests.length > 0 || servicePartChargeSectionVisible || activePartRequests.length > 0)', $source);
+        $this->assertStringContainsString('{shouldShowPartCreateAction ? (', $source);
+        $this->assertStringContainsString('{partRequests.length > 0 ? (', $source);
+        $this->assertStringNotContainsString('{canCreatePartRequest ? (', $source);
+    }
+
+    public function test_detail_ui_collapses_history_by_default(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const shouldRenderHistoryPanel = Boolean((request.auditLogs ?? []).length > 0 || events.length > 0)', $source);
+        $this->assertStringContainsString('{shouldRenderHistoryPanel ? (', $source);
+        $this->assertStringContainsString('<DetailPanel title="İşlem Geçmişi"', $source);
+        $this->assertStringContainsString('order-[85] rounded-3xl border border-violet-100', $source);
+    }
+
+    public function test_assigned_request_collapses_suggestions(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || shouldShowRouteQuoteLoading', $source);
+        $this->assertStringContainsString("return isAssignedTechnicianStage(context) ? null : 'assignment'", $source);
+        $this->assertStringNotContainsString("return new Set(['product', 'customer', 'assignment'])", $source);
+    }
+
+    public function test_completed_request_is_read_only_compact(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const visibleFooterWorkflowActions = isActionDisabled ? [] : footerWorkflowActions', $source);
+        $this->assertStringContainsString('!isActionDisabled && finalCheckCompletionAction', $source);
+        $this->assertStringContainsString('!isActionDisabled && canReassignAfterReview', $source);
+        $this->assertStringContainsString('Salt okunur belge özeti', $source);
+        $this->assertStringContainsString("isActionDisabled ? 'Kayıt yok' : 'Bekliyor'", $source);
+    }
+
+    public function test_srv_child_does_not_show_parent_gate(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('const isServiceVisitDetail = visibleSections?.is_service_visit === true', $source);
+        $this->assertStringContainsString('const showMountOperationControls = (visibleSections?.operation_mount_controls ?? operationControl.show_mount_controls ?? !isServiceVisitDetail) === true', $source);
+        $this->assertStringContainsString('SRV kaydı parent montaj kapı/ödeme kontrolünü devralmaz.', $source);
+        $this->assertStringContainsString('order-[85] rounded-3xl border border-violet-100', $source);
+    }
+
+    public function test_payment_earning_summary_uses_canonical_values(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+
+        $this->assertStringContainsString('totalCustomerCollectionDisplayLabel', $source);
+        $this->assertStringContainsString('financeRootCustomerCollectionDisplayLabel', $source);
+        $this->assertStringContainsString('financeSummaryTitle', $source);
+        $this->assertStringContainsString('locksmithPayoutTotalMetricLabel', $source);
+        $this->assertStringContainsString('netDifferenceMetricLabel', $source);
+    }
+
+    public function test_no_generic_islem_kaydi_in_detail_history(): void
+    {
+        $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $genericFallback = 'İşlem ' . 'kaydı';
+
+        $this->assertStringContainsString('Kayıt detayı', $source);
+        $this->assertStringNotContainsString("return '{$genericFallback}'", $source);
+        $this->assertStringNotContainsString("? '{$genericFallback}' : value", $source);
     }
 
     private function source(string $relativePath): string

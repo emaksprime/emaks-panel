@@ -196,6 +196,12 @@ const displayOrEmpty = (value: string | null | undefined, fallback: string): str
   return normalized !== '' ? normalized : fallback
 }
 
+const optionalMetricValue = (value: string | number | null | undefined): string | null => {
+  const normalized = cleanDisplayText(value === null || value === undefined ? '' : String(value)).trim()
+
+  return normalized !== '' && normalized !== '-' ? normalized : null
+}
+
 const dateTimeOrEmpty = (value: string | null | undefined, fallback: string): string => (
   hasText(value) ? formatTechnicalServiceDateTime(value, fallback) : fallback
 )
@@ -286,10 +292,10 @@ const hasRawCodeShape = (value: string): boolean => /^[a-z0-9_-]+$/i.test(value)
 
 const safeActionLabelFallback = (value: string): string => {
   if (value === '') {
-    return 'İşlem kaydı'
+    return 'Kayıt detayı'
   }
 
-  return hasRawCodeShape(value) ? 'İşlem kaydı' : value
+  return hasRawCodeShape(value) ? 'Kayıt detayı' : value
 }
 
 const actionLabel = (code: string | null | undefined, provided?: string | null): string => {
@@ -598,14 +604,6 @@ const getOpsDefaultOpenSections = (context: OpsDetailSectionContext): Set<OpsDet
 
   if (activeSection === 'finalCheck') {
     return new Set(['finalCheck'])
-  }
-
-  if (!activeSection && isAssignedTechnicianStage(context)) {
-    return new Set(['product', 'customer', 'assignment'])
-  }
-
-  if (!activeSection) {
-    return new Set()
   }
 
   return new Set([activeSection])
@@ -2069,6 +2067,41 @@ export function ServiceRequestDetails({
   const hasSparePartDetail = partRequests.length > 0
   const hasPriceRevisionDetail = Boolean(String(request.technicianRevisionNote ?? '').trim())
   const hasRevisitDetail = revisitRequests.length > 0 || Boolean(request.requiresSecondVisit)
+  const hasProductIdentityDetail = Boolean(
+    optionalMetricValue(productInfo?.product_name ?? request.product)
+    || optionalMetricValue(productInfo?.product_model ?? request.model)
+    || optionalMetricValue(productInfo?.serial_number ?? request.serialNumber)
+    || optionalMetricValue(productInfo?.brand)
+    || optionalMetricValue(productInfo?.activation_code)
+    || optionalMetricValue(documentInfo?.invoice_display_no)
+    || optionalMetricValue(documentInfo?.dispatch_display_no)
+    || optionalMetricValue(documentInfo?.order_display_no),
+  )
+  const shouldRenderProductInfoPanel = hasProductIdentityDetail || shouldRenderHeaderPaymentSummary || hasMultiProductRequest
+  const customerCityDistrictLabel = [request.city, request.district].filter(Boolean).join(' / ')
+  const buildingAddressLabel = [
+    locationInfo?.building_no,
+    locationInfo?.apartment_no,
+    locationInfo?.door_no,
+    locationInfo?.floor_no,
+  ].filter(Boolean).join(' / ')
+  const hasCustomerDetail = Boolean(
+    optionalMetricValue(request.customer)
+    || optionalMetricValue(request.phone)
+    || optionalMetricValue(customerCityDistrictLabel)
+    || optionalMetricValue(request.address)
+    || locationInfo?.shared
+    || optionalMetricValue(buildingAddressLabel),
+  )
+  const invoiceSerialTotalCount = invoiceSerials?.all_invoice_serial_count
+    ?? invoiceSerials?.selected_serial_count
+    ?? invoiceSerials?.all_invoice_serials?.length
+    ?? invoiceSerials?.selected_serials?.length
+    ?? 0
+  const shouldRenderInvoiceSerialsPanel = Boolean(invoiceSerials?.check_error || invoiceSerialTotalCount > 0)
+  const shouldRenderHistoryPanel = Boolean((request.auditLogs ?? []).length > 0 || events.length > 0)
+  const shouldShowPartCreateAction = canCreatePartRequest && (partRequests.length > 0 || servicePartChargeSectionVisible || activePartRequests.length > 0)
+  const shouldShowFinalReasonMetrics = Boolean(request.pendingReason || request.cancellationReason)
   const showAssignmentPortalActionBlock = Boolean(
     openAppointmentProposals.length > 0
     || jobRejections.length > 0
@@ -3453,7 +3486,7 @@ export function ServiceRequestDetails({
         </section>
 
         {serviceVisitHistory ? (
-          <details className="order-15 rounded-3xl border border-violet-100 bg-violet-50 p-4 text-sm text-violet-950 shadow-sm lg:p-5">
+          <details className="order-[85] rounded-3xl border border-violet-100 bg-violet-50 p-4 text-sm text-violet-950 shadow-sm lg:p-5">
             <summary className="flex cursor-pointer list-none flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">SRV / Ana MRN Geçmişi</p>
@@ -3472,11 +3505,13 @@ export function ServiceRequestDetails({
               ) : null}
             </summary>
             <div className="mt-4 grid gap-3 lg:grid-cols-3">
-              <MiniMetric
-                label="Ana iş durumu"
-                value={displayOrEmpty(serviceVisitHistory.parent_request?.workflow_status ?? serviceVisitHistory.parent_request?.status, 'Bilgi yok')}
-                hint={serviceVisitHistory.parent_request?.completed_at ? `Tamamlandı: ${dateTimeOrEmpty(serviceVisitHistory.parent_request.completed_at, '-')}` : undefined}
-              />
+              {(serviceVisitHistory.parent_request?.workflow_status || serviceVisitHistory.parent_request?.status) ? (
+                <MiniMetric
+                  label="Ana iş durumu"
+                  value={displayOrEmpty(serviceVisitHistory.parent_request?.workflow_status ?? serviceVisitHistory.parent_request?.status, '-')}
+                  hint={serviceVisitHistory.parent_request?.completed_at ? `Tamamlandı: ${dateTimeOrEmpty(serviceVisitHistory.parent_request.completed_at, '-')}` : undefined}
+                />
+              ) : null}
               <MiniMetric label="SRV kodu" value={displayOrEmpty(serviceVisitHistory.service_code, 'Ana talep')} />
               <MiniMetric label="SRV nedeni" value={displayOrEmpty(serviceVisitHistory.reason_label, 'Ek servis ziyareti')} />
             </div>
@@ -3680,6 +3715,7 @@ export function ServiceRequestDetails({
           </section>
         ) : null}
 
+        {shouldRenderProductInfoPanel ? (
         <DetailPanel
           title="Ürün / Seri Bilgisi"
           summary="Ürün adı, model, marka, seri ve belge numaraları"
@@ -3689,23 +3725,25 @@ export function ServiceRequestDetails({
           className={opsSectionClass('product', activeOpsSection)}
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <MiniMetric label="Ürün" value={displayOrEmpty(productInfo?.product_name ?? request.product, 'Bilgi yok')} />
-            <MiniMetric label="Model" value={displayOrEmpty(productInfo?.product_model ?? request.model, '-')} />
-            <MiniMetric label="Seri No" value={displayOrEmpty(productInfo?.serial_number ?? request.serialNumber, '-')} />
-            <MiniMetric label="Marka" value={displayOrEmpty(productInfo?.brand, '-')} />
-            <MiniMetric label="Aktivasyon Kodu" value={displayOrEmpty(productInfo?.activation_code, '-')} />
-            <MiniMetric label="Fatura No" value={displayOrEmpty(documentInfo?.invoice_display_no, '-')} />
-            <MiniMetric label="İrsaliye No" value={displayOrEmpty(documentInfo?.dispatch_display_no, '-')} />
-            <MiniMetric label="Sipariş No" value={displayOrEmpty(documentInfo?.order_display_no, '-')} />
-            <MiniMetric label="Montaj ödeme durumu" value={mountPaymentDetailLabel} />
-            <MiniMetric label="Ödeme aşaması" value={mountPaymentStageLabel} />
-            <MiniMetric label="Ödeme tutarı" value={mountPaymentAmountLabel} />
+            {optionalMetricValue(productInfo?.product_name ?? request.product) ? <MiniMetric label="Ürün" value={optionalMetricValue(productInfo?.product_name ?? request.product)} /> : null}
+            {optionalMetricValue(productInfo?.product_model ?? request.model) ? <MiniMetric label="Model" value={optionalMetricValue(productInfo?.product_model ?? request.model)} /> : null}
+            {optionalMetricValue(productInfo?.serial_number ?? request.serialNumber) ? <MiniMetric label="Seri No" value={optionalMetricValue(productInfo?.serial_number ?? request.serialNumber)} /> : null}
+            {optionalMetricValue(productInfo?.brand) ? <MiniMetric label="Marka" value={optionalMetricValue(productInfo?.brand)} /> : null}
+            {optionalMetricValue(productInfo?.activation_code) ? <MiniMetric label="Aktivasyon Kodu" value={optionalMetricValue(productInfo?.activation_code)} /> : null}
+            {optionalMetricValue(documentInfo?.invoice_display_no) ? <MiniMetric label="Fatura No" value={optionalMetricValue(documentInfo?.invoice_display_no)} /> : null}
+            {optionalMetricValue(documentInfo?.dispatch_display_no) ? <MiniMetric label="İrsaliye No" value={optionalMetricValue(documentInfo?.dispatch_display_no)} /> : null}
+            {optionalMetricValue(documentInfo?.order_display_no) ? <MiniMetric label="Sipariş No" value={optionalMetricValue(documentInfo?.order_display_no)} /> : null}
+            {shouldRenderHeaderPaymentSummary ? <MiniMetric label="Montaj ödeme durumu" value={mountPaymentDetailLabel} /> : null}
+            {shouldRenderHeaderPaymentSummary ? <MiniMetric label="Ödeme aşaması" value={mountPaymentStageLabel} /> : null}
+            {mountPaymentAmountLabel !== '-' ? <MiniMetric label="Ödeme tutarı" value={mountPaymentAmountLabel} /> : null}
             {hasMultiProductRequest ? (
               <MiniMetric label="Çoklu ürün ödeme durumu" value={mountPaymentReceived ? 'Ödeme onaylandı' : canonicalPaymentRequiresPayment ? 'Ödeme operasyon tarafından netleştirilecek' : mountPaymentStageLabel} />
             ) : null}
           </div>
         </DetailPanel>
+        ) : null}
 
+        {hasCustomerDetail ? (
         <DetailPanel
           title="Müşteri Bilgisi"
           summary="Müşteri, telefon, adres ve paylaşılan konum bilgileri"
@@ -3715,10 +3753,10 @@ export function ServiceRequestDetails({
           className={opsSectionClass('customer', activeOpsSection)}
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <MiniMetric label="Müşteri" value={displayOrEmpty(request.customer, 'Bilgi yok')} />
-            <MiniMetric label="Telefon" value={displayOrEmpty(request.phone, 'Bilgi yok')} />
-            <MiniMetric label="İl / İlçe" value={displayOrEmpty([request.city, request.district].filter(Boolean).join(' / '), 'Bilgi yok')} />
-            <MiniMetric label="Adres" value={displayOrEmpty(request.address, 'Bilgi yok')} />
+            {optionalMetricValue(request.customer) ? <MiniMetric label="Müşteri" value={optionalMetricValue(request.customer)} /> : null}
+            {optionalMetricValue(request.phone) ? <MiniMetric label="Telefon" value={optionalMetricValue(request.phone)} /> : null}
+            {optionalMetricValue(customerCityDistrictLabel) ? <MiniMetric label="İl / İlçe" value={optionalMetricValue(customerCityDistrictLabel)} /> : null}
+            {optionalMetricValue(request.address) ? <MiniMetric label="Adres" value={optionalMetricValue(request.address)} /> : null}
             {locationInfo?.shared ? (
               <MiniMetric
                 label="Konum paylaşıldı"
@@ -3730,14 +3768,10 @@ export function ServiceRequestDetails({
                 hint={displayOrEmpty(locationInfo.formatted_address, 'Konum adresi yok')}
               />
             ) : null}
-            <MiniMetric label="Bina / Daire / Kapı / Kat" value={[
-              locationInfo?.building_no,
-              locationInfo?.apartment_no,
-              locationInfo?.door_no,
-              locationInfo?.floor_no,
-            ].filter(Boolean).join(' / ') || '-'} />
+            {optionalMetricValue(buildingAddressLabel) ? <MiniMetric label="Bina / Daire / Kapı / Kat" value={optionalMetricValue(buildingAddressLabel)} /> : null}
           </div>
         </DetailPanel>
+        ) : null}
 
         <DetailPanel
           title={showMountOperationControls ? 'Operasyon ve Montaj Kontrolü' : 'SRV Bağlamı'}
@@ -4180,7 +4214,7 @@ export function ServiceRequestDetails({
                 </div>
               </div>
             ) : null}
-            {canCreatePartRequest ? (
+            {shouldShowPartCreateAction ? (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-100 bg-white p-3 text-sm text-slate-700">
                 <div>
                   <p className="font-semibold text-slate-950">Parça talepleri</p>
@@ -4450,9 +4484,11 @@ export function ServiceRequestDetails({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-900">Mesafe ve önceliğe göre önerilen ustalar</p>
-                    <p className="mt-1 max-w-3xl truncate text-xs text-slate-500" title={customerOpenAddress || undefined}>
-                      Müşteri açık adresi: {displayOrEmpty(customerOpenAddress, 'Bilgi yok')}
-                    </p>
+                    {optionalMetricValue(customerOpenAddress) ? (
+                      <p className="mt-1 max-w-3xl truncate text-xs text-slate-500" title={customerOpenAddress || undefined}>
+                        Müşteri açık adresi: {customerOpenAddress}
+                      </p>
+                    ) : null}
                   </div>
                   <Badge variant="outline">{technicianSuggestions.length > 0 ? `${technicianSuggestions.length} öneri` : 'Öneri yok'}</Badge>
                 </div>
@@ -4483,9 +4519,11 @@ export function ServiceRequestDetails({
                           <p className="mt-1 text-xs text-slate-500">
                             {[technician.phone, technician.location, technician.distanceKmLabel].filter(Boolean).join(' · ')}
                           </p>
-                          <p className="mt-1 truncate text-xs text-slate-500" title={technician.addressSummary ?? undefined}>
-                            Adres: {displayOrEmpty(technician.addressSummary ?? '', 'Bilgi yok')}
-                          </p>
+                          {optionalMetricValue(technician.addressSummary) ? (
+                            <p className="mt-1 truncate text-xs text-slate-500" title={technician.addressSummary ?? undefined}>
+                              Adres: {technician.addressSummary}
+                            </p>
+                          ) : null}
                         </div>
                         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 md:justify-end">
                           <span className="rounded-full bg-slate-100 px-2 py-1">Öncelik: {displayOrEmpty(String(technician.priority ?? ''), '-')}</span>
@@ -4909,9 +4947,9 @@ export function ServiceRequestDetails({
               </Button>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <MiniMetric label="Atanan servis" value={hasAssignedTechnician ? displayOrEmpty(request.technician, 'Bilgi yok') : 'Atanmadı'} />
-              <MiniMetric label="Servis telefonu" value={hasAssignedTechnician ? displayOrEmpty(request.technicianPhone, 'Bilgi yok') : 'Bilgi yok'} />
-              <MiniMetric label="Şehir" value={hasAssignedTechnician ? displayOrEmpty(selectedTechnician?.location, request.city || 'Bilgi yok') : 'Bilgi yok'} />
+              {hasAssignedTechnician && optionalMetricValue(request.technician) ? <MiniMetric label="Atanan servis" value={optionalMetricValue(request.technician)} /> : null}
+              {hasAssignedTechnician && optionalMetricValue(request.technicianPhone) ? <MiniMetric label="Servis telefonu" value={optionalMetricValue(request.technicianPhone)} /> : null}
+              {hasAssignedTechnician && optionalMetricValue(selectedTechnician?.location ?? request.city) ? <MiniMetric label="Şehir" value={optionalMetricValue(selectedTechnician?.location ?? request.city)} /> : null}
               <MiniMetric label="Usta yol hakedişi durumu" value={routeFeeStatusText} />
               <MiniMetric label="Tahmini usta yol hakedişi" value={travelCostLabel} />
               {hasAssignedTechnician && approvalState.title.toLocaleLowerCase('tr-TR').includes('bek') ? (
@@ -4922,7 +4960,6 @@ export function ServiceRequestDetails({
               {hasAssignedTechnician ? (
                 <>
                   <MiniMetric label="Servis onay durumu" value={approvalState.title} hint={approvalState.detail ?? undefined} />
-                  <MiniMetric label="Kabul / red" value={approvalState.title} />
                   {hasSupportRequestDetail ? (
                     <MiniMetric label="Destek talebi" value={displayOrEmpty(request.technicianRevisionNote || request.pendingReason, 'İnceleniyor')} />
                   ) : null}
@@ -4957,25 +4994,27 @@ export function ServiceRequestDetails({
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="text-sm text-slate-600">Son kontrol kararları ve operasyon notları burada özetlenir.</p>
+              {!isActionDisabled ? (
               <Button
                 type="button"
                 variant="outline"
                 className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 hover:text-rose-800"
                 onClick={() => onComplete?.()}
-                disabled={isActionDisabled}
               >
                 İşi İptal Et
               </Button>
+              ) : null}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <MiniMetric label="Operasyon onayı" value={closureApprovalLabel} hint={dateTimeOrEmpty(request.customerClosureApprovedAt, 'Bekliyor')} />
               <MiniMetric label="Tamamlandı / İnceleniyor / İptal" value={currentStatusLabel} />
               <MiniMetric label="Not / yorum alanı" value={notesLabel} />
-              <MiniMetric label="İşlem geçmişi" value={(request.auditLogs ?? []).length > 0 || sortedEvents.length > 0 ? 'Var' : 'Yok'} hint={`${(request.auditLogs ?? []).length} audit / ${sortedEvents.length} olay`} />
-              <MiniMetric label="Bekleme nedeni" value={displayOrEmpty(request.pendingReason, 'Bilgi yok')} />
-              <MiniMetric label="İptal nedeni" value={displayOrEmpty(request.cancellationReason, 'Bilgi yok')} />
+              {shouldRenderHistoryPanel ? <MiniMetric label="İşlem geçmişi" value="Var" hint={`${(request.auditLogs ?? []).length} audit / ${sortedEvents.length} olay`} /> : null}
+              {shouldShowFinalReasonMetrics && request.pendingReason ? <MiniMetric label="Bekleme nedeni" value={request.pendingReason} /> : null}
+              {shouldShowFinalReasonMetrics && request.cancellationReason ? <MiniMetric label="İptal nedeni" value={request.cancellationReason} /> : null}
             </div>
           </DetailPanel>
+        {shouldRenderInvoiceSerialsPanel ? (
         <DetailPanel
           title="Faturadaki diğer serileri gör"
           summary={invoiceSerials?.check_error ? 'Fatura seri kontrolü bekliyor' : 'Talep edilen, gizlenen ve iade seri hareketleri'}
@@ -5043,6 +5082,7 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
         </DetailPanel>
+        ) : null}
 
         <DetailPanel
           title="Saha Tamamlama Belgeleri"
@@ -5060,7 +5100,7 @@ export function ServiceRequestDetails({
               <MiniMetric
                 label="Saha belgeleri"
                 value={photoCompletionLabel}
-                hint={missingFieldDocumentLabels.length > 0 ? `${missingFieldDocumentLabels.join(', ')} bekliyor` : 'Tamam'}
+                hint={isActionDisabled ? 'Salt okunur belge özeti' : missingFieldDocumentLabels.length > 0 ? `${missingFieldDocumentLabels.join(', ')} bekliyor` : 'Tamam'}
               />
               <MiniMetric label="Müşteri onayı" value={closureApprovalLabel} hint={dateTimeOrEmpty(request.customerClosureApprovedAt, 'Bekliyor')} />
               <MiniMetric label="Usta açıklaması" value={displayOrEmpty(request.fieldCompletionNote, 'Bilgi yok')} />
@@ -5358,7 +5398,7 @@ export function ServiceRequestDetails({
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-semibold text-slate-900">{item.label}</p>
                     <Badge variant={item.uploaded ? 'secondary' : 'outline'}>
-                      {item.uploaded ? 'Yüklendi' : 'Bekliyor'}
+                      {item.uploaded ? 'Yüklendi' : isActionDisabled ? 'Kayıt yok' : 'Bekliyor'}
                     </Badge>
                   </div>
                   {item.document?.preview_url ? (
@@ -5376,7 +5416,7 @@ export function ServiceRequestDetails({
                       Belgeyi aç
                     </a>
                   ) : (
-                    <p className="mt-3 text-xs text-slate-500">Bu belge henüz yüklenmedi.</p>
+                    <p className="mt-3 text-xs text-slate-500">{isActionDisabled ? 'Bu tamamlanmış işte belge kaydı yok.' : 'Bu belge henüz yüklenmedi.'}</p>
                   )}
                 </div>
               ))}
@@ -5508,6 +5548,7 @@ export function ServiceRequestDetails({
           </section>
         </DetailPanel>
 
+        {shouldRenderHistoryPanel ? (
         <DetailPanel title="İşlem Geçmişi" summary="Audit kayıtları ve durum akışı" tone="history" className={opsSectionClass('history', activeOpsSection)}>
           <section className="rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">İşlem Kayıtları</p>
@@ -5563,15 +5604,25 @@ export function ServiceRequestDetails({
             </div>
           </section>
         </DetailPanel>
+        ) : null}
 
       </CardContent>
 
+      {(() => {
+        const visibleFooterWorkflowActions = isActionDisabled ? [] : footerWorkflowActions
+        const showFooterBar = visibleFooterWorkflowActions.length > 0
+          || (!isActionDisabled && Boolean(finalCheckCompletionAction))
+          || (!isActionDisabled && canReassignAfterReview)
+          || (!isActionDisabled && Boolean(whatsappHref))
+          || isReopenVisible
+
+        return showFooterBar ? (
       <div
         className="sticky bottom-0 z-10 mt-2 flex justify-end bg-transparent px-2 py-2"
         style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
         <div className="grid max-w-full gap-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center lg:justify-end">
-          {footerWorkflowActions.map(([actionKey, action]) => (
+          {visibleFooterWorkflowActions.map(([actionKey, action]) => (
             <Button
               key={actionKey}
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
@@ -5584,7 +5635,7 @@ export function ServiceRequestDetails({
               {workflowActionInFlight === actionKey ? 'İşleniyor...' : action.label}
             </Button>
           ))}
-          {finalCheckCompletionAction ? (
+          {!isActionDisabled && finalCheckCompletionAction ? (
             <Button
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
               type="button"
@@ -5598,7 +5649,7 @@ export function ServiceRequestDetails({
               {finalPayoutApprovalRequired ? 'İşaretlileri onayla' : 'Son kontrolü tamamla'}
             </Button>
           ) : null}
-          {canReassignAfterReview ? (
+          {!isActionDisabled && canReassignAfterReview ? (
             <>
               <Button
                 className="h-9 w-full text-xs sm:text-sm lg:w-auto"
@@ -5622,6 +5673,7 @@ export function ServiceRequestDetails({
               ) : null}
             </>
           ) : null}
+          {!isActionDisabled ? (
           <Button
             asChild
             className="h-9 w-full text-[0.72rem] sm:text-sm lg:w-auto"
@@ -5630,6 +5682,7 @@ export function ServiceRequestDetails({
           >
             <a href={whatsappHref || '#'} target="_blank" rel="noreferrer">WhatsApp Aç</a>
           </Button>
+          ) : null}
           {isReopenVisible ? (
             <Button
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"
@@ -5642,6 +5695,8 @@ export function ServiceRequestDetails({
           ) : null}
         </div>
       </div>
+        ) : null
+      })()}
     </Card>
   )
 }

@@ -3783,7 +3783,6 @@ class TechnicalServiceWorkflowTest extends TestCase
             'assignmentSubmitDisabled',
             'routeFeeEditorMessage',
             'Servis onay durumu',
-            'Kabul / red',
             'Hakedi',
             'Maliyet',
             'Farkl',
