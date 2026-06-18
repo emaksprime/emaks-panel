@@ -294,6 +294,13 @@ class EvolutionWhatsAppMessageService
     private function suppressionStatus(?TechnicalServiceRequest $request, array $context): ?array
     {
         $mrn = (string) ($request?->mrn ?? ($context['mrn'] ?? ''));
+        if (filter_var($context['prepare_only'] ?? false, FILTER_VALIDATE_BOOL)) {
+            return [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+                'message' => 'Mesaj taslağı hazırlandı; gerçek WhatsApp gönderilmedi.',
+            ];
+        }
+
         if (app()->runningUnitTests() && ! $this->allowUnitTestHttpFake($context)) {
             return [
                 'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,

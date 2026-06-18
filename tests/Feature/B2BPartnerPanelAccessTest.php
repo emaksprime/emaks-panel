@@ -23,6 +23,7 @@ use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceCustomerConfirmation;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartRequest;
@@ -8263,7 +8264,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->contains(fn (array $action): bool => $action['action'] === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED));
     }
 
-    public function test_technical_service_assignment_creates_assignment_offer_for_portal(): void
+    public function test_technical_service_assignment_creates_assignment_offer_job_card_link_for_portal(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
@@ -8359,6 +8360,9 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Yol: 1.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringContainsString('Toplam: 3.000 TL', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringContainsString('İş kartı:', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Seri: SN-OFFER-ACT-001', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringContainsString('Aktivasyon: ACT-OFFER', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
+        $this->assertStringNotContainsString('STK-OFFER', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertStringNotContainsString('TRY', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
@@ -8367,10 +8371,17 @@ class B2BPartnerPanelAccessTest extends TestCase
             'target_type' => 'technician',
             'target_phone' => '905467647428',
             'test_mode' => true,
+            'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
         ]);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $job->id,
             'event_type' => 'assignment_offer_sent',
+            'title' => 'Hakediş bilgisi hazırlandı',
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $job->id,
+            'event_type' => 'assignment_created',
+            'title' => 'Usta atandı',
         ]);
 
         $this->actingAs($admin)
@@ -8383,6 +8394,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.assignment_offer.message_payload.route_fee_amount', 1000)
             ->assertJsonPath('request.assignment_offer.message_payload.total_amount', 3000)
             ->assertJsonPath('request.assignment_offer.job_link', $offer->metadata['message_payload']['job_link'])
+            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED)
             ->assertJsonPath('request.travel_fee_amount', '1000.00')
             ->assertJsonPath('request.technician_payment_amount', '2000.00');
 

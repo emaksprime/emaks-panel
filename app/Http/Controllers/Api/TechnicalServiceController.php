@@ -1155,6 +1155,12 @@ class TechnicalServiceController extends Controller
     public function assign(AssignTechnicalServiceRequest $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         $payload = $request->validated();
+        if ($this->isTerminalOperationRequest($technicalServiceRequest)) {
+            throw ValidationException::withMessages([
+                'request' => 'Tamamlanmış veya iptal edilmiş iş yeniden servise atanamaz.',
+            ]);
+        }
+
         $technician = isset($payload['technical_service_technician_id'])
             ? TechnicalServiceTechnician::query()->find($payload['technical_service_technician_id'])
             : null;
@@ -1252,6 +1258,20 @@ class TechnicalServiceController extends Controller
             $technicianPayload,
             $request->user()
         );
+
+        $technicalServiceRequest->events()->create([
+            'event_type' => 'assignment_created',
+            'title' => 'Usta atandı',
+            'note' => $payload['note'] ?? null,
+            'from_status' => $sourceWorkflowStatus,
+            'to_status' => $technicalServiceRequest->workflow_status,
+            'author_user_id' => $request->user()?->id,
+            'metadata' => [
+                'technician_id' => $technician?->id,
+                'technician_name' => $technician?->name ?? ($payload['technician_name'] ?? null),
+                'source' => 'technical_service_assign',
+            ],
+        ]);
 
         $newPartnerId = $technician
             ? B2BPartnerTechnician::query()
@@ -1736,7 +1756,7 @@ class TechnicalServiceController extends Controller
 
         $request->events()->create([
             'event_type' => 'assignment_offer_sent',
-            'title' => 'Ustaya hakediş bilgisi gönderildi',
+            'title' => 'Hakediş bilgisi hazırlandı',
             'note' => $note !== '' ? $note : null,
             'from_status' => $request->workflow_status,
             'to_status' => $request->workflow_status,
@@ -1757,7 +1777,7 @@ class TechnicalServiceController extends Controller
             'technician',
             $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
             $messageText,
-            [...$messagePayload, 'manual_ui_send' => true],
+            [...$messagePayload, 'prepare_only' => true, 'manual_ui_send' => false],
             $request,
             $user,
             null,
@@ -1883,7 +1903,10 @@ class TechnicalServiceController extends Controller
             'maps_url' => $mapsLink,
             'product_name' => $request->product_name,
             'model' => $request->product_model,
+            'product_model' => $request->product_model,
+            'brand' => $request->brand,
             'serial_no' => $request->serial_number,
+            'activation_code' => $request->activation_code,
             'job_link' => $this->partnerJobLink($request, $technician),
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
@@ -1901,6 +1924,12 @@ class TechnicalServiceController extends Controller
     private function technicianAssignmentMessageText(array $payload): string
     {
         $appointment = trim((string) ($payload['appointment_date'] ?? '').' '.(string) ($payload['appointment_time'] ?? ''));
+        $product = trim(implode(' / ', array_filter([
+            trim((string) ($payload['product_name'] ?? '')),
+            trim((string) ($payload['model'] ?? $payload['product_model'] ?? '')),
+        ], fn (string $value): bool => $value !== '')));
+        $serialNo = trim((string) ($payload['serial_no'] ?? ''));
+        $activationCode = trim((string) ($payload['activation_code'] ?? ''));
 
         return trim(implode("\n", array_filter([
             'EMAKS Prime Teknik Servis',
@@ -1912,6 +1941,9 @@ class TechnicalServiceController extends Controller
             'Telefon: '.($payload['customer_phone'] ?? '-'),
             'Adres: '.($payload['address'] ?? '-'),
             'Harita: '.($payload['maps_link'] ?? '-'),
+            $product !== '' ? 'Ürün: '.$product : null,
+            $serialNo !== '' ? 'Seri: '.$serialNo : null,
+            $activationCode !== '' ? 'Aktivasyon: '.$activationCode : null,
             $appointment !== '' ? 'Randevu: '.$appointment : null,
             '',
             'Hakediş:',

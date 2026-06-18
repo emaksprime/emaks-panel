@@ -213,11 +213,11 @@ const dateOrDateTimeOrEmpty = (value: string | null | undefined, fallback: strin
 const actionCodeLabels: Record<string, string> = {
   accepted: 'İş kabul edildi',
   assignment_archived: 'Önceki usta ataması arşivlendi',
-  assignment_created: 'Servis ataması oluşturuldu',
+  assignment_created: 'Usta atandı',
   assignment_reassigned: 'Servis ataması güncellendi',
   assignment_updated: 'Servis ataması güncellendi',
   assignment_offer: 'Hakediş teklifi oluşturuldu',
-  assignment_offer_sent: 'Hakediş bilgisi gönderildi',
+  assignment_offer_sent: 'Hakediş bilgisi hazırlandı',
   assignment_offer_cancelled: 'Eski hakediş teklifi iptal edildi',
   reassign_after_review_resolved: 'İş yeniden atamaya alındı',
   appointment_accepted_by_technician: 'Randevu onaylandı',

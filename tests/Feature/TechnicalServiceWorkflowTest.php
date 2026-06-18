@@ -1136,6 +1136,40 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_assignment_save_rejects_completed_request(): void
+    {
+        $user = $this->adminUser();
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Kapalı İş Ustası',
+            'phone' => '+905551111119',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'travel_round_trip_km' => 12,
+                'labor_amount' => 1000,
+                'travel_amount' => 100,
+                'confirm_assignment' => true,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('request');
+
+        $this->assertDatabaseMissing('technical_service_assignment_offers', [
+            'technical_service_request_id' => $request->id,
+        ]);
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+        ]);
+    }
+
     public function test_mount_excluded_multi_product_assignment_requires_acknowledgement(): void
     {
         $user = $this->adminUser();
@@ -2784,7 +2818,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
-    public function test_manual_review_reassign_dispatches_assignment_whatsapp_when_real_send_enabled(): void
+    public function test_manual_review_reassign_prepares_assignment_message_without_real_whatsapp(): void
     {
         config([
             'services.evolution.n8n_webhook_url' => 'https://n8n.test/webhook/emaks/evo/send-message',
@@ -2827,6 +2861,11 @@ class TechnicalServiceWorkflowTest extends TestCase
             'mrn' => 'MRN-MANUAL-WP',
             'status' => 'Devam Ediyor',
             'workflow_status' => 'Müşteri Kapanış Onayı Bekleyen',
+            'product_name' => 'E10 Kilit',
+            'product_model' => 'Plus',
+            'serial_number' => 'SN-ASSIGN-MSG',
+            'activation_code' => 'ACT-ASSIGN-MSG',
+            'stock_code' => 'STK-INTERNAL-ONLY',
             'technical_service_technician_id' => $oldTechnician->id,
             'technician_name' => $oldTechnician->name,
             'technician_approval_status' => 'onayladı',
@@ -2861,7 +2900,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
             ->assertJsonPath('request.status', 'Atandı')
             ->assertJsonPath('request.technician_approved_at', null)
-            ->assertJsonPath('request.assignment_offer.metadata.message_dispatch.status', TechnicalServiceMessageDispatch::STATUS_SENT);
+            ->assertJsonPath('request.assignment_offer.metadata.message_dispatch.status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED);
 
         $request->refresh();
         $this->assertNull($request->technician_approved_at);
@@ -2872,22 +2911,21 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->latest('id')
             ->firstOrFail();
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->status);
         $this->assertSame('905467647428', $dispatch->target_phone);
         $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?', (string) data_get($dispatch->request_payload, 'job_link'));
         $this->assertStringContainsString('partner_id='.$partner->id, (string) data_get($dispatch->request_payload, 'job_link'));
         $this->assertStringContainsString('job_id='.$request->id, (string) data_get($dispatch->request_payload, 'job_link'));
+        $this->assertStringContainsString('Ürün: E10 Kilit / Plus', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Seri: SN-ASSIGN-MSG', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringContainsString('Aktivasyon: ACT-ASSIGN-MSG', (string) data_get($dispatch->request_payload, 'message_text'));
+        $this->assertStringNotContainsString('STK-INTERNAL-ONLY', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringContainsString('İşçilik: 1.500 TL', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringContainsString('Yol: 100 TL', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringContainsString('Toplam: 1.600 TL', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringNotContainsString('TRY', (string) data_get($dispatch->request_payload, 'message_text'));
 
-        Http::assertSent(fn ($httpRequest): bool => $httpRequest->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
-            && $httpRequest['target_phone'] === '905467647428'
-            && $httpRequest['event'] === 'assignment_offer_technician'
-            && str_starts_with((string) $httpRequest['job_link'], 'https://dashboard.test/partner/service-jobs?')
-            && str_contains((string) $httpRequest['job_link'], 'partner_id='.$partner->id)
-            && str_contains((string) $httpRequest['job_link'], 'job_id='.$request->id));
+        Http::assertNothingSent();
     }
 
     public function test_rejected_job_can_be_sent_to_same_technician_again_and_clears_active_rejection(): void

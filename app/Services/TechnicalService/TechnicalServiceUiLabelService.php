@@ -15,11 +15,11 @@ class TechnicalServiceUiLabelService
         return match ($code) {
             TechnicalServicePartnerJobAction::ACTION_ACCEPTED => 'İş kabul edildi',
             'assignment_archived' => 'Önceki usta ataması arşivlendi',
-            'assignment_created' => 'Servis ataması oluşturuldu',
+            'assignment_created' => 'Usta atandı',
             'assignment_reassigned',
             'assignment_updated' => 'Servis ataması güncellendi',
             'assignment_offer' => 'Hakediş teklifi oluşturuldu',
-            'assignment_offer_sent' => 'Hakediş bilgisi gönderildi',
+            'assignment_offer_sent' => 'Hakediş bilgisi hazırlandı',
             'assignment_offer_cancelled' => 'Eski hakediş teklifi iptal edildi',
             'reassign_after_review_resolved' => 'İş yeniden atamaya alındı',
             TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_ACCEPTED_BY_TECHNICIAN => 'Randevu onaylandı',
