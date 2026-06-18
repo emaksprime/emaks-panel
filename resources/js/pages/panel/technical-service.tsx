@@ -1850,9 +1850,14 @@ export function TechnicalServiceOperationCenter() {
     : parseNullableNumber(modalRequest?.saleAndPayment?.paid_amount)
     ?? parseNullableNumber(modalRequest?.saleAndPayment?.payment_status?.amount)
     ?? null
-  const modalCollectedPaymentLabel = modalFinanceCustomerCollection?.total_amount_label
-    ?? modalRequest?.saleAndPayment?.paid_amount_label
-    ?? (modalCollectedPaymentAmount !== null ? formatMoneyLabel(modalCollectedPaymentAmount) : '0 TL')
+  const modalFinanceHasRecordedCollection = modalFinanceCustomerCollection?.has_collection === true
+  const modalZeroCollectionIsExpected = modalCurrentFinance?.is_service_visit === true || modalCurrentFinance?.warranty_covered === true
+  const modalCollectedPaymentLabel = modalFinanceCustomerCollection?.total_amount_label && (modalFinanceHasRecordedCollection || modalZeroCollectionIsExpected)
+    ? modalFinanceCustomerCollection.total_amount_label
+    : modalFinanceCustomerCollection?.total_amount_label && modalCollectedPaymentAmount !== null && modalCollectedPaymentAmount > 0
+    ? modalFinanceCustomerCollection.total_amount_label
+    : modalRequest?.saleAndPayment?.paid_amount_label
+    ?? (modalCollectedPaymentAmount !== null && modalCollectedPaymentAmount > 0 ? formatMoneyLabel(modalCollectedPaymentAmount) : 'Ödeme kaydı yok')
   const assignPaymentPreview = getServicePaymentInfo(
     modalRequest?.serviceType,
     assignmentRouteQuote?.round_trip_distance_km ?? assignmentRouteQuote?.distance_km ?? null,

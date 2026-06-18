@@ -27,6 +27,7 @@ use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
+use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -1407,6 +1408,130 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('Form üzerinden ödeme alındı', $request->fresh()->mount_payment_label);
     }
 
+    public function test_missing_paid_payment_falls_back_safely_without_fake_collection(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_label' => 'Montaj ödemesi alındı',
+            'service_type' => 'Montaj',
+            'technician_payment_amount' => 3000,
+            'travel_fee_amount' => 120,
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame('Ödendi', $payload['sale_and_payment']['payment_status_label']);
+        $this->assertNull($payload['sale_and_payment']['paid_amount']);
+        $this->assertNull($payload['sale_and_payment']['payment_summary']['mount']['amount']);
+        $this->assertNull($payload['sale_and_payment']['payment_summary']['total_customer_collection']);
+        $this->assertFalse($payload['sale_and_payment']['payment_summary']['has_mount_collection']);
+        $this->assertSame(3000.0, $payload['customer_fee']);
+        $this->assertNull($payload['total_customer_collected']);
+        $this->assertNull($payload['cost_delta']);
+        $this->assertSame(0.0, $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertFalse($payload['finance_summary']['current_visit']['customer_collection']['has_collection']);
+    }
+
+    public function test_srv_code_uses_root_mrn_body_and_sequence(): void
+    {
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-2606MP030001',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+
+        $child = app(TechnicalServiceServiceVisitService::class)
+            ->createServiceVisitFromRequest($parent, $this->adminUser(), 'revisit', [
+                'copy_operation_control' => false,
+            ]);
+
+        $this->assertSame('SRV-2606MP030001-001', $child->mrn);
+        $this->assertSame('SRV-2606MP030001-001', $child->service_code);
+        $this->assertSame(1, $child->service_sequence);
+    }
+
+    public function test_second_srv_increments_sequence(): void
+    {
+        $parent = $this->technicalServiceRequest(['mrn' => 'MRN-2606MP030001']);
+        $service = app(TechnicalServiceServiceVisitService::class);
+
+        $first = $service->createServiceVisitFromRequest($parent, $this->adminUser(), 'revisit');
+        $second = $service->createServiceVisitFromRequest($parent->fresh(), $this->adminUser(), 'revisit');
+
+        $this->assertSame('SRV-2606MP030001-001', $first->service_code);
+        $this->assertSame('SRV-2606MP030001-002', $second->service_code);
+        $this->assertSame(2, $second->service_sequence);
+    }
+
+    public function test_srv_child_mrn_is_unique(): void
+    {
+        $parent = $this->technicalServiceRequest(['mrn' => 'MRN-2606MP030001']);
+        $this->technicalServiceRequest([
+            'mrn' => 'SRV-2606MP030001-001',
+            'service_code' => 'SRV-2606MP030001-001',
+            'root_mrn' => $parent->mrn,
+            'service_sequence' => null,
+        ]);
+
+        $child = app(TechnicalServiceServiceVisitService::class)
+            ->createServiceVisitFromRequest($parent, $this->adminUser(), 'revisit');
+
+        $this->assertSame('SRV-2606MP030001-002', $child->mrn);
+        $this->assertSame('SRV-2606MP030001-002', $child->service_code);
+    }
+
+    public function test_srv_child_keeps_root_mrn(): void
+    {
+        $parent = $this->technicalServiceRequest(['mrn' => 'MRN-2606MP030001']);
+
+        $child = app(TechnicalServiceServiceVisitService::class)
+            ->createServiceVisitFromRequest($parent, $this->adminUser(), 'revisit');
+
+        $this->assertSame($parent->id, $child->parent_request_id);
+        $this->assertSame('MRN-2606MP030001', $child->root_mrn);
+    }
+
+    public function test_srv_child_does_not_inherit_parent_completion_gate(): void
+    {
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-2606MP030001',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+                'completed_earning_snapshot' => ['total_amount' => 3000],
+            ],
+            'operation_control_checked_at' => now(),
+        ]);
+
+        $child = app(TechnicalServiceServiceVisitService::class)
+            ->createServiceVisitFromRequest($parent, $this->adminUser(), 'revisit', [
+                'copy_operation_control' => false,
+            ]);
+
+        $this->assertNull($child->operation_control_payload);
+        $this->assertNull($child->operation_control_checked_at);
+    }
+
+    public function test_existing_srv_values_are_not_migrated(): void
+    {
+        $legacy = $this->technicalServiceRequest([
+            'mrn' => 'SRV-LEGACY-OLD-1',
+            'service_code' => 'SRV-LEGACY-OLD-1',
+            'root_mrn' => 'MRN-LEGACY-OLD',
+            'service_sequence' => 1,
+        ]);
+        $parent = $this->technicalServiceRequest(['mrn' => 'MRN-2606MP030001']);
+
+        app(TechnicalServiceServiceVisitService::class)
+            ->createServiceVisitFromRequest($parent, $this->adminUser(), 'revisit');
+
+        $this->assertSame('SRV-LEGACY-OLD-1', $legacy->fresh()->mrn);
+        $this->assertSame('SRV-LEGACY-OLD-1', $legacy->fresh()->service_code);
+    }
+
     public function test_presenter_normalizes_legacy_mojibake_system_messages(): void
     {
         $legacy = 'Partner portal tamamlama gÃƒÂ¶nderimi operasyon tarafÃ„Â±ndan onaylandÃ„Â±.';
@@ -2098,9 +2223,20 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('const modalFinanceCustomerCollection = modalCurrentFinance?.customer_collection ?? null', $source);
         $this->assertStringContainsString('const activeModalFinancePayout = modalFinancePayoutMatchesSelection ? modalFinancePayout : null', $source);
         $this->assertStringContainsString('modalFinanceCustomerCollection?.total_amount_label', $source);
+        $this->assertStringContainsString('Ödeme kaydı yok', $source);
         $this->assertStringNotContainsString('?? modalPayment.customerAmount', $source);
         $this->assertStringNotContainsString('const assignmentTechnicianLaborAmount = typeof modalFinancePayout?.labor_amount', $source);
         $this->assertStringNotContainsString('Müşteriden alınan montaj ödemesi', $source);
+    }
+
+    public function test_service_request_detail_uses_missing_payment_label_for_absent_collection(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('totalCustomerCollectionDisplayLabel', $source);
+        $this->assertStringContainsString('financeRootCustomerCollectionDisplayLabel', $source);
+        $this->assertStringContainsString('Ödeme kaydı yok', $source);
     }
 
     public function test_selected_technician_change_recomputes_draft_payout_and_route_fee(): void
@@ -3147,7 +3283,8 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.technician_fee', 3000)
             ->assertJsonPath('request.travel_fee', 120)
             ->assertJsonPath('request.total_technician_cost', 3120)
-            ->assertJsonPath('request.cost_delta', -120)
+            ->assertJsonPath('request.total_customer_collected', null)
+            ->assertJsonPath('request.cost_delta', null)
             ->assertJsonPath('request.qr_source.source_channel', TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM)
             ->assertJsonPath('request.product.activation_code', '275023')
             ->assertJsonPath('request.product.stock_code', 'STK-001')

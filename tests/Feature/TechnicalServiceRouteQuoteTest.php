@@ -664,7 +664,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->refresh(), true);
 
         $this->assertSame(150.0, $payload['extra_customer_payment']);
-        $this->assertSame(3150.0, $payload['total_customer_collected']);
+        $this->assertSame(150.0, $payload['total_customer_collected']);
+        $this->assertSame(150.0, $payload['sale_and_payment']['payment_summary']['total_customer_collection']);
         $this->assertNull($payload['sale_and_payment']['technician_earning_message']);
     }
 

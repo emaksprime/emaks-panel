@@ -4378,10 +4378,6 @@ class TechnicalServiceWorkflowService
             return (float) $paymentStatus['amount'];
         }
 
-        if ($request->mount_payment_status === TechnicalServiceMountSession::PAYMENT_PAID) {
-            return $this->customerAmountForService($request->service_type);
-        }
-
         return null;
     }
 

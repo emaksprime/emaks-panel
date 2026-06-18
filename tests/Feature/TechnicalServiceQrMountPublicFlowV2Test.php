@@ -446,6 +446,17 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         }
     }
 
+    public function test_mrn_generator_handles_single_word_customer_with_x(): void
+    {
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $this->assertSame('MRN-2606BX030001', app(TechnicalServiceCodeGenerator::class)->nextMrn('Burhan'));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function test_mrn_generator_avoids_collision(): void
     {
         Carbon::setTestNow('2026-06-03 10:00:00');
@@ -458,6 +469,21 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    public function test_existing_mrn_values_are_not_migrated(): void
+    {
+        $legacy = $this->createRequestWithMrn('MRN-LEGACY-2024-001');
+
+        Carbon::setTestNow('2026-06-03 10:00:00');
+
+        try {
+            $this->assertSame('MRN-2606MP030001', app(TechnicalServiceCodeGenerator::class)->nextMrn('Mehmet Pekguzel'));
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $this->assertSame('MRN-LEGACY-2024-001', $legacy->fresh()->mrn);
     }
 
     public function test_form_ready_public_page_does_not_show_mount_status_block(): void

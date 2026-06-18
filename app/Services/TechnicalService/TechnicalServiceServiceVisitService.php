@@ -182,10 +182,9 @@ class TechnicalServiceServiceVisitService
                 ->lockForUpdate()
                 ->findOrFail($parent->id);
             $root = $this->rootRequest($parent);
-            $sequence = $this->nextServiceSequence($root);
             $rootMrn = (string) ($root->root_mrn ?: $root->mrn);
-            $serviceCode = $this->codeGenerator->serviceCodeForRoot($rootMrn, $sequence);
-            $mrn = $this->uniqueServiceVisitMrn($serviceCode);
+            [$sequence, $serviceCode] = $this->nextAvailableServiceVisitCode($root, $rootMrn);
+            $mrn = $serviceCode;
             $sourcePartRequest = $options['source_part_request'] ?? null;
             $sourcePartnerAction = $options['source_partner_action'] ?? null;
 
@@ -360,18 +359,26 @@ class TechnicalServiceServiceVisitService
         return max(1, ((int) $max) + 1);
     }
 
-    private function uniqueServiceVisitMrn(string $serviceCode): string
+    /**
+     * @return array{0:int,1:string}
+     */
+    private function nextAvailableServiceVisitCode(TechnicalServiceRequest $root, string $rootMrn): array
     {
-        $base = $serviceCode;
-        $candidate = $base;
-        $index = 2;
+        $sequence = $this->nextServiceSequence($root);
 
-        while (TechnicalServiceRequest::query()->where('mrn', $candidate)->exists()) {
-            $candidate = $base.'-'.$index;
-            $index++;
+        while (true) {
+            $serviceCode = $this->codeGenerator->serviceCodeForRoot($rootMrn, $sequence);
+            $exists = TechnicalServiceRequest::query()
+                ->where('mrn', $serviceCode)
+                ->orWhere('service_code', $serviceCode)
+                ->exists();
+
+            if (! $exists) {
+                return [$sequence, $serviceCode];
+            }
+
+            $sequence++;
         }
-
-        return $candidate;
     }
 
     private function reopenTypeToServiceVisitReason(string $reopenType): string

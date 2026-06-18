@@ -1914,6 +1914,19 @@ export function ServiceRequestDetails({
   const totalCustomerCollectionLabel = financeCustomerCollection?.total_amount_label
     ?? paymentSummary?.total_customer_collection_label
     ?? (totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : null)
+  const zeroCustomerCollectionIsExpected = financeCurrentVisit?.is_service_visit === true || financeCurrentVisit?.warranty_covered === true
+  const totalCustomerCollectionDisplayLabel = financeCustomerCollection
+    && financeCustomerCollection.has_collection !== true
+    && financeCustomerCollection.total_amount <= 0
+    && !zeroCustomerCollectionIsExpected
+    ? 'Ödeme kaydı yok'
+    : (totalCustomerCollectionLabel ?? 'Ödeme kaydı yok')
+  const financeRootCollection = financeRootTotal?.customer_collection ?? null
+  const financeRootCustomerCollectionDisplayLabel = financeRootCollection
+    && financeRootCollection.has_collection !== true
+    && financeRootCollection.total_amount <= 0
+    ? 'Ödeme kaydı yok'
+    : (financeRootCollection?.total_amount_label ?? (financeRootCollection ? formatMoneyValue(financeRootCollection.total_amount) : 'Ödeme kaydı yok'))
   const showServicePartPaymentSummary = servicePartChargeSectionVisible
     || Boolean(latestCustomerCharge)
     || hasServiceCustomerPayment
@@ -4162,7 +4175,7 @@ export function ServiceRequestDetails({
                   <MiniMetric label="İşçilik" value={technicianLaborCostLabel} />
                   <MiniMetric label="Yol" value={travelCostLabel} />
                   <MiniMetric label={locksmithPayoutTotalMetricLabel} value={totalTechnicianCostLabel} />
-                  <MiniMetric label="Müşteri tahsilatı" value={totalCustomerCollectedAmount !== null ? formatMoneyValue(totalCustomerCollectedAmount) : '-'} />
+                <MiniMetric label="Müşteri tahsilatı" value={totalCustomerCollectionDisplayLabel} />
                   <MiniMetric label={netDifferenceMetricLabel} value={netProfitLabel} />
                 </div>
               </div>
@@ -4737,8 +4750,8 @@ export function ServiceRequestDetails({
                 {showFinanceCollectionMetrics && hasExtraCustomerPayment ? (
                   <MiniMetric label="Müşteriden alınan ek ödeme" value={formatMoneyValue(paidExtraCustomerAmount)} />
                 ) : null}
-                {showFinanceCollectionMetrics && totalCustomerCollectionLabel ? (
-                  <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionLabel} />
+                {showFinanceCollectionMetrics ? (
+                  <MiniMetric label="Toplam müşteri tahsilatı" value={totalCustomerCollectionDisplayLabel} />
                 ) : null}
                 {showFinanceCollectionMetrics && showPaymentControl ? (
                   <MiniMetric label="Montaj ödeme durumu" value={resolvedMountPaymentLabel} />
@@ -4778,7 +4791,7 @@ export function ServiceRequestDetails({
                   ) : null}
                   {showFinanceCollectionMetrics && financeRootTotal ? (
                     <div className="grid gap-2 rounded-xl bg-slate-50 px-3 py-2 sm:grid-cols-3">
-                      <span>Müşteri tahsilatı: <strong>{financeRootTotal.customer_collection.total_amount_label ?? formatMoneyValue(financeRootTotal.customer_collection.total_amount)}</strong></span>
+                      <span>Müşteri tahsilatı: <strong>{financeRootCustomerCollectionDisplayLabel}</strong></span>
                       <span>Usta hakedişi: <strong>{financeRootTotal.locksmith_payout.total_amount_label ?? formatMoneyValue(financeRootTotal.locksmith_payout.total_amount)}</strong></span>
                       <span>Net fark: <strong>{financeRootTotal.net_margin.amount_label ?? formatMoneyValue(financeRootTotal.net_margin.amount)}</strong></span>
                     </div>
