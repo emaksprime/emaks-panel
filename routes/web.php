@@ -256,6 +256,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::delete('technicians/{technician}', [TechnicalServiceTechnicianController::class, 'destroy'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.destroy');
+            Route::post('technicians/import-preview', [TechnicalServiceTechnicianController::class, 'importPreview'])
+                ->middleware('panel.access:technical_service_technicians')
+                ->name('api.technical-service.technicians.import-preview');
             Route::post('technicians/import', [TechnicalServiceTechnicianController::class, 'importCsv'])
                 ->middleware('panel.access:technical_service_technicians')
                 ->name('api.technical-service.technicians.import');

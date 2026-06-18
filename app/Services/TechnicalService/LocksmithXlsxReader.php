@@ -9,9 +9,9 @@ use ZipArchive;
 class LocksmithXlsxReader
 {
     /**
-     * @return array<int, array<string, string|null>>
+     * @return array<int, string>
      */
-    public function rows(string $path, string $sheetName): array
+    public function sheetNames(string $path): array
     {
         if (! is_file($path)) {
             throw new RuntimeException("Excel dosyası bulunamadı: {$path}");
@@ -23,18 +23,59 @@ class LocksmithXlsxReader
         }
 
         try {
-            $sheetPath = $this->worksheetPath($zip, $sheetName);
+            $workbookXml = $zip->getFromName('xl/workbook.xml');
+
+            if (! is_string($workbookXml)) {
+                throw new RuntimeException('Excel workbook metadata okunamadı.');
+            }
+
+            $workbook = new SimpleXMLElement($workbookXml);
+            $sheets = $workbook->xpath('//*[local-name()="sheet"]') ?: [];
+
+            return array_values(array_filter(array_map(
+                fn (SimpleXMLElement $sheet): string => (string) $sheet['name'],
+                $sheets,
+            )));
+        } finally {
+            $zip->close();
+        }
+    }
+
+    /**
+     * @return array<int, array<int, string|null>>
+     */
+    public function rawRows(string $path, ?string $sheetName = null): array
+    {
+        if (! is_file($path)) {
+            throw new RuntimeException("Excel dosyası bulunamadı: {$path}");
+        }
+
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) {
+            throw new RuntimeException("Excel dosyası açılamadı: {$path}");
+        }
+
+        try {
+            $sheetPath = $this->worksheetPath($zip, $sheetName ?? $this->defaultSheetName($zip));
             $sharedStrings = $this->sharedStrings($zip);
             $sheetXml = $zip->getFromName($sheetPath);
 
             if (! is_string($sheetXml)) {
-                throw new RuntimeException("Excel sheet okunamadı: {$sheetName}");
+                throw new RuntimeException('Excel sheet okunamadı.');
             }
 
-            $rows = $this->worksheetRows($sheetXml, $sharedStrings);
+            return $this->worksheetRows($sheetXml, $sharedStrings);
         } finally {
             $zip->close();
         }
+    }
+
+    /**
+     * @return array<int, array<string, string|null>>
+     */
+    public function rows(string $path, string $sheetName): array
+    {
+        $rows = $this->rawRows($path, $sheetName);
 
         if ($rows === []) {
             return [];
@@ -160,6 +201,34 @@ class LocksmithXlsxReader
         }
 
         throw new RuntimeException("Excel sheet ilişki kaydı bulunamadı: {$sheetName}");
+    }
+
+    private function defaultSheetName(ZipArchive $zip): string
+    {
+        $workbookXml = $zip->getFromName('xl/workbook.xml');
+
+        if (! is_string($workbookXml)) {
+            throw new RuntimeException('Excel workbook metadata okunamadı.');
+        }
+
+        $workbook = new SimpleXMLElement($workbookXml);
+        $sheets = $workbook->xpath('//*[local-name()="sheet"]') ?: [];
+        $names = array_values(array_filter(array_map(
+            fn (SimpleXMLElement $sheet): string => (string) $sheet['name'],
+            $sheets,
+        )));
+
+        if ($names === []) {
+            throw new RuntimeException('Excel dosyasında sheet bulunamadı.');
+        }
+
+        foreach ($names as $name) {
+            if (mb_strtolower($name, 'UTF-8') === mb_strtolower(LocksmithImportService::SHEET_NAME, 'UTF-8')) {
+                return $name;
+            }
+        }
+
+        return $names[0];
     }
 
     /**

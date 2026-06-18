@@ -40,29 +40,92 @@ type TechnicianForm = {
   active: boolean
 }
 
-type ImportError = {
-  row: number
-  reason: string
-  data: unknown
+type ImportPreviewSummary = {
+  total_rows: number
+  parsed_rows: number
+  valid_rows: number
+  create_count: number
+  update_count: number
+  skip_count: number
+  error_count: number
+  warning_count: number
+  duplicate_count: number
+  partner_link_create_count: number
+  partner_link_update_count: number
+  partner_link_skip_count: number
+  partner_missing_count: number
+  geocode_ready_count: number
+  geocode_warning_count: number
+  geocode_existing_coordinates_count: number
+  geocode_preserve_existing_count: number
+  geocode_error_count: number
 }
 
-type ImportResult = {
-  created_count: number
-  skipped_count: number
-  errors: ImportError[]
+type ImportPreviewRow = {
+  row_number: number
+  action: string
+  confidence: string
+  normalized: Record<string, string | number | boolean | null>
+  existing_match: {
+    id: number | string
+    name: string
+    reason: string
+    reliable: boolean
+  } | null
+  partner_match: {
+    id: number | string
+    name: string
+    cari_code: string | null
+  } | null
+  link_plan: {
+    action: string
+    reason: string
+  } | null
+  geocode_plan: {
+    status: string
+    reason: string
+    query: string | null
+    source: string | null
+  }
+  warnings: string[]
+  errors: string[]
+  duplicates: string[]
+  changed_fields: string[]
 }
 
-const csvColumns = [
+type ImportPreviewResult = {
+  ok: boolean
+  dry_run: boolean
+  writes_performed: boolean
+  file: {
+    original_name: string
+    extension: string
+    sheet_name: string | null
+    detected_header_row: number | null
+    row_count: number
+    file_hash: string
+  }
+  summary: ImportPreviewSummary
+  rows: ImportPreviewRow[]
+  message?: string
+}
+
+const importColumns = [
   'first_name',
   'last_name',
+  'full_name',
   'phone',
   'city',
   'district',
   'address',
+  'latitude',
+  'longitude',
   'google_plus_code',
   'google_formatted_address',
   'default_start_address',
   'default_start_plus_code',
+  'start_latitude',
+  'start_longitude',
   'mikro_cari_kodu',
   'mikro_cari_adi',
   'note',
@@ -95,6 +158,47 @@ const emptyForm: TechnicianForm = {
 }
 
 const csrfToken = () => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? ''
+
+const importActionLabels: Record<string, string> = {
+  create: 'Yeni',
+  update: 'Güncelleme',
+  skip: 'Skip',
+  error: 'Hata',
+}
+
+const importConfidenceLabels: Record<string, string> = {
+  new: 'Yeni kayıt',
+  reliable: 'Güvenilir eşleşme',
+  weak: 'Manuel kontrol',
+  blocked: 'Bloklandı',
+}
+
+const geocodePlanLabels: Record<string, string> = {
+  coordinates_present: 'Koordinat dosyada var',
+  preserve_existing: 'Mevcut koordinat korunacak',
+  ready_plus_code: 'Plus code ile hazır',
+  ready_address: 'Adres ile hazır',
+  warning_city_only: 'Şehir-only uyarı',
+  warning_missing_address: 'Adres eksik',
+  invalid_coordinate: 'Koordinat hatası',
+  skipped: 'Geocode kapalı',
+}
+
+const importRowValue = (row: ImportPreviewRow, key: string): string => {
+  const value = row.normalized[key]
+
+  if (value === null || value === undefined || typeof value === 'boolean') {
+    return ''
+  }
+
+  return String(value)
+}
+
+const importRowDisplayName = (row: ImportPreviewRow): string => (
+  importRowValue(row, 'full_name')
+  || [importRowValue(row, 'first_name'), importRowValue(row, 'last_name')].filter(Boolean).join(' ')
+  || '-'
+)
 
 const displayName = (technician: ServiceTechnician) =>
   [technician.first_name, technician.last_name].filter(Boolean).join(' ').trim() || technician.name
@@ -215,9 +319,15 @@ export default function TechnicalServiceTechnicians() {
   const [geocoding, setGeocoding] = useState(false)
   const [geocodeMessage, setGeocodeMessage] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [csvFile, setCsvFile] = useState<File | null>(null)
-  const [importing, setImporting] = useState(false)
-  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [previewingImport, setPreviewingImport] = useState(false)
+  const [importPreview, setImportPreview] = useState<ImportPreviewResult | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [importPreviewTab, setImportPreviewTab] = useState('all')
+  const [importUpdateExisting, setImportUpdateExisting] = useState(false)
+  const [importPreserveCoordinates, setImportPreserveCoordinates] = useState(true)
+  const [importLinkPartners, setImportLinkPartners] = useState(true)
+  const [importGeocodeMode, setImportGeocodeMode] = useState('plan_only')
   const [typeFilter, setTypeFilter] = useState('')
   const [cityFilter, setCityFilter] = useState('')
   const [activeFilter, setActiveFilter] = useState('')
@@ -293,6 +403,28 @@ export default function TechnicalServiceTechnicians() {
       technician.import_note,
     ].some((value) => String(value ?? '').toLocaleLowerCase('tr-TR').includes(normalizedSearch)))
   }, [search, technicians])
+
+  const filteredImportRows = useMemo(() => {
+    const rows = importPreview?.rows ?? []
+
+    if (importPreviewTab === 'create' || importPreviewTab === 'update') {
+      return rows.filter((row) => row.action === importPreviewTab)
+    }
+
+    if (importPreviewTab === 'error') {
+      return rows.filter((row) => row.errors.length > 0)
+    }
+
+    if (importPreviewTab === 'warning') {
+      return rows.filter((row) => row.warnings.length > 0)
+    }
+
+    if (importPreviewTab === 'duplicate') {
+      return rows.filter((row) => row.duplicates.length > 0)
+    }
+
+    return rows
+  }, [importPreview, importPreviewTab])
 
   const openCreate = () => {
     setEditing(null)
@@ -500,25 +632,33 @@ export default function TechnicalServiceTechnicians() {
     }
   }
 
-  const importCsv = async () => {
-    if (!csvFile) {
-      setImportResult({
-        created_count: 0,
-        skipped_count: 0,
-        errors: [{ row: 0, reason: 'CSV dosyası seçilmedi.', data: [] }],
-      })
+  const resetImportPreview = () => {
+    setImportPreview(null)
+    setImportError(null)
+    setImportPreviewTab('all')
+  }
+
+  const runImportPreview = async () => {
+    if (!importFile) {
+      setImportError('CSV veya Excel dosyası seçin.')
 
       return
     }
 
-    setImporting(true)
-    setImportResult(null)
+    setPreviewingImport(true)
+    setImportError(null)
+    setImportPreview(null)
 
     try {
       const formData = new FormData()
-      formData.append('file', csvFile)
+      formData.append('file', importFile)
+      formData.append('dry_run', '1')
+      formData.append('update_existing', importUpdateExisting ? '1' : '0')
+      formData.append('override_existing_coordinates', importPreserveCoordinates ? '0' : '1')
+      formData.append('link_existing_partners', importLinkPartners ? '1' : '0')
+      formData.append('geocode_mode', importGeocodeMode)
 
-      const response = await fetch('/api/technical-service/technicians/import', {
+      const response = await fetch('/api/technical-service/technicians/import-preview', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {
@@ -527,19 +667,19 @@ export default function TechnicalServiceTechnicians() {
         },
         body: formData,
       })
-      const result = await response.json()
+      const result = await response.json().catch(() => null) as ImportPreviewResult | null
 
-      if (!response.ok) {
-        setImportResult(result as ImportResult)
+      if (!response.ok || !result?.ok) {
+        setImportError(result?.message ?? 'İçe aktarma önizlemesi alınamadı.')
 
         return
       }
 
-      setImportResult(result as ImportResult)
-      setCsvFile(null)
-      await loadTechnicians()
+      setImportPreview(result)
+    } catch (caught) {
+      setImportError(caught instanceof Error ? caught.message : 'İçe aktarma önizlemesi alınamadı.')
     } finally {
-      setImporting(false)
+      setPreviewingImport(false)
     }
   }
 
@@ -809,40 +949,224 @@ export default function TechnicalServiceTechnicians() {
           </div>
         </section>
 
-        <section className="grid gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="grid gap-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <div>
-            <h2 className="text-lg font-semibold text-slate-950">CSV ile toplu ekleme</h2>
-            <p className="mt-1 text-sm text-slate-500">Beklenen kolon sırası:</p>
-            <code className="mt-2 block overflow-x-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-700">
-              {csvColumns.join(',')}
+            <h2 className="text-lg font-semibold text-slate-950">CSV / Excel ile toplu içe aktarma</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Bu faz sadece önizleme yapar; usta, partner veya bağlantı kaydı yazmaz.
+            </p>
+            <code className="mt-3 block overflow-x-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-700">
+              {importColumns.join(', ')}
             </code>
             <p className="mt-2 text-xs text-slate-500">
-              Virgül veya noktalı virgül ayracı desteklenir. Türkçe Excel CSV dosyaları okunmaya çalışılır. first_name zorunlu, active sadece 1 veya 0 olmalı.
+              CSV için virgül, noktalı virgül ve tab ayracı desteklenir. Excel dosyasında “Tam Liste” sayfası varsa otomatik kullanılır.
             </p>
           </div>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <Input type="file" accept=".csv,text/csv,text/plain" onChange={(event) => setCsvFile(event.target.files?.[0] ?? null)} />
-            <Button type="button" onClick={() => void importCsv()} disabled={importing}>
-              {importing ? 'İçe aktarılıyor...' : 'CSV İçe Aktar'}
-            </Button>
+
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <label className="grid gap-2 text-sm font-medium text-slate-700">
+              Dosya
+              <Input
+                type="file"
+                accept=".csv,.xlsx,.xls,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(event) => {
+                  setImportFile(event.target.files?.[0] ?? null)
+                  resetImportPreview()
+                }}
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" onClick={() => void runImportPreview()} disabled={previewingImport || !importFile}>
+                {previewingImport ? 'Önizleniyor...' : 'Önizle / Dry-run'}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setImportFile(null)
+                  resetImportPreview()
+                }}
+              >
+                Sonucu temizle
+              </Button>
+              <Button type="button" disabled title="Apply Faz 2B'de açılacak">
+                Faz 2B’de aktif olacak
+              </Button>
+            </div>
           </div>
-          {importResult ? (
-            <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-              <div className="flex flex-wrap gap-4 font-semibold text-slate-700">
-                <span>Eklenen: {importResult.created_count}</span>
-                <span>Atlanan: {importResult.skipped_count}</span>
-                <span>Hata: {importResult.errors.length}</span>
+
+          <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-4">
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={importUpdateExisting}
+                onChange={(event) => {
+                  setImportUpdateExisting(event.target.checked)
+                  resetImportPreview()
+                }}
+              />
+              Mevcut kayıtları güncelle
+            </label>
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={importPreserveCoordinates}
+                onChange={(event) => {
+                  setImportPreserveCoordinates(event.target.checked)
+                  resetImportPreview()
+                }}
+              />
+              Mevcut koordinatı koru
+            </label>
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={importLinkPartners}
+                onChange={(event) => {
+                  setImportLinkPartners(event.target.checked)
+                  resetImportPreview()
+                }}
+              />
+              Partner eşleşmesini göster
+            </label>
+            <label className="grid gap-1 text-sm font-medium text-slate-700">
+              Geocode planı
+              <select
+                value={importGeocodeMode}
+                onChange={(event) => {
+                  setImportGeocodeMode(event.target.value)
+                  resetImportPreview()
+                }}
+                className={selectClassName}
+              >
+                <option value="plan_only">Plan oluştur</option>
+                <option value="none">Geocode planlama</option>
+              </select>
+            </label>
+          </div>
+
+          {importError ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-700">{importError}</div>
+          ) : null}
+
+          {importPreview ? (
+            <div className="grid gap-5">
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                <p className="font-semibold">Dry-run tamamlandı. DB yazımı yapılmadı.</p>
+                <p className="mt-1">
+                  Dosya: {importPreview.file.original_name} · Sayfa: {importPreview.file.sheet_name ?? '-'} · Header satırı: {importPreview.file.detected_header_row ?? '-'}
+                </p>
               </div>
-              {importResult.errors.length > 0 ? (
-                <div className="max-h-72 overflow-auto rounded-xl border border-slate-200 bg-white">
-                  {importResult.errors.map((error, index) => (
-                    <div key={`${error.row}-${index}`} className="border-b border-slate-100 p-3 last:border-b-0">
-                      <p className="font-semibold text-rose-700">Satır {error.row}: {error.reason}</p>
-                      <pre className="mt-2 whitespace-pre-wrap break-words text-xs text-slate-500">{JSON.stringify(error.data, null, 2)}</pre>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+                {[
+                  ['Toplam', importPreview.summary.total_rows],
+                  ['Parsed', importPreview.summary.parsed_rows],
+                  ['Yeni', importPreview.summary.create_count],
+                  ['Güncelleme', importPreview.summary.update_count],
+                  ['Skip', importPreview.summary.skip_count],
+                  ['Hata', importPreview.summary.error_count],
+                  ['Uyarı', importPreview.summary.warning_count],
+                  ['Duplicate', importPreview.summary.duplicate_count],
+                  ['Partner eşleşti', importPreview.summary.partner_link_create_count + importPreview.summary.partner_link_update_count + importPreview.summary.partner_link_skip_count],
+                  ['Partner eksik', importPreview.summary.partner_missing_count],
+                  ['Geocode hazır', importPreview.summary.geocode_ready_count],
+                  ['Geocode uyarı', importPreview.summary.geocode_warning_count],
+                  ['Koordinat var', importPreview.summary.geocode_existing_coordinates_count],
+                  ['Koordinat korunacak', importPreview.summary.geocode_preserve_existing_count],
+                  ['Geocode hata', importPreview.summary.geocode_error_count],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+                    <p className="mt-1 text-xl font-semibold text-slate-950">{value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ['all', 'Tümü'],
+                  ['create', 'Yeni'],
+                  ['update', 'Güncelleme'],
+                  ['error', 'Hata'],
+                  ['warning', 'Uyarı'],
+                  ['duplicate', 'Duplicate'],
+                ].map(([value, label]) => (
+                  <Button
+                    key={value}
+                    type="button"
+                    variant={importPreviewTab === value ? 'default' : 'secondary'}
+                    onClick={() => setImportPreviewTab(value)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-200">
+                <table className="w-full min-w-[1180px] table-fixed divide-y divide-slate-200 text-sm">
+                  <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <tr>
+                      <th className="w-[7%] px-3 py-3">Satır</th>
+                      <th className="w-[17%] px-3 py-3">Usta</th>
+                      <th className="w-[12%] px-3 py-3">Telefon</th>
+                      <th className="w-[15%] px-3 py-3">Şehir / Adres</th>
+                      <th className="w-[10%] px-3 py-3">Aksiyon</th>
+                      <th className="w-[15%] px-3 py-3">Eşleşme</th>
+                      <th className="w-[13%] px-3 py-3">Geocode</th>
+                      <th className="w-[11%] px-3 py-3">Uyarı / Hata</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {filteredImportRows.map((row) => (
+                      <tr key={`${row.row_number}-${row.action}`}>
+                        <td className="px-3 py-3 font-semibold text-slate-700">{row.row_number}</td>
+                        <td className="min-w-0 px-3 py-3">
+                          <p className="truncate font-semibold text-slate-950">{importRowDisplayName(row)}</p>
+                          <p className="mt-1 truncate text-xs text-slate-500">{importRowValue(row, 'mikro_cari_kodu') || importRowValue(row, 'source_key') || '-'}</p>
+                        </td>
+                        <td className="min-w-0 px-3 py-3 text-slate-700">
+                          <p className="truncate">{importRowValue(row, 'phone_e164') || importRowValue(row, 'phone') || '-'}</p>
+                        </td>
+                        <td className="min-w-0 px-3 py-3 text-slate-700">
+                          <p className="truncate font-medium">{[importRowValue(row, 'city'), importRowValue(row, 'district')].filter(Boolean).join(' / ') || '-'}</p>
+                          <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{importRowValue(row, 'address') || importRowValue(row, 'google_formatted_address') || '-'}</p>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                            {importActionLabels[row.action] ?? row.action}
+                          </span>
+                          <p className="mt-1 text-xs text-slate-500">{importConfidenceLabels[row.confidence] ?? row.confidence}</p>
+                        </td>
+                        <td className="min-w-0 px-3 py-3 text-slate-700">
+                          <p className="line-clamp-2 break-words">{row.existing_match?.name ?? 'Teknisyen eşleşmesi yok'}</p>
+                          <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{row.partner_match?.name ?? row.link_plan?.reason ?? 'Partner eşleşmesi yok'}</p>
+                        </td>
+                        <td className="min-w-0 px-3 py-3 text-slate-700">
+                          <p className="font-medium">{geocodePlanLabels[row.geocode_plan.status] ?? row.geocode_plan.status}</p>
+                          <p className="mt-1 line-clamp-2 break-words text-xs text-slate-500">{row.geocode_plan.reason}</p>
+                        </td>
+                        <td className="min-w-0 px-3 py-3">
+                          {[...row.errors, ...row.warnings, ...row.duplicates].length > 0 ? (
+                            <div className="grid gap-1">
+                              {row.errors.map((message) => <span key={`error-${message}`} className="rounded-lg bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700">{message}</span>)}
+                              {row.warnings.map((message) => <span key={`warning-${message}`} className="rounded-lg bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">{message}</span>)}
+                              {row.duplicates.map((message) => <span key={`duplicate-${message}`} className="rounded-lg bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">{message}</span>)}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400">Temiz</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {filteredImportRows.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-8 text-center text-slate-500" colSpan={8}>Bu filtrede satır yok.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : null}
         </section>

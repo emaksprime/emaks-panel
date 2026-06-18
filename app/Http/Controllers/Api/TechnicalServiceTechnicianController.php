@@ -9,12 +9,14 @@ use App\Http\Requests\UpdateTechnicalServiceTechnicianRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\TechnicalService\TechnicalServiceGeocodingService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
+use App\Services\TechnicalService\TechnicianImportPreviewService;
 use App\Services\TechnicalService\TechnicianGeocodingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use RuntimeException;
 
 class TechnicalServiceTechnicianController extends Controller
 {
@@ -290,6 +292,42 @@ class TechnicalServiceTechnicianController extends Controller
         $technician->update(['active' => false]);
 
         return response()->json(['technician' => $this->technicianResponsePayload($technician->fresh())]);
+    }
+
+    public function importPreview(Request $request, TechnicianImportPreviewService $previewService): JsonResponse
+    {
+        $data = $request->validate([
+            'file' => ['required', 'file', 'max:8192'],
+            'sheet_name' => ['nullable', 'string', 'max:128'],
+            'dry_run' => ['nullable', 'boolean'],
+            'update_existing' => ['nullable', 'boolean'],
+            'override_existing_coordinates' => ['nullable', 'boolean'],
+            'link_existing_partners' => ['nullable', 'boolean'],
+            'geocode_mode' => ['nullable', 'string', 'in:plan_only,none'],
+        ], [
+            'file.required' => 'Import dosyası zorunlu.',
+            'file.file' => 'Import dosyası yüklenemedi.',
+            'file.max' => 'Import dosyası en fazla 8 MB olabilir.',
+            'geocode_mode.in' => 'Geocode modu sadece plan_only veya none olabilir.',
+        ]);
+
+        try {
+            return response()->json($previewService->preview($request->file('file'), [
+                'sheet_name' => $data['sheet_name'] ?? null,
+                'dry_run' => true,
+                'update_existing' => (bool) ($data['update_existing'] ?? false),
+                'override_existing_coordinates' => (bool) ($data['override_existing_coordinates'] ?? false),
+                'link_existing_partners' => ! array_key_exists('link_existing_partners', $data) || (bool) $data['link_existing_partners'],
+                'geocode_mode' => $data['geocode_mode'] ?? 'plan_only',
+            ]));
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'ok' => false,
+                'dry_run' => true,
+                'writes_performed' => false,
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
     }
 
     public function importCsv(ImportTechnicalServiceTechniciansCsvRequest $request): JsonResponse
