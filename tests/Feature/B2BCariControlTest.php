@@ -7,6 +7,7 @@ use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\B2B\B2BCariSnapshot;
 use App\Models\Role;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\B2B\B2BCariControlService;
 use App\Models\User;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -605,6 +606,46 @@ class B2BCariControlTest extends TestCase
             ->assertJsonPath('summary.technician_geocode_ready', 1);
 
         Http::assertNothingSent();
+    }
+
+    public function test_customers_list_tax_fields_are_normalized_from_mikro_cari_card_columns(): void
+    {
+        $candidate = app(B2BCariControlService::class)->normalizeCandidateInput([
+            'musteri_kodu' => '320.CLG.TAX.001',
+            'cari_unvan1' => 'Vergili Cari',
+            'cari_VergiKimlikNo' => '6470242953',
+            'cari_vdaire_no' => '1111111111',
+            'cari_vdaire_adi' => 'M.KARAGÜZEL VERGİ DAİRESİ MÜD.',
+            'cari_vergidairekodu' => '034567',
+        ]);
+
+        $this->assertSame('6470242953', $candidate['tax_no']);
+        $this->assertSame('6470242953', $candidate['tax_number']);
+        $this->assertSame('M.KARAGÜZEL VERGİ DAİRESİ MÜD.', $candidate['tax_office']);
+        $this->assertSame('034567', $candidate['tax_office_code']);
+        $this->assertSame('vkn', $candidate['tax_identity_type']);
+    }
+
+    public function test_customers_list_tax_number_falls_back_to_vdaire_no_only_when_valid(): void
+    {
+        $service = app(B2BCariControlService::class);
+
+        $fallback = $service->normalizeCandidateInput([
+            'musteri_kodu' => '320.CLG.TAX.002',
+            'cari_unvan1' => 'Fallback Cari',
+            'cari_vdaire_no' => '12345678901',
+            'cari_vdaire_adi' => 'Kadıköy VD',
+        ]);
+        $invalid = $service->normalizeCandidateInput([
+            'musteri_kodu' => '320.CLG.TAX.003',
+            'cari_unvan1' => 'Eksik Cari',
+            'cari_vdaire_no' => 'ABC-123',
+        ]);
+
+        $this->assertSame('12345678901', $fallback['tax_number']);
+        $this->assertSame('tckn', $fallback['tax_identity_type']);
+        $this->assertNull($invalid['tax_number']);
+        $this->assertNull($invalid['tax_identity_type']);
     }
 
     public function test_dry_run_does_not_write_business_data(): void

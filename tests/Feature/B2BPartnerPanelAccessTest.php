@@ -111,6 +111,74 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_b2b_partner_search_finds_partner_by_linked_technician_name(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER, B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'BAHATTİN ÖZBEK',
+            'mikro_cari_kodu' => '320.ÇLG.06.002',
+            'city' => 'Ankara',
+            'latitude' => '39.9111158',
+            'longitude' => '32.8607935',
+        ]);
+        $technician = $this->technician([
+            'name' => 'BERKAY ATLAS',
+            'first_name' => 'BERKAY',
+            'last_name' => 'ATLAS',
+            'phone' => '+905071838038',
+            'city' => 'İzmir',
+            'district' => 'Bornova',
+            'latitude' => null,
+            'longitude' => null,
+            'mikro_cari_kodu' => '320.ÇLG.06.002',
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'contracted_technician',
+            'active' => true,
+            'is_primary' => false,
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/partners?partner_type=locksmith&search=ber')
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $partner->id)
+            ->assertJsonPath('items.0.display_name', 'BAHATTİN ÖZBEK')
+            ->assertJsonPath('items.0.city', 'Ankara')
+            ->assertJsonPath('items.0.linked_technicians.0.technician.name', 'BERKAY ATLAS')
+            ->assertJsonPath('items.0.linked_technicians.0.technician.city', 'İzmir');
+
+        $this->assertSame('İzmir', $technician->fresh()->city);
+    }
+
+    public function test_b2b_locksmith_filter_includes_partner_with_linked_active_technician(): void
+    {
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_DEALER,
+            'capabilities' => [B2BPartner::TYPE_DEALER],
+            'display_name' => 'Bağlı Ustalı Bayi',
+        ]);
+        $technician = $this->technician(['name' => 'Filtre Ustası', 'city' => 'İzmir']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'contracted_technician',
+            'active' => true,
+            'is_primary' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->getJson('/api/b2b/partners?partner_type=locksmith')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $partner->id])
+            ->assertJsonPath('items.0.linked_technicians.0.technician.city', 'İzmir');
+    }
+
     public function test_dealer_only_user_cannot_view_locksmith_detail_by_url_manipulation(): void
     {
         $user = $this->partnerUser();

@@ -52,7 +52,7 @@ class B2BPartnerController extends Controller
         $user = $request->user();
         abort_unless($user, 403);
 
-        $query = $this->access->visiblePartnerQuery($user, $filters['capability'] ?? $filters['partner_type'] ?? null);
+        $query = $this->access->visiblePartnerQuery($user);
         $this->applyFilters($query, $filters);
 
         return response()->json([
@@ -2009,6 +2009,7 @@ class B2BPartnerController extends Controller
             'address' => $this->nullableString($candidate['address'] ?? null) ?? $partner?->address,
             'tax_number' => $partner?->tax_number ?? $taxNumber,
             'tax_office' => $partner?->tax_office ?? $taxOffice,
+            'tax_office_code' => $this->candidateTaxOfficeCode($candidate),
             'tax_identity_type' => $partner?->tax_identity_type ?? $this->taxIdentityType($taxNumber),
         ];
     }
@@ -2024,14 +2025,22 @@ class B2BPartnerController extends Controller
             'vergi_no',
             'vkn',
             'tckn',
-            'cari_vdaire_no',
             'cari_VergiKimlikNo',
+            'cari_vergikimlikno',
+            'vergi_kimlik_no',
         ] as $key) {
             $value = $this->nullableString($candidate[$key] ?? null);
 
             if ($value !== null) {
                 return $value;
             }
+        }
+
+        $fallback = $this->nullableString($candidate['cari_vdaire_no'] ?? null);
+        $digits = preg_replace('/\D+/', '', (string) $fallback);
+
+        if ($fallback !== null && in_array(strlen($digits ?? ''), [10, 11], true)) {
+            return $fallback;
         }
 
         return null;
@@ -2046,6 +2055,27 @@ class B2BPartnerController extends Controller
             'tax_office',
             'vergi_dairesi',
             'cari_vdaire_adi',
+        ] as $key) {
+            $value = $this->nullableString($candidate[$key] ?? null);
+
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateTaxOfficeCode(array $candidate): ?string
+    {
+        foreach ([
+            'tax_office_code',
+            'vergi_dairesi_kodu',
+            'cari_vergidairekodu',
+            'cari_vergi_daire_kodu',
         ] as $key) {
             $value = $this->nullableString($candidate[$key] ?? null);
 
@@ -2087,6 +2117,7 @@ class B2BPartnerController extends Controller
             'address' => $this->nullableString($candidate['address'] ?? null),
             'tax_no' => $this->candidateTaxNumber($candidate),
             'tax_office' => $this->candidateTaxOffice($candidate),
+            'tax_office_code' => $this->candidateTaxOfficeCode($candidate),
             'raw_source_summary' => $this->rawSourceSummary($candidate),
             'source_field_missing' => $candidate['source_field_missing'] ?? null,
             'child_cari_accounts' => $children,
@@ -2113,6 +2144,7 @@ class B2BPartnerController extends Controller
             'address_present' => $this->nullableString($candidate['address'] ?? null) !== null,
             'tax_no_present' => $this->candidateTaxNumber($candidate) !== null,
             'tax_office_present' => $this->candidateTaxOffice($candidate) !== null,
+            'tax_office_code_present' => $this->candidateTaxOfficeCode($candidate) !== null,
             'source_field_missing' => $candidate['source_field_missing'] ?? [],
         ];
     }
@@ -2129,6 +2161,7 @@ class B2BPartnerController extends Controller
                 ?? $this->nullableString($candidate['display_name'] ?? null),
             'tax_no' => $this->candidateTaxNumber($candidate),
             'tax_office' => $this->candidateTaxOffice($candidate),
+            'tax_office_code' => $this->candidateTaxOfficeCode($candidate),
             'invoice_address' => $this->nullableString($candidate['address'] ?? null),
             'city' => $this->nullableString($candidate['city'] ?? null),
             'district' => $this->nullableString($candidate['district'] ?? null),
@@ -2977,6 +3010,15 @@ class B2BPartnerController extends Controller
             $metadata['address'] = $address;
         }
 
+        $taxOfficeCode = $this->nullableString($data['tax_office_code'] ?? null);
+        if ($taxOfficeCode !== null) {
+            $metadata['tax_office_code'] = $taxOfficeCode;
+            $metadata['invoice_profile'] = [
+                ...(is_array($metadata['invoice_profile'] ?? null) ? $metadata['invoice_profile'] : []),
+                'tax_office_code' => $taxOfficeCode,
+            ];
+        }
+
         if ($metadata !== (is_array($partner->metadata) ? $partner->metadata : [])) {
             $partner->forceFill(['metadata' => $metadata])->save();
         }
@@ -3046,6 +3088,21 @@ class B2BPartnerController extends Controller
     private function applyFilters(Builder $query, array $filters): void
     {
         $likeOperator = DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
+        $partnerType = $this->nullableString($filters['capability'] ?? $filters['partner_type'] ?? null);
+
+        if ($partnerType !== null) {
+            $query->where(function (Builder $query) use ($partnerType): void {
+                $query->whereHas('activeCapabilities', function (Builder $query) use ($partnerType): void {
+                    $query->where('capability', $partnerType);
+                });
+
+                if ($partnerType === B2BPartner::TYPE_LOCKSMITH) {
+                    $query->orWhereHas('activePartnerTechnicians.technician', function (Builder $query): void {
+                        $query->where('active', true);
+                    });
+                }
+            });
+        }
 
         if (array_key_exists('active', $filters)) {
             $query->where('active', $filters['active']);
@@ -3067,7 +3124,17 @@ class B2BPartnerController extends Controller
                     ->orWhere('mikro_cari_kodu', $likeOperator, '%'.$search.'%')
                     ->orWhere('mikro_cari_unvan', $likeOperator, '%'.$search.'%')
                     ->orWhere('city', $likeOperator, '%'.$search.'%')
-                    ->orWhere('district', $likeOperator, '%'.$search.'%');
+                    ->orWhere('district', $likeOperator, '%'.$search.'%')
+                    ->orWhereHas('activePartnerTechnicians.technician', function (Builder $query) use ($likeOperator, $search): void {
+                        $query->where('first_name', $likeOperator, '%'.$search.'%')
+                            ->orWhere('last_name', $likeOperator, '%'.$search.'%')
+                            ->orWhere('name', $likeOperator, '%'.$search.'%')
+                            ->orWhere('display_name', $likeOperator, '%'.$search.'%')
+                            ->orWhere('phone', $likeOperator, '%'.$search.'%')
+                            ->orWhere('phone_e164', $likeOperator, '%'.$search.'%')
+                            ->orWhere('city', $likeOperator, '%'.$search.'%')
+                            ->orWhere('district', $likeOperator, '%'.$search.'%');
+                    });
             });
         }
     }
@@ -3100,6 +3167,7 @@ class B2BPartnerController extends Controller
             'tax_number' => ['nullable', 'string', 'max:64'],
             'tax_no' => ['nullable', 'string', 'max:64'],
             'tax_office' => ['nullable', 'string', 'max:255'],
+            'tax_office_code' => ['nullable', 'string', 'max:128'],
             'tax_identity_type' => ['nullable', 'string', Rule::in(['vkn', 'tckn', 'unknown'])],
             'latitude' => ['nullable', 'numeric', 'between:-90,90'],
             'longitude' => ['nullable', 'numeric', 'between:-180,180'],
@@ -3453,6 +3521,7 @@ class B2BPartnerController extends Controller
         $metadata = is_array($partner->metadata) ? $partner->metadata : [];
         $taxNumber = $partner->tax_number ?? ($metadata['tax_no'] ?? data_get($metadata, 'invoice_profile.tax_no'));
         $taxOffice = $partner->tax_office ?? ($metadata['tax_office'] ?? data_get($metadata, 'invoice_profile.tax_office'));
+        $taxOfficeCode = $metadata['tax_office_code'] ?? data_get($metadata, 'invoice_profile.tax_office_code');
 
         return [
             'id' => $partner->id,
@@ -3480,6 +3549,7 @@ class B2BPartnerController extends Controller
             'tax_number' => $taxNumber,
             'tax_no' => $taxNumber,
             'tax_office' => $taxOffice,
+            'tax_office_code' => $taxOfficeCode,
             'tax_identity_type' => $partner->tax_identity_type ?? $this->taxIdentityType($this->nullableString($taxNumber)),
             'latitude' => $partner->latitude,
             'longitude' => $partner->longitude,

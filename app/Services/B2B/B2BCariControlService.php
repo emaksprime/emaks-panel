@@ -1163,8 +1163,9 @@ class B2BCariControlService
         $address = $this->value($row, ['cari_adres', 'cari_adres1', 'cari_adres2', 'adres', 'address']);
         $addressSource = $this->value($row, ['address_source', 'adres_kaynak', 'AdresKaynak']);
         $phoneSource = $phone !== null ? 'Mikro cari kaynağı' : null;
-        $taxNo = $this->value($row, ['tax_no', 'vergi_no', 'vkn', 'tckn', 'cari_vdaire_no', 'cari_VergiKimlikNo', 'cari_VergiNo', 'vergi_kimlik_no', 'tc_kimlik_no']);
+        $taxNo = $this->taxNumberFromRow($row);
         $taxOffice = $this->value($row, ['tax_office', 'vergi_dairesi', 'cari_vdaire_adi', 'cari_VergiDairesi', 'vergi_daire']);
+        $taxOfficeCode = $this->value($row, ['tax_office_code', 'vergi_dairesi_kodu', 'cari_vergidairekodu', 'cari_vergi_daire_kodu']);
         $normalizedCode = $this->normalizedText($code);
         $existingPartner = $existingPartners[$normalizedCode] ?? null;
         $technician = $techniciansByCari[$normalizedCode] ?? null;
@@ -1209,7 +1210,10 @@ class B2BCariControlService
             'address_source' => $addressSource,
             'phone_source' => $phoneSource,
             'tax_no' => $taxNo,
+            'tax_number' => $taxNo,
             'tax_office' => $taxOffice,
+            'tax_office_code' => $taxOfficeCode,
+            'tax_identity_type' => $this->taxIdentityType($taxNo),
             'raw_source' => $row,
             'suggested_capabilities' => $suggestedCapabilities,
             'capabilities' => $suggestedCapabilities,
@@ -1672,6 +1676,48 @@ class B2BCariControlService
         return null;
     }
 
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function taxNumberFromRow(array $row): ?string
+    {
+        $primary = $this->value($row, [
+            'tax_number',
+            'tax_no',
+            'vergi_no',
+            'vkn',
+            'tckn',
+            'cari_VergiKimlikNo',
+            'cari_vergikimlikno',
+            'cari_VergiNo',
+            'vergi_kimlik_no',
+            'tc_kimlik_no',
+        ]);
+
+        if ($primary !== null) {
+            return $primary;
+        }
+
+        $fallback = $this->value($row, ['cari_vdaire_no']);
+        $digits = preg_replace('/\D+/', '', (string) $fallback);
+
+        return $fallback !== null && in_array(strlen($digits ?? ''), [10, 11], true)
+            ? $fallback
+            : null;
+    }
+
+    private function taxIdentityType(?string $taxNumber): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $taxNumber);
+
+        return match (strlen($digits ?? '')) {
+            10 => 'vkn',
+            11 => 'tckn',
+            0 => null,
+            default => 'unknown',
+        };
+    }
+
     private function nullableString(mixed $value): ?string
     {
         if ($value === null) {
@@ -1872,6 +1918,8 @@ class B2BCariControlService
             'tax_number',
             'tax_no',
             'tax_office',
+            'tax_office_code',
+            'tax_identity_type',
             'existing_partner_id',
             'status',
             'status_label',
@@ -1972,6 +2020,8 @@ class B2BCariControlService
                     'district',
                     'address',
                     'tax_no',
+                    'tax_office',
+                    'tax_office_code',
                     'suggested_capabilities',
                     'status',
                     'existing_partner_id',

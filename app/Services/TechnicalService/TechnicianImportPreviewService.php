@@ -416,6 +416,10 @@ class TechnicianImportPreviewService
         $phone = $this->blankToNull($data['phone'] ?? null);
         $phoneE164 = $this->normalizePhone($phone);
         $city = $this->blankToNull($data['city'] ?? null);
+        $address = $this->blankToNull($data['address'] ?? null)
+            ?? $this->blankToNull($data['default_start_address'] ?? null);
+        $plusCode = $this->blankToNull($data['google_plus_code'] ?? null)
+            ?? $this->blankToNull($data['default_start_plus_code'] ?? null);
 
         return [
             'first_name' => $firstName,
@@ -427,11 +431,12 @@ class TechnicianImportPreviewService
             'city_plate_code' => $this->blankToNull($data['city_plate_code'] ?? null),
             'city' => $city,
             'district' => $this->blankToNull($data['district'] ?? null),
-            'address' => $this->blankToNull($data['address'] ?? null),
-            'google_plus_code' => $this->blankToNull($data['google_plus_code'] ?? null),
+            'address' => $address,
+            'google_plus_code' => $plusCode,
             'google_formatted_address' => $this->blankToNull($data['google_formatted_address'] ?? null),
             'default_start_address' => $this->blankToNull($data['default_start_address'] ?? null),
             'default_start_plus_code' => $this->blankToNull($data['default_start_plus_code'] ?? null),
+            'start_location_contract' => 'primary_location',
             'latitude' => $this->blankToNull($data['latitude'] ?? null),
             'longitude' => $this->blankToNull($data['longitude'] ?? null),
             'start_latitude' => $this->blankToNull($data['start_latitude'] ?? null),
@@ -601,12 +606,12 @@ class TechnicianImportPreviewService
             return ['status' => 'preserve_existing', 'reason' => 'Mevcut koordinat korunacak.'];
         }
 
-        $plusCode = $row['google_plus_code'] ?? $row['default_start_plus_code'] ?? null;
+        $plusCode = $row['google_plus_code'] ?? null;
         if ($plusCode !== null) {
             return ['status' => 'ready_plus_code', 'reason' => 'Plus Code ile geocode planı hazır.', 'query' => $plusCode];
         }
 
-        $address = $row['google_formatted_address'] ?? $row['address'] ?? $row['default_start_address'] ?? null;
+        $address = $row['google_formatted_address'] ?? $row['address'] ?? null;
         if ($address !== null && $row['city'] !== null) {
             return [
                 'status' => 'ready_address',

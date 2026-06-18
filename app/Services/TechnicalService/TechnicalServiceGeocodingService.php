@@ -171,7 +171,11 @@ class TechnicalServiceGeocodingService
             : null;
 
         if ($status !== 'OK' || ! is_array($result) || $coordinates === null) {
-            return $this->failedResult($query, $status !== '' ? "Google geocoding sonucu geçersiz: {$status}." : 'Google geocoding sonucu geçersiz.');
+            $message = $status === 'ZERO_RESULTS'
+                ? 'Adres Google tarafından çözülemedi. Lütfen plus code veya açık adresi düzelt.'
+                : ($status !== '' ? "Google geocoding sonucu geçersiz: {$status}." : 'Google geocoding sonucu geçersiz.');
+
+            return $this->failedResult($query, $message, $status !== '' ? Str::lower($status) : 'failed', $status !== '' ? $status : null);
         }
 
         $quality = $this->qualityGate($query, $coordinates, $formattedAddress, $locationType, $context);
@@ -203,11 +207,12 @@ class TechnicalServiceGeocodingService
      *
      * @return array<string, mixed>
      */
-    private function failedResult(array $query, string $message, string $status = 'failed'): array
+    private function failedResult(array $query, string $message, string $status = 'failed', ?string $providerStatus = null): array
     {
         return [
             'ok' => false,
             'status' => $status,
+            'provider_status' => $providerStatus,
             'quality' => 'failed',
             'query' => $query['query'],
             'source_type' => $query['source_type'],

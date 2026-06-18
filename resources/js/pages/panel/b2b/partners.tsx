@@ -30,6 +30,7 @@ type Partner = {
   tax_number?: string | null
   tax_no?: string | null
   tax_office?: string | null
+  tax_office_code?: string | null
   tax_identity_type?: string | null
   latitude?: string | number | null
   longitude?: string | number | null
@@ -171,6 +172,7 @@ type PartnerForm = {
   address: string
   tax_number: string
   tax_office: string
+  tax_office_code: string
   tax_identity_type: string
   latitude: string
   longitude: string
@@ -211,6 +213,8 @@ type CariControlCandidate = {
   tax_number?: string | null
   tax_no?: string | null
   tax_office?: string | null
+  tax_office_code?: string | null
+  tax_identity_type?: string | null
   suggested_capabilities?: PartnerType[]
   capabilities?: PartnerType[]
   selected_capabilities?: PartnerType[]
@@ -344,6 +348,7 @@ const emptyForm: PartnerForm = {
   address: '',
   tax_number: '',
   tax_office: '',
+  tax_office_code: '',
   tax_identity_type: '',
   latitude: '',
   longitude: '',
@@ -526,6 +531,7 @@ const partnerToFormValues = (partner: Partner): PartnerForm => {
     address: partner.address ?? '',
     tax_number: partner.tax_number ?? partner.tax_no ?? '',
     tax_office: partner.tax_office ?? '',
+    tax_office_code: partner.tax_office_code ?? '',
     tax_identity_type: partner.tax_identity_type ?? '',
     latitude: partner.latitude === null || partner.latitude === undefined ? '' : String(partner.latitude),
     longitude: partner.longitude === null || partner.longitude === undefined ? '' : String(partner.longitude),
@@ -563,6 +569,12 @@ const locationLabel = (city: string | null, district: string | null) => {
 
 const partnerTaxNumber = (partner: Partner) => partner.tax_number ?? partner.tax_no ?? null
 
+const partnerTaxLabel = (partner: Partner) => {
+  const parts = [partnerTaxNumber(partner), partner.tax_office, partner.tax_office_code ? `Kod: ${partner.tax_office_code}` : null].filter(Boolean)
+
+  return parts.length > 0 ? parts.join(' / ') : '-'
+}
+
 const coordinateLabel = (latitude: string | number | null | undefined, longitude: string | number | null | undefined) => {
   if (latitude === null || latitude === undefined || latitude === '' || longitude === null || longitude === undefined || longitude === '') {
     return 'Koordinat yok'
@@ -573,7 +585,7 @@ const coordinateLabel = (latitude: string | number | null | undefined, longitude
 
 const candidateTaxLabel = (candidate: CariControlCandidate) => {
   const taxNumber = candidate.tax_number ?? candidate.tax_no
-  const parts = [taxNumber, candidate.tax_office].filter(Boolean)
+  const parts = [taxNumber, candidate.tax_office, candidate.tax_office_code ? `Kod: ${candidate.tax_office_code}` : null].filter(Boolean)
 
   return parts.length > 0 ? parts.join(' · ') : 'Mikro kaynağında vergi bilgisi yok'
 }
@@ -628,6 +640,8 @@ const cariCandidateApplyPayload = (candidate: CariControlCandidate, selectedCapa
   tax_number: candidate.tax_number ?? candidate.tax_no ?? null,
   tax_no: candidate.tax_no ?? candidate.tax_number ?? null,
   tax_office: candidate.tax_office ?? null,
+  tax_office_code: candidate.tax_office_code ?? null,
+  tax_identity_type: candidate.tax_identity_type ?? null,
   suggested_capabilities: candidate.suggested_capabilities ?? candidate.capabilities ?? [],
   existing_partner_id: candidate.existing_partner_id ?? null,
   status: candidate.status ?? null,
@@ -2259,8 +2273,8 @@ export default function B2BPartnersPage() {
                             <span><strong className="text-slate-800">Telefon:</strong> {partner.phone ?? '-'}</span>
                             <span><strong className="text-slate-800">E-posta:</strong> {partner.email ?? '-'}</span>
                             <span><strong className="text-slate-800">Konum:</strong> {locationLabel(partner.city, partner.district)}</span>
-                            <span><strong className="text-slate-800">Vergi:</strong> {partnerTaxNumber(partner) ?? '-'}</span>
-                            <span><strong className="text-slate-800">Koordinat:</strong> {coordinateLabel(partner.latitude, partner.longitude)}</span>
+                            <span><strong className="text-slate-800">Vergi:</strong> {partnerTaxLabel(partner)}</span>
+                            <span><strong className="text-slate-800">Partner koordinatı:</strong> {coordinateLabel(partner.latitude, partner.longitude)}</span>
                             <span><strong className="text-slate-800">Kullanıcı:</strong> {partner.active_users_count ?? 0}/{partner.users_count ?? 0}</span>
                             <span><strong className="text-slate-800">Portal admin:</strong> {partner.has_portal_admin ? portalAdminLabel(partner) : 'Yok'}</span>
                           </div>
@@ -2278,6 +2292,24 @@ export default function B2BPartnersPage() {
                                     : partner.linked_technician_name ?? 'Teknik servis ustası bağlı değil'
                                   : '-'}
                               </span>
+                              {(partner.linked_technicians ?? []).length > 0 ? (
+                                <span className="mt-1 block line-clamp-2 text-[11px] text-slate-500">
+                                  {(partner.linked_technicians ?? [])
+                                    .map((link) => {
+                                      const technician = link.technician
+
+                                      if (!technician) {
+                                        return null
+                                      }
+
+                                      return [locationLabel(technician.city, technician.district), `Usta koordinatı: ${coordinateLabel(technician.latitude, technician.longitude)}`]
+                                        .filter(Boolean)
+                                        .join(' · ')
+                                    })
+                                    .filter(Boolean)
+                                    .join(' | ')}
+                                </span>
+                              ) : null}
                             </div>
                             <div className="rounded-xl bg-white px-3 py-2">
                               <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Açık adres</span>
@@ -2447,6 +2479,10 @@ export default function B2BPartnersPage() {
                       <Input className="w-full min-w-0 max-w-full" value={form.tax_office} onChange={(event) => updateForm('tax_office', event.target.value)} disabled={formMode === 'detail'} />
                     </label>
                   </div>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
+                    Vergi dairesi kodu
+                    <Input className="w-full min-w-0 max-w-full" value={form.tax_office_code} onChange={(event) => updateForm('tax_office_code', event.target.value)} disabled={formMode === 'detail'} />
+                  </label>
                 </section>
               )}
 
@@ -2552,7 +2588,7 @@ export default function B2BPartnersPage() {
                             <span>Partner koordinatı: {coordinateLabel(form.latitude, form.longitude)}</span>
                             <span>Usta koordinatı: {coordinateLabel(link.technician?.latitude, link.technician?.longitude)}</span>
                           </div>
-                          {coordinateLabel(form.latitude, form.longitude) === 'Yok' && coordinateLabel(link.technician?.latitude, link.technician?.longitude) !== 'Yok' ? (
+                          {coordinateLabel(form.latitude, form.longitude) === 'Koordinat yok' && coordinateLabel(link.technician?.latitude, link.technician?.longitude) !== 'Koordinat yok' ? (
                             <div className="mt-1 text-xs font-semibold text-emerald-700">Partner koordinatı eksik; bağlı usta koordinatı var.</div>
                           ) : null}
                           <div className="mt-2 flex flex-wrap gap-1">

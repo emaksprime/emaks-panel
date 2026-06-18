@@ -149,13 +149,48 @@ class TechnicalServiceTechnicianController extends Controller
         $plan = $geocodingService->bestQueryFor($technician);
 
         if ($dryRun || ! $apply) {
+            if ($this->hasStoredCoordinates($technician) && ! $overrideExisting) {
+                return response()->json([
+                    'ok' => true,
+                    'dry_run' => true,
+                    'writes_performed' => false,
+                    'can_apply' => false,
+                    'message' => 'Mevcut koordinat korunacak.',
+                    'plan' => $plan,
+                    'result' => [
+                        'status' => 'skipped_existing_coordinates',
+                        'needs_review' => (bool) $technician->needs_review,
+                    ],
+                    'technician' => $this->technicianResponsePayload($technician),
+                ]);
+            }
+
+            if ($plan === null) {
+                return response()->json([
+                    'ok' => false,
+                    'dry_run' => true,
+                    'writes_performed' => false,
+                    'can_apply' => false,
+                    'message' => 'Adres veya Plus Code bulunamadı.',
+                    'plan' => null,
+                    'technician' => $this->technicianResponsePayload($technician),
+                ], 422);
+            }
+
+            $result = $geocodingService->geocode($technician);
+
             return response()->json([
-                'ok' => $plan !== null,
+                'ok' => (bool) ($result['ok'] ?? false),
                 'dry_run' => true,
-                'message' => $plan ? 'Geocode planı hazır.' : 'Adres veya Plus Code bulunamadı.',
+                'writes_performed' => false,
+                'can_apply' => (bool) ($result['ok'] ?? false),
+                'message' => (bool) ($result['ok'] ?? false)
+                    ? 'Geocode doğrulaması başarılı; apply güvenli.'
+                    : (string) ($result['error_message'] ?? 'Geocode doğrulaması başarısız.'),
                 'plan' => $plan,
+                'result' => $result,
                 'technician' => $this->technicianResponsePayload($technician),
-            ], $plan ? 200 : 422);
+            ], (bool) ($result['ok'] ?? false) ? 200 : 422);
         }
 
         if ($this->hasStoredCoordinates($technician) && ! $overrideExisting) {
@@ -715,7 +750,7 @@ class TechnicalServiceTechnicianController extends Controller
             'geocode_confidence' => $this->geocodeConfidence($result),
             'geocoded_at' => now(),
             'geocode_payload' => collect($result)
-                ->only(['ok', 'status', 'provider', 'query', 'source_type', 'quality', 'needs_review', 'review_reason', 'location_type', 'latitude', 'longitude', 'formatted_address', 'error_message'])
+                ->only(['ok', 'status', 'provider_status', 'provider', 'query', 'source_type', 'quality', 'needs_review', 'review_reason', 'location_type', 'latitude', 'longitude', 'formatted_address', 'error_message', 'fallback_from'])
                 ->all(),
         ];
     }

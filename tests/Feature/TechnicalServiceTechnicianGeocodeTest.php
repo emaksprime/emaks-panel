@@ -410,7 +410,19 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
 
     public function test_technician_geocode_dry_run_does_not_write_coordinates(): void
     {
-        Http::fake();
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Organize Sanayi Bölgesi, Yunusemre/Manisa, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.619099, 'lng' => 27.428921],
+                    ],
+                ]],
+            ], 200),
+        ]);
         $user = User::factory()->create(['role_code' => 'admin']);
         $technician = TechnicalServiceTechnician::query()->create([
             'name' => 'Dry Run Endpoint Usta',
@@ -429,12 +441,136 @@ class TechnicalServiceTechnicianGeocodeTest extends TestCase
             ->assertOk()
             ->assertJsonPath('ok', true)
             ->assertJsonPath('dry_run', true)
-            ->assertJsonPath('plan.source_type', 'address');
+            ->assertJsonPath('writes_performed', false)
+            ->assertJsonPath('can_apply', true)
+            ->assertJsonPath('plan.source_type', 'address')
+            ->assertJsonPath('result.ok', true);
 
         $technician->refresh();
         $this->assertNull($technician->latitude);
         $this->assertNull($technician->longitude);
-        Http::assertNothingSent();
+        Http::assertSentCount(1);
+    }
+
+    public function test_geocode_dry_run_provider_validation_zero_results_returns_warning_without_write(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'ZERO_RESULTS',
+                'results' => [],
+            ], 200),
+        ]);
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Zero Results Usta',
+            'first_name' => 'Zero',
+            'phone' => '+905555555563',
+            'city' => 'İzmir',
+            'district' => 'Bornova',
+            'address' => 'Çözülemeyen adres',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/technicians/{$technician->id}/geocode", [
+                'dry_run' => true,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('ok', false)
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('writes_performed', false)
+            ->assertJsonPath('can_apply', false)
+            ->assertJsonPath('result.provider_status', 'ZERO_RESULTS')
+            ->assertJsonPath('message', 'Adres Google tarafından çözülemedi. Lütfen plus code veya açık adresi düzelt.');
+
+        $technician->refresh();
+        $this->assertNull($technician->latitude);
+        $this->assertNull($technician->longitude);
+    }
+
+    public function test_geocode_apply_zero_results_does_not_write_coordinates(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fake([
+            'https://maps.googleapis.com/maps/api/geocode/json*' => Http::response([
+                'status' => 'ZERO_RESULTS',
+                'results' => [],
+            ], 200),
+        ]);
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Apply Zero Usta',
+            'first_name' => 'Apply',
+            'phone' => '+905555555564',
+            'city' => 'İzmir',
+            'district' => 'Bornova',
+            'address' => 'Çözülemeyen adres',
+            'latitude' => '38.4237340',
+            'longitude' => '27.1428260',
+            'start_latitude' => '38.4237340',
+            'start_longitude' => '27.1428260',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/technicians/{$technician->id}/geocode", [
+                'override_existing_coordinates' => true,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('ok', false)
+            ->assertJsonPath('result.provider_status', 'ZERO_RESULTS');
+
+        $technician->refresh();
+        $this->assertSame('38.4237340', $technician->latitude);
+        $this->assertSame('27.1428260', $technician->longitude);
+        $this->assertTrue($technician->needs_review);
+    }
+
+    public function test_short_plus_code_is_resolved_with_city_context_and_fallbacks_to_full_address(): void
+    {
+        config(['services.google.geocoding_api_key' => 'test-geocoding-key']);
+        Http::fakeSequence()
+            ->push([
+                'status' => 'ZERO_RESULTS',
+                'results' => [],
+            ], 200)
+            ->push([
+                'status' => 'OK',
+                'results' => [[
+                    'formatted_address' => 'Kazımdirik, 402. Sk. No:11 D:3, Bornova/İzmir, Türkiye',
+                    'geometry' => [
+                        'location_type' => 'ROOFTOP',
+                        'location' => ['lat' => 38.4621, 'lng' => 27.2177],
+                    ],
+                ]],
+            ], 200);
+        $user = User::factory()->create(['role_code' => 'admin']);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Short Plus Usta',
+            'first_name' => 'Short',
+            'phone' => '+905555555565',
+            'city' => 'İzmir',
+            'district' => 'Bornova',
+            'address' => 'Kazımdirik, 402. Sk. No:11 D:3',
+            'google_plus_code' => 'C5XJ+3P',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/technicians/{$technician->id}/geocode")
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('result.fallback_from.source_type', 'google_plus_code')
+            ->assertJsonPath('technician.latitude', '38.4621000');
+
+        Http::assertSent(function ($request): bool {
+            return str_contains((string) $request->url(), 'maps.googleapis.com')
+                && str_contains(rawurldecode((string) $request->url()), 'C5XJ+3P, Bornova, İzmir, Türkiye');
+        });
+        Http::assertSent(function ($request): bool {
+            return str_contains(rawurldecode((string) $request->url()), 'Kazımdirik, 402. Sk. No:11 D:3, Bornova, İzmir, Türkiye');
+        });
     }
 
     public function test_manual_location_fix_clears_review_when_complete(): void

@@ -122,10 +122,6 @@ const importColumns = [
   'longitude',
   'google_plus_code',
   'google_formatted_address',
-  'default_start_address',
-  'default_start_plus_code',
-  'start_latitude',
-  'start_longitude',
   'mikro_cari_kodu',
   'mikro_cari_adi',
   'note',
@@ -960,6 +956,9 @@ export default function TechnicalServiceTechnicians() {
             </code>
             <p className="mt-2 text-xs text-slate-500">
               CSV için virgül, noktalı virgül ve tab ayracı desteklenir. Excel dosyasında “Tam Liste” sayfası varsa otomatik kullanılır.
+            </p>
+            <p className="mt-1 text-xs font-medium text-slate-600">
+              Başlangıç adresi ana adresle aynı kabul edilir; eski dosyalardaki başlangıç kolonları geriye dönük okunur.
             </p>
           </div>
 

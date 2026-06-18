@@ -9,6 +9,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -144,6 +145,25 @@ class TechnicalServiceTechnicianImportPreviewTest extends TestCase
             ->assertJsonPath('rows.0.geocode_plan.status', 'preserve_existing');
     }
 
+    public function test_import_preview_uses_primary_address_as_default_start_contract(): void
+    {
+        $response = $this->actingAs($this->admin())
+            ->post('/api/technical-service/technicians/import-preview', [
+                'file' => $this->csvUpload('start-contract.csv', [
+                    ['Ad Soyad', 'Telefon', 'Şehir', 'Adres', 'Başlangıç Adresi', 'Plus Code', 'Başlangıç Plus Code'],
+                    ['Ana Adres Usta', '0532 111 22 33', 'İzmir', 'Ana adres', 'Başlangıç adresi', 'C5XJ+3P', 'XXXX+99'],
+                    ['Fallback Usta', '0532 111 22 44', 'İzmir', '', 'Fallback başlangıç adresi', '', 'C5XJ+3Q'],
+                ]),
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('rows.0.normalized.address', 'Ana adres')
+            ->assertJsonPath('rows.0.normalized.google_plus_code', 'C5XJ+3P')
+            ->assertJsonPath('rows.0.normalized.start_location_contract', 'primary_location')
+            ->assertJsonPath('rows.1.normalized.address', 'Fallback başlangıç adresi')
+            ->assertJsonPath('rows.1.normalized.google_plus_code', 'C5XJ+3Q');
+    }
+
     public function test_import_preview_links_existing_partner_and_warns_when_partner_missing(): void
     {
         B2BPartner::query()->create([
@@ -238,6 +258,7 @@ class TechnicalServiceTechnicianImportPreviewTest extends TestCase
     public function test_technician_page_contains_import_preview_controls_and_disabled_apply(): void
     {
         $source = file_get_contents(resource_path('js/pages/panel/technical-service-technicians.tsx'));
+        $importColumnBlock = Str::between($source, 'const importColumns = [', 'const emptyForm');
 
         $this->assertIsString($source);
         foreach ([
@@ -248,9 +269,15 @@ class TechnicalServiceTechnicianImportPreviewTest extends TestCase
             'writes_performed',
             'Geocode hazır',
             'Partner eksik',
+            'Başlangıç adresi ana adresle aynı kabul edilir',
         ] as $expected) {
             $this->assertStringContainsString($expected, $source);
         }
+
+        $this->assertStringNotContainsString('default_start_address', $importColumnBlock);
+        $this->assertStringNotContainsString('default_start_plus_code', $importColumnBlock);
+        $this->assertStringNotContainsString('start_latitude', $importColumnBlock);
+        $this->assertStringNotContainsString('start_longitude', $importColumnBlock);
     }
 
     private function admin(): User
