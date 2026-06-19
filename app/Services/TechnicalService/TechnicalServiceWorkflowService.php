@@ -1448,6 +1448,14 @@ class TechnicalServiceWorkflowService
         $payload['display_action_label'] = $operationalState['display_action_label'];
         $payload['display_tags'] = $operationalState['display_tags'];
         $payload['attention'] = $operationalState['attention'];
+        $payload['action_owner'] = $operationalState['dashboard_action_owner'] ?? $operationalState['action_owner'];
+        $payload['action_owner_label'] = $operationalState['action_owner_label'] ?? null;
+        $payload['action_priority'] = $operationalState['action_priority_score'] ?? $operationalState['sort_priority'] ?? null;
+        $payload['action_bucket'] = $operationalState['action_bucket'] ?? null;
+        $payload['card_tone'] = $operationalState['card_tone'] ?? null;
+        $payload['action_title'] = $operationalState['action_title'] ?? null;
+        $payload['action_reason'] = $operationalState['action_reason'] ?? null;
+        $payload['action_filter_keys'] = $operationalState['action_filter_keys'] ?? [];
         $payload['visible_sections'] = $this->visibleSectionsPayload($request);
         $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request, $this->paymentStatusForRequest($request));
 

@@ -200,6 +200,14 @@ type ApiTechnicalServiceRequest = {
   kanban_column?: ServiceRequest['kanbanColumn']
   display_action_label?: string | null
   display_tags?: ServiceRequest['displayTags']
+  action_owner?: ServiceRequest['actionOwner']
+  action_owner_label?: string | null
+  action_priority?: number | string | null
+  action_bucket?: ServiceRequest['actionBucket']
+  card_tone?: ServiceRequest['cardTone']
+  action_title?: string | null
+  action_reason?: string | null
+  action_filter_keys?: string[]
   operational_state?: ServiceRequest['operationalState']
   visible_sections?: ServiceRequest['visibleSections']
   service_visit_history?: ServiceRequest['serviceVisitHistory']
@@ -219,6 +227,14 @@ type ApiOperationControlUpdate = {
   kanban_column?: ServiceRequest['kanbanColumn']
   display_action_label?: string | null
   display_tags?: ServiceRequest['displayTags']
+  action_owner?: ServiceRequest['actionOwner']
+  action_owner_label?: string | null
+  action_priority?: number | string | null
+  action_bucket?: ServiceRequest['actionBucket']
+  card_tone?: ServiceRequest['cardTone']
+  action_title?: string | null
+  action_reason?: string | null
+  action_filter_keys?: string[]
   attention?: ServiceRequest['attention']
   visible_sections?: ServiceRequest['visibleSections'] | null
   next_action?: string | null
@@ -924,6 +940,14 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     kanbanColumn: request.kanban_column ?? request.operational_state?.ops_column ?? null,
     displayActionLabel: request.display_action_label ?? request.operational_state?.display_action_label ?? null,
     displayTags: request.display_tags ?? request.operational_state?.display_tags ?? [],
+    actionOwner: request.action_owner ?? request.operational_state?.dashboard_action_owner ?? request.operational_state?.action_owner ?? null,
+    actionOwnerLabel: request.action_owner_label ?? request.operational_state?.action_owner_label ?? null,
+    actionPriority: parseNullableNumber(request.action_priority ?? request.operational_state?.action_priority_score ?? request.operational_state?.sort_priority),
+    actionBucket: request.action_bucket ?? request.operational_state?.action_bucket ?? null,
+    cardTone: request.card_tone ?? request.operational_state?.card_tone ?? null,
+    actionTitle: request.action_title ?? request.operational_state?.action_title ?? null,
+    actionReason: request.action_reason ?? request.operational_state?.action_reason ?? request.operational_state?.attention_reason ?? null,
+    actionFilterKeys: request.action_filter_keys ?? request.operational_state?.action_filter_keys ?? [],
     operationalState: request.operational_state ?? null,
     visibleSections: request.visible_sections ?? null,
     serviceVisitHistory: request.service_visit_history ?? null,

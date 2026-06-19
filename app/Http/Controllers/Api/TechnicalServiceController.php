@@ -1541,6 +1541,7 @@ class TechnicalServiceController extends Controller
     {
         $displayCity = TechnicalServiceUiLabelService::cityLabel($request->customer_city);
         $displayDistrict = TechnicalServiceUiLabelService::districtLabel($request->customer_district, $displayCity);
+        $operationalState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($request);
 
         return [
             'id' => $request->id,
@@ -1579,6 +1580,19 @@ class TechnicalServiceController extends Controller
             'installation_completed_at' => $request->installation_completed_at?->toISOString(),
             'warranty_started_at' => $request->installation_completed_at?->toDateString(),
             'overdue_label' => $includeOverdue ? $this->overdueLabel($request) : null,
+            'operational_state' => $operationalState,
+            'kanban_column' => $operationalState['ops_column'],
+            'display_action_label' => $operationalState['display_action_label'],
+            'display_tags' => $operationalState['display_tags'],
+            'attention' => $operationalState['attention'],
+            'action_owner' => $operationalState['dashboard_action_owner'] ?? $operationalState['action_owner'],
+            'action_owner_label' => $operationalState['action_owner_label'] ?? null,
+            'action_priority' => $operationalState['action_priority_score'] ?? $operationalState['sort_priority'] ?? null,
+            'action_bucket' => $operationalState['action_bucket'] ?? null,
+            'card_tone' => $operationalState['card_tone'] ?? null,
+            'action_title' => $operationalState['action_title'] ?? null,
+            'action_reason' => $operationalState['action_reason'] ?? null,
+            'action_filter_keys' => $operationalState['action_filter_keys'] ?? [],
         ];
     }
 

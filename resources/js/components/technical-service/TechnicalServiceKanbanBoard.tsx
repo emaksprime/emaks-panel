@@ -43,23 +43,89 @@ const getNewestRequestTime = (request: ServiceRequest): number => Math.max(
 )
 
 const requiresOpsAction = (request: ServiceRequest): boolean =>
-  Boolean(request.operationalState?.requires_ops_action)
+  Boolean(
+    request.actionOwner === 'ops'
+    || request.actionFilterKeys?.includes('ops_action')
+    || request.operationalState?.requires_ops_action
+  )
+
+type ActionFilterKey = 'all' | 'ops_action' | 'technician_action' | 'customer_waiting' | 'part_or_repeat' | 'scheduled' | 'completed'
+
+const ACTION_FILTERS: Array<{ key: ActionFilterKey, label: string, description: string }> = [
+  { key: 'all', label: 'Tümü', description: 'Tüm açık ve kapalı işler' },
+  { key: 'ops_action', label: 'OPS aksiyonu', description: 'Operasyon karar bekleyen işler' },
+  { key: 'technician_action', label: 'Usta bekleniyor', description: 'Aksiyon ustada' },
+  { key: 'customer_waiting', label: 'Müşteri bekleniyor', description: 'Müşteri onayı veya dönüşü bekleniyor' },
+  { key: 'part_or_repeat', label: 'Parça / tekrar servis', description: 'Parça veya tekrar ziyaret gündemi' },
+  { key: 'scheduled', label: 'Planlı / randevulu', description: 'Randevu veya saha planı olan işler' },
+  { key: 'completed', label: 'Tamamlanan', description: 'Kapalı işler' },
+]
+
+const requestActionFilterKeys = (request: ServiceRequest): string[] => (
+  request.actionFilterKeys
+  ?? request.operationalState?.action_filter_keys
+  ?? []
+)
+
+const requestMatchesActionFilter = (request: ServiceRequest, filter: ActionFilterKey): boolean => {
+  if (filter === 'all') {
+    return true
+  }
+
+  const keys = requestActionFilterKeys(request)
+
+  if (keys.includes(filter)) {
+    return true
+  }
+
+  if (filter === 'ops_action') {
+    return requiresOpsAction(request)
+  }
+
+  if (filter === 'technician_action') {
+    return request.actionOwner === 'technician' || request.operationalState?.action_owner === 'technician'
+  }
+
+  if (filter === 'customer_waiting') {
+    return request.actionOwner === 'customer' || request.operationalState?.action_owner === 'customer'
+  }
+
+  if (filter === 'part_or_repeat') {
+    return Boolean(request.activePartRequest || request.requiresSecondVisit)
+  }
+
+  if (filter === 'scheduled') {
+    return Boolean(request.scheduledAt || request.scheduledDate || request.operationalState?.is_appointment_confirmed)
+  }
+
+  if (filter === 'completed') {
+    return request.actionOwner === 'completed' || getTechnicalServiceKanbanColumn(request) === 'completed'
+  }
+
+  return false
+}
 
 const actionOwnerSortPriority = (request: ServiceRequest): number => {
-  if (request.operationalState?.requires_ops_action) {
+  const dashboardPriority = request.actionPriority ?? request.operationalState?.action_priority_score
+
+  if (typeof dashboardPriority === 'number' && Number.isFinite(dashboardPriority)) {
+    return dashboardPriority
+  }
+
+  if (requiresOpsAction(request)) {
     return ({
-      critical: 0,
-      high: 1,
-      normal: 2,
-      low: 3,
-    } as Record<string, number>)[String(request.operationalState.action_priority ?? 'normal')] ?? 2
+      critical: 10,
+      high: 20,
+      normal: 40,
+      low: 70,
+    } as Record<string, number>)[String(request.operationalState?.action_priority ?? 'normal')] ?? 40
   }
 
-  if (request.operationalState?.action_owner === 'none') {
-    return 20
+  if (request.actionOwner === 'completed' || request.operationalState?.action_owner === 'none') {
+    return 900
   }
 
-  return 10
+  return 500
 }
 
 const compareRequestsNewestFirst = (a: ServiceRequest, b: ServiceRequest): number => {
@@ -110,11 +176,14 @@ export function TechnicalServiceKanbanBoard({
   onSelectRequest,
 }: TechnicalServiceKanbanBoardProps) {
   const [showOtherColumns, setShowOtherColumns] = useState(false)
-  const [showOpsActionsOnly, setShowOpsActionsOnly] = useState(false)
+  const [activeActionFilter, setActiveActionFilter] = useState<ActionFilterKey>('all')
   const opsActionCount = requests.filter(requiresOpsAction).length
-  const filteredRequests = showOpsActionsOnly
-    ? requests.filter(requiresOpsAction)
-    : requests
+  const filterCounts = ACTION_FILTERS.reduce<Record<ActionFilterKey, number>>((counts, filter) => {
+    counts[filter.key] = requests.filter((request) => requestMatchesActionFilter(request, filter.key)).length
+
+    return counts
+  }, {} as Record<ActionFilterKey, number>)
+  const filteredRequests = requests.filter((request) => requestMatchesActionFilter(request, activeActionFilter))
   const groupedRequests = TECHNICAL_SERVICE_KANBAN_COLUMNS.map((column) => ({
     ...column,
     items: filteredRequests
@@ -124,9 +193,11 @@ export function TechnicalServiceKanbanBoard({
   const primaryColumns = groupedRequests.filter((column) => primaryColumnIds.includes(column.id))
   const otherColumns = groupedRequests.filter((column) => !primaryColumnIds.includes(column.id))
   const otherCount = otherColumns.reduce((total, column) => total + column.items.length, 0)
-  const opsFilteredColumns = groupedRequests.filter((column) => column.items.length > 0)
-  const visibleColumns = showOpsActionsOnly
-    ? (opsFilteredColumns.length > 0 ? opsFilteredColumns : primaryColumns)
+  const filteredColumns = groupedRequests.filter((column) => column.items.length > 0)
+  const isActionFiltered = activeActionFilter !== 'all'
+  const activeFilter = ACTION_FILTERS.find((filter) => filter.key === activeActionFilter) ?? ACTION_FILTERS[0]
+  const visibleColumns = isActionFiltered
+    ? (filteredColumns.length > 0 ? filteredColumns : primaryColumns)
     : showOtherColumns
       ? [...primaryColumns, ...otherColumns]
       : primaryColumns
@@ -142,35 +213,42 @@ export function TechnicalServiceKanbanBoard({
 
   return (
     <div className="space-y-4">
-      {!loading && (otherColumns.length > 0 || opsActionCount > 0 || showOpsActionsOnly) && (
+      {!loading && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-[24px] border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm">
           <div>
             <p className="font-semibold text-slate-900">
-              {showOpsActionsOnly ? 'OPS aksiyonu bekleyenler' : 'Kanban filtreleri'}
+              {isActionFiltered ? activeFilter.label : 'Aksiyon filtreleri'}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              {showOpsActionsOnly
-                ? 'Sadece operasyonun karar vermesi gereken işler gösteriliyor.'
+              {isActionFiltered
+                ? activeFilter.description
                 : 'İnceleniyor ve İptal kolonları küçük ekranda alanı boğmasın diye kapalı gelir.'}
             </p>
-            {showOpsActionsOnly && opsActionCount === 0 ? (
+            {activeActionFilter === 'ops_action' && opsActionCount === 0 ? (
               <p className="mt-1 text-xs font-semibold text-emerald-700">OPS aksiyonu bekleyen iş yok.</p>
             ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowOpsActionsOnly((current) => !current)}
-              className={[
-                'rounded-2xl border px-3 py-2 text-sm font-semibold transition',
-                showOpsActionsOnly
-                  ? 'border-amber-300 bg-amber-100 text-amber-950 shadow-sm'
-                  : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
-              ].join(' ')}
-            >
-              OPS aksiyonu bekleyenler ({opsActionCount})
-            </button>
-            {!showOpsActionsOnly && otherColumns.length > 0 ? (
+            {ACTION_FILTERS.map((filter) => (
+              <button
+                key={filter.key}
+                type="button"
+                onClick={() => setActiveActionFilter(filter.key)}
+                className={[
+                  'rounded-2xl border px-3 py-2 text-sm font-semibold transition',
+                  activeActionFilter === filter.key
+                    ? filter.key === 'ops_action'
+                      ? 'border-amber-300 bg-amber-100 text-amber-950 shadow-sm'
+                      : 'border-[#06143A] bg-[#06143A] text-white shadow-sm'
+                    : filter.key === 'ops_action'
+                      ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                      : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100',
+                ].join(' ')}
+              >
+                {filter.label} ({filterCounts[filter.key] ?? 0})
+              </button>
+            ))}
+            {!isActionFiltered && otherColumns.length > 0 ? (
               <button
                 type="button"
                 onClick={() => setShowOtherColumns((current) => !current)}

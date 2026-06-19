@@ -182,8 +182,61 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertFalse($state['requires_technician_action']);
         $this->assertSame('Parça talebi incelenmeli', $state['action_label']);
         $this->assertSame('Usta yedek parça talep etti. Operasyon karar vermeli.', $state['action_hint']);
+        $this->assertSame('Operasyon', $state['action_owner_label']);
+        $this->assertSame('part_or_repeat', $state['action_bucket']);
+        $this->assertSame('warning', $state['card_tone']);
+        $this->assertContains('ops_action', $state['action_filter_keys']);
+        $this->assertContains('part_or_repeat', $state['action_filter_keys']);
+        $this->assertIsInt($state['action_priority_score']);
         $this->assertContains('OPS aksiyonu: Parça talebi incelenmeli', $tagLabels);
         $this->assertSame('Parça talebi operasyon incelemesinde', TechnicalServicePartRequest::partnerLabelForStatus(TechnicalServicePartRequest::STATUS_OPS_REVIEW));
+    }
+
+    public function test_technician_rejected_action_overrides_generic_overdue_closure_action(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'reddedildi',
+            'scheduled_at' => CarbonImmutable::now()->subHours(13),
+            'scheduled_date' => CarbonImmutable::now()->subHours(13)->toDateString(),
+            'scheduled_time' => CarbonImmutable::now()->subHours(13)->format('H:i'),
+        ]);
+        $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'reason' => 'time_not_suitable',
+                'reason_label' => 'Zaman uygun değil',
+            ],
+            'note' => 'Uygun değil.',
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame('Usta işi reddetti. Acil yeniden atama gerekli.', $state['attention_reason']);
+        $this->assertSame('Usta işi reddetti. Acil yeniden atama gerekli.', $state['action_reason']);
+        $this->assertSame('Usta işi reddetti', $state['action_title']);
+        $this->assertSame(1, $state['sort_priority']);
+        $this->assertSame('ops', $state['action_owner']);
+        $this->assertSame('ops', $state['dashboard_action_owner']);
+        $this->assertSame('critical', $state['action_priority']);
+        $this->assertSame(1, $state['action_priority_score']);
+        $this->assertSame('ops_action', $state['action_bucket']);
+        $this->assertSame('danger', $state['card_tone']);
+        $this->assertContains('ops_action', $state['action_filter_keys']);
+        $this->assertContains('technician_rejected', $state['action_filter_keys']);
+        $this->assertContains('reassignment_required', $state['action_filter_keys']);
+        $this->assertNotSame('İş kapanışı için usta ile iletişime geçin', $state['attention_reason']);
+
+        $this->assertSame('ops', data_get($payload, 'action_owner'));
+        $this->assertSame(1, data_get($payload, 'action_priority'));
+        $this->assertSame('ops_action', data_get($payload, 'action_bucket'));
+        $this->assertSame('danger', data_get($payload, 'card_tone'));
+        $this->assertSame('Usta işi reddetti', data_get($payload, 'action_title'));
+        $this->assertSame('Usta işi reddetti. Acil yeniden atama gerekli.', data_get($payload, 'action_reason'));
+        $this->assertContains('technician_rejected', data_get($payload, 'action_filter_keys'));
     }
 
     public function test_ops_presenter_marks_appointment_change_and_revisit_as_ops_actions(): void
@@ -231,6 +284,11 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertFalse($state['requires_ops_action']);
         $this->assertTrue($state['requires_technician_action']);
         $this->assertSame('Fotoğraf bekleniyor', $state['action_label']);
+        $this->assertSame('Usta', $state['action_owner_label']);
+        $this->assertSame('technician_action', $state['action_bucket']);
+        $this->assertSame('neutral', $state['card_tone']);
+        $this->assertContains('technician_action', $state['action_filter_keys']);
+        $this->assertContains('scheduled', $state['action_filter_keys']);
     }
 
     public function test_ops_presenter_does_not_mark_customer_waiting_as_ops_action(): void
@@ -261,6 +319,28 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertFalse($state['requires_technician_action']);
         $this->assertTrue($state['requires_customer_action']);
         $this->assertSame('Müşteri onayı bekliyor', $state['action_label']);
+        $this->assertSame('Müşteri', $state['action_owner_label']);
+        $this->assertSame('customer_waiting', $state['action_bucket']);
+        $this->assertSame('info', $state['card_tone']);
+        $this->assertContains('customer_waiting', $state['action_filter_keys']);
+    }
+
+    public function test_action_owner_marks_completed_cards_as_closed(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => CarbonImmutable::now(),
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertSame('none', $state['action_owner']);
+        $this->assertSame('completed', $state['dashboard_action_owner']);
+        $this->assertSame('Kapalı', $state['action_owner_label']);
+        $this->assertSame('completed', $state['action_bucket']);
+        $this->assertSame('success', $state['card_tone']);
+        $this->assertContains('completed', $state['action_filter_keys']);
     }
 
     public function test_kanban_payload_and_source_include_ops_action_filter_contract(): void
@@ -284,16 +364,29 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertTrue(data_get($payload, 'operational_state.requires_ops_action'));
         $this->assertFalse(data_get($payload, 'operational_state.requires_technician_action'));
         $this->assertSame('Usta randevu önerdi', data_get($payload, 'operational_state.action_label'));
+        $this->assertSame('ops', data_get($payload, 'action_owner'));
+        $this->assertSame('Operasyon', data_get($payload, 'action_owner_label'));
+        $this->assertIsInt(data_get($payload, 'action_priority'));
+        $this->assertSame('ops_action', data_get($payload, 'action_bucket'));
+        $this->assertSame('warning', data_get($payload, 'card_tone'));
+        $this->assertContains('ops_action', data_get($payload, 'action_filter_keys'));
 
         $boardSource = file_get_contents(resource_path('js/components/technical-service/TechnicalServiceKanbanBoard.tsx')) ?: '';
         $cardSource = file_get_contents(resource_path('js/components/technical-service/TechnicalServiceKanbanCard.tsx')) ?: '';
 
-        $this->assertStringContainsString('showOpsActionsOnly', $boardSource);
+        $this->assertStringContainsString('ACTION_FILTERS', $boardSource);
         $this->assertStringContainsString('requires_ops_action', $boardSource);
-        $this->assertStringContainsString('OPS aksiyonu bekleyenler', $boardSource);
+        $this->assertStringContainsString('OPS aksiyonu', $boardSource);
+        $this->assertStringContainsString('Usta bekleniyor', $boardSource);
+        $this->assertStringContainsString('Müşteri bekleniyor', $boardSource);
+        $this->assertStringContainsString('Parça / tekrar servis', $boardSource);
+        $this->assertStringContainsString('Planlı / randevulu', $boardSource);
+        $this->assertStringContainsString('Tamamlanan', $boardSource);
         $this->assertStringContainsString('actionOwnerSortPriority', $boardSource);
-        $this->assertStringContainsString('opsFilteredColumns', $boardSource);
+        $this->assertStringContainsString('filteredColumns', $boardSource);
+        $this->assertStringContainsString('cardTone', $cardSource);
         $this->assertStringContainsString('requires_ops_action', $cardSource);
+        $this->assertStringContainsString('Sahip:', $cardSource);
     }
 
     public function test_appointment_approved_is_not_completed_in_canonical_state(): void

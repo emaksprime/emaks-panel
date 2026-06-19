@@ -110,6 +110,17 @@ class TechnicalServiceOperationalStatePresenter
             $isFieldDocsRequired,
             $doorIncompatible,
         );
+        $dashboardAction = $this->dashboardActionPayload(
+            $request,
+            $actionMeta,
+            $attention,
+            $opsColumn,
+            $displayActionLabel,
+            $isCompleted,
+            $isCancelled,
+            $isAppointmentConfirmed,
+            $activePartRequest,
+        );
 
         return [
             'canonical_stage' => $opsColumn,
@@ -125,6 +136,14 @@ class TechnicalServiceOperationalStatePresenter
             'active_action_required' => $actionMeta['action_owner'] !== 'none',
             'action_owner' => $actionMeta['action_owner'],
             'action_priority' => $actionMeta['action_priority'],
+            'dashboard_action_owner' => $dashboardAction['action_owner'],
+            'action_owner_label' => $dashboardAction['action_owner_label'],
+            'action_priority_score' => $dashboardAction['action_priority'],
+            'action_bucket' => $dashboardAction['action_bucket'],
+            'card_tone' => $dashboardAction['card_tone'],
+            'action_title' => $dashboardAction['action_title'],
+            'action_reason' => $dashboardAction['action_reason'],
+            'action_filter_keys' => $dashboardAction['action_filter_keys'],
             'requires_ops_action' => $actionMeta['requires_ops_action'],
             'requires_technician_action' => $actionMeta['requires_technician_action'],
             'requires_customer_action' => $actionMeta['requires_customer_action'],
@@ -522,10 +541,6 @@ class TechnicalServiceOperationalStatePresenter
             return $this->normalAttention($request, 100);
         }
 
-        if (($appointmentAttention['sort_priority'] ?? null) === 1) {
-            return $appointmentAttention;
-        }
-
         if ($doorIncompatible) {
             return [
                 'sort_priority' => 4,
@@ -556,8 +571,15 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         if ($activeAction instanceof TechnicalServicePartnerJobAction) {
+            if ($activeAction->action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED) {
+                return $this->technicianRejectionAttention($activeAction);
+            }
+
+            if (($appointmentAttention['sort_priority'] ?? null) === 1) {
+                return $appointmentAttention;
+            }
+
             $payload = match ($activeAction->action) {
-                TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED => [2, 'critical', 'Usta işi reddetti'],
                 TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED => [3, 'critical', 'Müşteri onayı reddedildi'],
                 TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED => [4, 'critical', 'Hakediş revize talebi'],
                 TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED => [5, 'warning', 'Son kontrol bekliyor'],
@@ -586,6 +608,10 @@ class TechnicalServiceOperationalStatePresenter
                 'last_action_at' => $activeAction->created_at?->toDateTimeString(),
                 'action' => $activeAction->action,
             ];
+        }
+
+        if (($appointmentAttention['sort_priority'] ?? null) === 1) {
+            return $appointmentAttention;
         }
 
         if ($appointmentAttention !== null) {
@@ -626,6 +652,21 @@ class TechnicalServiceOperationalStatePresenter
             'attention_reason' => null,
             'last_action_at' => $request->updated_at?->toDateTimeString(),
             'action' => null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function technicianRejectionAttention(TechnicalServicePartnerJobAction $activeAction): array
+    {
+        return [
+            'sort_priority' => 1,
+            'attention_level' => 'critical',
+            'attention_reason' => 'Usta işi reddetti. Acil yeniden atama gerekli.',
+            'action_title' => 'Usta işi reddetti',
+            'last_action_at' => $activeAction->created_at?->toDateTimeString(),
+            'action' => TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
         ];
     }
 
@@ -700,6 +741,10 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($isCompleted || $isCancelled) {
             return $this->actionMetaPayload('none', 'low', $displayActionLabel, null);
+        }
+
+        if ($action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED) {
+            return $this->actionMetaPayload('ops', 'critical', 'Usta işi reddetti', 'Usta işi reddetti. Acil yeniden atama gerekli.');
         }
 
         if ($action === 'appointment_overdue_for_closure') {
@@ -790,6 +835,145 @@ class TechnicalServiceOperationalStatePresenter
             'action_label' => $label,
             'action_hint' => $hint,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $actionMeta
+     * @param array<string, mixed> $attention
+     * @return array<string, mixed>
+     */
+    private function dashboardActionPayload(
+        TechnicalServiceRequest $request,
+        array $actionMeta,
+        array $attention,
+        string $opsColumn,
+        string $displayActionLabel,
+        bool $isCompleted,
+        bool $isCancelled,
+        bool $isAppointmentConfirmed,
+        ?TechnicalServicePartRequest $activePartRequest,
+    ): array {
+        $owner = (string) ($actionMeta['action_owner'] ?? 'system');
+        if ($isCompleted || $isCancelled) {
+            $owner = 'completed';
+        } elseif ($owner === 'none') {
+            $owner = 'system';
+        }
+
+        $isPartOrRepeat = $this->isPartOrRepeatBucket($request, $activePartRequest);
+        $isTechnicianRejected = ($attention['action'] ?? null) === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED;
+        $isScheduled = ! $isCompleted
+            && ! $isCancelled
+            && ($isAppointmentConfirmed || $this->hasAppointment($request) || $opsColumn === self::OPS_COLUMN_ASSIGNED);
+
+        $filterKeys = [];
+        if ($owner === 'ops') {
+            $filterKeys[] = 'ops_action';
+        }
+        if ($isTechnicianRejected) {
+            $filterKeys[] = 'technician_rejected';
+            $filterKeys[] = 'reassignment_required';
+        }
+        if ($owner === 'technician') {
+            $filterKeys[] = 'technician_action';
+        }
+        if ($owner === 'customer') {
+            $filterKeys[] = 'customer_waiting';
+        }
+        if ($isPartOrRepeat) {
+            $filterKeys[] = 'part_or_repeat';
+        }
+        if ($isScheduled) {
+            $filterKeys[] = 'scheduled';
+        }
+        if ($owner === 'completed') {
+            $filterKeys[] = 'completed';
+        }
+
+        $bucket = match (true) {
+            $owner === 'completed' => 'completed',
+            $isTechnicianRejected => 'ops_action',
+            $isPartOrRepeat => 'part_or_repeat',
+            $owner === 'ops' => 'ops_action',
+            $owner === 'technician' => 'technician_action',
+            $owner === 'customer' => 'customer_waiting',
+            $isScheduled => 'scheduled',
+            default => 'system',
+        };
+
+        return [
+            'action_owner' => $owner,
+            'action_owner_label' => $this->actionOwnerLabel($owner),
+            'action_priority' => $isTechnicianRejected ? 1 : $this->actionPriorityScore($owner, (string) ($actionMeta['action_priority'] ?? 'low'), $attention, $bucket),
+            'action_bucket' => $bucket,
+            'card_tone' => $isTechnicianRejected ? 'danger' : $this->cardTone($owner, $isCompleted, $isCancelled),
+            'action_title' => $attention['action_title'] ?? $displayActionLabel,
+            'action_reason' => $actionMeta['action_hint'] ?? $attention['attention_reason'] ?? $displayActionLabel,
+            'action_filter_keys' => array_values(array_unique($filterKeys)),
+        ];
+    }
+
+    private function actionOwnerLabel(string $owner): string
+    {
+        return match ($owner) {
+            'ops' => 'Operasyon',
+            'technician' => 'Usta',
+            'customer' => 'Müşteri',
+            'completed' => 'Kapalı',
+            default => 'Sistem',
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $attention
+     */
+    private function actionPriorityScore(string $owner, string $priority, array $attention, string $bucket): int
+    {
+        if ($owner === 'completed') {
+            return 900;
+        }
+
+        $levelScore = match ($priority) {
+            'critical' => 10,
+            'high' => 20,
+            'normal' => 40,
+            default => 70,
+        };
+        $attentionScore = is_numeric($attention['sort_priority'] ?? null)
+            ? ((int) $attention['sort_priority']) * 10
+            : 500;
+
+        $ownerOffset = match ($owner) {
+            'ops' => 0,
+            'technician' => 200,
+            'customer' => 300,
+            'system' => 500,
+            default => 600,
+        };
+        $bucketOffset = $bucket === 'part_or_repeat' && $owner !== 'ops' ? 25 : 0;
+
+        return $ownerOffset + min($levelScore, $attentionScore) + $bucketOffset;
+    }
+
+    private function cardTone(string $owner, bool $isCompleted, bool $isCancelled): string
+    {
+        if ($owner === 'completed') {
+            return $isCompleted && ! $isCancelled ? 'success' : 'muted';
+        }
+
+        return match ($owner) {
+            'ops' => 'warning',
+            'technician' => 'neutral',
+            'customer' => 'info',
+            default => 'muted',
+        };
+    }
+
+    private function isPartOrRepeatBucket(TechnicalServiceRequest $request, ?TechnicalServicePartRequest $activePartRequest): bool
+    {
+        return $activePartRequest instanceof TechnicalServicePartRequest
+            || (bool) $request->requires_second_visit
+            || $this->statusIn($request->workflow_status, self::REVISIT_STATUSES);
     }
 
     /**

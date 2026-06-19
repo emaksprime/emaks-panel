@@ -3,6 +3,9 @@ export type ServiceType = 'Montaj' | 'Servis' | 'Arıza' | 'Kontrol'
 export type ServiceStatus = 'Yeni' | 'Atandı' | 'Randevulu' | 'Devam Ediyor' | 'Tamamlandı' | 'İptal'
 export type ServiceStatusFilter = '' | 'unassigned' | 'today_installations' | 'scheduled' | 'Tamamlandı' | 'İptal'
 export type ServiceRequestOpsColumn = 'new' | 'assignment_pending' | 'assigned' | 'final_check' | 'completed' | 'review' | 'cancelled' | string | null
+export type ServiceRequestActionOwner = 'ops' | 'technician' | 'customer' | 'system' | 'completed' | string | null
+export type ServiceRequestActionBucket = 'ops_action' | 'technician_action' | 'customer_waiting' | 'part_or_repeat' | 'scheduled' | 'completed' | 'system' | string | null
+export type ServiceRequestCardTone = 'warning' | 'neutral' | 'info' | 'success' | 'muted' | 'danger' | string | null
 
 export type ServiceRequestVisibleSections = {
   warranty?: boolean
@@ -82,6 +85,14 @@ export type ServiceRequest = {
   kanbanColumn?: ServiceRequestOpsColumn
   displayActionLabel?: string | null
   displayTags?: ServiceRequestDisplayTag[]
+  actionOwner?: ServiceRequestActionOwner
+  actionOwnerLabel?: string | null
+  actionPriority?: number | null
+  actionBucket?: ServiceRequestActionBucket
+  cardTone?: ServiceRequestCardTone
+  actionTitle?: string | null
+  actionReason?: string | null
+  actionFilterKeys?: string[]
   operationalState?: ServiceRequestOperationalState | null
   visibleSections?: ServiceRequestVisibleSections | null
   serviceVisitHistory?: ServiceRequestServiceVisitHistory | null
@@ -169,6 +180,14 @@ export type ServiceRequestOperationalState = {
   active_action_required?: boolean | null
   action_owner?: 'ops' | 'technician' | 'customer' | 'system' | 'none' | string | null
   action_priority?: 'critical' | 'high' | 'normal' | 'low' | string | null
+  dashboard_action_owner?: ServiceRequestActionOwner
+  action_owner_label?: string | null
+  action_priority_score?: number | null
+  action_bucket?: ServiceRequestActionBucket
+  card_tone?: ServiceRequestCardTone
+  action_title?: string | null
+  action_reason?: string | null
+  action_filter_keys?: string[]
   requires_ops_action?: boolean | null
   requires_technician_action?: boolean | null
   requires_customer_action?: boolean | null

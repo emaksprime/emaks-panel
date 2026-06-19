@@ -161,17 +161,46 @@ const attentionBadgeTone = (level: string | null | undefined): RequestBadge['ton
   return 'amber'
 }
 
+const ownerBadgeTone = (owner: string | null | undefined): RequestBadge['tone'] => {
+  switch (owner) {
+    case 'ops':
+      return 'amber'
+    case 'technician':
+      return 'neutral'
+    case 'customer':
+      return 'blue'
+    case 'completed':
+      return 'green'
+    default:
+      return 'neutral'
+  }
+}
+
 const actionCardClassName = (request: ServiceRequest, selected: boolean, isUnread: boolean): string => {
   if (selected) {
     return 'border-[#06143A] bg-white ring-2 ring-[#06143A]/15'
   }
 
-  if (request.operationalState?.requires_ops_action) {
-    if (request.operationalState.action_priority === 'critical') {
-      return 'border-rose-300 bg-rose-50/85 hover:border-rose-400 hover:bg-rose-50'
-    }
+  const tone = request.cardTone ?? request.operationalState?.card_tone ?? null
 
+  if (tone === 'danger') {
+    return 'border-rose-300 bg-rose-50/90 hover:border-rose-400 hover:bg-rose-50'
+  }
+
+  if (tone === 'warning' || request.actionOwner === 'ops' || request.operationalState?.requires_ops_action) {
     return 'border-amber-300 bg-amber-50/85 hover:border-amber-400 hover:bg-amber-50'
+  }
+
+  if (tone === 'info' || request.actionOwner === 'customer') {
+    return 'border-blue-200 bg-blue-50/70 hover:border-blue-300 hover:bg-blue-50'
+  }
+
+  if (tone === 'success' || request.actionOwner === 'completed') {
+    return 'border-emerald-200 bg-emerald-50/65 hover:border-emerald-300 hover:bg-emerald-50'
+  }
+
+  if (tone === 'muted') {
+    return 'border-slate-200 bg-slate-50/80 hover:border-slate-300 hover:bg-slate-100'
   }
 
   if (isUnread) {
@@ -442,6 +471,8 @@ export function TechnicalServiceKanbanCard({
   const technicianPhone = resolveTechnicianPhone(request)
   const column = getTechnicalServiceKanbanColumn(request)
   const detailRows = columnDetailRows(request, column, technicianPhone)
+  const actionOwner = request.actionOwner ?? request.operationalState?.dashboard_action_owner ?? request.operationalState?.action_owner ?? null
+  const actionOwnerLabel = request.actionOwnerLabel ?? request.operationalState?.action_owner_label ?? null
 
   const technicianLabel = request.technician && normalizeTechnicalServiceText(request.technician) !== 'atanmadi'
     ? `TS - ${request.technician} - ${request.city || '-'}`
@@ -482,6 +513,11 @@ export function TechnicalServiceKanbanCard({
             <span className={[badgeClassName, badgeTone(request.priority === 'Kritik' || request.priority === 'Yüksek' ? 'rose' : request.priority === 'Orta' ? 'amber' : 'neutral')].join(' ')}>
               {request.priority}
             </span>
+            {actionOwnerLabel ? (
+              <span className={[badgeClassName, badgeTone(ownerBadgeTone(actionOwner))].join(' ')}>
+                Sahip: {actionOwnerLabel}
+              </span>
+            ) : null}
             {badges.map((badge) => (
               <span key={badge.label} className={badgeClass(badge)}>
                 <BadgeIconMark icon={badge.icon} />
