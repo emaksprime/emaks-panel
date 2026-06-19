@@ -214,6 +214,9 @@ type ApiTechnicalServiceRequest = {
   current_stage_summary?: ServiceRequest['currentStageSummary']
   visible_sections?: ServiceRequest['visibleSections']
   service_visit_history?: ServiceRequest['serviceVisitHistory']
+  admin_overrides?: ServiceRequest['adminOverrides']
+  admin_override_summary?: ServiceRequest['adminOverrideSummary']
+  field_correction_policy?: ServiceRequest['fieldCorrectionPolicy']
   document?: unknown
   documents?: unknown
   photo?: unknown
@@ -959,6 +962,9 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     currentStageSummary: request.current_stage_summary ?? null,
     visibleSections: request.visible_sections ?? null,
     serviceVisitHistory: request.service_visit_history ?? null,
+    adminOverrides: request.admin_overrides ?? null,
+    adminOverrideSummary: request.admin_override_summary ?? null,
+    fieldCorrectionPolicy: request.field_correction_policy ?? null,
     attention: request.attention ?? null,
   }
 }
@@ -1137,6 +1143,8 @@ export function TechnicalServiceOperationCenter() {
   const [workflowActionLoading, setWorkflowActionLoading] = useState<string | null>(null)
   const [operationControlUpdateLoading, setOperationControlUpdateLoading] = useState(false)
   const [operationControlUpdateError, setOperationControlUpdateError] = useState<string | null>(null)
+  const [adminOverrideLoading, setAdminOverrideLoading] = useState(false)
+  const [adminOverrideError, setAdminOverrideError] = useState<string | null>(null)
   const [invoiceSerialRecheckLoading, setInvoiceSerialRecheckLoading] = useState(false)
   const [invoiceSerialRecheckError, setInvoiceSerialRecheckError] = useState<string | null>(null)
   const [invoiceSerialActionLoading, setInvoiceSerialActionLoading] = useState<string | null>(null)
@@ -1625,6 +1633,76 @@ export function TechnicalServiceOperationCenter() {
       technicianId: assignTechnicianOption,
     }
   }, [assignTechnicianOption, selectedId])
+
+  const applyUpdatedRequest = (updatedRequest: ServiceRequest) => {
+    preserveDetailScroll(() => {
+      setRequests((current) => current.map((request) => (
+        request.id === updatedRequest.id ? updatedRequest : request
+      )))
+      setSelectedListRequest((current) => (
+        current?.id === updatedRequest.id ? updatedRequest : current
+      ))
+      setSelectedDetailRequest(updatedRequest)
+    })
+  }
+
+  const handleAdminOverrideSubmit = async (payload: { field_key: string, new_value: unknown, reason: string, mode?: 'apply' | 'request' }) => {
+    if (!selectedId) {
+      return
+    }
+
+    setAdminOverrideLoading(true)
+    setAdminOverrideError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/overrides`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        applyUpdatedRequest(updatedRequest)
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+
+      await loadSummary()
+    } catch (caught) {
+      setAdminOverrideError(caught instanceof Error ? caught.message : 'Düzeltme kaydedilemedi.')
+    } finally {
+      setAdminOverrideLoading(false)
+    }
+  }
+
+  const handleAdminOverrideReview = async (overrideId: number | string, action: 'approve' | 'reject', note?: string | null) => {
+    if (!selectedId) {
+      return
+    }
+
+    setAdminOverrideLoading(true)
+    setAdminOverrideError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/overrides/${overrideId}/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({ note: note ?? null }),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (updatedRequest) {
+        applyUpdatedRequest(updatedRequest)
+      } else {
+        await loadRequestDetail(selectedId)
+      }
+
+      await loadSummary()
+    } catch (caught) {
+      setAdminOverrideError(caught instanceof Error ? caught.message : 'Düzeltme kararı kaydedilemedi.')
+    } finally {
+      setAdminOverrideLoading(false)
+    }
+  }
 
   const handlePriorityChange = async (priority: ServicePriority) => {
     if (!selectedId || modalRequest?.priority === priority) {
@@ -5429,6 +5507,8 @@ export function TechnicalServiceOperationCenter() {
                     onPriorityChange={handlePriorityChange}
                     onWorkflowAction={handleWorkflowAction}
                     onOperationControlChange={handleOperationControlChange}
+                    onAdminOverrideSubmit={handleAdminOverrideSubmit}
+                    onAdminOverrideReview={handleAdminOverrideReview}
                     onInvoiceSerialRecheck={handleInvoiceSerialRecheck}
                     onInvoiceSerialAdd={(serialId) => handleInvoiceSerialAction('add', serialId)}
                     onInvoiceSerialRemove={(serialId) => handleInvoiceSerialAction('remove', serialId)}
@@ -5438,6 +5518,8 @@ export function TechnicalServiceOperationCenter() {
                     workflowActionInFlight={workflowActionLoading}
                     operationControlUpdateInFlight={operationControlUpdateLoading}
                     operationControlUpdateError={operationControlUpdateError}
+                    adminOverrideInFlight={adminOverrideLoading}
+                    adminOverrideError={adminOverrideError}
                     invoiceSerialRecheckInFlight={invoiceSerialRecheckLoading}
                     invoiceSerialRecheckError={invoiceSerialRecheckError}
                     invoiceSerialActionInFlight={invoiceSerialActionLoading}

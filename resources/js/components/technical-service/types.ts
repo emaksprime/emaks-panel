@@ -143,6 +143,22 @@ export type ServiceRequest = {
   visibleSections?: ServiceRequestVisibleSections | null
   serviceVisitHistory?: ServiceRequestServiceVisitHistory | null
   auditLogs?: ServiceRequestAuditLog[] | null
+  adminOverrides?: ServiceRequestAdminOverride[] | null
+  adminOverrideSummary?: {
+    pending_count?: number | null
+    applied_count?: number | null
+    rejected_count?: number | null
+  } | null
+  fieldCorrectionPolicy?: {
+    fields?: Array<{
+      key: string
+      label: string
+      group?: string | null
+      sensitive?: boolean | null
+      recompute_flags?: string[] | null
+    }>
+    blocked_fields?: string[]
+  } | null
   attention?: {
     sort_priority?: number | null
     attention_level?: 'normal' | 'info' | 'warning' | 'critical' | string | null
@@ -164,6 +180,42 @@ export type ServiceRequestAuditLog = {
   user_name?: string | null
   note?: string | null
   created_at: string
+}
+
+export type ServiceRequestAdminOverride = {
+  id: number | string
+  request_id?: number | string | null
+  root_request_id?: number | string | null
+  request_code?: string | null
+  root_mrn?: string | null
+  field_key: string
+  field_label: string
+  field_group?: string | null
+  source: string
+  source_label?: string | null
+  status: 'pending' | 'applied' | 'rejected' | string
+  status_label?: string | null
+  old_value?: { value?: unknown, display?: string | null } | null
+  requested_value?: { value?: unknown, display?: string | null } | null
+  new_value?: { value?: unknown, display?: string | null } | null
+  recompute_flags?: string[] | null
+  recompute_flag_labels?: string[] | null
+  reason?: string | null
+  approval_note?: string | null
+  rejection_reason?: string | null
+  requested_by?: number | null
+  requested_actor_label?: string | null
+  approved_by?: number | null
+  approved_actor_label?: string | null
+  applied_by?: number | null
+  applied_actor_label?: string | null
+  rejected_by?: number | null
+  rejected_actor_label?: string | null
+  requested_at?: string | null
+  approved_at?: string | null
+  applied_at?: string | null
+  rejected_at?: string | null
+  created_at?: string | null
 }
 
 export type ServiceRequestServiceVisitSummary = {

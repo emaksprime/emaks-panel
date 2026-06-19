@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\StockCriticalSettingController;
 use App\Http\Controllers\Api\SupportActivationCodeSearchController;
 use App\Http\Controllers\Api\SupportManagementController;
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceAdminOverrideController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
 use App\Http\Controllers\Api\TechnicalServicePartRequestController;
@@ -229,6 +230,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
                 Route::post('service-jobs/{technicalServiceRequest}/note', [PartnerServiceJobController::class, 'note'])
                     ->middleware('panel.access:partner.service_jobs.view')
                     ->name('api.partner.service-jobs.note');
+                Route::post('service-jobs/{technicalServiceRequest}/correction-request', [PartnerServiceJobController::class, 'correctionRequest'])
+                    ->middleware('panel.access:partner.service_jobs.view')
+                    ->name('api.partner.service-jobs.correction-request');
                 Route::get('earnings', [PartnerServiceJobController::class, 'earnings'])
                     ->middleware('panel.access:partner.earnings.view')
                     ->name('api.partner.earnings');
@@ -335,6 +339,21 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::get('requests/{technicalServiceRequest}/audit-logs', [TechnicalServiceController::class, 'auditLogs'])
                 ->middleware('panel.access:technical_service')
                 ->name('api.technical-service.requests.audit-logs');
+            Route::get('requests/{technicalServiceRequest}/overrides', [TechnicalServiceAdminOverrideController::class, 'index'])
+                ->middleware('panel.access:technical_service')
+                ->name('api.technical-service.requests.overrides.index');
+            Route::post('requests/{technicalServiceRequest}/overrides', [TechnicalServiceAdminOverrideController::class, 'store'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.overrides.store');
+            Route::post('requests/{technicalServiceRequest}/overrides/{override}/approve', [TechnicalServiceAdminOverrideController::class, 'approve'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.overrides.approve');
+            Route::post('requests/{technicalServiceRequest}/overrides/{override}/reject', [TechnicalServiceAdminOverrideController::class, 'reject'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.overrides.reject');
+            Route::post('requests/{technicalServiceRequest}/admin-recompute', [TechnicalServiceAdminOverrideController::class, 'recompute'])
+                ->middleware('panel.access:technical_service_manage')
+                ->name('api.technical-service.requests.admin-recompute');
             Route::get('summary', [TechnicalServiceController::class, 'summary'])
                 ->middleware('panel.access:technical_service')
                 ->name('api.technical-service.summary');

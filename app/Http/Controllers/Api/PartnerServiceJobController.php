@@ -17,6 +17,7 @@ use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\PanelAccessService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
+use App\Services\TechnicalService\TechnicalServiceAdminOverrideService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
@@ -92,6 +93,7 @@ class PartnerServiceJobController extends Controller
         private readonly B2BPartnerPortalDataService $portalData,
         private readonly TechnicalServiceWorkflowService $workflow,
         private readonly TechnicalServicePartRequestService $partRequests,
+        private readonly TechnicalServiceAdminOverrideService $adminOverrides,
         private readonly PanelAccessService $panelAccess,
         private readonly EvolutionWhatsAppMessageService $messages,
     ) {}
@@ -765,6 +767,44 @@ class PartnerServiceJobController extends Controller
             'status' => 'ok',
             'action' => $action->action,
             'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+        ]);
+    }
+
+    public function correctionRequest(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
+    {
+        [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
+        $data = $request->validate([
+            'field_key' => ['required', 'string', Rule::in([
+                'customer_phone',
+                'customer_address',
+                'city',
+                'district',
+                'appointment_at',
+                'serial_no',
+                'activation_code',
+                'product_model',
+                'operation_note',
+            ])],
+            'new_value' => ['present'],
+            'reason' => ['required', 'string', 'min:3', 'max:2000'],
+        ]);
+
+        $override = $this->adminOverrides->submit(
+            $job,
+            [
+                ...$data,
+                'mode' => 'request',
+            ],
+            $user,
+            true,
+            \App\Models\TechnicalServiceAdminOverride::SOURCE_PARTNER_REQUEST,
+        );
+
+        return response()->json([
+            'status' => 'pending',
+            'override' => $this->adminOverrides->serialize($override),
+            'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
+            'message' => 'Düzeltme talebi operasyona gönderildi.',
         ]);
     }
 

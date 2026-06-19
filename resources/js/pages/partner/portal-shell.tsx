@@ -288,11 +288,24 @@ type ServiceJob = {
   can_request_revisit: boolean
   can_request_support?: boolean
   can_request_price_revision?: boolean
+  can_request_correction?: boolean
   can_request_customer_otp?: boolean
   can_upload_photos?: boolean
   can_submit_completion: boolean
   can_complete_directly: boolean
   can_reject: boolean
+  correction_requests?: Array<{
+    id: number | string
+    field_key: string
+    field_label: string
+    source: string
+    source_label?: string | null
+    status: string
+    status_label?: string | null
+    requested_value?: { display?: string | null } | null
+    reason?: string | null
+    created_at?: string | null
+  }>
   updated_at: string | null
 }
 
@@ -1013,7 +1026,7 @@ const actionLabel = (action: string, status?: string | null, provided?: string |
 
   const cleanAction = cleanDisplayText(action)
 
-  return labels[action] ?? (hasRawCodeShape(cleanAction) ? 'İşlem kaydı' : cleanAction)
+  return labels[action] ?? (hasRawCodeShape(cleanAction) ? 'Operasyon kaydı' : cleanAction)
 }
 
 const todayDateValue = () => new Date().toISOString().slice(0, 10)
@@ -1123,6 +1136,16 @@ const appointmentSlotOptions = [
 
 type AppointmentSlotValue = (typeof appointmentSlotOptions)[number]
 type AppointmentSlotDraft = { date: string, slot: AppointmentSlotValue }
+
+const correctionFieldOptions = [
+  ['customer_phone', 'Müşteri telefonu'],
+  ['customer_address', 'Servis adresi'],
+  ['city', 'İl'],
+  ['district', 'İlçe'],
+  ['appointment_at', 'Randevu zamanı'],
+  ['serial_no', 'Seri numarası'],
+  ['product_model', 'Ürün modeli'],
+] as const
 
 const slotTimeRange = (slot: AppointmentSlotValue) => {
   const [start_time, end_time] = slot.split('-')
@@ -1450,7 +1473,10 @@ function ServiceJobDetail({
   const [priceLaborAmount, setPriceLaborAmount] = useState(job.assignment_offer?.labor_amount ? String(job.assignment_offer.labor_amount) : '')
   const [priceRouteAmount, setPriceRouteAmount] = useState(job.assignment_offer?.route_fee_amount ? String(job.assignment_offer.route_fee_amount) : '')
   const [priceRevisionNote, setPriceRevisionNote] = useState('')
-  const [activeActionDialog, setActiveActionDialog] = useState<'appointment' | 'reject' | 'revisit' | 'otp' | 'support' | 'price' | 'completion' | 'note' | null>(null)
+  const [correctionFieldKey, setCorrectionFieldKey] = useState<(typeof correctionFieldOptions)[number][0]>('customer_phone')
+  const [correctionValue, setCorrectionValue] = useState('')
+  const [correctionReason, setCorrectionReason] = useState('')
+  const [activeActionDialog, setActiveActionDialog] = useState<'appointment' | 'reject' | 'revisit' | 'otp' | 'support' | 'price' | 'completion' | 'note' | 'correction' | null>(null)
   useEffect(() => {
     onActionDialogOpenChange(activeActionDialog !== null)
 
@@ -1618,6 +1644,42 @@ function ServiceJobDetail({
       onMessage(response.message ?? successMessage)
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'İşlem tamamlanamadı.')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const submitCorrectionRequest = async () => {
+    if (readOnly) {
+      onMessage('Önizleme modunda işlem yapılamaz.')
+
+      return
+    }
+
+    setActionLoading('correction-request')
+    onMessage(null)
+
+    try {
+      const response = await apiRequest(`/api/partner/service-jobs/${job.id}/correction-request`, {
+        method: 'POST',
+        body: JSON.stringify({
+          field_key: correctionFieldKey,
+          new_value: correctionValue.trim(),
+          reason: correctionReason.trim(),
+        }),
+      }) as { job?: ServiceJob, message?: string }
+
+      if (response.job) {
+        onJobUpdated(response.job)
+      }
+
+      await onJobsRefresh?.()
+      onMessage(response.message ?? 'Düzeltme talebi operasyona gönderildi.')
+      setActiveActionDialog(null)
+      setCorrectionValue('')
+      setCorrectionReason('')
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Düzeltme talebi gönderilemedi.')
     } finally {
       setActionLoading(null)
     }
@@ -2125,6 +2187,20 @@ function ServiceJobDetail({
             </div>
           </details>
         )}
+        {(job.correction_requests?.length ?? 0) > 0 && (
+          <details className="mt-5 rounded-2xl bg-blue-50 p-4">
+            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-blue-700">Düzeltme talepleri</summary>
+            <div className="mt-3 grid gap-2">
+              {job.correction_requests?.map((correction) => (
+                <div key={String(correction.id)} className="rounded-xl bg-white px-3 py-2 text-sm">
+                  <div className="font-semibold text-slate-900">{correction.field_label} · {correction.status_label ?? 'Onay bekliyor'}</div>
+                  <p className="mt-1 text-xs text-slate-500">Yeni değer: {correction.requested_value?.display ?? '-'}</p>
+                  {correction.reason ? <p className="mt-1 text-xs text-slate-500">{correction.reason}</p> : null}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
       <aside className="hidden min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-4 lg:block lg:self-start">
         <p className="text-sm font-semibold text-slate-950">Bu aşamadaki aksiyonlar</p>
@@ -2289,6 +2365,13 @@ function ServiceJobDetail({
               Not ekle
             </button>
           </ActionBox>
+          {job.can_request_correction ? (
+          <ActionBox title="Düzeltme talebi" className="hidden lg:grid">
+            <button type="button" disabled={readOnly || actionLoading === 'correction-request'} onClick={() => setActiveActionDialog('correction')} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">
+              Düzeltme iste
+            </button>
+          </ActionBox>
+          ) : null}
         </div>
       </aside>
       {!readOnly && !activeActionDialog && (
@@ -2336,6 +2419,11 @@ function ServiceJobDetail({
           <button type="button" onClick={() => setActiveActionDialog('note')} className="min-h-10 min-w-0 truncate rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold leading-tight text-slate-700">
             Not ekle
           </button>
+          {job.can_request_correction ? (
+            <button type="button" onClick={() => setActiveActionDialog('correction')} className="min-h-10 min-w-0 truncate rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold leading-tight text-blue-800">
+              Düzeltme iste
+            </button>
+          ) : null}
         </div>
       )}
       <ActionDialog title={canRequestAppointmentChange ? 'Randevu değişikliği iste' : 'Randevu saatleri öner'} open={activeActionDialog === 'appointment'} onClose={() => setActiveActionDialog(null)}>
@@ -2542,6 +2630,18 @@ function ServiceJobDetail({
         <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Not yaz" disabled={readOnly} />
         <button type="button" disabled={readOnly || note.trim().length < 3 || actionLoading === 'note'} onClick={() => void submitAction('note', { note, visibility: 'ops' }, 'Not eklendi.').then(() => setActiveActionDialog(null))} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
           Not ekle
+        </button>
+      </ActionDialog>
+      <ActionDialog title="Düzeltme talebi" open={activeActionDialog === 'correction'} onClose={() => setActiveActionDialog(null)}>
+        <select className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={correctionFieldKey} onChange={(event) => setCorrectionFieldKey(event.target.value as typeof correctionFieldKey)} disabled={readOnly || !job.can_request_correction}>
+          {correctionFieldOptions.map(([key, label]) => (
+            <option key={key} value={key}>{label}</option>
+          ))}
+        </select>
+        <input className="w-full rounded-xl border border-slate-200 p-3 text-sm" value={correctionValue} onChange={(event) => setCorrectionValue(event.target.value)} placeholder="Doğru değer" disabled={readOnly || !job.can_request_correction} />
+        <textarea className="min-h-24 w-full rounded-xl border border-slate-200 p-3 text-sm" value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} placeholder="Düzeltme nedeni zorunlu" disabled={readOnly || !job.can_request_correction} />
+        <button type="button" disabled={readOnly || !job.can_request_correction || correctionReason.trim().length < 3 || actionLoading === 'correction-request'} onClick={() => void submitCorrectionRequest()} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">
+          Düzeltme talebi gönder
         </button>
       </ActionDialog>
     </section>

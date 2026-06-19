@@ -1529,6 +1529,8 @@ class TechnicalServiceWorkflowService
         $payload['action_filter_keys'] = $operationalState['action_filter_keys'] ?? [];
         $payload['visible_sections'] = $this->visibleSectionsPayload($request);
         $payload['next_action_payload'] = app(TechnicalServiceNextActionService::class)->forRequest($request, $this->paymentStatusForRequest($request));
+        $payload['admin_override_summary'] = app(TechnicalServiceAdminOverrideService::class)->summaryForRequest($request);
+        $payload['field_correction_policy'] = app(TechnicalServiceAdminOverrideService::class)->correctionPolicyPayload();
 
         if ($includeHistory) {
             if ($this->auditLogTableAvailable()) {
@@ -1538,6 +1540,8 @@ class TechnicalServiceWorkflowService
                 $payload['audit_logs'] = [];
                 $payload['audit_logs_unavailable'] = true;
             }
+
+            $payload['admin_overrides'] = app(TechnicalServiceAdminOverrideService::class)->serializeForRequest($request);
         }
 
         return $payload;

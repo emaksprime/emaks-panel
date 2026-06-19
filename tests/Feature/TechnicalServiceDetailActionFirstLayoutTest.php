@@ -172,7 +172,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
             $this->assertStringNotContainsString('Bilinmeyen işlem', $source);
         }
 
-        $genericFallback = 'İşlem ' . 'kaydı';
+        $genericFallback = 'Operasyon ' . 'kaydı';
         $this->assertStringContainsString('Kayıt detayı', $opsSource);
         $this->assertStringContainsString($genericFallback, $partnerSource);
         $this->assertStringContainsString($genericFallback, $labelService);
@@ -211,7 +211,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
 
         $this->assertStringContainsString('const shouldRenderHistoryPanel = Boolean((request.auditLogs ?? []).length > 0 || events.length > 0)', $source);
         $this->assertStringContainsString('{shouldRenderHistoryPanel ? (', $source);
-        $this->assertStringContainsString('<DetailPanel title="İşlem Geçmişi"', $source);
+        $this->assertStringContainsString('<DetailPanel title="Operasyon Geçmişi"', $source);
         $this->assertStringContainsString('order-[85] rounded-3xl border border-violet-100', $source);
     }
 

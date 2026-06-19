@@ -16,6 +16,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceCancelContextService;
+use App\Services\TechnicalService\TechnicalServiceAdminOverrideService;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
@@ -730,6 +731,12 @@ class B2BPartnerPortalDataService
             'can_upload_photos' => $shouldShowCurrentActions && $canFieldActions,
             'can_submit_completion' => $shouldShowCurrentActions && $completionReadyForSubmit,
             'can_request_price_revision' => $shouldShowCurrentActions && ! $isTerminal && ! $isRejectedInReview && $assignmentOffer !== null,
+            'can_request_correction' => $shouldShowCurrentActions && ! $isTerminal,
+            'correction_requests' => collect(app(TechnicalServiceAdminOverrideService::class)->serializeForRequest($request))
+                ->filter(fn (array $override): bool => ($override['source'] ?? null) === \App\Models\TechnicalServiceAdminOverride::SOURCE_PARTNER_REQUEST)
+                ->take(6)
+                ->values()
+                ->all(),
             'can_complete_directly' => false,
             'can_reject' => $shouldShowCurrentActions && ! $isTerminal && ! $isFinalCheck && ! $isRejectedInReview,
             'updated_at' => $request->updated_at?->toIso8601String(),

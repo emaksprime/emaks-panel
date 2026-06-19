@@ -1,4 +1,4 @@
-import { ChevronDown } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Pencil, XCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 import type { ReactNode, Ref } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -63,6 +63,8 @@ type ServiceRequestDetailsProps = {
   onPriorityChange?: (priority: ServicePriority) => void | Promise<void>
   onWorkflowAction?: (action: string) => void
   onOperationControlChange?: (payload: Partial<NonNullable<ServiceRequest['operationControl']>>) => void | Promise<void>
+  onAdminOverrideSubmit?: (payload: { field_key: string, new_value: unknown, reason: string, mode?: 'apply' | 'request' }) => void | Promise<void>
+  onAdminOverrideReview?: (overrideId: number | string, action: 'approve' | 'reject', note?: string | null) => void | Promise<void>
   onInvoiceSerialRecheck?: () => void | Promise<void>
   onInvoiceSerialAdd?: (serialId: number | string) => void | Promise<void>
   onInvoiceSerialRemove?: (serialId: number | string) => void | Promise<void>
@@ -72,6 +74,8 @@ type ServiceRequestDetailsProps = {
   workflowActionInFlight?: string | null
   operationControlUpdateInFlight?: boolean
   operationControlUpdateError?: string | null
+  adminOverrideInFlight?: boolean
+  adminOverrideError?: string | null
   invoiceSerialRecheckInFlight?: boolean
   invoiceSerialRecheckError?: string | null
   invoiceSerialActionInFlight?: string | null
@@ -283,6 +287,10 @@ const actionCodeLabels: Record<string, string> = {
   technician_updated: 'Usta bilgisi güncellendi',
   technician_earning_message_sent: 'Hakediş bilgisi gönderildi',
   technician_revision_requested: 'Usta revize talep etti',
+  field_override_requested: 'Düzeltme talebi oluşturuldu',
+  field_override_applied: 'Düzeltme uygulandı',
+  field_override_rejected: 'Düzeltme talebi reddedildi',
+  admin_recompute_requested: 'Yeniden hesaplama kontrolü kaydedildi',
   customer_called: 'Müşteri arandı',
   cancel: 'İptal edildi',
   cancelled: 'İptal edildi',
@@ -331,6 +339,87 @@ const formatMoneyValue = (value: number | null | undefined): string => (
     ? `${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} TL`
     : '-'
 )
+
+const correctionFieldGroups: Array<{
+  group: string
+  label: string
+  fields: Array<{ key: string, label: string, input: 'text' | 'number' | 'datetime-local', mode?: 'apply' | 'request' }>
+}> = [
+  {
+    group: 'customer',
+    label: 'Müşteri / adres',
+    fields: [
+      { key: 'customer_phone', label: 'Telefon', input: 'text' },
+      { key: 'customer_address', label: 'Adres', input: 'text' },
+      { key: 'city', label: 'İl', input: 'text' },
+      { key: 'district', label: 'İlçe', input: 'text' },
+    ],
+  },
+  {
+    group: 'schedule',
+    label: 'Randevu',
+    fields: [
+      { key: 'appointment_at', label: 'Randevu zamanı', input: 'datetime-local' },
+      { key: 'appointment_note', label: 'Randevu notu', input: 'text' },
+    ],
+  },
+  {
+    group: 'earning',
+    label: 'Usta / hakediş',
+    fields: [
+      { key: 'assigned_technician_id', label: 'Atanan usta ID', input: 'number' },
+      { key: 'labor_earning', label: 'İşçilik hakedişi', input: 'number' },
+      { key: 'route_earning', label: 'Yol hakedişi', input: 'number' },
+      { key: 'technician_route_distance', label: 'Yol mesafesi', input: 'number' },
+    ],
+  },
+  {
+    group: 'serial',
+    label: 'Seri / ürün',
+    fields: [
+      { key: 'serial_no', label: 'Seri numarası', input: 'text', mode: 'request' },
+      { key: 'activation_code', label: 'Aktivasyon kodu', input: 'text', mode: 'request' },
+      { key: 'product_model', label: 'Ürün modeli', input: 'text', mode: 'request' },
+    ],
+  },
+]
+
+const correctionFieldByKey = new Map(
+  correctionFieldGroups.flatMap((group) => group.fields.map((field) => [field.key, field] as const)),
+)
+
+const requestCorrectionValue = (request: ServiceRequest, fieldKey: string): string => {
+  switch (fieldKey) {
+    case 'customer_phone':
+      return request.phone ?? ''
+    case 'customer_address':
+      return request.address ?? ''
+    case 'city':
+      return request.city ?? ''
+    case 'district':
+      return request.district ?? ''
+    case 'appointment_at':
+      return request.scheduledAt ? request.scheduledAt.slice(0, 16) : ''
+    case 'appointment_note':
+      return String(request.operationControl?.note ?? '')
+    case 'assigned_technician_id':
+      return request.technicianId ? String(request.technicianId) : ''
+    case 'labor_earning':
+      return numericInputValue(request.technicianPaymentAmount)
+    case 'route_earning':
+      return numericInputValue(request.travelFeeAmount)
+    case 'technician_route_distance':
+      return numericInputValue(request.travelRoundTripKm)
+    case 'serial_no':
+      return request.serialNumber ?? ''
+    case 'activation_code':
+      return request.productInfo?.activation_code ?? ''
+    case 'product_model':
+      return request.model ?? ''
+    default:
+      return ''
+  }
+}
 
 const paymentStatusLabel = (status: string | null | undefined, isPaid = false): string => {
   if (isPaid) {
@@ -1259,6 +1348,8 @@ export function ServiceRequestDetails({
   onPriorityChange,
   onWorkflowAction,
   onOperationControlChange,
+  onAdminOverrideSubmit,
+  onAdminOverrideReview,
   onInvoiceSerialRecheck,
   onInvoiceSerialAdd,
   onInvoiceSerialRemove,
@@ -1268,6 +1359,8 @@ export function ServiceRequestDetails({
   workflowActionInFlight = null,
   operationControlUpdateInFlight = false,
   operationControlUpdateError = null,
+  adminOverrideInFlight = false,
+  adminOverrideError = null,
   invoiceSerialRecheckInFlight = false,
   invoiceSerialRecheckError = null,
   invoiceSerialActionInFlight = null,
@@ -1329,6 +1422,8 @@ export function ServiceRequestDetails({
   const invoiceSerials = request.invoiceSerials ?? null
   const serviceVisitHistory = request.serviceVisitHistory ?? null
   const partnerPortalActions = request.partnerPortalActions ?? []
+  const adminOverrides = request.adminOverrides ?? []
+  const pendingAdminOverrides = adminOverrides.filter((override) => override.status === 'pending')
   const openAppointmentProposals = partnerPortalActions.filter((action) => ['appointment_proposed', 'appointment_change_requested'].includes(action.action) && action.status === 'ops_review')
   const jobRejections = partnerPortalActions.filter((action) => action.action === 'job_rejected' && action.status === 'ops_review')
   const customerApprovalRejections = partnerPortalActions.filter((action) => action.action === 'customer_approval_rejected' && action.status === 'ops_review')
@@ -1438,6 +1533,38 @@ export function ServiceRequestDetails({
   const fieldCompletionOpen = fieldCompletionOpenByRequest[request.id] ?? defaultOpenOpsSections.has('fieldCompletion')
   const setFieldCompletionOpen = (open: boolean) => {
     setFieldCompletionOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
+  const [correctionFieldKey, setCorrectionFieldKey] = useState<string | null>(null)
+  const [correctionValue, setCorrectionValue] = useState('')
+  const [correctionReason, setCorrectionReason] = useState('')
+  const correctionField = correctionFieldKey ? correctionFieldByKey.get(correctionFieldKey) ?? null : null
+  const openCorrectionEditor = (fieldKey: string) => {
+    setCorrectionFieldKey(fieldKey)
+    setCorrectionValue(requestCorrectionValue(request, fieldKey))
+    setCorrectionReason('')
+  }
+  const closeCorrectionEditor = () => {
+    setCorrectionFieldKey(null)
+    setCorrectionValue('')
+    setCorrectionReason('')
+  }
+  const submitCorrection = async () => {
+    if (!correctionField || !onAdminOverrideSubmit) {
+      return
+    }
+
+    const inputType = correctionField.input
+    const normalizedValue = inputType === 'number'
+      ? parseNumericInput(correctionValue)
+      : correctionValue.trim()
+
+    await onAdminOverrideSubmit({
+      field_key: correctionField.key,
+      new_value: normalizedValue,
+      reason: correctionReason.trim(),
+      mode: correctionField.mode ?? 'apply',
+    })
+    closeCorrectionEditor()
   }
   const [customerApprovalModalOpen, setCustomerApprovalModalOpen] = useState(false)
   const [customerApprovalCopyMessage, setCustomerApprovalCopyMessage] = useState<string | null>(null)
@@ -5087,7 +5214,7 @@ export function ServiceRequestDetails({
           </DetailPanel>
 
           <DetailPanel
-            title="İşlem Geçmişi / Notlar"
+            title="Operasyon Geçmişi / Notlar"
             summary="Operasyon onayı, karar alanı, not ve yorum özeti"
             tone="history"
             open={finalCheckOpen}
@@ -5653,14 +5780,132 @@ export function ServiceRequestDetails({
           </section>
         </DetailPanel>
 
+        <DetailPanel title="Düzeltme / Denetim" summary="Alan düzeltmeleri ve onay bekleyen kayıtlar" tone="warning" className="order-75">
+          <section className="grid gap-4 rounded-2xl border border-amber-100 bg-amber-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-amber-950">OPS düzeltme defteri</p>
+                <p className="mt-1 text-xs leading-5 text-amber-800">
+                  Düzeltmeler eski/yeni değer, neden, uygulayan ve yeniden kontrol bayraklarıyla denetim kaydına yazılır.
+                </p>
+              </div>
+              <Badge variant={pendingAdminOverrides.length > 0 ? 'warning' : 'outline'}>
+                {pendingAdminOverrides.length > 0 ? `${pendingAdminOverrides.length} onay bekliyor` : 'Bekleyen yok'}
+              </Badge>
+            </div>
+
+            {adminOverrideError ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800">
+                {adminOverrideError}
+              </div>
+            ) : null}
+
+            {pendingAdminOverrides.length > 0 ? (
+              <div className="grid gap-2">
+                <div className="rounded-xl border border-amber-200 bg-amber-100 px-3 py-2 text-sm font-semibold text-amber-950">
+                  Bu işte bekleyen düzeltme talepleri var.
+                </div>
+                {pendingAdminOverrides.map((override) => (
+                  <div key={String(override.id)} className="rounded-xl border border-amber-200 bg-white p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-950">{override.field_label}</p>
+                        <p className="mt-1 text-xs text-slate-600 break-words">
+                          Eski: {override.old_value?.display ?? '-'} · Yeni: {override.requested_value?.display ?? '-'}
+                        </p>
+                        {override.reason ? <p className="mt-1 text-xs text-slate-600 break-words">Neden: {override.reason}</p> : null}
+                        <p className="mt-1 text-[11px] font-semibold text-amber-800">
+                          {override.source_label ?? 'Düzeltme talebi'} · {dateTimeOrEmpty(override.created_at, 'Tarih yok')}
+                        </p>
+                      </div>
+                      {onAdminOverrideReview ? (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <Button type="button" size="sm" variant="outline" disabled={adminOverrideInFlight} onClick={() => void onAdminOverrideReview(override.id, 'approve', 'OPS onayıyla uygulandı.')}>
+                            <CheckCircle2 className="mr-1 h-4 w-4" />
+                            Onayla
+                          </Button>
+                          <Button type="button" size="sm" variant="outline" disabled={adminOverrideInFlight} onClick={() => void onAdminOverrideReview(override.id, 'reject', 'OPS tarafından reddedildi.')}>
+                            <XCircle className="mr-1 h-4 w-4" />
+                            Reddet
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {correctionFieldGroups.map((group) => (
+                <div key={group.group} className="rounded-xl border border-white bg-white/80 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{group.label}</p>
+                  <div className="mt-3 grid gap-2">
+                    {group.fields.map((field) => (
+                      <Button key={field.key} type="button" variant="outline" size="sm" className="justify-start" disabled={!onAdminOverrideSubmit || adminOverrideInFlight} onClick={() => openCorrectionEditor(field.key)}>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        {field.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {adminOverrides.length > pendingAdminOverrides.length ? (
+              <details className="rounded-xl border border-amber-100 bg-white p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-amber-900">Son uygulanan / reddedilen düzeltmeler</summary>
+                <div className="mt-3 grid gap-2">
+                  {adminOverrides.filter((override) => override.status !== 'pending').slice(0, 6).map((override) => (
+                    <div key={String(override.id)} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <strong>{override.field_label}</strong>
+                        <span>{override.status_label ?? 'Düzeltme kaydı'}</span>
+                      </div>
+                      <p className="mt-1 break-words">Eski: {override.old_value?.display ?? '-'} · Yeni: {(override.new_value ?? override.requested_value)?.display ?? '-'}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+
+            {correctionField ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-950">Alanı düzelt: {correctionField.label}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {correctionField.mode === 'request' ? 'Bu hassas alan onay talebi olarak kaydedilir.' : 'Bu alan doğrudan uygulanır ve denetim kaydına yazılır.'}
+                    </p>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={closeCorrectionEditor}>Kapat</Button>
+                </div>
+                <div className="mt-3 grid gap-3">
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">
+                    Yeni değer
+                    <Input type={correctionField.input} value={correctionValue} onChange={(event) => setCorrectionValue(event.target.value)} />
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-slate-700">
+                    Düzeltme nedeni
+                    <Input value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} placeholder="Neden zorunlu" />
+                  </label>
+                  <Button type="button" disabled={adminOverrideInFlight || correctionReason.trim().length < 3} onClick={() => void submitCorrection()}>
+                    {adminOverrideInFlight ? 'Kaydediliyor...' : correctionField.mode === 'request' ? 'Onay talebi oluştur' : 'Düzeltmeyi uygula'}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </section>
+        </DetailPanel>
+
         {shouldRenderHistoryPanel ? (
-        <DetailPanel title="İşlem Geçmişi" summary="Audit kayıtları ve durum akışı" tone="history" className={opsSectionClass('history', activeOpsSection)}>
+        <DetailPanel title="Operasyon Geçmişi" summary="Denetim kayıtları ve durum akışı" tone="history" className={opsSectionClass('history', activeOpsSection)}>
           <section className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">İşlem Kayıtları</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Operasyon kayıtları</p>
             <div className="mt-4 space-y-3">
               {(request.auditLogs ?? []).length === 0 ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-                  Audit kaydı bulunmuyor.
+                  Denetim kaydı bulunmuyor.
                 </div>
               ) : (
                 (request.auditLogs ?? []).map((log) => (

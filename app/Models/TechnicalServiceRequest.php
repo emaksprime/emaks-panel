@@ -220,6 +220,11 @@ class TechnicalServiceRequest extends Model
             ->where('entity_type', 'technical_service_request');
     }
 
+    public function adminOverrides(): HasMany
+    {
+        return $this->hasMany(TechnicalServiceAdminOverride::class, 'request_id');
+    }
+
     public function technicianRecord(): BelongsTo
     {
         return $this->belongsTo(TechnicalServiceTechnician::class, 'technical_service_technician_id');

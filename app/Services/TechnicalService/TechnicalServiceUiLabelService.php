@@ -84,8 +84,12 @@ class TechnicalServiceUiLabelService
             'second_visit_required' => 'Tekrar randevu gerekli',
             'technician_updated' => 'Usta bilgisi güncellendi',
             'technician_revision_requested' => 'Usta revize talep etti',
-            '' => 'İşlem kaydı',
-            default => self::safeFallback($code, 'İşlem kaydı'),
+            'field_override_requested' => 'Düzeltme talebi oluşturuldu',
+            'field_override_applied' => 'Düzeltme uygulandı',
+            'field_override_rejected' => 'Düzeltme talebi reddedildi',
+            'admin_recompute_requested' => 'Yeniden hesaplama kontrolü kaydedildi',
+            '' => 'Operasyon kaydı',
+            default => self::safeFallback($code, 'Operasyon kaydı'),
         };
     }
 
