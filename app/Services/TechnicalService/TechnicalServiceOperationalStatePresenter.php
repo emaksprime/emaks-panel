@@ -2,6 +2,7 @@
 
 namespace App\Services\TechnicalService;
 
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
@@ -55,12 +56,19 @@ class TechnicalServiceOperationalStatePresenter
             'customerConfirmations' => fn ($query) => $query->latest(),
             'partRequests' => fn ($query) => $query->latest(),
             'childRequests',
+            'latestAssignmentOffer',
         ]);
 
         $hasDelegatedServiceVisit = $this->hasNonCancelledServiceVisitChild($request);
         $activeAction = $hasDelegatedServiceVisit ? null : $this->activeOpsReviewAction($request);
         $activePartRequest = $hasDelegatedServiceVisit ? null : $this->activePartRequest($request);
         $doorIncompatible = ! $hasDelegatedServiceVisit && $this->doorIncompatible($request);
+        $isCancellationReview = $this->isCancellationReview($request);
+        if ($isCancellationReview) {
+            $activeAction = null;
+            $activePartRequest = null;
+            $doorIncompatible = false;
+        }
         $isCancelled = $this->isCancelled($request);
         $isCompleted = $this->isCompleted($request);
         $isPendingFinalCheck = ! $isCompleted
@@ -74,6 +82,7 @@ class TechnicalServiceOperationalStatePresenter
             $request,
             $activeAction,
             $isCancelled,
+            $isCancellationReview,
             $isCompleted,
             $isPendingFinalCheck,
             $isAppointmentConfirmed,
@@ -84,6 +93,7 @@ class TechnicalServiceOperationalStatePresenter
             $request,
             $activeAction,
             $isCancelled,
+            $isCancellationReview,
             $isCompleted,
             $isPendingFinalCheck,
             $isAppointmentConfirmed,
@@ -91,7 +101,7 @@ class TechnicalServiceOperationalStatePresenter
             $activePartRequest,
         );
 
-        $attention = $this->attention($request, $activeAction, $activePartRequest, $appointmentAttention, $opsColumn, $isCompleted, $isCancelled, $doorIncompatible);
+        $attention = $this->attention($request, $activeAction, $activePartRequest, $appointmentAttention, $opsColumn, $isCompleted, $isCancelled, $isCancellationReview, $doorIncompatible);
         $displayActionLabel = $this->displayActionLabel($request, $activeAction, $activePartRequest, $attention, $opsColumn, $isCompleted);
         $isCustomerApprovalRequired = $this->customerApprovalRequired($request, $opsColumn, $isCompleted);
         $isFieldDocsRequired = $this->fieldDocumentsRequired($request, $opsColumn, $isCompleted);
@@ -104,6 +114,7 @@ class TechnicalServiceOperationalStatePresenter
             $displayActionLabel,
             $isCompleted,
             $isCancelled,
+            $isCancellationReview,
             $isPendingFinalCheck,
             $isAppointmentConfirmed,
             $isCustomerApprovalRequired,
@@ -118,6 +129,7 @@ class TechnicalServiceOperationalStatePresenter
             $displayActionLabel,
             $isCompleted,
             $isCancelled,
+            $isCancellationReview,
             $isAppointmentConfirmed,
             $activePartRequest,
         );
@@ -152,6 +164,7 @@ class TechnicalServiceOperationalStatePresenter
             'allowed_ops_actions' => [],
             'allowed_technician_actions' => [],
             'is_completed' => $isCompleted,
+            'is_cancellation_review' => $isCancellationReview,
             'is_pending_final_check' => $isPendingFinalCheck,
             'is_appointment_confirmed' => $isAppointmentConfirmed,
             'is_customer_approval_required' => $isCustomerApprovalRequired,
@@ -167,6 +180,7 @@ class TechnicalServiceOperationalStatePresenter
         TechnicalServiceRequest $request,
         ?TechnicalServicePartnerJobAction $activeAction,
         bool $isCancelled,
+        bool $isCancellationReview,
         bool $isCompleted,
         bool $isPendingFinalCheck,
         bool $isAppointmentConfirmed,
@@ -179,6 +193,10 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($isCompleted) {
             return self::OPS_COLUMN_COMPLETED;
+        }
+
+        if ($isCancellationReview) {
+            return self::OPS_COLUMN_REVIEW;
         }
 
         if ($isPendingFinalCheck) {
@@ -221,6 +239,7 @@ class TechnicalServiceOperationalStatePresenter
         TechnicalServiceRequest $request,
         ?TechnicalServicePartnerJobAction $activeAction,
         bool $isCancelled,
+        bool $isCancellationReview,
         bool $isCompleted,
         bool $isPendingFinalCheck,
         bool $isAppointmentConfirmed,
@@ -233,6 +252,10 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($isPendingFinalCheck) {
             return self::PARTNER_COLUMN_FINAL_CHECK;
+        }
+
+        if ($isCancellationReview) {
+            return self::PARTNER_COLUMN_OPS_REVIEW;
         }
 
         if ($doorIncompatible) {
@@ -286,8 +309,7 @@ class TechnicalServiceOperationalStatePresenter
 
         $opsReview = $request->partnerJobActions
             ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
-                && ! $this->actionResolvedForNewWork($action)
-                && ! $this->actionPredatesActiveReopen($request, $action));
+                && ! $this->actionResolvedForCurrentWork($request, $action));
 
         foreach ([
             TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED,
@@ -368,6 +390,64 @@ class TechnicalServiceOperationalStatePresenter
             || isset($payload['service_visit_created']);
     }
 
+    private function actionResolvedForCurrentWork(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
+    {
+        return $this->actionResolvedForNewWork($action)
+            || $this->actionPredatesActiveReopen($request, $action)
+            || $this->priceRevisionResolvedByAssignmentOffer($request, $action);
+    }
+
+    private function priceRevisionResolvedByAssignmentOffer(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
+    {
+        if ($action->action !== TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED) {
+            return false;
+        }
+
+        if ($action->status !== TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return true;
+        }
+
+        $payload = is_array($action->payload) ? $action->payload : [];
+        if (($payload['revision_status'] ?? null) === 'resolved' || isset($payload['resolved_assignment_offer_id'])) {
+            return true;
+        }
+
+        $offer = $request->latestAssignmentOffer;
+        if (! $offer instanceof TechnicalServiceAssignmentOffer) {
+            return false;
+        }
+
+        $actionTechnicianId = (int) ($action->technical_service_technician_id ?? 0);
+        if ($actionTechnicianId > 0 && $actionTechnicianId !== (int) $offer->technical_service_technician_id) {
+            return false;
+        }
+
+        $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+        $resolvedIds = collect($metadata['resolved_price_revision_action_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->values();
+        if ($resolvedIds->contains((int) $action->id)) {
+            return true;
+        }
+
+        $revisedAt = $offer->updated_at;
+        if (isset($metadata['revised_at'])) {
+            try {
+                $revisedAt = CarbonImmutable::parse((string) $metadata['revised_at']);
+            } catch (\Throwable) {
+                $revisedAt = $offer->updated_at;
+            }
+        }
+
+        $actionAt = $action->created_at ?? $action->updated_at;
+
+        return $offer->status === TechnicalServiceAssignmentOffer::STATUS_REVISED
+            && $revisedAt instanceof CarbonInterface
+            && $actionAt instanceof CarbonInterface
+            && $revisedAt->greaterThanOrEqualTo($actionAt);
+    }
+
     private function actionPredatesActiveReopen(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
     {
         if ($request->reopened_at === null) {
@@ -417,6 +497,20 @@ class TechnicalServiceOperationalStatePresenter
             || $this->statusIn($request->status, self::CANCELLED_STATUSES);
     }
 
+    private function isCancellationReview(TechnicalServiceRequest $request): bool
+    {
+        if ($this->isCancelled($request)) {
+            return false;
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $review = $operationControl[TechnicalServiceWorkflowService::CANCELLATION_REVIEW_KEY] ?? $operationControl['cancellation_review'] ?? null;
+        $reviewStatus = is_array($review) ? (string) ($review['status'] ?? '') : '';
+
+        return in_array($reviewStatus, ['pending', 'review'], true)
+            || (string) $request->pending_reason === TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON;
+    }
+
     private function isActiveReopenedWork(TechnicalServiceRequest $request): bool
     {
         if ($request->reopened_at === null) {
@@ -449,7 +543,95 @@ class TechnicalServiceOperationalStatePresenter
 
     private function partRequestAttentionReason(TechnicalServicePartRequest $partRequest): string
     {
-        return TechnicalServicePartRequest::labelForStatus((string) $partRequest->status);
+        return $this->partRequestActionState($partRequest)['reason'];
+    }
+
+    /**
+     * @return array{sort_priority:int,attention_level:string,owner:string,priority:string,reason:string,hint:string,title:string}
+     */
+    private function partRequestActionState(TechnicalServicePartRequest $partRequest): array
+    {
+        if ($partRequest->isChargePaymentPending()) {
+            return [
+                'sort_priority' => 7,
+                'attention_level' => 'info',
+                'owner' => 'customer',
+                'priority' => 'normal',
+                'reason' => 'Müşteri parça ödemesi bekleniyor',
+                'hint' => 'Ücretli parça için müşteri ödemesi alınmadan gönderim yapılamaz.',
+                'title' => 'Parça ödemesi bekleniyor',
+            ];
+        }
+
+        if ($partRequest->isChargePaymentPaid() && $partRequest->status === TechnicalServicePartRequest::STATUS_APPROVED) {
+            return [
+                'sort_priority' => 4,
+                'attention_level' => 'warning',
+                'owner' => 'ops',
+                'priority' => 'high',
+                'reason' => 'Parça ödemesi alındı',
+                'hint' => 'Ödeme alındı. Parça tedarik ve gönderim süreci operasyon tarafında takip edilmeli.',
+                'title' => 'Parça ödemesi alındı',
+            ];
+        }
+
+        return match ((string) $partRequest->status) {
+            TechnicalServicePartRequest::STATUS_REQUESTED,
+            TechnicalServicePartRequest::STATUS_OPS_REVIEW => [
+                'sort_priority' => 4,
+                'attention_level' => 'warning',
+                'owner' => 'ops',
+                'priority' => 'high',
+                'reason' => 'Parça talebi operasyon incelemesinde',
+                'hint' => 'Usta yedek parça talep etti. Operasyon karar vermeli.',
+                'title' => 'Parça talebi',
+            ],
+            TechnicalServicePartRequest::STATUS_ORDERED => [
+                'sort_priority' => 5,
+                'attention_level' => 'warning',
+                'owner' => 'ops',
+                'priority' => 'normal',
+                'reason' => 'Parça tedarikte',
+                'hint' => 'Parça tedarik ve gönderim bilgisi operasyon tarafında takip edilmeli.',
+                'title' => 'Parça tedarikte',
+            ],
+            TechnicalServicePartRequest::STATUS_SENT => [
+                'sort_priority' => 12,
+                'attention_level' => 'info',
+                'owner' => 'technician',
+                'priority' => 'normal',
+                'reason' => 'Parça gönderildi; usta teslim almalı',
+                'hint' => 'Parça gönderildi. Ustanın teslim aldım demesi bekleniyor.',
+                'title' => 'Parça gönderildi',
+            ],
+            TechnicalServicePartRequest::STATUS_RECEIVED => [
+                'sort_priority' => 6,
+                'attention_level' => 'warning',
+                'owner' => 'ops',
+                'priority' => 'normal',
+                'reason' => 'Parça teslim alındı; tekrar servis kararını verin',
+                'hint' => 'Parça teslim alındı. Operasyon servis gerekip gerekmediğini netleştirmeli.',
+                'title' => 'Parça teslim alındı',
+            ],
+            TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED => [
+                'sort_priority' => 3,
+                'attention_level' => 'critical',
+                'owner' => 'ops',
+                'priority' => 'critical',
+                'reason' => 'Parça sonrası servis gerekli',
+                'hint' => 'Parça sonrası servis kaydı operasyon tarafında oluşturulmalı.',
+                'title' => 'Parça sonrası servis',
+            ],
+            default => [
+                'sort_priority' => 8,
+                'attention_level' => 'warning',
+                'owner' => 'ops',
+                'priority' => 'normal',
+                'reason' => $partRequest->statusLabel(),
+                'hint' => 'Parça talebi operasyon takibinde.',
+                'title' => 'Parça talebi',
+            ],
+        };
     }
 
     private function isAppointmentConfirmed(TechnicalServiceRequest $request): bool
@@ -535,10 +717,22 @@ class TechnicalServiceOperationalStatePresenter
         string $opsColumn,
         bool $isCompleted,
         bool $isCancelled,
+        bool $isCancellationReview,
         bool $doorIncompatible,
     ): array {
         if ($isCompleted || $isCancelled) {
             return $this->normalAttention($request, 100);
+        }
+
+        if ($isCancellationReview) {
+            return [
+                'sort_priority' => 3,
+                'attention_level' => 'warning',
+                'attention_reason' => 'İptal talebi incelenmeli',
+                'action_title' => 'İptal incelemede',
+                'last_action_at' => $request->updated_at?->toDateTimeString(),
+                'action' => 'cancel_review',
+            ];
         }
 
         if ($doorIncompatible) {
@@ -552,19 +746,13 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         if ($activePartRequest instanceof TechnicalServicePartRequest) {
-            $payload = match ((string) $activePartRequest->status) {
-                TechnicalServicePartRequest::STATUS_REQUESTED,
-                TechnicalServicePartRequest::STATUS_OPS_REVIEW => [4, 'warning'],
-                TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED => [4, 'critical'],
-                TechnicalServicePartRequest::STATUS_SENT,
-                TechnicalServicePartRequest::STATUS_RECEIVED => [8, 'warning'],
-                default => [9, 'warning'],
-            };
+            $payload = $this->partRequestActionState($activePartRequest);
 
             return [
-                'sort_priority' => $payload[0],
-                'attention_level' => $payload[1],
-                'attention_reason' => $this->partRequestAttentionReason($activePartRequest),
+                'sort_priority' => $payload['sort_priority'],
+                'attention_level' => $payload['attention_level'],
+                'attention_reason' => $payload['reason'],
+                'action_title' => $payload['title'],
                 'last_action_at' => $activePartRequest->updated_at?->toDateTimeString(),
                 'action' => 'part_request_'.$activePartRequest->status,
             ];
@@ -731,6 +919,7 @@ class TechnicalServiceOperationalStatePresenter
         string $displayActionLabel,
         bool $isCompleted,
         bool $isCancelled,
+        bool $isCancellationReview,
         bool $isPendingFinalCheck,
         bool $isAppointmentConfirmed,
         bool $isCustomerApprovalRequired,
@@ -741,6 +930,10 @@ class TechnicalServiceOperationalStatePresenter
 
         if ($isCompleted || $isCancelled) {
             return $this->actionMetaPayload('none', 'low', $displayActionLabel, null);
+        }
+
+        if ($isCancellationReview || $action === 'cancel_review') {
+            return $this->actionMetaPayload('ops', 'high', 'İptal incelemede', 'İptal talebi incelenmeli');
         }
 
         if ($action === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED) {
@@ -756,16 +949,9 @@ class TechnicalServiceOperationalStatePresenter
         }
 
         if ($activePartRequest instanceof TechnicalServicePartRequest) {
-            return match ((string) $activePartRequest->status) {
-                TechnicalServicePartRequest::STATUS_REQUESTED,
-                TechnicalServicePartRequest::STATUS_OPS_REVIEW => $this->actionMetaPayload('ops', 'high', $displayActionLabel, 'Usta yedek parça talep etti. Operasyon karar vermeli.'),
-                TechnicalServicePartRequest::STATUS_APPROVED,
-                TechnicalServicePartRequest::STATUS_ORDERED => $this->actionMetaPayload('ops', 'normal', $displayActionLabel, 'Parça tedarik ve gönderim bilgisi operasyon tarafında takip edilmeli.'),
-                TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED => $this->actionMetaPayload('ops', 'critical', $displayActionLabel, 'Parça sonrası servis kaydı operasyon tarafında oluşturulmalı.'),
-                TechnicalServicePartRequest::STATUS_SENT => $this->actionMetaPayload('technician', 'normal', $displayActionLabel, 'Parça gönderildi. Ustanın teslim aldım demesi bekleniyor.'),
-                TechnicalServicePartRequest::STATUS_RECEIVED => $this->actionMetaPayload('system', 'low', $displayActionLabel, 'Parça teslim alındı. Operasyon aksiyonu yok.'),
-                default => $this->actionMetaPayload('ops', 'normal', $displayActionLabel, 'Parça talebi operasyon takibinde.'),
-            };
+            $payload = $this->partRequestActionState($activePartRequest);
+
+            return $this->actionMetaPayload($payload['owner'], $payload['priority'], $payload['reason'], $payload['hint']);
         }
 
         if ($activeAction instanceof TechnicalServicePartnerJobAction) {
@@ -850,6 +1036,7 @@ class TechnicalServiceOperationalStatePresenter
         string $displayActionLabel,
         bool $isCompleted,
         bool $isCancelled,
+        bool $isCancellationReview,
         bool $isAppointmentConfirmed,
         ?TechnicalServicePartRequest $activePartRequest,
     ): array {
@@ -862,8 +1049,10 @@ class TechnicalServiceOperationalStatePresenter
 
         $isPartOrRepeat = $this->isPartOrRepeatBucket($request, $activePartRequest);
         $isTechnicianRejected = ($attention['action'] ?? null) === TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED;
+        $isCancelReview = $isCancellationReview || ($attention['action'] ?? null) === 'cancel_review';
         $isScheduled = ! $isCompleted
             && ! $isCancelled
+            && ! $isCancelReview
             && ($isAppointmentConfirmed || $this->hasAppointment($request) || $opsColumn === self::OPS_COLUMN_ASSIGNED);
 
         $filterKeys = [];
@@ -873,6 +1062,9 @@ class TechnicalServiceOperationalStatePresenter
         if ($isTechnicianRejected) {
             $filterKeys[] = 'technician_rejected';
             $filterKeys[] = 'reassignment_required';
+        }
+        if ($isCancelReview) {
+            $filterKeys[] = 'cancel_review';
         }
         if ($owner === 'technician') {
             $filterKeys[] = 'technician_action';
@@ -904,9 +1096,9 @@ class TechnicalServiceOperationalStatePresenter
         return [
             'action_owner' => $owner,
             'action_owner_label' => $this->actionOwnerLabel($owner),
-            'action_priority' => $isTechnicianRejected ? 1 : $this->actionPriorityScore($owner, (string) ($actionMeta['action_priority'] ?? 'low'), $attention, $bucket),
+            'action_priority' => $isTechnicianRejected ? 1 : ($isCancelReview ? 3 : $this->actionPriorityScore($owner, (string) ($actionMeta['action_priority'] ?? 'low'), $attention, $bucket)),
             'action_bucket' => $bucket,
-            'card_tone' => $isTechnicianRejected ? 'danger' : $this->cardTone($owner, $isCompleted, $isCancelled),
+            'card_tone' => $isTechnicianRejected ? 'danger' : ($isCancelReview ? 'warning' : $this->cardTone($owner, $isCompleted, $isCancelled)),
             'action_title' => $attention['action_title'] ?? $displayActionLabel,
             'action_reason' => $actionMeta['action_hint'] ?? $attention['attention_reason'] ?? $displayActionLabel,
             'action_filter_keys' => array_values(array_unique($filterKeys)),

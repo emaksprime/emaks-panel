@@ -373,6 +373,10 @@ const buildBadges = (request: ServiceRequest): RequestBadge[] => {
 
   if (column === 'cancelled') {
     addBadge({ label: 'İptal', tone: 'rose' })
+
+    if (request.cancelContext?.earning_excluded) {
+      addBadge({ label: 'Hakedişe dahil değil', tone: 'neutral' })
+    }
   }
 
   if (column === 'review' && badges.length === 0) {
@@ -440,6 +444,14 @@ const columnDetailRows = (
       { label: 'Tamamlanma', value: formatTechnicalServiceDateTime(request.completedAt ?? null, '-') },
       { label: 'Usta', value: truncateText(request.technician || '-') },
       { label: 'Hakediş', value: assignmentOfferStatusLabel(request.assignmentOffer?.status) },
+    ]
+  }
+
+  if (column === 'cancelled') {
+    return [
+      { label: 'İptal', value: truncateText(request.cancelContext?.summary ?? 'İş iptal edildi') },
+      { label: 'Son usta', value: truncateText(request.cancelContext?.last_technician_name ?? request.technician ?? '-') },
+      { label: 'Hakediş', value: truncateText(request.cancelContext?.earning_excluded_label ?? 'Hakedişe dahil değil') },
     ]
   }
 

@@ -37,6 +37,8 @@ class TechnicalServicePartRequestService
             $partName = 'Yedek parça';
         }
 
+        $this->assertNoOpenPartRequest($request);
+
         $part = TechnicalServicePartRequest::query()->create([
             'technical_service_request_id' => $request->id,
             'root_request_id' => $this->rootRequest($request)->id,
@@ -131,10 +133,18 @@ class TechnicalServicePartRequestService
             ]);
         }
 
+        $this->assertTransitionAllowed($partRequest, $targetStatus);
+
         $note = trim((string) ($payload['note'] ?? ''));
         if ($targetStatus === TechnicalServicePartRequest::STATUS_REJECTED && $note === '') {
             throw ValidationException::withMessages([
                 'note' => 'Parça talebini reddetmek için operasyon notu zorunludur.',
+            ]);
+        }
+
+        if ($targetStatus === TechnicalServicePartRequest::STATUS_SENT && $partRequest->isChargePaymentPending()) {
+            throw ValidationException::withMessages([
+                'payment' => 'Ücretli parça ödemesi alınmadan parça gönderildi işaretlenemez.',
             ]);
         }
 
@@ -239,7 +249,7 @@ class TechnicalServicePartRequestService
             ])->save();
         }
 
-        $this->recordEvent($partRequest->request, 'part_request_'.$targetStatus, TechnicalServicePartRequest::labelForStatus($targetStatus), $note !== '' ? $note : null, $user, [
+        $this->recordEvent($partRequest->request, 'part_request_'.$targetStatus, $this->eventTitleForTransition($partRequest, $targetStatus), $note !== '' ? $note : null, $user, [
             'part_request_id' => $partRequest->id,
             'status' => $targetStatus,
             'customer_charge_payment_id' => $customerCharge?->id,
@@ -281,7 +291,7 @@ class TechnicalServicePartRequestService
                     TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
                 ], true)) {
                     throw ValidationException::withMessages([
-                        'part_request' => 'Parca teslim alindiktan sonra SRV hazirlanabilir.',
+                        'part_request' => 'Parça teslim alındıktan sonra SRV hazırlanabilir.',
                     ]);
                 }
 
@@ -323,8 +333,9 @@ class TechnicalServicePartRequestService
                 'source_part_request' => $partRequest,
                 'source_partner_action_id' => $partRequest->source_partner_action_id,
                 'description' => 'Parça sonrası servis: '.$partRequest->part_name,
+                'copy_operation_control' => false,
                 'parent_event_type' => 'part_request_srv_created',
-                'parent_event_title' => 'SRV kaydı oluşturuldu',
+                'parent_event_title' => 'Parça sonrası servis oluşturuldu',
             ],
         );
 
@@ -372,8 +383,8 @@ class TechnicalServicePartRequestService
         return TechnicalServiceRequest::query()
             ->where('source_part_request_id', $partRequest->id)
             ->whereNull('cancelled_at')
-            ->whereNotIn('status', ['Ä°ptal', 'Iptal', 'Ã„Â°ptal'])
-            ->whereNotIn('workflow_status', ['Ä°ptal', 'Iptal', 'Ã„Â°ptal'])
+            ->whereNotIn('status', ['İptal', 'Iptal'])
+            ->whereNotIn('workflow_status', ['İptal', 'Iptal'])
             ->latest('id')
             ->first();
     }
@@ -442,6 +453,100 @@ class TechnicalServicePartRequestService
             ->exists();
     }
 
+    private function assertNoOpenPartRequest(TechnicalServiceRequest $request): void
+    {
+        if (! $this->hasOpenBlockingPartRequest($request)) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'part_request' => 'Açık parça talebi varken yeni parça talebi oluşturulamaz.',
+        ]);
+    }
+
+    private function assertTransitionAllowed(TechnicalServicePartRequest $partRequest, string $targetStatus): void
+    {
+        $currentStatus = (string) $partRequest->status;
+
+        if ($targetStatus === TechnicalServicePartRequest::STATUS_APPROVED
+            && ! in_array($currentStatus, [
+                TechnicalServicePartRequest::STATUS_REQUESTED,
+                TechnicalServicePartRequest::STATUS_OPS_REVIEW,
+                TechnicalServicePartRequest::STATUS_APPROVED,
+            ], true)
+        ) {
+            throw ValidationException::withMessages([
+                'status' => 'Parça kararı sadece inceleme aşamasındaki talepte verilebilir.',
+            ]);
+        }
+
+        if ($targetStatus === TechnicalServicePartRequest::STATUS_RECEIVED
+            && ! in_array($currentStatus, [
+                TechnicalServicePartRequest::STATUS_SENT,
+                TechnicalServicePartRequest::STATUS_RECEIVED,
+            ], true)
+        ) {
+            throw ValidationException::withMessages([
+                'status' => 'Parça teslim alındı aksiyonu sadece parça gönderildikten sonra yapılabilir.',
+            ]);
+        }
+
+        if ($targetStatus === TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED
+            && ! in_array($currentStatus, [
+                TechnicalServicePartRequest::STATUS_RECEIVED,
+                TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
+            ], true)
+        ) {
+            throw ValidationException::withMessages([
+                'status' => 'Tekrar servis kararı için parça önce teslim alınmış olmalıdır.',
+            ]);
+        }
+    }
+
+    private function eventTitleForTransition(TechnicalServicePartRequest $partRequest, string $targetStatus): string
+    {
+        if ($targetStatus === TechnicalServicePartRequest::STATUS_APPROVED && $partRequest->isChargePaymentPending()) {
+            return 'Parça ödemesi istendi';
+        }
+
+        if ($targetStatus === TechnicalServicePartRequest::STATUS_APPROVED && $partRequest->isChargePaymentPaid()) {
+            return 'Parça ödemesi alındı';
+        }
+
+        return TechnicalServicePartRequest::labelForStatus($targetStatus);
+    }
+
+    private function nextActionLabel(TechnicalServicePartRequest $partRequest, bool $forPartner = false): string
+    {
+        if ($partRequest->isChargePaymentPending()) {
+            return 'Müşteri parça ödemesi bekleniyor';
+        }
+
+        if ($partRequest->isChargePaymentPaid() && $partRequest->status === TechnicalServicePartRequest::STATUS_APPROVED) {
+            return 'Parça ödemesi alındı; tedarik/gönderim operasyon tarafında';
+        }
+
+        return match ((string) $partRequest->status) {
+            TechnicalServicePartRequest::STATUS_REQUESTED,
+            TechnicalServicePartRequest::STATUS_OPS_REVIEW => $forPartner
+                ? 'Parça talebi operasyon incelemesinde'
+                : 'Parça talebi inceleniyor',
+            TechnicalServicePartRequest::STATUS_APPROVED => 'Parça tedarik/gönderim bekliyor',
+            TechnicalServicePartRequest::STATUS_ORDERED => 'Parça tedarikte',
+            TechnicalServicePartRequest::STATUS_SENT => $forPartner
+                ? 'Parça gönderildi; teslim aldığınızda işaretleyin'
+                : 'Parça gönderildi; usta teslim almalı',
+            TechnicalServicePartRequest::STATUS_RECEIVED => $forPartner
+                ? 'Parça teslim alındı; operasyon servis planını netleştiriyor'
+                : 'Parça teslim alındı; tekrar servis kararını verin',
+            TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED => 'Parça sonrası servis gerekli',
+            TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED => 'Parça sonrası servis oluşturuldu',
+            TechnicalServicePartRequest::STATUS_REJECTED => 'Parça talebi reddedildi',
+            TechnicalServicePartRequest::STATUS_CLOSED => 'Parça talebi kapatıldı',
+            default => 'Parça talebi takipte',
+        };
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -465,6 +570,7 @@ class TechnicalServicePartRequestService
             'source_partner_action_id' => $partRequest->source_partner_action_id,
             'status' => $partRequest->status,
             'status_label' => $forPartner ? $partRequest->partnerStatusLabel() : $partRequest->statusLabel(),
+            'next_action_label' => $this->nextActionLabel($partRequest, $forPartner),
             'part_name' => $partRequest->part_name,
             'part_code' => $partRequest->part_code,
             'quantity' => $partRequest->quantity,
@@ -488,6 +594,13 @@ class TechnicalServicePartRequestService
             'total_amount_label' => isset($metadata['total_amount']) ? $this->moneyLabel((float) $metadata['total_amount']) : null,
             'customer_message' => $forPartner ? null : ($metadata['customer_message'] ?? null),
             'charge_status' => $customerCharge['status'] ?? $metadata['charge_status'] ?? null,
+            'is_payment_required' => $partRequest->isChargePaymentPending(),
+            'is_payment_paid' => $partRequest->isChargePaymentPaid(),
+            'can_ship' => $partRequest->canBeShipped(),
+            'can_create_service_visit' => in_array($partRequest->status, [
+                TechnicalServicePartRequest::STATUS_RECEIVED,
+                TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
+            ], true),
             'payment_id' => $paymentId,
             'payment_url' => $forPartner ? null : ($customerCharge['payment_url'] ?? $metadata['payment_url'] ?? null),
             'payment_reference' => $customerCharge['payment_reference'] ?? $metadata['payment_reference'] ?? $metadata['provider_reference'] ?? null,

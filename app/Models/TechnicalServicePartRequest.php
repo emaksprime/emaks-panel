@@ -113,12 +113,81 @@ class TechnicalServicePartRequest extends Model
 
     public function statusLabel(): string
     {
+        if ($this->isChargePaymentPending()) {
+            return 'Müşteri parça ödemesi bekleniyor';
+        }
+
+        if ($this->isChargePaymentPaid() && $this->status === self::STATUS_APPROVED) {
+            return 'Parça ödemesi alındı';
+        }
+
         return self::labelForStatus((string) $this->status);
     }
 
     public function partnerStatusLabel(): string
     {
+        if ($this->isChargePaymentPending()) {
+            return 'Müşteri parça ödemesi bekleniyor';
+        }
+
+        if ($this->isChargePaymentPaid() && $this->status === self::STATUS_APPROVED) {
+            return 'Parça ödemesi alındı';
+        }
+
         return self::partnerLabelForStatus((string) $this->status);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function metadataPayload(): array
+    {
+        return is_array($this->metadata) ? $this->metadata : [];
+    }
+
+    public function chargeDecision(): ?string
+    {
+        $metadata = $this->metadataPayload();
+
+        return is_string($metadata['charge_decision'] ?? null) ? $metadata['charge_decision'] : null;
+    }
+
+    public function chargeStatus(): ?string
+    {
+        $metadata = $this->metadataPayload();
+        $customerCharge = is_array($metadata['customer_charge'] ?? null) ? $metadata['customer_charge'] : [];
+        $status = $customerCharge['status'] ?? $metadata['charge_status'] ?? null;
+
+        return is_string($status) ? $status : null;
+    }
+
+    public function isChargeable(): bool
+    {
+        return $this->chargeDecision() === 'chargeable';
+    }
+
+    public function isChargePaymentPaid(): bool
+    {
+        return $this->isChargeable() && $this->chargeStatus() === 'paid';
+    }
+
+    public function isChargePaymentPending(): bool
+    {
+        if (! $this->isChargeable()) {
+            return false;
+        }
+
+        return ! $this->isChargePaymentPaid();
+    }
+
+    public function canBeShipped(): bool
+    {
+        return ! $this->isChargePaymentPending();
+    }
+
+    public function needsRepeatServiceDecision(): bool
+    {
+        return $this->status === self::STATUS_RECEIVED && ! $this->service_visit_request_id;
     }
 
     public static function labelForStatus(string $status): string
@@ -128,11 +197,11 @@ class TechnicalServicePartRequest extends Model
             self::STATUS_OPS_REVIEW => 'Parça talebi incelenmeli',
             self::STATUS_APPROVED => 'Parça talebi onaylandı',
             self::STATUS_REJECTED => 'Parça talebi reddedildi',
-            self::STATUS_ORDERED => 'Parça tedarik ediliyor',
+            self::STATUS_ORDERED => 'Parça tedarikte',
             self::STATUS_SENT => 'Parça gönderildi',
             self::STATUS_RECEIVED => 'Parça teslim alındı',
-            self::STATUS_SERVICE_VISIT_REQUIRED => 'Parça sonrası servis oluşturulmalı',
-            self::STATUS_SERVICE_VISIT_CREATED => 'SRV oluşturuldu',
+            self::STATUS_SERVICE_VISIT_REQUIRED => 'Parça sonrası servis gerekli',
+            self::STATUS_SERVICE_VISIT_CREATED => 'Parça sonrası servis oluşturuldu',
             self::STATUS_CLOSED => 'Parça talebi kapatıldı',
             default => 'Parça talebi',
         };
@@ -145,11 +214,11 @@ class TechnicalServicePartRequest extends Model
             self::STATUS_OPS_REVIEW => 'Parça talebi operasyon incelemesinde',
             self::STATUS_APPROVED => 'Parça talebi onaylandı',
             self::STATUS_REJECTED => 'Parça talebi reddedildi',
-            self::STATUS_ORDERED => 'Parça tedarik ediliyor',
+            self::STATUS_ORDERED => 'Parça tedarikte',
             self::STATUS_SENT => 'Parça gönderildi',
             self::STATUS_RECEIVED => 'Parça teslim alındı',
             self::STATUS_SERVICE_VISIT_REQUIRED => 'Operasyon servis planlıyor',
-            self::STATUS_SERVICE_VISIT_CREATED => 'Servis kaydı oluşturuldu',
+            self::STATUS_SERVICE_VISIT_CREATED => 'Parça sonrası servis oluşturuldu',
             self::STATUS_CLOSED => 'Parça talebi kapatıldı',
             default => 'Parça talebi',
         };

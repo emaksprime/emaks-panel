@@ -143,6 +143,7 @@ type ServiceJob = {
     id: number
     status: string
     status_label: string
+    next_action_label?: string | null
     part_name: string
     quantity: number
     technician_note?: string | null
@@ -151,11 +152,16 @@ type ServiceJob = {
     tracking_no?: string | null
     sent_at?: string | null
     received_at?: string | null
+    is_payment_required?: boolean
+    is_payment_paid?: boolean
+    can_ship?: boolean
+    can_create_service_visit?: boolean
   }>
   active_part_request?: {
     id: number
     status: string
     status_label: string
+    next_action_label?: string | null
     part_name: string
     quantity: number
     technician_note?: string | null
@@ -164,6 +170,10 @@ type ServiceJob = {
     tracking_no?: string | null
     sent_at?: string | null
     received_at?: string | null
+    is_payment_required?: boolean
+    is_payment_paid?: boolean
+    can_ship?: boolean
+    can_create_service_visit?: boolean
   } | null
   can_receive_part?: boolean
   price_revision_request?: { id: number, status: string, status_label?: string | null, note: string | null, payload: Record<string, unknown>, created_at: string | null } | null
@@ -186,7 +196,29 @@ type ServiceJob = {
     route_fee_amount: number
     total_amount: number
     status: string | null
+    excluded_from_payable?: boolean
+    exclusion_label?: string | null
   }
+  cancel_context?: {
+    exists?: boolean
+    is_cancelled?: boolean
+    is_cancel_review?: boolean
+    is_reopened?: boolean
+    cancelled_code?: string | null
+    previous_cancelled_code?: string | null
+    cancel_reason?: string | null
+    previous_cancel_reason?: string | null
+    last_technician_name?: string | null
+    current_stage_label?: string | null
+    earning_excluded?: boolean
+    earning_excluded_label?: string | null
+    next_ops_message?: string | null
+    summary?: string | null
+  } | null
+  current_stage_summary?: {
+    label?: string | null
+    summary?: string | null
+  } | null
   earning_breakdown?: {
     current_visit?: {
       id: number
@@ -273,35 +305,63 @@ type ServiceJobColumn = {
 }
 
 type EarningRow = {
-  id: number
+  id: number | string
   period: string | null
   job_count: number
   labor_total: number
   travel_fee_total: number
   grand_total: number
   status: string
+  payment_record_status_label?: string | null
   paid_at: string | null
   items: Array<{
+    technical_service_request_id?: number
     job_date: string | null
     mrn: string | null
+    root_mrn?: string | null
+    customer_name?: string | null
     city: string | null
     district: string | null
     labor_amount: number
     travel_fee_amount: number
     line_total: number
     status: string
+    job_status?: string | null
+    job_status_label?: string | null
+    earning_status?: string | null
+    earning_status_label?: string | null
+    earning_bucket?: string | null
+    earning_bucket_label?: string | null
+    payment_record_status_label?: string | null
   }>
 }
 
 type PendingEarningRow = {
   id: number
+  request_id?: number
   mrn: string | null
+  root_mrn?: string | null
+  customer_name?: string | null
   scheduled_at: string | null
+  appointment_at?: string | null
   labor_amount: number
   travel_fee_amount: number
   line_total: number
   status: string
+  status_label?: string | null
+  job_status?: string | null
+  job_status_label?: string | null
+  earning_status?: string | null
+  earning_status_label?: string | null
+  earning_bucket?: string | null
+  earning_bucket_label?: string | null
   offer_status: string | null
+  bucket?: string
+  actual?: boolean
+  excluded_from_payable?: boolean
+  exclusion_label?: string | null
+  note?: string | null
+  explanation?: string | null
   city: string | null
   district: string | null
 }
@@ -359,6 +419,22 @@ type PartnerPortalProps = {
           grand_total: number
         }
         note?: string
+      }
+      excluded?: {
+        rows: PendingEarningRow[]
+        summary: {
+          job_count: number
+          labor_total: number
+          travel_fee_total: number
+          grand_total: number
+        }
+        note?: string
+      }
+      totals?: {
+        pending_count: number
+        pending_total: number
+        completed_count: number
+        completed_total: number
       }
       summary: {
         job_count: number
@@ -911,7 +987,7 @@ const actionLabel = (action: string, status?: string | null, provided?: string |
     part_requested: 'Parça talebi oluşturuldu',
     part_request_created: 'Parça talebi oluşturuldu',
     part_approved: 'Parça talebi onaylandı',
-    part_ordered: 'Parça tedarik ediliyor',
+    part_ordered: 'Parça tedarikte',
     part_sent: 'Parça gönderildi',
     part_received: 'Parça teslim alındı',
     srv_created: 'Servis kaydı oluşturuldu',
@@ -1270,10 +1346,10 @@ function ServiceJobsView({ partnerId, board, readOnly }: { partnerId: number, bo
                       <strong>{jobEarningTotal(job) > 0 ? money.format(jobEarningTotal(job)) : 'Gönderilmedi'}</strong>
                     </div>
                     <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-emerald-700">
-                      <span>İşçilik {money.format(jobEarningLabor(job))}</span>
-                      <span>Yol {money.format(jobEarningRoute(job))}</span>
-                    </div>
-                    <p className="mt-1 text-[11px] font-semibold text-emerald-700">Durum: {jobEarningStatus(job)}</p>
+                <span>İşçilik {money.format(jobEarningLabor(job))}</span>
+                <span>Yol {money.format(jobEarningRoute(job))}</span>
+              </div>
+                    <p className="mt-1 text-[11px] font-semibold text-emerald-700">Hakediş durumu: {jobEarningStatus(job)}{jobEarningStatus(job) === 'Taslak' ? ' / onay bekliyor' : ''}</p>
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs text-slate-500">{job.next_action ?? 'Aksiyon bekleniyor'}</p>
                   {job.kanban_column === 'appointment_confirmed' ? (
@@ -1454,6 +1530,14 @@ function ServiceJobDetail({
   const canOnlyAddNote = job.kanban_column === 'ops_review'
     || ['final_check_waiting', 'rejected_ops_review', 'completed', 'appointment_change_requested', 'support_requested', 'revisit_requested'].includes(job.action_state ?? '')
   const statusPlan = (() => {
+    if (job.cancel_context?.is_cancel_review) {
+      return 'Bu iş iptal incelemesinde. Operasyon kararını bekleyin; aktif saha aksiyonu kapalıdır.'
+    }
+
+    if (job.cancel_context?.is_cancelled) {
+      return 'Bu iş iptal edildi. Hakedişe dahil değil; operasyon yeni işlem açarsa ayrıca bildirilecek.'
+    }
+
     if (job.action_state === 'rejected_ops_review') {
       return 'İş reddi operasyona iletildi. Bu aşamada sadece not ekleyebilirsiniz.'
     }
@@ -1713,6 +1797,40 @@ function ServiceJobDetail({
           <p className="mt-1 text-2xl font-semibold text-slate-950">{job.appointment_label ?? job.appointment_at ?? 'Randevu bekleniyor'}</p>
           <p className="mt-1 text-sm text-blue-800">{job.kanban_column === 'appointment_confirmed' ? 'Randevu onaylandı' : statusPlan}</p>
         </div>
+        {job.cancel_context?.exists ? (
+          <div className="mt-5 rounded-2xl border border-rose-100 bg-rose-50 p-4 text-rose-950">
+            <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">İptal bilgisi</p>
+            <p className="mt-1 text-lg font-semibold text-slate-950">
+              {job.cancel_context.is_cancel_review ? 'İptal incelemede' : job.cancel_context.is_cancelled ? 'Bu iş iptal edildi' : 'Önceki iş iptal edildi'}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-rose-900">
+              {job.cancel_context.summary ?? job.cancel_context.next_ops_message ?? 'Operasyon iptal bağlamını takip ediyor.'}
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {[{
+                label: 'İş',
+                value: job.cancel_context.cancelled_code ?? job.cancel_context.previous_cancelled_code ?? job.mrn,
+              }, {
+                label: 'Son usta',
+                value: job.cancel_context.last_technician_name,
+              }, {
+                label: 'İptal nedeni',
+                value: job.cancel_context.cancel_reason ?? job.cancel_context.previous_cancel_reason,
+              }, {
+                label: 'Hakediş',
+                value: job.cancel_context.earning_excluded_label ?? (job.cancel_context.earning_excluded ? 'Hakedişe dahil değil' : null),
+              }, {
+                label: 'Şu an',
+                value: job.cancel_context.current_stage_label ?? job.current_stage_summary?.label,
+              }].filter((row) => cleanDisplayText(row.value ?? '') !== '').map((row) => (
+                <div key={row.label} className="rounded-xl bg-white/80 px-3 py-2">
+                  <p className="text-xs font-semibold text-rose-700">{row.label}</p>
+                  <p className="mt-1 font-semibold text-slate-950">{row.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {job.service_visit_context ? (
           <div className="mt-5 rounded-2xl border border-violet-100 bg-violet-50 p-4 text-violet-950">
             <p className="text-xs font-semibold uppercase tracking-wide text-violet-600">Servis geçmişi</p>
@@ -1755,6 +1873,9 @@ function ServiceJobDetail({
             </div>
             {job.active_part_request.partner_message ? (
               <p className="mt-3 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm text-violet-900">{job.active_part_request.partner_message}</p>
+            ) : null}
+            {job.active_part_request.next_action_label && job.active_part_request.next_action_label !== job.active_part_request.status_label ? (
+              <p className="mt-3 rounded-xl border border-white/80 bg-white/70 px-3 py-2 text-sm font-semibold text-violet-900">{job.active_part_request.next_action_label}</p>
             ) : null}
             {job.active_part_request.tracking_no ? (
               <p className="mt-3 text-sm text-violet-800">Kargo: {[job.active_part_request.shipment_provider, job.active_part_request.tracking_no].filter(Boolean).join(' / ')}</p>
@@ -2510,45 +2631,51 @@ function ActionDialog({ title, open, onClose, children }: { title: string, open:
 function EarningsView({ earnings }: { earnings: PartnerPortalProps['partnerPortal']['earnings'] }) {
   const pending = earnings.pending ?? { rows: [], summary: { job_count: 0, labor_total: 0, travel_fee_total: 0, grand_total: 0 } }
   const completed = earnings.completed ?? { rows: earnings.rows, summary: earnings.summary }
+  const excluded = earnings.excluded ?? { rows: [], summary: { job_count: 0, labor_total: 0, travel_fee_total: 0, grand_total: 0 } }
 
   return (
     <div className="grid gap-5">
       <section className="grid gap-3 md:grid-cols-4">
-        <StatCard title="Bekleyen iş" value={pending.summary.job_count} hint="Tahmini hakediş" />
-        <StatCard title="Bekleyen toplam" value={money.format(pending.summary.grand_total)} hint="Actual hakediş değildir" />
-        <StatCard title="Tamamlanan iş" value={completed.summary.job_count} hint="Teknik Servis hakedişi" />
-        <StatCard title="Tamamlanan toplam" value={money.format(completed.summary.grand_total)} hint="Hesaplanan" />
+        <StatCard title="Hakediş onayı bekleyen iş" value={pending.summary.job_count} hint="İş tamamlandı, hakediş kesinleşmedi" />
+        <StatCard title="Bekleyen tahmini toplam" value={money.format(pending.summary.grand_total)} hint="Kesin hakediş değildir" />
+        <StatCard title="Kesinleşen hakediş" value={completed.summary.job_count} hint="Gönderilen / onaylanan kayıt" />
+        <StatCard title="Kesinleşen toplam" value={money.format(completed.summary.grand_total)} hint="Gönderilen tutar" />
       </section>
       <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-950 shadow-sm">
-        <h2 className="text-lg font-semibold">Bekleyen tahmini hakedişler</h2>
-        <p className="mt-1 text-sm">Bekleyen hakedişler tahmini tutardır. Operasyon son kontrolünden sonra kesin hakedişe dönüşür.</p>
+        <h2 className="text-lg font-semibold">Hakediş onayı bekleyen tamamlanan işler</h2>
+        <p className="mt-1 text-sm">{pending.note ?? 'Bu işler tamamlandı; hakediş operasyon onayı veya gönderimi sonrası kesinleşir.'}</p>
         <div className="mt-4 grid gap-2">
-          {pending.rows.length === 0 && <EmptyState title="Bekleyen hakediş yok" message="Planlı veya son kontrol bekleyen teklif bulunmadı." />}
+          {pending.rows.length === 0 && <EmptyState title="Hakediş onayı bekleyen kayıt yok" message="Tamamlanmış ama hakedişi kesinleşmemiş iş bulunmadı." />}
           {pending.rows.map((row) => (
             <div key={row.id} className="rounded-xl bg-white px-3 py-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-semibold text-slate-950">{row.mrn ?? '-'}</span>
                 <span className="font-semibold text-slate-950">{money.format(row.line_total)}</span>
               </div>
-              <div className="mt-1 text-slate-500">{[row.scheduled_at, row.city, row.district].filter(Boolean).join(' · ') || '-'}</div>
-              <div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-3">
+              <div className="mt-1 text-slate-500">{[row.customer_name, row.scheduled_at, row.city, row.district].filter(Boolean).join(' · ') || '-'}</div>
+              <div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
                 <span>İşçilik: {money.format(row.labor_amount)}</span>
                 <span>Yol: {money.format(row.travel_fee_amount)}</span>
-                <span>Durum: {row.status}</span>
+                <span>İş durumu: {statusLabel(row.job_status, row.job_status_label)}</span>
+                <span>Hakediş durumu: {statusLabel(row.earning_status ?? row.offer_status, row.earning_status_label ?? row.status_label ?? row.status)}</span>
               </div>
+              <p className="mt-2 text-xs text-amber-800">{row.explanation ?? row.note ?? 'İş tamamlandı; hakediş operasyon onayı veya gönderimi sonrası kesinleşir.'}</p>
+              {row.note && <p className="mt-1 text-xs font-semibold text-amber-800">{row.note}</p>}
             </div>
           ))}
         </div>
       </section>
       <section className="grid gap-3">
-        <h2 className="text-lg font-semibold text-slate-950">Tamamlanan hakedişler</h2>
-        {completed.rows.length === 0 && <EmptyState title="Tamamlanan hakediş kaydı yok" message="Teknik Servis hakediş dönemi oluştuğunda burada görünecek." />}
+        <h2 className="text-lg font-semibold text-slate-950">Kesinleşen / gönderilen hakedişler</h2>
+        {completed.note && <p className="text-sm text-slate-500">{completed.note}</p>}
+        {completed.rows.length === 0 && <EmptyState title="Kesinleşen hakediş kaydı yok" message="Operasyon tarafından gönderilen veya kesinleşen hakediş oluştuğunda burada görünecek." />}
         {completed.rows.map((row) => (
           <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold text-slate-950">{row.period ?? 'Dönem yok'}</h2>
                 <p className="text-sm text-slate-500">{row.job_count} iş · {row.status}</p>
+                {row.payment_record_status_label && <p className="text-xs text-slate-400">{row.payment_record_status_label}</p>}
               </div>
               <div className="text-right font-semibold text-slate-950">{money.format(row.grand_total)}</div>
             </div>
@@ -2559,13 +2686,36 @@ function EarningsView({ earnings }: { earnings: PartnerPortalProps['partnerPorta
                     <span className="font-semibold text-slate-900">{item.mrn ?? '-'}</span>
                     <span>{money.format(item.line_total)}</span>
                   </div>
-                  <div className="mt-1 text-slate-500">{[item.job_date, item.city, item.district].filter(Boolean).join(' · ') || '-'}</div>
+                  <div className="mt-1 text-slate-500">{[item.customer_name, item.job_date, item.city, item.district].filter(Boolean).join(' · ') || '-'}</div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {[`İş durumu: ${statusLabel(item.job_status, item.job_status_label)}`, `Hakediş durumu: ${statusLabel(item.earning_status, item.earning_status_label ?? item.status)}`, item.payment_record_status_label].filter(Boolean).join(' · ')}
+                  </div>
                 </div>
               ))}
             </div>
           </article>
         ))}
       </section>
+      {excluded.rows.length > 0 && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-950">Hakedişe dahil olmayan işler</h2>
+          <p className="mt-1 text-sm text-slate-500">{excluded.note ?? 'İptal veya inceleme nedeniyle aktif hakedişe dahil edilmeyen işler.'}</p>
+          <details className="mt-4">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-700">{excluded.summary.job_count} iş · {money.format(excluded.summary.grand_total)}</summary>
+            <div className="mt-3 grid gap-2">
+              {excluded.rows.map((row) => (
+                <div key={row.id} className="rounded-xl bg-slate-50 px-3 py-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-900">{row.mrn ?? '-'}</span>
+                    <span className="text-xs font-semibold text-slate-500">{row.exclusion_label ?? 'Hakedişe dahil değil'}</span>
+                  </div>
+                  <div className="mt-1 text-slate-500">{[row.customer_name, row.city, row.district].filter(Boolean).join(' · ') || '-'}</div>
+                </div>
+              ))}
+            </div>
+          </details>
+        </section>
+      )}
     </div>
   )
 }

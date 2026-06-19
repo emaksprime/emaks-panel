@@ -27,6 +27,8 @@ use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
+use App\Services\TechnicalService\TechnicalServicePartRequestService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
@@ -180,7 +182,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('high', $state['action_priority']);
         $this->assertTrue($state['requires_ops_action']);
         $this->assertFalse($state['requires_technician_action']);
-        $this->assertSame('Parça talebi incelenmeli', $state['action_label']);
+        $this->assertSame('Parça talebi operasyon incelemesinde', $state['action_label']);
         $this->assertSame('Usta yedek parça talep etti. Operasyon karar vermeli.', $state['action_hint']);
         $this->assertSame('Operasyon', $state['action_owner_label']);
         $this->assertSame('part_or_repeat', $state['action_bucket']);
@@ -188,8 +190,445 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertContains('ops_action', $state['action_filter_keys']);
         $this->assertContains('part_or_repeat', $state['action_filter_keys']);
         $this->assertIsInt($state['action_priority_score']);
-        $this->assertContains('OPS aksiyonu: Parça talebi incelenmeli', $tagLabels);
+        $this->assertContains('OPS aksiyonu: Parça talebi operasyon incelemesinde', $tagLabels);
         $this->assertSame('Parça talebi operasyon incelemesinde', TechnicalServicePartRequest::partnerLabelForStatus(TechnicalServicePartRequest::STATUS_OPS_REVIEW));
+    }
+
+    public function test_part_request_duplicate_is_rejected_for_technician_once(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Parça Talep Ustası',
+            'phone' => '+905550001122',
+            'city' => 'Adana',
+            'district' => 'Seyhan',
+            'is_active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technical_service_technician_id' => $technician->id,
+        ]);
+        $service = app(TechnicalServicePartRequestService::class);
+
+        $service->createFromPartnerSupport($request, $this->adminUser(), $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]), [
+            'type' => 'spare_part',
+            'description' => 'Kilit göbeği gerekiyor.',
+            'product_name' => 'Kilit göbeği',
+            'quantity' => 1,
+        ]);
+
+        $this->expectException(ValidationException::class);
+
+        $service->createFromPartnerSupport($request->fresh(), $this->adminUser(), $this->partnerJobAction($request, [
+            'action' => TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+        ]), [
+            'type' => 'spare_part',
+            'description' => 'Aynı parça tekrar istendi.',
+            'product_name' => 'Kilit göbeği',
+            'quantity' => 1,
+        ]);
+    }
+
+    public function test_chargeable_part_payment_required_card_is_customer_owned_and_blocks_shipment(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+        ]);
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+            'part_name' => 'Ücretli kart okuyucu',
+            'quantity' => 1,
+            'metadata' => [
+                'charge_decision' => 'chargeable',
+                'charge_status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                'part_amount' => 1250,
+                'total_amount' => 1250,
+            ],
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertSame('customer', $state['action_owner']);
+        $this->assertSame('Müşteri parça ödemesi bekleniyor', $state['action_label']);
+        $this->assertSame('Müşteri parça ödemesi bekleniyor', $state['display_action_label']);
+        $this->assertContains('customer_waiting', $state['action_filter_keys']);
+        $this->assertContains('part_or_repeat', $state['action_filter_keys']);
+        $this->assertSame('info', $state['card_tone']);
+        $this->assertSame('Müşteri parça ödemesi bekleniyor', $partRequest->fresh()->statusLabel());
+
+        $this->expectException(ValidationException::class);
+
+        app(TechnicalServicePartRequestService::class)->transition($partRequest->fresh(), TechnicalServicePartRequest::STATUS_SENT, $this->adminUser());
+    }
+
+    public function test_free_part_status_allows_shipping_without_payment_block(): void
+    {
+        $request = $this->technicalServiceRequest();
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_APPROVED,
+            'part_name' => 'Garanti parçası',
+            'quantity' => 1,
+            'metadata' => [
+                'charge_decision' => 'free',
+                'charge_status' => 'none',
+            ],
+        ]);
+
+        $serialized = app(TechnicalServicePartRequestService::class)->serialize($partRequest->fresh());
+
+        $this->assertFalse($serialized['is_payment_required']);
+        $this->assertTrue($serialized['can_ship']);
+
+        $updated = app(TechnicalServicePartRequestService::class)->transition($partRequest->fresh(), TechnicalServicePartRequest::STATUS_SENT, $this->adminUser());
+
+        $this->assertSame(TechnicalServicePartRequest::STATUS_SENT, $updated->status);
+        $this->assertNotNull($updated->sent_at);
+    }
+
+    public function test_part_shipped_card_is_technician_owned_in_part_or_repeat_filter(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+        ]);
+        TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_SENT,
+            'part_name' => 'Gönderilen parça',
+            'quantity' => 1,
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertSame('technician', $state['action_owner']);
+        $this->assertSame('Parça gönderildi; usta teslim almalı', $state['action_label']);
+        $this->assertSame('neutral', $state['card_tone']);
+        $this->assertContains('technician_action', $state['action_filter_keys']);
+        $this->assertContains('part_or_repeat', $state['action_filter_keys']);
+    }
+
+    public function test_part_received_status_is_ops_owned_for_repeat_service_decision(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+            'technician_approved_at' => CarbonImmutable::now(),
+        ]);
+        TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_RECEIVED,
+            'part_name' => 'Teslim alınan parça',
+            'quantity' => 1,
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertSame('ops', $state['action_owner']);
+        $this->assertSame('Parça teslim alındı; tekrar servis kararını verin', $state['action_label']);
+        $this->assertSame('part_or_repeat', $state['action_bucket']);
+        $this->assertContains('ops_action', $state['action_filter_keys']);
+        $this->assertContains('part_or_repeat', $state['action_filter_keys']);
+    }
+
+    public function test_part_service_required_srv_created_flow_uses_canonical_code_and_parent_history(): void
+    {
+        CarbonImmutable::setTestNow('2026-06-16 09:30:00');
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-2606MP030001',
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'operation_control_payload' => [
+                'door_photos_checked' => 'pending',
+                'payment_checked' => 'pending',
+            ],
+        ]);
+        $partRequest = TechnicalServicePartRequest::query()->create([
+            'technical_service_request_id' => $request->id,
+            'status' => TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED,
+            'part_name' => 'Parça sonrası servis',
+            'quantity' => 1,
+            'requires_service_visit' => true,
+        ]);
+
+        $child = app(TechnicalServicePartRequestService::class)->createServiceVisit($partRequest->fresh(), $this->adminUser(), 'spare_part');
+
+        $this->assertSame('SRV-2606MP030001-001', $child->mrn);
+        $this->assertSame('MRN-2606MP030001', $child->root_mrn);
+        $this->assertSame($request->id, $child->parent_request_id);
+        $this->assertNull($child->operation_control_payload);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'part_request_srv_created',
+            'title' => 'Parça sonrası servis oluşturuldu',
+        ]);
+        $this->assertSame(TechnicalServicePartRequest::STATUS_SERVICE_VISIT_CREATED, $partRequest->fresh()->status);
+    }
+
+    public function test_part_history_uses_turkish_labels_without_raw_status(): void
+    {
+        $this->assertSame('Parça tedarikte', TechnicalServicePartRequest::labelForStatus(TechnicalServicePartRequest::STATUS_ORDERED));
+        $this->assertSame('Parça sonrası servis gerekli', TechnicalServicePartRequest::labelForStatus(TechnicalServicePartRequest::STATUS_SERVICE_VISIT_REQUIRED));
+        $this->assertSame('Parça sonrası servis oluşturuldu', TechnicalServiceUiLabelService::actionLabel('part_request_srv_created'));
+        $this->assertSame('Parça ödemesi alındı', TechnicalServiceUiLabelService::actionLabel('part_request_payment_paid'));
+        $this->assertNotSame('part_request_srv_created', TechnicalServiceUiLabelService::actionLabel('part_request_srv_created'));
+    }
+
+    public function test_cancel_status_starts_ops_cancel_review_before_terminal_cancel(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-CANCEL-REVIEW-FIRST',
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+        ]);
+
+        $response = $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'İptal',
+                'note' => 'Müşteri iptal istedi.',
+            ])
+            ->assertOk();
+
+        $request->refresh();
+        $this->assertNull($request->cancelled_at);
+        $this->assertSame('Devam Ediyor', $request->status);
+        $this->assertSame('Beklemede', $request->workflow_status);
+        $this->assertSame(TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON, $request->pending_reason);
+        $this->assertTrue((bool) $response->json('request.operational_state.is_cancellation_review'));
+        $this->assertSame('ops', $response->json('request.action_owner'));
+        $this->assertSame('İptal talebi incelenmeli', $response->json('request.operational_state.action_reason'));
+        $this->assertContains('cancel_review', $response->json('request.operational_state.action_filter_keys'));
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'cancellation_requested',
+            'title' => 'İptal talebi incelemeye alındı',
+        ]);
+    }
+
+    public function test_confirming_cancel_review_finalizes_cancel_and_cancels_assignment_offer(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-CANCEL-REVIEW-CONFIRM',
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+        ]);
+        $offer = TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => null,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+            'total_amount' => 3500,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+        app(TechnicalServiceWorkflowService::class)->startCancellationReview(
+            $request,
+            ['note' => 'İptal incelemesi açıldı.'],
+            $this->adminUser(),
+        );
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'İptal',
+                'note' => 'İptal onaylandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.status', 'İptal')
+            ->assertJsonPath('request.workflow_status', 'İptal')
+            ->assertJsonPath('request.operational_state.ops_column', 'cancelled');
+
+        $request->refresh();
+        $this->assertNotNull($request->cancelled_at);
+        $this->assertNull($request->pending_reason);
+        $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_CANCELLED, $offer->fresh()->status);
+        $this->assertSame('excluded_from_payable', $offer->fresh()->metadata['cancellation_exclusion']['status'] ?? null);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'cancellation_confirmed',
+            'title' => 'İş iptal edildi',
+        ]);
+    }
+
+    public function test_reopen_from_cancel_review_requires_reason_and_keeps_original_mrn(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-CANCEL-REVIEW-REOPEN',
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+        ]);
+        app(TechnicalServiceWorkflowService::class)->startCancellationReview(
+            $request,
+            ['note' => 'Yanlış iptal akışı.'],
+            $this->adminUser(),
+        );
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'Yeni',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('reopen_reason');
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => 'Operasyon düzeltmesi',
+                'reopen_note' => 'İptal talebi geri alındı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.mrn', 'MRN-CANCEL-REVIEW-REOPEN')
+            ->assertJsonPath('request.status', 'Yeni')
+            ->assertJsonPath('request.workflow_status', 'Yeni Talep')
+            ->assertJsonPath('request.operational_state.is_cancellation_review', false);
+
+        $request->refresh();
+        $this->assertNull($request->cancelled_at);
+        $this->assertNull($request->pending_reason);
+        $this->assertSame('MRN-CANCEL-REVIEW-REOPEN', $request->mrn);
+        $this->assertSame(1, (int) $request->reopen_count);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'technical_service_request_reopened',
+        ]);
+    }
+
+    public function test_hidden_cancel_request_goes_to_cancelled_column_and_not_ops_action_filter(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-HIDDEN-CANCEL',
+            'status' => 'İptal',
+            'workflow_status' => 'İptal',
+            'cancelled_at' => now(),
+        ]);
+
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($request->fresh());
+
+        $this->assertSame('cancelled', $state['ops_column']);
+        $this->assertSame('completed', $state['dashboard_action_owner']);
+        $this->assertSame('none', $state['action_owner']);
+        $this->assertFalse($state['active_action_required']);
+        $this->assertSame('muted', $state['card_tone']);
+        $this->assertNotContains('ops_action', $state['action_filter_keys']);
+        $this->assertNotContains('technician_action', $state['action_filter_keys']);
+    }
+
+    public function test_cancel_context_cancel_summary_current_stage_payload_for_cancelled_request(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'BİRCAN BORAN',
+            'phone' => '+905427271386',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'SRV-CANCEL-CONTEXT-001',
+            'root_mrn' => 'MRN-CANCEL-CONTEXT',
+            'service_code' => 'SRV-CANCEL-CONTEXT-001',
+            'customer_name' => 'Aslan Selamet',
+            'customer_phone' => '+905121312313',
+            'customer_city' => 'Niğde',
+            'customer_district' => 'Bor',
+            'product_name' => 'DDL720',
+            'serial_number' => 'W720-CANCEL-CONTEXT',
+            'activation_code' => '363183',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => 'BİRCAN BORAN',
+            'scheduled_at' => CarbonImmutable::parse('2026-06-20 10:00:00'),
+            'status' => 'İptal',
+            'workflow_status' => 'İptal',
+            'cancelled_at' => CarbonImmutable::parse('2026-06-19 11:00:00'),
+            'cancellation_reason' => 'Müşteri iptal istedi.',
+        ]);
+        $request->events()->create([
+            'event_type' => 'cancel',
+            'title' => 'İptal Et',
+            'note' => 'Müşteri iptal istedi.',
+            'from_status' => 'Planlı',
+            'to_status' => 'İptal',
+            'author_user_id' => $this->adminUser()->id,
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->getJson("/api/technical-service/requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('request.cancel_context.exists', true)
+            ->assertJsonPath('request.cancel_context.is_cancelled', true)
+            ->assertJsonPath('request.cancel_context.cancelled_code', 'SRV-CANCEL-CONTEXT-001')
+            ->assertJsonPath('request.cancel_context.customer_name', 'Aslan Selamet')
+            ->assertJsonPath('request.cancel_context.last_technician_name', 'BİRCAN BORAN')
+            ->assertJsonPath('request.cancel_context.cancel_reason', 'Müşteri iptal istedi.')
+            ->assertJsonPath('request.cancel_context.previous_stage_label', 'Servis atandı')
+            ->assertJsonPath('request.cancel_context.current_stage_label', 'İptal edildi')
+            ->assertJsonPath('request.cancel_context.earning_excluded', true)
+            ->assertJsonPath('request.cancel_context.earning_excluded_label', 'İptal nedeniyle hakedişe dahil değil')
+            ->assertJsonPath('request.cancel_context.summary', 'İş iptal edildi. Hakedişe dahil değil.');
+    }
+
+    public function test_reopened_request_payload_includes_previous_cancel_context(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-CANCEL-CONTEXT-REOPEN',
+            'status' => 'Randevulu',
+            'workflow_status' => 'Planlı',
+            'technician_approval_status' => 'onayladı',
+        ]);
+        app(TechnicalServiceWorkflowService::class)->startCancellationReview(
+            $request,
+            ['note' => 'Yanlış iptal akışı.'],
+            $this->adminUser(),
+        );
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/status", [
+                'status' => 'Yeni',
+                'reopen_reason' => 'Operasyon düzeltmesi',
+                'reopen_note' => 'İptal talebi geri alındı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.cancel_context.exists', true)
+            ->assertJsonPath('request.cancel_context.is_reopened', true)
+            ->assertJsonPath('request.cancel_context.previous_cancelled_code', 'MRN-CANCEL-CONTEXT-REOPEN')
+            ->assertJsonPath('request.cancel_context.current_stage_label', 'Yeniden açıldı')
+            ->assertJsonPath('request.cancel_context.summary', 'Önceki iş MRN-CANCEL-CONTEXT-REOPEN iptal edildi. Şu an: Yeniden açıldı.');
+    }
+
+    public function test_cancel_context_does_not_fuzzy_link_unrelated_requests(): void
+    {
+        $this->technicalServiceRequest([
+            'mrn' => 'SRV-CANCEL-CONTEXT-UNRELATED',
+            'root_mrn' => 'MRN-CANCEL-CONTEXT-OTHER',
+            'customer_name' => 'Aynı Müşteri',
+            'serial_number' => 'SAME-SERIAL',
+            'status' => 'İptal',
+            'workflow_status' => 'İptal',
+            'cancelled_at' => now(),
+        ]);
+        $active = $this->technicalServiceRequest([
+            'mrn' => 'MRN-CANCEL-CONTEXT-ACTIVE',
+            'customer_name' => 'Aynı Müşteri',
+            'serial_number' => 'SAME-SERIAL',
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->getJson("/api/technical-service/requests/{$active->id}")
+            ->assertOk()
+            ->assertJsonPath('request.cancel_context', null);
     }
 
     public function test_technician_rejected_action_overrides_generic_overdue_closure_action(): void
@@ -341,6 +780,42 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('completed', $state['action_bucket']);
         $this->assertSame('success', $state['card_tone']);
         $this->assertContains('completed', $state['action_filter_keys']);
+    }
+
+    public function test_ops_completion_final_control_approval_finalizes_draft_earning_snapshot_and_preserves_labor_route_total(): void
+    {
+        $admin = User::factory()->create(['role_code' => 'admin']);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => CarbonImmutable::now(),
+            'technician_payment_amount' => 1200,
+            'travel_fee_amount' => 365.75,
+            'operation_control_payload' => [
+                'completed_earning_snapshot' => [
+                    'labor_amount' => 1200,
+                    'route_fee_amount' => 365.75,
+                    'total_amount' => 1565.75,
+                    'status' => null,
+                    'payout_status' => 'draft',
+                    'status_label' => 'Hakediş yok',
+                    'payout_status_label' => 'Önerilen / taslak hakediş',
+                ],
+            ],
+        ]);
+
+        $finalized = app(TechnicalServiceWorkflowService::class)
+            ->finalizeCompletedEarningSnapshotForOpsPayoutApproval($request->fresh(), $admin);
+        $snapshot = $finalized->operation_control_payload['completed_earning_snapshot'];
+
+        $this->assertSame('finalized', $snapshot['status']);
+        $this->assertSame('Kesinleşti', $snapshot['status_label']);
+        $this->assertSame('confirmed', $snapshot['payout_status']);
+        $this->assertSame('Onaylanan usta hakedişi', $snapshot['payout_status_label']);
+        $this->assertSame(1200, $snapshot['labor_amount']);
+        $this->assertSame(365.75, $snapshot['route_fee_amount']);
+        $this->assertSame(1565.75, $snapshot['total_amount']);
+        $this->assertSame($admin->id, $snapshot['finalized_by_user_id']);
     }
 
     public function test_kanban_payload_and_source_include_ops_action_filter_contract(): void
@@ -1919,6 +2394,167 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertNotSame('İşlem kaydı', $event['title_label']);
     }
 
+    public function test_service_visit_history_root_mrn_history_mrn_srv_history_includes_root_mrn_and_all_sibling_srvs(): void
+    {
+        $root = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-HISTORY-ROOT',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+        $first = $this->technicalServiceRequest([
+            'mrn' => 'SRV-SRV-HISTORY-ROOT-001',
+            'parent_request_id' => $root->id,
+            'root_mrn' => $root->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-SRV-HISTORY-ROOT-001',
+            'service_visit_reason' => 'revisit',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $second = $this->technicalServiceRequest([
+            'mrn' => 'SRV-SRV-HISTORY-ROOT-002',
+            'parent_request_id' => $first->id,
+            'root_mrn' => $root->mrn,
+            'service_sequence' => 2,
+            'service_code' => 'SRV-SRV-HISTORY-ROOT-002',
+            'service_visit_reason' => 'spare_part',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $third = $this->technicalServiceRequest([
+            'mrn' => 'SRV-SRV-HISTORY-ROOT-003',
+            'parent_request_id' => $second->id,
+            'root_mrn' => $root->mrn,
+            'service_sequence' => 3,
+            'service_code' => 'SRV-SRV-HISTORY-ROOT-003',
+            'service_visit_reason' => 'spare_part',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($third->fresh(), true);
+        $history = $payload['service_visit_history'];
+        $records = collect($history['history_records']);
+
+        $this->assertSame($root->mrn, $history['root_request']['mrn']);
+        $this->assertSame($second->mrn, $history['direct_parent_request']['mrn']);
+        $this->assertSame([
+            $root->mrn,
+            $first->mrn,
+            $second->mrn,
+            $third->mrn,
+        ], $records->pluck('mrn')->all());
+        $this->assertSame([
+            'root_mrn',
+            'srv',
+            'srv',
+            'srv',
+        ], $records->pluck('type')->all());
+        $this->assertTrue($records->firstWhere('mrn', $third->mrn)['is_current']);
+        $this->assertFalse($records->firstWhere('mrn', $root->mrn)['is_current']);
+        $this->assertSame([
+            $root->mrn,
+            $first->mrn,
+            $second->mrn,
+            $third->mrn,
+        ], collect($payload['mrn_srv_history']['items'])->pluck('code')->all());
+    }
+
+    public function test_parent_chain_srv_detail_history_handles_missing_root_without_fake_row(): void
+    {
+        $orphanParent = $this->technicalServiceRequest([
+            'mrn' => 'SRV-MISSING-ROOT-PARENT-001',
+            'root_mrn' => 'MRN-MISSING-ROOT',
+            'service_sequence' => 1,
+            'service_code' => 'SRV-MISSING-ROOT-PARENT-001',
+            'service_visit_reason' => 'revisit',
+        ]);
+        $child = $this->technicalServiceRequest([
+            'mrn' => 'SRV-MISSING-ROOT-CHILD-002',
+            'parent_request_id' => $orphanParent->id,
+            'root_mrn' => 'MRN-MISSING-ROOT',
+            'service_sequence' => 2,
+            'service_code' => 'SRV-MISSING-ROOT-CHILD-002',
+            'service_visit_reason' => 'spare_part',
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($child->fresh(), true);
+        $records = collect($payload['service_visit_history']['history_records']);
+
+        $this->assertNull($payload['service_visit_history']['root_request']);
+        $this->assertNull($payload['mrn_srv_history']['root_request']);
+        $this->assertFalse($records->contains(fn (array $record): bool => $record['mrn'] === 'MRN-MISSING-ROOT'));
+        $this->assertSame([
+            $orphanParent->mrn,
+            $child->mrn,
+        ], $records->pluck('mrn')->all());
+    }
+
+    public function test_partner_srv_history_shows_root_mrn_context(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Partner SRV Geçmiş Ustası',
+            'phone' => '+905551111811',
+            'city' => 'Adana',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'PARTNER-SRV-HISTORY',
+            'display_name' => 'Partner SRV History',
+            'active' => true,
+        ]);
+        $partner->capabilities()->create([
+            'capability' => B2BPartner::TYPE_LOCKSMITH,
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $root = $this->technicalServiceRequest([
+            'mrn' => 'MRN-PARTNER-SRV-HISTORY',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $first = $this->technicalServiceRequest([
+            'mrn' => 'SRV-PARTNER-SRV-HISTORY-001',
+            'parent_request_id' => $root->id,
+            'root_mrn' => $root->mrn,
+            'service_sequence' => 1,
+            'service_code' => 'SRV-PARTNER-SRV-HISTORY-001',
+            'service_visit_reason' => 'revisit',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $second = $this->technicalServiceRequest([
+            'mrn' => 'SRV-PARTNER-SRV-HISTORY-002',
+            'parent_request_id' => $first->id,
+            'root_mrn' => $root->mrn,
+            'service_sequence' => 2,
+            'service_code' => 'SRV-PARTNER-SRV-HISTORY-002',
+            'service_visit_reason' => 'spare_part',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+
+        $method = new \ReflectionMethod(B2BPartnerPortalDataService::class, 'serviceVisitContext');
+        $method->setAccessible(true);
+        $context = $method->invoke(app(B2BPartnerPortalDataService::class), $second->fresh('parentRequest'));
+
+        $this->assertIsArray($context);
+        $this->assertSame($root->mrn, $context['root_mrn']);
+        $this->assertSame($root->mrn, $context['root_request']['mrn']);
+        $this->assertSame([
+            $root->mrn,
+            $first->mrn,
+            $second->mrn,
+        ], collect($context['history_records'])->pluck('mrn')->all());
+    }
+
     public function test_visit_start_block_hidden_when_no_start_timestamp(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
@@ -3150,6 +3786,223 @@ class TechnicalServiceWorkflowTest extends TestCase
             'entity_id' => $request->id,
             'action_type' => 'technician_earning_message_sent',
         ]);
+    }
+
+    public function test_technician_revision_offer_visible_in_ops_detail_without_overwriting_approved_earning(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Bircan Boran',
+            'phone_e164' => '+905551234567',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REVISION-OFFER-PARTNER',
+            'display_name' => 'Revizyon Teklif Partner',
+            'active' => true,
+        ]);
+        $portalUser = User::factory()->create(['role_code' => 'b2b_locksmith']);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Atandı',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1000,
+            'total_amount' => 4000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now()->subHour(),
+        ]);
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'labor_amount' => 3000,
+                'route_fee_amount' => 1967.40,
+                'note' => 'Yol pahalı',
+                'submitted_at' => now()->toISOString(),
+                'ops_review_required' => true,
+            ],
+            'note' => 'Yol pahalı',
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->refresh(), true);
+        $opsState = app(TechnicalServiceOperationalStatePresenter::class)->present($request->refresh());
+
+        $this->assertTrue($payload['technician_revision_offer']['exists']);
+        $this->assertSame('pending', $payload['technician_revision_offer']['status']);
+        $this->assertSame('Bircan Boran', $payload['technician_revision_offer']['technician_name']);
+        $this->assertSame(3000.0, $payload['technician_revision_offer']['labor_earning']);
+        $this->assertSame(1967.4, $payload['technician_revision_offer']['route_earning']);
+        $this->assertSame(4967.4, $payload['technician_revision_offer']['total_earning']);
+        $this->assertSame('Yol pahalı', $payload['technician_revision_offer']['note']);
+        $this->assertSame(4000.0, $payload['assignment_offer']['total_amount']);
+        $this->assertSame('ops', $opsState['dashboard_action_owner']);
+        $this->assertSame('ops_action', $opsState['action_bucket']);
+        $this->assertSame('Hakediş revize talebi', $opsState['display_action_label']);
+    }
+
+    public function test_partner_portal_revision_payout_revision_resolves_after_ops_earning_update_and_shows_appointment_state(): void
+    {
+        $user = $this->adminUser();
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'REVISION-PARTNER',
+            'display_name' => 'Revizyon Partner',
+            'active' => true,
+        ]);
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Bircan Boran',
+            'phone_e164' => '+905551234567',
+            'active' => true,
+        ]);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'field_technician',
+            'active' => true,
+        ]);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Atandı',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $offer = TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 1000,
+            'total_amount' => 4000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now()->subHour(),
+        ]);
+        $revision = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'labor_amount' => 3000,
+                'route_fee_amount' => 1967.40,
+                'note' => 'Yol pahalı',
+                'submitted_at' => now()->toISOString(),
+                'ops_review_required' => true,
+            ],
+            'note' => 'Yol pahalı',
+        ]);
+        TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => $user->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'slots' => [['date' => now()->addDay()->toDateString(), 'start_time' => '10:00', 'end_time' => '11:00']],
+            ],
+            'note' => 'Yarın uygunum.',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/assignment-offers/{$offer->id}", [
+                'labor_amount' => 3000,
+                'route_fee_amount' => 1967.40,
+                'total_amount' => 4967.40,
+                'note' => 'Revize yanıtlandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.total_amount', 4967.4)
+            ->assertJsonPath('request.technician_revision_offer.status', 'resolved');
+
+        $this->assertSame('appointment_proposed', $response->json('request.operational_state.attention.action'));
+        $this->assertSame('Usta randevu önerdi', $response->json('request.display_action_label'));
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'id' => $revision->id,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'assignment_offer_revised',
+            'title' => 'Hakediş revize talebi yanıtlandı',
+        ]);
+
+        $partnerPayload = app(B2BPartnerPortalDataService::class)->safeServiceJobSummary($request->refresh(), $partner);
+
+        $this->assertSame(4967.4, $partnerPayload['assignment_offer']['total_amount']);
+        $this->assertSame('appointment_proposed_waiting', $partnerPayload['action_state']);
+        $this->assertSame('Randevu önerildi', $partnerPayload['next_action']);
+        $this->assertNotSame('price_revision_requested', $partnerPayload['action_state']);
+        $this->assertSame(TechnicalServicePartnerJobAction::STATUS_APPLIED, $partnerPayload['price_revision_request']['status']);
+    }
+
+    public function test_resolved_earning_revision_is_not_ops_action_without_new_pending_review(): void
+    {
+        $technician = TechnicalServiceTechnician::query()->create([
+            'name' => 'Bircan Boran',
+            'active' => true,
+        ]);
+        $partner = B2BPartner::query()->create([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'partner_code' => 'RESOLVED-REVISION-PARTNER',
+            'display_name' => 'Çözülmüş Revizyon Partner',
+            'active' => true,
+        ]);
+        $portalUser = User::factory()->create(['role_code' => 'b2b_locksmith']);
+        $request = $this->technicalServiceRequest([
+            'status' => 'Atandı',
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+        ]);
+        $action = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $request->id,
+            'partner_id' => $partner->id,
+            'user_id' => $portalUser->id,
+            'technical_service_technician_id' => $technician->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'labor_amount' => 3000,
+                'route_fee_amount' => 500,
+                'note' => 'Revize',
+            ],
+            'note' => 'Revize',
+            'created_at' => now()->subHour(),
+            'updated_at' => now()->subHour(),
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $request->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+            'total_amount' => 3500,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_REVISED,
+            'sent_at' => now()->subHours(2),
+            'metadata' => [
+                'revised_at' => now()->toISOString(),
+                'resolved_price_revision_action_ids' => [$action->id],
+            ],
+        ]);
+
+        $opsState = app(TechnicalServiceOperationalStatePresenter::class)->present($request->refresh());
+
+        $this->assertNotSame('ops', $opsState['dashboard_action_owner']);
+        $this->assertNotSame('ops_action', $opsState['action_bucket']);
+        $this->assertNotSame('Hakediş revize talebi', $opsState['display_action_label']);
     }
 
     public function test_assignment_is_blocked_until_payment_and_door_photo_controls_are_complete(): void

@@ -29,6 +29,7 @@ use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
+use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
@@ -219,12 +220,14 @@ class TechnicalServiceController extends Controller
         $previousLegacyStatus = $technicalServiceRequest->status;
         $requestedStatusToken = $this->statusToken($payload['status'] ?? null);
         $isNewStatus = $requestedStatusToken === 'yeni';
+        $isCancellationReview = $this->workflowService->isCancellationReview($technicalServiceRequest);
+        $isCancelRequest = $this->isCancelledStatusValue($payload['status'] ?? null);
         $isCompletedReopen = $isNewStatus
             && $this->isCompletedRequestForCleanServiceVisit($technicalServiceRequest, $previousLegacyStatus);
         $isAccidentalCompletionReopen = $isCompletedReopen
             && $this->isAccidentalCompletionReopenReason($payload['reopen_reason'] ?? null);
         $isReopen = $isNewStatus
-            && ($this->isCompletedStatusValue($previousLegacyStatus) || $this->isCancelledStatusValue($previousLegacyStatus));
+            && ($isCancellationReview || $this->isCompletedStatusValue($previousLegacyStatus) || $this->isCancelledStatusValue($previousLegacyStatus));
         $this->validateInstallationAfterLatestSale($technicalServiceRequest, $payload);
 
         if ($isAccidentalCompletionReopen) {
@@ -257,6 +260,25 @@ class TechnicalServiceController extends Controller
                 'parent_request' => $parent ? $this->workflowService->serialize($parent, true) : null,
                 'reopened_as_service_visit' => true,
             ]);
+        }
+
+        if ($isReopen && ! filled($payload['reopen_reason'] ?? null)) {
+            throw ValidationException::withMessages([
+                'reopen_reason' => 'Yeniden açma nedeni zorunludur.',
+            ]);
+        }
+
+        if ($isCancelRequest && ! $isCancellationReview && ! $this->isCancelledStatusValue($previousLegacyStatus)) {
+            $technicalServiceRequest = $this->workflowService->startCancellationReview(
+                $technicalServiceRequest,
+                [
+                    'note' => $payload['note'] ?? null,
+                    'cancellation_reason' => $payload['note'] ?? null,
+                ],
+                $request->user(),
+            );
+
+            return response()->json(['request' => $this->workflowService->serialize($technicalServiceRequest, true)]);
         }
 
         if ($isReopen) {
@@ -304,7 +326,9 @@ class TechnicalServiceController extends Controller
             $targetWorkflowStatus,
             $workflowPayload,
             $request->user(),
-            $isReopen ? 'technical_service_request_reopened' : 'legacy_status_update'
+            $isReopen
+                ? 'technical_service_request_reopened'
+                : ($isCancellationReview && $targetIsCancelled ? 'cancellation_confirmed' : 'legacy_status_update')
         );
 
         if ($isReopen) {
@@ -1542,6 +1566,7 @@ class TechnicalServiceController extends Controller
         $displayCity = TechnicalServiceUiLabelService::cityLabel($request->customer_city);
         $displayDistrict = TechnicalServiceUiLabelService::districtLabel($request->customer_district, $displayCity);
         $operationalState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($request);
+        $cancelContext = app(TechnicalServiceCancelContextService::class)->present($request, $operationalState);
 
         return [
             'id' => $request->id,
@@ -1585,6 +1610,8 @@ class TechnicalServiceController extends Controller
             'display_action_label' => $operationalState['display_action_label'],
             'display_tags' => $operationalState['display_tags'],
             'attention' => $operationalState['attention'],
+            'cancel_context' => $cancelContext,
+            'current_stage_summary' => app(TechnicalServiceCancelContextService::class)->currentStageSummary($request, $operationalState),
             'action_owner' => $operationalState['dashboard_action_owner'] ?? $operationalState['action_owner'],
             'action_owner_label' => $operationalState['action_owner_label'] ?? null,
             'action_priority' => $operationalState['action_priority_score'] ?? $operationalState['sort_priority'] ?? null,

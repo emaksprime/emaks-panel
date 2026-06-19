@@ -38,6 +38,7 @@ use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
 use App\Services\PanelAccessService;
 use App\Services\PanelNavigationService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -3816,6 +3817,411 @@ class B2BPartnerPanelAccessTest extends TestCase
             );
     }
 
+    public function test_partner_job_card_and_earnings_tab_share_earning_summary_for_draft_and_sent_srv(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Portal Canonical Earnings Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Portal Canonical Earnings Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+
+        $sentSrv = $this->serviceRequestForTechnician($technician, 'SRV-CANONICAL-EARNING-002', [
+            'root_mrn' => 'MRN-CANONICAL-EARNING',
+            'service_code' => 'SRV-CANONICAL-EARNING-002',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now()->subDay(),
+            'scheduled_at' => now()->subDays(2),
+            'scheduled_date' => now()->subDays(2)->toDateString(),
+            'customer_name' => 'Canonical Musteri',
+            'customer_city' => 'Eskişehir',
+            'customer_district' => 'Beylikova',
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $sentSrv->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1000,
+            'route_fee_amount' => 2500,
+            'total_amount' => 3500,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now()->subDay(),
+        ]);
+
+        $draftSrv = $this->serviceRequestForTechnician($technician, 'SRV-CANONICAL-EARNING-003', [
+            'parent_request_id' => $sentSrv->id,
+            'root_mrn' => 'MRN-CANONICAL-EARNING',
+            'service_code' => 'SRV-CANONICAL-EARNING-003',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+            'scheduled_at' => now()->addDays(2),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'customer_name' => 'Canonical Musteri',
+            'customer_city' => 'Eskişehir',
+            'customer_district' => 'Beylikova',
+            'technician_payment_amount' => 0,
+            'travel_fee_amount' => 4850,
+            'operation_control_payload' => [
+                'completed_earning_snapshot' => [
+                    'completed_request_id' => null,
+                    'mrn' => 'SRV-CANONICAL-EARNING-003',
+                    'root_mrn' => 'MRN-CANONICAL-EARNING',
+                    'technical_service_technician_id' => $technician->id,
+                    'technician_name' => $technician->name,
+                    'labor_amount' => 0,
+                    'route_fee_amount' => 4850,
+                    'total_amount' => 4850,
+                    'payout_status' => 'draft',
+                    'source' => 'completion_snapshot',
+                ],
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/service-jobs?partner_id='.$partner->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/service-jobs')
+                ->where('partnerPortal.serviceJobs.0.earning_breakdown.current_visit.total_amount', 4850)
+                ->where('partnerPortal.serviceJobs.0.earning_breakdown.current_visit.status_label', 'Taslak')
+                ->where('partnerPortal.serviceJobs.1.earning_breakdown.current_visit.total_amount', 3500)
+                ->where('partnerPortal.serviceJobs.1.earning_breakdown.current_visit.status_label', 'Gönderildi')
+            );
+
+        $this->actingAs($portalUser)
+            ->get('/partner/earnings?partner_id='.$partner->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/earnings')
+                ->where('partnerPortal.earnings.pending.summary.job_count', 1)
+                ->where('partnerPortal.earnings.pending.summary.grand_total', 4850)
+                ->where('partnerPortal.earnings.pending.rows.0.mrn', $draftSrv->mrn)
+                ->where('partnerPortal.earnings.pending.rows.0.job_status_label', 'İş tamamlandı')
+                ->where('partnerPortal.earnings.pending.rows.0.earning_status', 'draft')
+                ->where('partnerPortal.earnings.pending.rows.0.status_label', 'Taslak')
+                ->where('partnerPortal.earnings.pending.rows.0.earning_bucket_label', 'Hakediş onayı bekliyor')
+                ->where('partnerPortal.earnings.pending.rows.0.explanation', 'İş tamamlandı; hakediş operasyon onayı veya gönderimi sonrası kesinleşir.')
+                ->where('partnerPortal.earnings.completed.summary.job_count', 1)
+                ->where('partnerPortal.earnings.completed.summary.grand_total', 3500)
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.mrn', $sentSrv->mrn)
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.job_status_label', 'İş tamamlandı')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.earning_status', 'sent')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.status', 'Gönderildi')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.earning_bucket_label', 'Kesinleşen/gönderilen hakediş')
+            );
+    }
+
+    public function test_finalized_earning_completed_payable_srv003_partner_earnings_tab_partner_job_card_not_pending_estimated_after_ops_final_approval(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Portal Finalized Earnings Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'EMRE YİĞİT']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+
+        $sentSrv = $this->serviceRequestForTechnician($technician, 'SRV-CANONICAL-FINALIZED-002', [
+            'root_mrn' => 'MRN-CANONICAL-FINALIZED',
+            'service_code' => 'SRV-CANONICAL-FINALIZED-002',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now()->subDay(),
+            'scheduled_at' => now()->subDays(2),
+            'scheduled_date' => now()->subDays(2)->toDateString(),
+            'customer_name' => 'Canonical Final Musteri',
+            'customer_city' => 'Eskişehir',
+            'customer_district' => 'Beylikova',
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $sentSrv->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1000,
+            'route_fee_amount' => 2500,
+            'total_amount' => 3500,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now()->subDay(),
+        ]);
+
+        $finalizedSrv = $this->serviceRequestForTechnician($technician, 'SRV-CANONICAL-FINALIZED-003', [
+            'parent_request_id' => $sentSrv->id,
+            'root_mrn' => 'MRN-CANONICAL-FINALIZED',
+            'service_code' => 'SRV-CANONICAL-FINALIZED-003',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+            'scheduled_at' => now()->addDays(2),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'customer_name' => 'Canonical Final Musteri',
+            'customer_city' => 'Eskişehir',
+            'customer_district' => 'Beylikova',
+            'technician_payment_amount' => 0,
+            'travel_fee_amount' => 4850,
+            'operation_control_payload' => [
+                'completed_earning_snapshot' => [
+                    'completed_request_id' => null,
+                    'mrn' => 'SRV-CANONICAL-FINALIZED-003',
+                    'root_mrn' => 'MRN-CANONICAL-FINALIZED',
+                    'technical_service_technician_id' => $technician->id,
+                    'technician_name' => $technician->name,
+                    'labor_amount' => 0,
+                    'route_fee_amount' => 4850,
+                    'total_amount' => 4850,
+                    'payout_status' => 'draft',
+                    'source' => 'completion_snapshot',
+                ],
+            ],
+        ]);
+        $operationControl = $finalizedSrv->operation_control_payload;
+        $operationControl['ops_final_payout_approval'] = [
+            'approved_request_ids' => [$finalizedSrv->id],
+            'excluded_request_ids' => [$sentSrv->id],
+            'approved_at' => now()->toISOString(),
+            'approved_by_user_id' => $admin->id,
+        ];
+        $finalizedSrv->forceFill(['operation_control_payload' => $operationControl])->save();
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/service-jobs?partner_id='.$partner->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/service-jobs')
+                ->where('partnerPortal.serviceJobs.0.mrn', $finalizedSrv->mrn)
+                ->where('partnerPortal.serviceJobs.0.earning_breakdown.current_visit.total_amount', 4850)
+                ->where('partnerPortal.serviceJobs.0.earning_breakdown.current_visit.status_label', 'Kesinleşti')
+                ->where('partnerPortal.serviceJobs.1.mrn', $sentSrv->mrn)
+                ->where('partnerPortal.serviceJobs.1.earning_breakdown.current_visit.total_amount', 3500)
+                ->where('partnerPortal.serviceJobs.1.earning_breakdown.current_visit.status_label', 'Gönderildi')
+            );
+
+        $this->actingAs($portalUser)
+            ->get('/partner/earnings?partner_id='.$partner->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('partner/earnings')
+                ->where('partnerPortal.earnings.pending.summary.job_count', 0)
+                ->where('partnerPortal.earnings.pending.summary.grand_total', 0)
+                ->where('partnerPortal.earnings.completed.summary.job_count', 2)
+                ->where('partnerPortal.earnings.completed.summary.grand_total', 8350)
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.mrn', $finalizedSrv->mrn)
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.job_status_label', 'İş tamamlandı')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.earning_status', 'finalized')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.status', 'Kesinleşti')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.earning_bucket_label', 'Kesinleşen/gönderilen hakediş')
+                ->where('partnerPortal.earnings.completed.rows.1.items.0.mrn', $sentSrv->mrn)
+                ->where('partnerPortal.earnings.completed.rows.1.items.0.job_status_label', 'İş tamamlandı')
+                ->where('partnerPortal.earnings.completed.rows.1.items.0.earning_status', 'sent')
+                ->where('partnerPortal.earnings.completed.rows.1.items.0.status', 'Gönderildi')
+            );
+    }
+
+    public function test_partner_earnings_top_cards_use_earning_status_not_job_status_language(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+
+        $this->assertStringContainsString('Hakediş onayı bekleyen iş', $source);
+        $this->assertStringContainsString('İş tamamlandı, hakediş kesinleşmedi', $source);
+        $this->assertStringContainsString('Kesinleşen hakediş', $source);
+        $this->assertStringContainsString('Gönderilen / onaylanan kayıt', $source);
+        $this->assertStringContainsString('Hakediş onayı bekleyen tamamlanan işler', $source);
+        $this->assertStringContainsString('İş durumu:', $source);
+        $this->assertStringContainsString('Hakediş durumu:', $source);
+        $this->assertStringNotContainsString('title="Bekleyen iş"', $source);
+        $this->assertStringNotContainsString('title="Tamamlanan iş"', $source);
+        $this->assertStringNotContainsString('Actual hakediş değildir', $source);
+    }
+
+    public function test_draft_earning_completed_job_appears_in_pending_earnings(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Portal Draft Earnings Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Portal Draft Earnings Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $draftJob = $this->serviceRequestForTechnician($technician, 'MRN-DRAFT-EARNING-PENDING', [
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+            'technician_payment_amount' => 1500,
+            'travel_fee_amount' => 350,
+            'operation_control_payload' => [
+                'completed_earning_snapshot' => [
+                    'labor_amount' => 1500,
+                    'route_fee_amount' => 350,
+                    'total_amount' => 1850,
+                    'payout_status' => 'draft',
+                ],
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/earnings?partner_id='.$partner->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('partnerPortal.earnings.pending.rows.0.mrn', $draftJob->mrn)
+                ->where('partnerPortal.earnings.pending.rows.0.line_total', 1850)
+                ->where('partnerPortal.earnings.pending.rows.0.job_status_label', 'İş tamamlandı')
+                ->where('partnerPortal.earnings.pending.rows.0.earning_status', 'draft')
+                ->where('partnerPortal.earnings.pending.rows.0.status_label', 'Taslak')
+                ->where('partnerPortal.earnings.completed.summary.job_count', 0)
+            );
+    }
+
+    public function test_sent_earning_completed_job_appears_in_completed_earnings(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Portal Sent Earnings Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Portal Sent Earnings Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $sentJob = $this->serviceRequestForTechnician($technician, 'MRN-SENT-EARNING-COMPLETED', [
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $sentJob->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 1200,
+            'route_fee_amount' => 300,
+            'total_amount' => 1500,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/earnings?partner_id='.$partner->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.mrn', $sentJob->mrn)
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.job_status_label', 'İş tamamlandı')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.earning_status', 'sent')
+                ->where('partnerPortal.earnings.completed.rows.0.items.0.status', 'Gönderildi')
+                ->where('partnerPortal.earnings.completed.summary.grand_total', 1500)
+                ->where('partnerPortal.earnings.pending.summary.job_count', 0)
+            );
+    }
+
+    public function test_excluded_earning_cancelled_job_not_counted_in_active_partner_earnings(): void
+    {
+        (new B2BPartnerPermissionSeeder)->run();
+        $admin = $this->userWithRole('admin', true);
+        $partner = $this->partner([
+            'partner_type' => B2BPartner::TYPE_LOCKSMITH,
+            'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
+            'display_name' => 'Portal Excluded Earnings Locksmith',
+        ]);
+        $technician = $this->technician(['name' => 'Portal Excluded Earnings Usta']);
+        B2BPartnerTechnician::query()->create([
+            'partner_id' => $partner->id,
+            'technical_service_technician_id' => $technician->id,
+            'relationship_type' => 'owner',
+            'active' => true,
+        ]);
+        $cancelledJob = $this->serviceRequestForTechnician($technician, 'MRN-EXCLUDED-EARNING-CANCELLED', [
+            'workflow_status' => 'İptal',
+            'status' => 'İptal',
+            'cancelled_at' => now(),
+            'technician_payment_amount' => 2500,
+            'travel_fee_amount' => 500,
+        ]);
+        TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $cancelledJob->id,
+            'technical_service_technician_id' => $technician->id,
+            'labor_amount' => 2500,
+            'route_fee_amount' => 500,
+            'total_amount' => 3000,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/b2b/partners/{$partner->id}/provision-admin-user")
+            ->assertCreated();
+        $portalUser = User::query()
+            ->where('role_code', 'b2b_locksmith')
+            ->whereHas('b2bPartnerProfiles', fn ($query) => $query->where('partner_id', $partner->id))
+            ->firstOrFail();
+
+        $this->actingAs($portalUser)
+            ->get('/partner/earnings?partner_id='.$partner->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('partnerPortal.earnings.pending.summary.grand_total', 0)
+                ->where('partnerPortal.earnings.completed.summary.grand_total', 0)
+            );
+    }
+
     public function test_locksmith_partner_service_jobs_api_returns_scoped_kanban_columns(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
@@ -4206,7 +4612,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
     }
 
-    public function test_cancelled_service_job_is_hidden_from_partner_active_portal(): void
+    public function test_partner_cancelled_service_job_is_hidden_from_partner_active_portal(): void
     {
         $scope = $this->partnerPortalScopeFixture();
         $scope['jobA']->forceFill([
@@ -4221,7 +4627,58 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
         $this->actingAs($scope['userA'])
             ->getJson('/api/partner/service-jobs/'.$scope['jobA']->id)
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('job.mrn', 'MRN-SCOPE-A')
+            ->assertJsonPath('job.is_current_active_assignment', false)
+            ->assertJsonPath('job.should_show_current_actions', false)
+            ->assertJsonPath('job.next_action', 'İptal edildi')
+            ->assertJsonPath('job.cancel_context.exists', true)
+            ->assertJsonPath('job.cancel_context.summary', 'İş iptal edildi. Hakedişe dahil değil.')
+            ->assertJsonPath('job.cancel_context.earning_excluded_label', 'İptal nedeniyle hakedişe dahil değil')
+            ->assertJsonPath('job.earning_summary.total_amount', 0)
+            ->assertJsonPath('job.earning_summary.excluded_from_payable', true)
+            ->assertJsonPath('job.earning_summary.exclusion_label', 'İptal nedeniyle hakedişe dahil değil')
+            ->assertJsonPath('job.can_upload_photos', false)
+            ->assertJsonPath('job.can_request_customer_otp', false)
+            ->assertJsonPath('job.can_submit_completion', false);
+    }
+
+    public function test_cancel_review_service_job_is_hidden_from_active_portal_but_detail_is_read_only(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $scope['jobA']->forceFill([
+            'status' => 'Devam Ediyor',
+            'workflow_status' => 'Beklemede',
+            'pending_reason' => TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON,
+            'operation_control_payload' => [
+                TechnicalServiceWorkflowService::CANCELLATION_REVIEW_KEY => [
+                    'status' => 'pending',
+                    'reason' => 'Müşteri iptal istedi',
+                ],
+            ],
+        ])->save();
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs?partner_id='.$scope['partnerA']->id)
+            ->assertOk()
+            ->assertJsonMissing(['mrn' => 'MRN-SCOPE-A']);
+
+        $this->actingAs($scope['userA'])
+            ->getJson('/api/partner/service-jobs/'.$scope['jobA']->id)
+            ->assertOk()
+            ->assertJsonPath('job.mrn', 'MRN-SCOPE-A')
+            ->assertJsonPath('job.is_current_active_assignment', false)
+            ->assertJsonPath('job.should_show_current_actions', false)
+            ->assertJsonPath('job.next_action', 'İptal incelemede')
+            ->assertJsonPath('job.cancel_context.exists', true)
+            ->assertJsonPath('job.cancel_context.is_cancel_review', true)
+            ->assertJsonPath('job.cancel_context.current_stage_label', 'İptal incelemede')
+            ->assertJsonPath('job.earning_summary.total_amount', 0)
+            ->assertJsonPath('job.earning_summary.excluded_from_payable', true)
+            ->assertJsonPath('job.can_receive_part', false)
+            ->assertJsonPath('job.can_upload_photos', false)
+            ->assertJsonPath('job.can_request_customer_otp', false)
+            ->assertJsonPath('job.can_submit_completion', false);
     }
 
     public function test_partner_user_cannot_open_other_partner_job_detail(): void
@@ -4411,8 +4868,8 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->actingAs($scope['userA'])
             ->getJson('/api/partner/earnings?partner_id='.$scope['partnerA']->id)
             ->assertOk()
-            ->assertJsonPath('items.0.earnings.completed.summary.grand_total', 6000)
-            ->assertJsonPath('items.0.earnings.completed.rows.0.job_count', 2)
+            ->assertJsonPath('items.0.earnings.completed.summary.grand_total', 3000)
+            ->assertJsonPath('items.0.earnings.completed.summary.job_count', 1)
             ->assertJsonFragment(['mrn' => 'SRV-SCOPE-A-001']);
     }
 
@@ -7978,7 +8435,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNotSame($normalJob->id, $proposedJob->id);
     }
 
-    public function test_polling_refresh_updates_appointment_approved_state(): void
+    public function test_polling_refresh_updates_appointment_approved_schedule_approved_state(): void
     {
         $scope = $this->partnerPortalScopeFixture();
         $scope['jobA']->forceFill([
@@ -8793,14 +9250,16 @@ class B2BPartnerPanelAccessTest extends TestCase
         $oldPartnerParentEarningRow = collect($oldPartnerEarnings)
             ->first(fn (array $row): bool => collect($row['items'] ?? [])->pluck('mrn')->contains($parent->mrn));
         $this->assertNotNull($oldPartnerParentEarningRow);
-        $this->assertSame('Hakediş ödeme kaydı yok', $oldPartnerParentEarningRow['status'] ?? null);
+        $this->assertSame('Gönderildi', $oldPartnerParentEarningRow['status'] ?? null);
+        $this->assertSame('Hakediş ödeme kaydı yok', $oldPartnerParentEarningRow['payment_record_status_label'] ?? null);
         $this->assertNull($oldPartnerParentEarningRow['paid_at'] ?? null);
         $oldPartnerParentEarningItem = collect($oldPartnerParentEarningRow['items'] ?? [])
             ->firstWhere('mrn', $parent->mrn);
         $this->assertNotNull($oldPartnerParentEarningItem);
         $this->assertEquals(1100.0, $oldPartnerParentEarningItem['line_total'] ?? null);
         $this->assertSame('Scope Usta B', $oldPartnerParentEarningItem['technician_name'] ?? null);
-        $this->assertSame('Hakediş ödeme kaydı yok', $oldPartnerParentEarningItem['status'] ?? null);
+        $this->assertSame('Gönderildi', $oldPartnerParentEarningItem['status'] ?? null);
+        $this->assertSame('Hakediş ödeme kaydı yok', $oldPartnerParentEarningItem['payment_record_status_label'] ?? null);
 
         $newPartnerJobs = $this->actingAs($scope['userA'])
             ->getJson("/api/partner/service-jobs?partner_id={$scope['partnerA']->id}")

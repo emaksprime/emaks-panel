@@ -6,6 +6,7 @@ use App\Models\B2B\B2BPartner;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -109,15 +110,12 @@ class B2BPartnerServiceJobScopeService
      */
     public function assertCanViewServiceJob(User $user, TechnicalServiceRequest $request): B2BPartner
     {
-        if ($this->isCancelled($request)) {
-            throw new AuthorizationException('Bu iş aktif partner işlerinde görünmez.');
-        }
-
-        if ($this->hasNonCancelledChildServiceVisit($request) && ! $this->isCompletedHistoryJob($request)) {
+        $isCancelledOrReview = $this->isCancelled($request) || $this->isCancellationReview($request);
+        if (! $isCancelledOrReview && $this->hasNonCancelledChildServiceVisit($request) && ! $this->isCompletedHistoryJob($request)) {
             throw new AuthorizationException('Bu ana talebin SRV kaydi var; partner islerinde SRV karti gorunur.');
         }
 
-        if ($this->hasActiveRejectedAction($request)) {
+        if (! $isCancelledOrReview && $this->hasActiveRejectedAction($request)) {
             throw new AuthorizationException('Bu iş usta reddi sonrası operasyon incelemesinde.');
         }
 
@@ -144,6 +142,7 @@ class B2BPartnerServiceJobScopeService
             ->whereDoesntHave('childRequests', fn (Builder $query): Builder => $this->nonCancelledChildServiceVisitQuery($query))
             ->whereNotIn('status', ['İptal', 'Iptal', 'Ä°ptal'])
             ->whereNotIn('workflow_status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->where(fn (Builder $query): Builder => $this->notCancellationReviewQuery($query))
             ->whereDoesntHave('partnerJobActions', fn (Builder $query): Builder => $query
                 ->where('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED)
                 ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW));
@@ -157,6 +156,7 @@ class B2BPartnerServiceJobScopeService
             ->where(fn (Builder $query): Builder => $this->completedHistoryQuery($query))
             ->whereNotIn('status', ['İptal', 'Iptal', 'Ä°ptal'])
             ->whereNotIn('workflow_status', ['İptal', 'Iptal', 'Ä°ptal'])
+            ->where(fn (Builder $query): Builder => $this->notCancellationReviewQuery($query))
             ->whereDoesntHave('partnerJobActions', fn (Builder $query): Builder => $query
                 ->where('action', TechnicalServicePartnerJobAction::ACTION_JOB_REJECTED)
                 ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW));
@@ -181,6 +181,20 @@ class B2BPartnerServiceJobScopeService
             || in_array($request->workflow_status, ['İptal', 'Iptal', 'Ä°ptal'], true);
     }
 
+    private function isCancellationReview(TechnicalServiceRequest $request): bool
+    {
+        if ($this->isCancelled($request)) {
+            return false;
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $review = $operationControl[TechnicalServiceWorkflowService::CANCELLATION_REVIEW_KEY] ?? $operationControl['cancellation_review'] ?? null;
+        $reviewStatus = is_array($review) ? (string) ($review['status'] ?? '') : '';
+
+        return in_array($reviewStatus, ['pending', 'review'], true)
+            || (string) $request->pending_reason === TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON;
+    }
+
     private function hasNonCancelledChildServiceVisit(TechnicalServiceRequest $request): bool
     {
         if ($request->parent_request_id !== null) {
@@ -197,6 +211,13 @@ class B2BPartnerServiceJobScopeService
         return $query
             ->whereNotNull('completed_at')
             ->orWhereNotNull('installation_completed_at');
+    }
+
+    private function notCancellationReviewQuery(Builder $query): Builder
+    {
+        return $query
+            ->whereNull('pending_reason')
+            ->orWhere('pending_reason', '!=', TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON);
     }
 
     private function nonCancelledChildServiceVisitQuery(Builder $query): Builder

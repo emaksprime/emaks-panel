@@ -15,9 +15,11 @@ use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
+use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Collection;
 
@@ -330,8 +332,7 @@ class B2BPartnerPortalDataService
             $request->setRelation('partnerJobActions', $partnerActions);
         }
         $currentPartnerActions = $partnerActions
-            ->reject(fn (TechnicalServicePartnerJobAction $action): bool => $this->actionResolvedForNewWork($action)
-                || $this->actionPredatesActiveReopen($request, $action))
+            ->reject(fn (TechnicalServicePartnerJobAction $action): bool => $this->actionResolvedForCurrentWork($request, $action))
             ->values();
         $latestAction = $this->latestVisiblePartnerAction($request, $partnerActions);
         $latestAppointmentProposal = $currentPartnerActions
@@ -345,12 +346,15 @@ class B2BPartnerPortalDataService
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_SUPPORT_REQUESTED);
         $latestOtpRequest = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
-        $latestPriceRevisionRequest = $currentPartnerActions
-            ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED);
+        $latestPriceRevisionRequest = $partnerActions
+            ->first(fn (TechnicalServicePartnerJobAction $action): bool => $action->action === TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED
+                && ! $this->actionResolvedForNewWork($action)
+                && ! $this->actionPredatesActiveReopen($request, $action));
         $latestCustomerApprovalRejection = $currentPartnerActions
             ->firstWhere('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_APPROVAL_REJECTED);
         $stateAction = $this->stateAction($request, $partnerActions);
         $canonicalState = $this->operationalState->present($request);
+        $cancelContext = app(TechnicalServiceCancelContextService::class)->present($request, $canonicalState);
         $partnerColumn = (string) ($canonicalState['partner_column'] ?? $this->serviceJobColumn($request, $stateAction));
         $partRequestRows = $request->partRequests
             ->map(fn (TechnicalServicePartRequest $partRequest): array => app(TechnicalServicePartRequestService::class)->serialize($partRequest, forPartner: true))
@@ -400,7 +404,9 @@ class B2BPartnerPortalDataService
         $previousPortalPhotos = $portalPhotos
             ->filter(fn (TechnicalServiceRequestUpload $upload): bool => $this->portalDocumentPredatesActiveReopen($request, $upload->created_at ?? $upload->updated_at))
             ->values();
+        $isCancellationReview = (bool) ($canonicalState['is_cancellation_review'] ?? false);
         $isTerminal = (bool) ($canonicalState['is_completed'] ?? false)
+            || $isCancellationReview
             || ($canonicalState['ops_column'] ?? null) === 'cancelled';
         $isAppointmentConfirmed = (bool) ($canonicalState['is_appointment_confirmed'] ?? false);
         $hasOpsReviewAction = $stateAction instanceof TechnicalServicePartnerJobAction
@@ -445,6 +451,11 @@ class B2BPartnerPortalDataService
         if (is_array($activePartRequest) && filled($activePartRequest['status_label'] ?? null)) {
             $partnerNextActionLabel = (string) $activePartRequest['status_label'];
         }
+        if ($isCancellationReview) {
+            $partnerNextActionLabel = 'İptal incelemede';
+        } elseif (($canonicalState['ops_column'] ?? null) === 'cancelled') {
+            $partnerNextActionLabel = 'İptal edildi';
+        }
         $activePartRequestOpsLabel = is_array($activePartRequest)
             ? TechnicalServicePartRequest::labelForStatus((string) ($activePartRequest['status'] ?? ''))
             : null;
@@ -483,6 +494,11 @@ class B2BPartnerPortalDataService
         if ($stateAction?->action === TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_PROPOSED
             && $stateAction->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
             $displayBadges = ['Operasyon onayı bekleniyor'];
+        }
+        if ($isCancellationReview) {
+            $displayBadges = ['İptal incelemede', 'Hakedişe dahil değil'];
+        } elseif (($canonicalState['ops_column'] ?? null) === 'cancelled') {
+            $displayBadges = ['İptal edildi', 'Hakedişe dahil değil'];
         }
         $actionState = $this->serviceJobActionState($request, $stateAction, $completionRequirements);
         if ($isFinalCheck || $partnerColumn === 'final_check') {
@@ -632,7 +648,8 @@ class B2BPartnerPortalDataService
             ] : null,
             'part_requests' => $partRequestRows->all(),
             'active_part_request' => is_array($activePartRequest) ? $activePartRequest : null,
-            'can_receive_part' => is_array($activePartRequest)
+            'can_receive_part' => $shouldShowCurrentActions
+                && is_array($activePartRequest)
                 && ($activePartRequest['status'] ?? null) === TechnicalServicePartRequest::STATUS_SENT,
             'price_revision_request' => $latestPriceRevisionRequest ? [
                 'id' => $latestPriceRevisionRequest->id,
@@ -686,6 +703,8 @@ class B2BPartnerPortalDataService
                 'status' => $earningSummary['status'],
                 'job_count' => $earningSummary['job_count'],
                 'related_mrns' => $earningSummary['related_mrns'],
+                'excluded_from_payable' => (bool) ($earningSummary['excluded_from_payable'] ?? false),
+                'exclusion_label' => $earningSummary['exclusion_label'] ?? null,
             ],
             'earning_breakdown' => $earningBreakdown,
             'completion_requirements' => $effectiveCompletionRequirements,
@@ -693,9 +712,13 @@ class B2BPartnerPortalDataService
             'card_priority' => $completionReadyForSubmit
                 ? 4
                 : ($canonicalState['sort_priority'] ?? $this->serviceJobPriority($stateAction)),
-            'card_tone' => $hasOpenPartRequest ? 'violet' : $this->serviceJobTone($request, $stateAction),
+            'card_tone' => $isTerminal
+                ? (string) ($canonicalState['card_tone'] ?? 'muted')
+                : ($hasOpenPartRequest ? 'violet' : $this->serviceJobTone($request, $stateAction)),
             'kanban_column' => $partnerColumn,
             'operational_state' => $canonicalState,
+            'cancel_context' => $cancelContext,
+            'current_stage_summary' => app(TechnicalServiceCancelContextService::class)->currentStageSummary($request, $canonicalState),
             'service_visit_context' => $this->serviceVisitContext($request),
             'action_state' => $actionState,
             'can_accept' => $shouldShowCurrentActions && $canAcceptAppointment,
@@ -828,6 +851,13 @@ class B2BPartnerPortalDataService
             return null;
         }
 
+        $root = $rootMrn !== ''
+            ? TechnicalServiceRequest::query()
+                ->where('mrn', $rootMrn)
+                ->orderByRaw('case when parent_request_id is null then 0 else 1 end')
+                ->oldest('id')
+                ->first()
+            : null;
         $siblings = collect();
         if ($rootMrn !== '') {
             $siblings = TechnicalServiceRequest::query()
@@ -843,11 +873,49 @@ class B2BPartnerPortalDataService
                     'status_label' => TechnicalServiceUiLabelService::cleanDisplayText($sibling->workflow_status ?: $sibling->status),
                 ]);
         }
+        $historyRecords = collect([$root])
+            ->filter(fn ($record): bool => $record instanceof TechnicalServiceRequest)
+            ->merge($siblings)
+            ->merge([$request])
+            ->unique(fn (TechnicalServiceRequest|array $record): int => (int) (is_array($record) ? $record['id'] : $record->id))
+            ->map(function (TechnicalServiceRequest|array $record) use ($root, $request): array {
+                if (is_array($record)) {
+                    $code = (string) ($record['service_code'] ?: $record['mrn']);
+
+                    return [
+                        ...$record,
+                        'code' => $code,
+                        'type' => 'srv',
+                        'label' => 'Servis ziyareti',
+                        'is_current' => (int) $record['id'] === (int) $request->id,
+                    ];
+                }
+
+                $isRoot = $root instanceof TechnicalServiceRequest && (int) $record->id === (int) $root->id;
+
+                return [
+                    'id' => $record->id,
+                    'mrn' => $record->mrn,
+                    'service_code' => $record->service_code,
+                    'code' => $record->service_code ?: $record->mrn,
+                    'status_label' => TechnicalServiceUiLabelService::cleanDisplayText($record->workflow_status ?: $record->status),
+                    'type' => $isRoot ? 'root_mrn' : 'srv',
+                    'label' => $isRoot ? 'Ana talep' : 'Servis ziyareti',
+                    'is_current' => (int) $record->id === (int) $request->id,
+                ];
+            })
+            ->values();
 
         return [
             'parent_request_id' => $request->parent_request_id,
             'root_mrn' => $rootMrn !== '' ? $rootMrn : null,
             'parent_mrn' => $request->parentRequest?->mrn,
+            'root_request' => $root instanceof TechnicalServiceRequest ? [
+                'id' => $root->id,
+                'mrn' => $root->mrn,
+                'service_code' => $root->service_code,
+                'status_label' => TechnicalServiceUiLabelService::cleanDisplayText($root->workflow_status ?: $root->status),
+            ] : null,
             'service_code' => $request->service_code,
             'reason' => $request->service_visit_reason,
             'reason_label' => TechnicalServiceUiLabelService::serviceVisitReasonLabel($request->service_visit_reason),
@@ -856,6 +924,7 @@ class B2BPartnerPortalDataService
                 ? 'Ana talep '.$rootMrn.' altında '.$request->service_code
                 : ($rootMrn !== '' ? 'Ana talep '.$rootMrn : null),
             'sibling_service_visits' => $siblings->values()->all(),
+            'history_records' => $historyRecords->all(),
         ];
     }
 
@@ -885,96 +954,29 @@ class B2BPartnerPortalDataService
             ->unique()
             ->values()
             ->all();
-        $completedJobRows = $this->serviceJobScope
-            ->completedHistoryJobsQuery($partner)
-            ->with(['latestAssignmentOffer.technician', 'technicianRecord'])
-            ->when($earningRequestIds !== [], fn ($query) => $query->whereNotIn('id', $earningRequestIds))
-            ->where(function ($query): void {
-                $query
-                    ->whereNotNull('completed_at')
-                    ->orWhereNotNull('installation_completed_at')
-                    ->orWhereIn('workflow_status', ['Tamamlandı', 'Tamamlandi', 'TamamlandÄ±']);
-            })
-            ->latest('completed_at')
-            ->latest('updated_at')
-            ->limit(50)
-            ->get()
-            ->filter(fn (TechnicalServiceRequest $request): bool => $this->serviceJobScope->isCompletedHistoryJob($request))
-            ->filter(fn (TechnicalServiceRequest $request): bool => $request->latestAssignmentOffer !== null || $this->earningMessagePayload($request) !== null)
-            ->map(function (TechnicalServiceRequest $request): array {
-                $earningSummary = $this->earningSummary($request, $request->latestAssignmentOffer);
-                $paymentStatus = $this->payoutPaymentStatusPayload($request);
-
-                return [
-                    'id' => 'completed-job-'.$request->id,
-                    'period' => 'Dönem bekliyor',
-                    'job_count' => $earningSummary['job_count'],
-                    'labor_total' => $earningSummary['labor_amount'],
-                    'travel_fee_total' => $earningSummary['route_fee_amount'],
-                    'grand_total' => $earningSummary['total_amount'],
-                    'status' => $paymentStatus['status_label'],
-                    'paid_at' => $paymentStatus['paid_at'],
-                    'items' => [[
-                        'technical_service_request_id' => $request->id,
-                        'job_date' => $request->completed_at?->toDateString()
-                            ?? $request->installation_completed_at?->toDateString()
-                            ?? $request->scheduled_date?->toDateString(),
-                        'mrn' => $request->mrn,
-                        'city' => TechnicalServiceUiLabelService::cityLabel($request->customer_city),
-                        'district' => TechnicalServiceUiLabelService::districtLabel($request->customer_district, $request->customer_city),
-                        'labor_amount' => $earningSummary['labor_amount'],
-                        'travel_fee_amount' => $earningSummary['route_fee_amount'],
-                        'line_total' => $earningSummary['total_amount'],
-                        'technician_id' => $earningSummary['technician_id'],
-                        'technician_name' => $earningSummary['technician_name'],
-                        'status' => $paymentStatus['status_label'],
-                        'related_mrns' => $earningSummary['related_mrns'],
-                    ]],
-                ];
-            })
+        $canonicalRows = $this->partnerCanonicalEarningRows($partner, $earningRequestIds);
+        $completedJobRows = $canonicalRows
+            ->filter(fn (array $row): bool => ($row['bucket'] ?? null) === 'completed_payable')
+            ->map(fn (array $row): array => $this->completedEarningRowFromCanonical($row))
             ->values();
         $completedRows = $rows->concat($completedJobRows)->values();
-        $pendingRows = $this->serviceJobScope
-            ->serviceJobsQuery($partner)
-            ->with(['latestAssignmentOffer'])
-            ->where(function ($query): void {
-                $query
-                    ->whereNull('completed_at')
-                    ->orWhere('workflow_status', '<>', 'Tamamlandı');
-            })
-            ->latest('updated_at')
-            ->limit(50)
-            ->get()
-            ->filter(fn (TechnicalServiceRequest $request): bool => ! $this->isCompletedForPortalEarnings($request)
-                && ($request->latestAssignmentOffer !== null || $this->earningMessagePayload($request) !== null))
-            ->map(function (TechnicalServiceRequest $request): array {
-                $request->loadMissing(['latestAssignmentOffer.technician', 'technicianRecord']);
-                $offer = $request->latestAssignmentOffer;
-                $earningSummary = $this->earningSummary($request, $offer);
-
-                return [
-                    'id' => $request->id,
-                    'mrn' => $request->mrn,
-                    'scheduled_at' => $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString(),
-                    'job_count' => $earningSummary['job_count'],
-                    'labor_amount' => $earningSummary['labor_amount'],
-                    'travel_fee_amount' => $earningSummary['route_fee_amount'],
-                    'line_total' => $earningSummary['total_amount'],
-                    'related_mrns' => $earningSummary['related_mrns'],
-                    'technician_id' => $earningSummary['technician_id'],
-                    'technician_name' => $earningSummary['technician_name'],
-                    'status' => $this->pendingEarningStatus($request),
-                    'offer_status' => $earningSummary['status'],
-                    'city' => TechnicalServiceUiLabelService::cityLabel($request->customer_city),
-                    'district' => TechnicalServiceUiLabelService::districtLabel($request->customer_district, $request->customer_city),
-                ];
-            })
+        $pendingRows = $canonicalRows
+            ->filter(fn (array $row): bool => ($row['bucket'] ?? null) === 'pending_estimated')
+            ->values();
+        $excludedRows = $canonicalRows
+            ->filter(fn (array $row): bool => ($row['bucket'] ?? null) === 'excluded')
             ->values();
         $pendingSummary = [
             'job_count' => $pendingRows->sum('job_count'),
             'labor_total' => $pendingRows->sum('labor_amount'),
             'travel_fee_total' => $pendingRows->sum('travel_fee_amount'),
             'grand_total' => $pendingRows->sum('line_total'),
+        ];
+        $excludedSummary = [
+            'job_count' => $excludedRows->sum('job_count'),
+            'labor_total' => $excludedRows->sum('labor_amount'),
+            'travel_fee_total' => $excludedRows->sum('travel_fee_amount'),
+            'grand_total' => $excludedRows->sum('line_total'),
         ];
         $completedSummary = [
             'job_count' => $completedRows->sum('job_count'),
@@ -989,12 +991,25 @@ class B2BPartnerPortalDataService
             'pending' => [
                 'rows' => $pendingRows->all(),
                 'summary' => $pendingSummary,
-                'note' => 'Bekleyen hakedişler tahmini atama teklifidir; actual hakediş değildir.',
+                'label' => 'Hakediş onayı bekleyen tamamlanan işler',
+                'note' => 'Bu işler tamamlandı; hakediş operasyon onayı veya gönderimi sonrası kesinleşir.',
             ],
             'completed' => [
                 'rows' => $completedRows->all(),
                 'summary' => $completedSummary,
-                'note' => 'Tamamlanan hakedişler Teknik Servis hakediş kaynağından okunur; dönem bekleyen işler ayrıca gösterilir.',
+                'label' => 'Kesinleşen / gönderilen hakedişler',
+                'note' => 'Operasyon tarafından gönderilen, onaylanan veya kesinleşen hakediş kayıtlarıdır.',
+            ],
+            'excluded' => [
+                'rows' => $excludedRows->all(),
+                'summary' => $excludedSummary,
+                'note' => 'İptal veya inceleme nedeniyle hakedişe dahil edilmeyen işler aktif toplamları etkilemez.',
+            ],
+            'totals' => [
+                'pending_count' => $pendingSummary['job_count'],
+                'pending_total' => $pendingSummary['grand_total'],
+                'completed_count' => $completedSummary['job_count'],
+                'completed_total' => $completedSummary['grand_total'],
             ],
             'summary' => [
                 'job_count' => $completedRows->sum('job_count'),
@@ -1003,6 +1018,233 @@ class B2BPartnerPortalDataService
                 'grand_total' => $completedRows->sum('grand_total'),
             ],
         ];
+    }
+
+    /**
+     * @param array<int, int> $excludedRequestIds
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function partnerCanonicalEarningRows(B2BPartner $partner, array $excludedRequestIds = []): Collection
+    {
+        $activeRows = $this->serviceJobScope
+            ->serviceJobsQuery($partner)
+            ->with(['latestAssignmentOffer.technician', 'technicianRecord'])
+            ->latest('updated_at')
+            ->limit(100)
+            ->get();
+
+        $completedRows = $this->serviceJobScope
+            ->completedHistoryJobsQuery($partner)
+            ->with(['latestAssignmentOffer.technician', 'technicianRecord'])
+            ->where(function ($query): void {
+                $query
+                    ->whereNotNull('completed_at')
+                    ->orWhereNotNull('installation_completed_at')
+                    ->orWhereIn('workflow_status', ['Tamamlandı', 'Tamamlandi', 'TamamlandÄ±']);
+            })
+            ->latest('completed_at')
+            ->latest('updated_at')
+            ->limit(100)
+            ->get()
+            ->filter(fn (TechnicalServiceRequest $request): bool => $this->serviceJobScope->isCompletedHistoryJob($request));
+
+        return $activeRows
+            ->concat($completedRows)
+            ->unique('id')
+            ->reject(fn (TechnicalServiceRequest $request): bool => in_array((int) $request->id, $excludedRequestIds, true))
+            ->map(fn (TechnicalServiceRequest $request): array => $this->partnerCanonicalEarningRow($request))
+            ->filter(fn (array $row): bool => (float) ($row['line_total'] ?? 0) > 0 || (bool) ($row['excluded_from_payable'] ?? false))
+            ->values();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function partnerCanonicalEarningRow(TechnicalServiceRequest $request): array
+    {
+        $request->loadMissing(['latestAssignmentOffer.technician', 'technicianRecord']);
+        $summary = $this->singleEarningSummary($request, $request->latestAssignmentOffer);
+        $bucket = $this->partnerEarningBucket($request, $summary);
+        $earningStatus = $this->partnerEarningStatus(
+            $summary['status'] ?? null,
+            $bucket,
+            $this->hasOpsFinalPayoutApproval($request),
+        );
+        $statusLabel = $this->partnerEarningDisplayStatus($earningStatus, $bucket);
+        $paymentStatus = $this->payoutPaymentStatusPayload($request);
+        $scheduledAt = $request->scheduled_at?->toIso8601String() ?? $request->scheduled_date?->toDateString();
+        $jobStatus = $this->partnerEarningJobStatus($request);
+
+        return [
+            'id' => $request->id,
+            'request_id' => $request->id,
+            'mrn' => $request->mrn,
+            'code' => $request->mrn,
+            'root_mrn' => $request->root_mrn,
+            'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($request->customer_name),
+            'scheduled_at' => $scheduledAt,
+            'appointment_at' => $scheduledAt,
+            'job_date' => $request->completed_at?->toDateString()
+                ?? $request->installation_completed_at?->toDateString()
+                ?? $request->scheduled_date?->toDateString(),
+            'job_count' => 1,
+            'labor_amount' => round((float) $summary['labor_amount'], 2),
+            'travel_fee_amount' => round((float) $summary['route_fee_amount'], 2),
+            'line_total' => round((float) $summary['total_amount'], 2),
+            'related_mrns' => array_values(array_filter([(string) $request->mrn])),
+            'technician_id' => $summary['technician_id'] ?? null,
+            'technician_name' => $summary['technician_name'] ?? null,
+            'status' => $statusLabel,
+            'status_label' => $statusLabel,
+            'job_status' => $jobStatus,
+            'job_status_label' => $this->partnerEarningJobStatusLabel($jobStatus),
+            'earning_status' => $earningStatus,
+            'earning_status_label' => $statusLabel,
+            'offer_status' => $earningStatus,
+            'bucket' => $bucket,
+            'earning_bucket' => $bucket,
+            'earning_bucket_label' => $this->partnerEarningBucketLabel($bucket),
+            'actual' => $bucket === 'completed_payable',
+            'excluded_from_payable' => $bucket === 'excluded',
+            'exclusion_label' => $bucket === 'excluded' ? 'Hakedişe dahil değil' : null,
+            'amount' => round((float) $summary['total_amount'], 2),
+            'payment_record_status' => $paymentStatus['status'],
+            'payment_record_status_label' => $paymentStatus['status_label'],
+            'paid_at' => $paymentStatus['paid_at'],
+            'explanation' => $bucket === 'pending_estimated'
+                ? 'İş tamamlandı; hakediş operasyon onayı veya gönderimi sonrası kesinleşir.'
+                : null,
+            'note' => $bucket === 'pending_estimated'
+                ? 'Kesin hakediş değildir.'
+                : null,
+            'city' => TechnicalServiceUiLabelService::cityLabel($request->customer_city),
+            'district' => TechnicalServiceUiLabelService::districtLabel($request->customer_district, $request->customer_city),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function completedEarningRowFromCanonical(array $row): array
+    {
+        return [
+            'id' => 'completed-job-'.$row['request_id'],
+            'period' => 'Dönem bekliyor',
+            'job_count' => $row['job_count'],
+            'labor_total' => $row['labor_amount'],
+            'travel_fee_total' => $row['travel_fee_amount'],
+            'grand_total' => $row['line_total'],
+            'status' => $row['status_label'],
+            'payment_record_status_label' => $row['payment_record_status_label'],
+            'paid_at' => $row['paid_at'],
+            'items' => [[
+                'technical_service_request_id' => $row['request_id'],
+                'job_date' => $row['job_date'],
+                'mrn' => $row['mrn'],
+                'root_mrn' => $row['root_mrn'],
+                'customer_name' => $row['customer_name'],
+                'city' => $row['city'],
+                'district' => $row['district'],
+                'labor_amount' => $row['labor_amount'],
+                'travel_fee_amount' => $row['travel_fee_amount'],
+                'line_total' => $row['line_total'],
+                'technician_id' => $row['technician_id'],
+                'technician_name' => $row['technician_name'],
+                'status' => $row['status_label'],
+                'job_status' => $row['job_status'],
+                'job_status_label' => $row['job_status_label'],
+                'earning_status' => $row['earning_status'],
+                'earning_status_label' => $row['earning_status_label'],
+                'earning_bucket' => $row['earning_bucket'],
+                'earning_bucket_label' => $row['earning_bucket_label'],
+                'payment_record_status_label' => $row['payment_record_status_label'],
+                'related_mrns' => $row['related_mrns'],
+            ]],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $summary
+     */
+    private function partnerEarningBucket(TechnicalServiceRequest $request, array $summary): string
+    {
+        $status = mb_strtolower(trim((string) ($summary['status'] ?? '')));
+
+        if ($this->isEarningExcludedServiceJob($request)
+            || in_array($status, ['cancelled', 'canceled', 'excluded', 'excluded_from_payable', 'cancel_review'], true)) {
+            return 'excluded';
+        }
+
+        return $this->isCompletedForPortalEarnings($request)
+            && (in_array($status, ['sent', 'submitted', 'accepted', 'approved', 'confirmed', 'final', 'finalized', 'payable', 'paid'], true)
+                || $this->hasOpsFinalPayoutApproval($request))
+            ? 'completed_payable'
+            : 'pending_estimated';
+    }
+
+    private function partnerEarningDisplayStatus(?string $status, string $bucket): string
+    {
+        if ($bucket === 'excluded') {
+            return 'Hakedişe dahil değil';
+        }
+
+        $label = $this->earningStatusLabel($status);
+
+        if ($label !== 'Hakediş yok') {
+            return $label;
+        }
+
+        return $bucket === 'pending_estimated' ? 'Taslak' : 'Kesinleşti';
+    }
+
+    private function partnerEarningStatus(?string $status, string $bucket, bool $opsFinalApproved = false): string
+    {
+        $normalized = mb_strtolower(trim((string) $status));
+
+        if ($bucket === 'excluded') {
+            return 'excluded_from_payable';
+        }
+
+        if ($bucket === 'completed_payable'
+            && $opsFinalApproved
+            && in_array($normalized, ['', 'draft', 'pending', 'prepared_not_sent', 'proposed', 'estimate'], true)) {
+            return 'finalized';
+        }
+
+        if ($normalized === '' || $this->earningStatusLabel($normalized) === 'Hakediş yok') {
+            return $bucket === 'pending_estimated' ? 'draft' : 'finalized';
+        }
+
+        return $normalized;
+    }
+
+    private function partnerEarningBucketLabel(string $bucket): string
+    {
+        return match ($bucket) {
+            'pending_estimated' => 'Hakediş onayı bekliyor',
+            'completed_payable' => 'Kesinleşen/gönderilen hakediş',
+            'excluded' => 'Hakedişe dahil değil',
+            default => 'Hakediş durumu',
+        };
+    }
+
+    private function partnerEarningJobStatus(TechnicalServiceRequest $request): string
+    {
+        if ($this->isEarningExcludedServiceJob($request)) {
+            return 'cancelled';
+        }
+
+        return $this->isCompletedForPortalEarnings($request) ? 'completed' : 'active';
+    }
+
+    private function partnerEarningJobStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'completed' => 'İş tamamlandı',
+            'cancelled' => 'İş iptal edildi',
+            default => 'İş devam ediyor',
+        };
     }
 
     /**
@@ -1062,9 +1304,7 @@ class B2BPartnerPortalDataService
         $request = $item->request;
 
         if ($request instanceof TechnicalServiceRequest) {
-            $root = (string) ($request->root_mrn ?: $request->parentRequest?->mrn ?: $request->mrn);
-
-            return $root !== '' ? 'service-request:'.$root : 'service-request-id:'.$request->id;
+            return 'service-request-id:'.$request->id;
         }
 
         return $item->id !== null ? 'earning-item:'.$item->id : null;
@@ -1079,7 +1319,8 @@ class B2BPartnerPortalDataService
 
         if ($request instanceof TechnicalServiceRequest) {
             $request->loadMissing(['latestAssignmentOffer.technician', 'technicianRecord']);
-            $earningSummary = $this->earningSummary($request, $request->latestAssignmentOffer);
+            $earningSummary = $this->singleEarningSummary($request, $request->latestAssignmentOffer);
+            $status = $this->partnerEarningDisplayStatus($earningSummary['status'] ?? $earning->status, 'completed_payable');
 
             return [
                 'technical_service_request_id' => $request->id,
@@ -1095,9 +1336,9 @@ class B2BPartnerPortalDataService
                 'line_total' => $earningSummary['total_amount'],
                 'technician_id' => $earningSummary['technician_id'],
                 'technician_name' => $earningSummary['technician_name'],
-                'status' => $earning->status,
-                'related_mrns' => $earningSummary['related_mrns'],
-                'job_count' => $earningSummary['job_count'],
+                'status' => $status,
+                'related_mrns' => array_values(array_filter([(string) $request->mrn])),
+                'job_count' => 1,
             ];
         }
 
@@ -1152,6 +1393,26 @@ class B2BPartnerPortalDataService
         $requests = $this->earningGroupRequests($request);
 
         if ($requests->isEmpty()) {
+            if ($this->isEarningExcludedServiceJob($request)) {
+                $excluded = $this->singleEarningSummary($request, $assignmentOffer);
+
+                return [
+                    'labor_amount' => 0.0,
+                    'route_fee_amount' => 0.0,
+                    'total_amount' => 0.0,
+                    'status' => $excluded['status'],
+                    'job_count' => 1,
+                    'technician_id' => $excluded['technician_id'],
+                    'technician_name' => $excluded['technician_name'],
+                    'technician_names' => array_values(array_filter([(string) ($excluded['technician_name'] ?? '')])),
+                    'technician_count' => filled($excluded['technician_name'] ?? null) ? 1 : 0,
+                    'is_multi_technician' => false,
+                    'related_mrns' => array_values(array_filter([(string) $request->mrn])),
+                    'excluded_from_payable' => true,
+                    'exclusion_label' => 'İptal nedeniyle hakedişe dahil değil',
+                ];
+            }
+
             $requests = collect([$request]);
         }
 
@@ -1196,6 +1457,45 @@ class B2BPartnerPortalDataService
         $requests = $this->earningGroupRequests($request);
 
         if ($requests->isEmpty()) {
+            if ($this->isEarningExcludedServiceJob($request)) {
+                $summary = $this->singleEarningSummary($request, $assignmentOffer);
+                $row = [
+                    'id' => $request->id,
+                    'mrn' => $request->mrn,
+                    'display_mrn' => $request->service_code
+                        ? trim((string) ($request->root_mrn ?: $request->mrn)).' / '.$request->service_code
+                        : $request->mrn,
+                    'service_code' => $request->service_code,
+                    'kind' => $request->parent_request_id !== null || filled($request->service_code) ? 'service' : 'mount',
+                    'kind_label' => $request->parent_request_id !== null || filled($request->service_code) ? 'Servis' : 'Montaj',
+                    'is_current' => true,
+                    'technician_id' => $summary['technician_id'],
+                    'technician_name' => $summary['technician_name'],
+                    'technician_source' => $summary['technician_source'],
+                    'labor_amount' => 0.0,
+                    'route_fee_amount' => 0.0,
+                    'total_amount' => 0.0,
+                    'status' => $summary['status'],
+                    'status_label' => $this->earningStatusLabel($summary['status']),
+                    'excluded_from_payable' => true,
+                    'exclusion_label' => 'İptal nedeniyle hakedişe dahil değil',
+                ];
+
+                return [
+                    'current_visit' => $row,
+                    'rows' => [$row],
+                    'root_total' => [
+                        'labor_amount' => 0.0,
+                        'route_fee_amount' => 0.0,
+                        'total_amount' => 0.0,
+                        'job_count' => 1,
+                        'technician_count' => filled($summary['technician_name'] ?? null) ? 1 : 0,
+                        'technician_names' => array_values(array_filter([(string) ($summary['technician_name'] ?? '')])),
+                        'is_multi_technician' => false,
+                    ],
+                ];
+            }
+
             $requests = collect([$request]);
         }
 
@@ -1277,7 +1577,7 @@ class B2BPartnerPortalDataService
 
         return $requests
             ->filter(fn (TechnicalServiceRequest $related): bool => (int) $related->technical_service_technician_id === (int) $technicianId)
-            ->reject(fn (TechnicalServiceRequest $related): bool => $this->isCancelledServiceJob($related))
+            ->reject(fn (TechnicalServiceRequest $related): bool => $this->isEarningExcludedServiceJob($related))
             ->unique('id')
             ->values();
     }
@@ -1287,18 +1587,37 @@ class B2BPartnerPortalDataService
      */
     private function singleEarningSummary(TechnicalServiceRequest $request, mixed $assignmentOffer): array
     {
+        if ($this->isEarningExcludedServiceJob($request)) {
+            $technician = $this->earningTechnicianPayload($request, $assignmentOffer);
+
+            return [
+                'labor_amount' => 0.0,
+                'route_fee_amount' => 0.0,
+                'total_amount' => 0.0,
+                'status' => 'cancelled',
+                'technician_id' => $technician['technician_id'],
+                'technician_name' => $technician['technician_name'],
+                'technician_source' => $technician['source'],
+            ];
+        }
+
         $completedSnapshot = $this->completedEarningSnapshot($request);
         if ($completedSnapshot !== null) {
             $technician = $this->earningTechnicianPayload($request, $assignmentOffer, $completedSnapshot);
             $laborAmount = $this->money($completedSnapshot['labor_amount'] ?? null) ?? 0.0;
             $routeFeeAmount = $this->money($completedSnapshot['route_fee_amount'] ?? null) ?? 0.0;
             $totalAmount = $this->money($completedSnapshot['total_amount'] ?? null) ?? round($laborAmount + $routeFeeAmount, 2);
+            $status = (string) ($completedSnapshot['status'] ?? $completedSnapshot['payout_status'] ?? 'sent');
+            if ($this->hasOpsFinalPayoutApproval($request)
+                && in_array(mb_strtolower(trim($status)), ['', 'draft', 'pending', 'prepared_not_sent', 'proposed', 'estimate'], true)) {
+                $status = 'finalized';
+            }
 
             return [
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
                 'total_amount' => round($totalAmount, 2),
-                'status' => (string) ($completedSnapshot['status'] ?? $completedSnapshot['payout_status'] ?? 'sent'),
+                'status' => $status,
                 'technician_id' => $technician['technician_id'],
                 'technician_name' => $technician['technician_name'],
                 'technician_source' => $technician['source'],
@@ -1444,13 +1763,14 @@ class B2BPartnerPortalDataService
 
     private function earningStatusLabel(?string $status): string
     {
-        return match ($status) {
-            'sent' => 'Gönderildi',
-            'accepted' => 'Kabul edildi',
-            'revised' => 'Revize edildi',
-            'confirmed' => 'Onaylanan hakediş',
-            'cancelled' => 'İptal edildi',
-            'draft' => 'Taslak',
+        return match (mb_strtolower(trim((string) $status))) {
+            'sent', 'submitted' => 'Gönderildi',
+            'accepted', 'approved' => 'Onaylandı',
+            'revised', 'revision_requested' => 'Revize edildi',
+            'confirmed', 'final', 'finalized', 'payable' => 'Kesinleşti',
+            'paid' => 'Ödendi',
+            'cancelled', 'canceled', 'excluded', 'excluded_from_payable' => 'Hakedişe dahil değil',
+            'draft', 'pending', 'prepared_not_sent', 'proposed', 'estimate' => 'Taslak',
             default => 'Hakediş yok',
         };
     }
@@ -1460,6 +1780,25 @@ class B2BPartnerPortalDataService
         return $request->cancelled_at !== null
             || $this->statusIncludes($request->status, 'ptal')
             || $this->statusIncludes($request->workflow_status, 'ptal');
+    }
+
+    private function isEarningExcludedServiceJob(TechnicalServiceRequest $request): bool
+    {
+        return $this->isCancelledServiceJob($request) || $this->isCancellationReview($request);
+    }
+
+    private function isCancellationReview(TechnicalServiceRequest $request): bool
+    {
+        if ($this->isCancelledServiceJob($request)) {
+            return false;
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $review = $operationControl[TechnicalServiceWorkflowService::CANCELLATION_REVIEW_KEY] ?? $operationControl['cancellation_review'] ?? null;
+        $reviewStatus = is_array($review) ? (string) ($review['status'] ?? '') : '';
+
+        return in_array($reviewStatus, ['pending', 'review'], true)
+            || (string) $request->pending_reason === TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON;
     }
 
     private function statusIncludes(?string $value, string $needle): bool
@@ -1491,6 +1830,23 @@ class B2BPartnerPortalDataService
         $snapshot = $operationControl['completed_earning_snapshot'] ?? null;
 
         return is_array($snapshot) ? $snapshot : null;
+    }
+
+    private function hasOpsFinalPayoutApproval(TechnicalServiceRequest $request): bool
+    {
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $approval = $operationControl['ops_final_payout_approval'] ?? null;
+        if (! is_array($approval)) {
+            return false;
+        }
+
+        $requestId = (int) $request->id;
+        $approvedIds = collect($approval['approved_request_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique();
+
+        return $requestId > 0 && $approvedIds->contains($requestId);
     }
 
     /**
@@ -1557,7 +1913,8 @@ class B2BPartnerPortalDataService
             return false;
         }
 
-        return in_array($request->workflow_status, ['Tamamlandı', 'TamamlandÄ±', 'İptal', 'Ä°ptal'], true)
+        return $this->isCancellationReview($request)
+            || in_array($request->workflow_status, ['Tamamlandı', 'TamamlandÄ±', 'İptal', 'Ä°ptal'], true)
             || $request->completed_at !== null;
     }
 
@@ -1616,8 +1973,7 @@ class B2BPartnerPortalDataService
     {
         $opsReview = ($actions ?? $request->partnerJobActions)
             ->filter(fn (TechnicalServicePartnerJobAction $action): bool => $action->status === TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW
-                && ! $this->actionResolvedForNewWork($action)
-                && ! $this->actionPredatesActiveReopen($request, $action));
+                && ! $this->actionResolvedForCurrentWork($request, $action));
 
         foreach ([
             TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED,
@@ -1645,6 +2001,64 @@ class B2BPartnerPortalDataService
 
         return (bool) ($payload['resolved_by_reassignment'] ?? false)
             || isset($payload['service_visit_created']);
+    }
+
+    private function actionResolvedForCurrentWork(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
+    {
+        return $this->actionResolvedForNewWork($action)
+            || $this->actionPredatesActiveReopen($request, $action)
+            || $this->priceRevisionResolvedByAssignmentOffer($request, $action);
+    }
+
+    private function priceRevisionResolvedByAssignmentOffer(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
+    {
+        if ($action->action !== TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED) {
+            return false;
+        }
+
+        if ($action->status !== TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW) {
+            return true;
+        }
+
+        $payload = is_array($action->payload) ? $action->payload : [];
+        if (($payload['revision_status'] ?? null) === 'resolved' || isset($payload['resolved_assignment_offer_id'])) {
+            return true;
+        }
+
+        $offer = $request->latestAssignmentOffer;
+        if (! $offer instanceof TechnicalServiceAssignmentOffer) {
+            return false;
+        }
+
+        $actionTechnicianId = (int) ($action->technical_service_technician_id ?? 0);
+        if ($actionTechnicianId > 0 && $actionTechnicianId !== (int) $offer->technical_service_technician_id) {
+            return false;
+        }
+
+        $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+        $resolvedIds = collect($metadata['resolved_price_revision_action_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->values();
+        if ($resolvedIds->contains((int) $action->id)) {
+            return true;
+        }
+
+        $revisedAt = $offer->updated_at;
+        if (isset($metadata['revised_at'])) {
+            try {
+                $revisedAt = \Carbon\CarbonImmutable::parse((string) $metadata['revised_at']);
+            } catch (\Throwable) {
+                $revisedAt = $offer->updated_at;
+            }
+        }
+
+        $actionAt = $action->created_at ?? $action->updated_at;
+
+        return $offer->status === TechnicalServiceAssignmentOffer::STATUS_REVISED
+            && $revisedAt instanceof \Carbon\CarbonInterface
+            && $actionAt instanceof \Carbon\CarbonInterface
+            && $revisedAt->greaterThanOrEqualTo($actionAt);
     }
 
     private function actionPredatesActiveReopen(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
@@ -1676,7 +2090,7 @@ class B2BPartnerPortalDataService
     private function latestVisiblePartnerAction(TechnicalServiceRequest $request, \Illuminate\Support\Collection $partnerActions): ?TechnicalServicePartnerJobAction
     {
         return $partnerActions->first(function (TechnicalServicePartnerJobAction $action) use ($request): bool {
-            if ($this->actionResolvedForNewWork($action) || $this->actionPredatesActiveReopen($request, $action)) {
+            if ($this->actionResolvedForCurrentWork($request, $action)) {
                 return false;
             }
 

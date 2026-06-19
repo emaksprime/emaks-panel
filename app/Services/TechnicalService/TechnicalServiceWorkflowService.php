@@ -25,6 +25,10 @@ use Illuminate\Validation\ValidationException;
 
 class TechnicalServiceWorkflowService
 {
+    public const CANCELLATION_REVIEW_PENDING_REASON = 'İptal talebi incelemede';
+
+    public const CANCELLATION_REVIEW_KEY = 'cancel_review';
+
     private const FIELD_COMPLETION_DOCUMENT_TYPES = [
         'before_photo' => 'Öncesi',
         'after_photo' => 'Sonrası',
@@ -158,6 +162,9 @@ class TechnicalServiceWorkflowService
             'closure_pending' => 'Kapanış Onayı Bekliyor',
             'complete' => 'Tamamla',
             'cancel' => 'İptal Et',
+            'cancellation_requested' => 'İptal talebi incelemeye alındı',
+            'cancellation_confirmed' => 'İş iptal edildi',
+            'technical_service_request_reopened' => 'İş yeniden açıldı',
             'field_travel_started' => 'Randevu zamanı geldi',
             'field_arrived' => 'Randevu zamanı geldi',
             'field_work_started' => 'Tamamlama işlemi başladı',
@@ -535,7 +542,8 @@ class TechnicalServiceWorkflowService
             $request->scheduled_at !== null
         );
 
-        if ($current !== $target) {
+        $isCancellationReviewReopen = $target === 'Yeni Talep' && $this->isCancellationReview($request);
+        if ($current !== $target && ! $isCancellationReviewReopen) {
             $this->assertTransitionAllowed($current, $target);
         }
 
@@ -544,6 +552,7 @@ class TechnicalServiceWorkflowService
         $request->workflow_status = $target;
         if ($target !== 'İptal') {
             $request->cancelled_at = null;
+            $this->resolveCancellationReview($request, $payload, $actionType === 'technical_service_request_reopened' ? 'reopened' : 'resolved');
         }
 
         $this->applyPayloadForWorkflow($request, $target, $payload);
@@ -558,6 +567,59 @@ class TechnicalServiceWorkflowService
         $this->writeEvent($request, $actionType, $current, $target, $user, $payload);
 
         return $request->refresh();
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public function startCancellationReview(TechnicalServiceRequest $request, array $payload = [], ?Authenticatable $user = null): TechnicalServiceRequest
+    {
+        $current = $this->currentWorkflowStatus($request);
+        $old = $this->snapshot($request);
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $reason = $payload['cancellation_reason'] ?? $payload['note'] ?? $request->cancellation_reason;
+
+        $operationControl[self::CANCELLATION_REVIEW_KEY] = [
+            'status' => 'pending',
+            'requested_at' => now()->toISOString(),
+            'requested_by_user_id' => $user?->id,
+            'reason' => $reason,
+            'source' => $payload['source'] ?? 'ops_status_update',
+        ];
+
+        $request->workflow_status = 'Beklemede';
+        $request->cancelled_at = null;
+        $request->cancellation_reason = $reason;
+        $request->pending_reason = self::CANCELLATION_REVIEW_PENDING_REASON;
+        $request->requires_reschedule = false;
+        $request->operation_control_payload = $operationControl;
+        $request->updated_by_user_id = $user?->id;
+        $this->applyDerivedState($request, ['next_action' => 'İptal talebi incelenmeli']);
+        $request->save();
+
+        $eventPayload = [
+            'note' => $payload['note'] ?? null,
+            'cancellation_reason' => $reason,
+            'cancel_review' => $operationControl[self::CANCELLATION_REVIEW_KEY],
+        ];
+        $this->writeAuditLog($request, 'cancellation_requested', $old, $this->snapshot($request), $user, $eventPayload['note'] ?? null);
+        $this->writeEvent($request, 'cancellation_requested', $current, $this->currentWorkflowStatus($request), $user, $eventPayload, 'İptal talebi incelemeye alındı');
+
+        return $request->refresh();
+    }
+
+    public function isCancellationReview(TechnicalServiceRequest $request): bool
+    {
+        if ($request->cancelled_at !== null) {
+            return false;
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $review = $operationControl[self::CANCELLATION_REVIEW_KEY] ?? $operationControl['cancellation_review'] ?? null;
+        $reviewStatus = is_array($review) ? (string) ($review['status'] ?? '') : '';
+
+        return in_array($reviewStatus, ['pending', 'review'], true)
+            || (string) $request->pending_reason === self::CANCELLATION_REVIEW_PENDING_REASON;
     }
 
     /**
@@ -1426,6 +1488,7 @@ class TechnicalServiceWorkflowService
         $payload['route_fee_config'] = app(TechnicalServiceRouteCostService::class)->feeConfig();
         $payload['route_quote'] = $this->routeQuotePayload($request);
         $payload['assignment_offer'] = $this->assignmentOfferPayload($request->latestAssignmentOffer);
+        $payload['technician_revision_offer'] = $this->technicianRevisionOfferPayload($request);
         $payload['earning_breakdown'] = $this->earningBreakdownPayload($request);
         $payload['finance_summary'] = $this->financeSummaryPayload($request, $payload['earning_breakdown']);
         $payload['partner_portal_actions'] = $this->partnerPortalActionPayload($request);
@@ -1441,9 +1504,17 @@ class TechnicalServiceWorkflowService
         $payload['display_mrn'] = $request->service_code
             ? trim((string) ($request->root_mrn ?: $request->mrn)).' / '.$request->service_code
             : $request->mrn;
-        $payload['service_visit_history'] = $this->serviceVisitHistoryPayload($request);
+        $payload['service_visit_history'] = $includeHistory
+            ? $this->serviceVisitHistoryPayload($request)
+            : null;
+        $payload['mrn_srv_history'] = $payload['service_visit_history'] !== null
+            ? Arr::only($payload['service_visit_history'], ['root_request', 'current_request', 'direct_parent_request', 'items'])
+            : null;
         $operationalState = app(TechnicalServiceOperationalStatePresenter::class)->present($request);
+        $cancelContext = app(TechnicalServiceCancelContextService::class)->present($request, $operationalState);
         $payload['operational_state'] = $operationalState;
+        $payload['cancel_context'] = $cancelContext;
+        $payload['current_stage_summary'] = app(TechnicalServiceCancelContextService::class)->currentStageSummary($request, $operationalState);
         $payload['kanban_column'] = $operationalState['ops_column'];
         $payload['display_action_label'] = $operationalState['display_action_label'];
         $payload['display_tags'] = $operationalState['display_tags'];
@@ -1485,6 +1556,7 @@ class TechnicalServiceWorkflowService
         ]);
 
         $operationalState = app(TechnicalServiceOperationalStatePresenter::class)->present($request);
+        $cancelContext = app(TechnicalServiceCancelContextService::class)->present($request, $operationalState);
 
         return [
             'id' => $request->id,
@@ -1493,6 +1565,8 @@ class TechnicalServiceWorkflowService
             'allowed_workflow_actions' => $this->allowedActionsFor($request),
             'allowed_workflow_transitions' => self::transitionMap()[$this->currentWorkflowStatus($request)] ?? [],
             'operational_state' => $operationalState,
+            'cancel_context' => $cancelContext,
+            'current_stage_summary' => app(TechnicalServiceCancelContextService::class)->currentStageSummary($request, $operationalState),
             'kanban_column' => $operationalState['ops_column'],
             'display_action_label' => $operationalState['display_action_label'],
             'display_tags' => $operationalState['display_tags'],
@@ -1693,8 +1767,62 @@ class TechnicalServiceWorkflowService
             case 'İptal':
                 $request->cancelled_at = $this->castDateTime($payload['cancelled_at'] ?? now());
                 $request->cancellation_reason = $payload['cancellation_reason'] ?? $payload['note'] ?? $request->cancellation_reason;
+                $this->resolveCancellationReview($request, $payload, 'approved');
+                $this->markAssignmentOffersCancelled($request, $payload);
                 break;
         }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function resolveCancellationReview(TechnicalServiceRequest $request, array $payload, string $status): void
+    {
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $review = $operationControl[self::CANCELLATION_REVIEW_KEY] ?? null;
+        if (! is_array($review)) {
+            return;
+        }
+
+        if (! in_array((string) ($review['status'] ?? ''), ['pending', 'review'], true)) {
+            return;
+        }
+
+        $operationControl[self::CANCELLATION_REVIEW_KEY] = array_merge($review, [
+            'status' => $status,
+            'resolved_at' => now()->toISOString(),
+            'resolution_note' => $payload['note'] ?? $payload['reopen_note'] ?? null,
+        ]);
+        $request->operation_control_payload = $operationControl;
+
+        if ((string) $request->pending_reason === self::CANCELLATION_REVIEW_PENDING_REASON) {
+            $request->pending_reason = null;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function markAssignmentOffersCancelled(TechnicalServiceRequest $request, array $payload): void
+    {
+        TechnicalServiceAssignmentOffer::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('status', '!=', TechnicalServiceAssignmentOffer::STATUS_CANCELLED)
+            ->get()
+            ->each(function (TechnicalServiceAssignmentOffer $offer) use ($request, $payload): void {
+                $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+                $metadata['cancellation_exclusion'] = [
+                    'status' => 'excluded_from_payable',
+                    'excluded_at' => now()->toISOString(),
+                    'reason' => $payload['cancellation_reason'] ?? $payload['note'] ?? $request->cancellation_reason,
+                    'source' => 'request_cancellation',
+                ];
+
+                $offer->forceFill([
+                    'status' => TechnicalServiceAssignmentOffer::STATUS_CANCELLED,
+                    'metadata' => $metadata,
+                ])->save();
+            });
     }
 
     /**
@@ -2951,6 +3079,7 @@ class TechnicalServiceWorkflowService
             TechnicalServiceAssignmentOffer::STATUS_REVISED => 'Revize edildi',
             TechnicalServiceAssignmentOffer::STATUS_CANCELLED => 'İptal edildi',
             TechnicalServiceAssignmentOffer::STATUS_DRAFT => 'Taslak',
+            'confirmed', 'final', 'finalized', 'payable' => 'Kesinleşti',
             default => 'Hakediş yok',
         };
     }
@@ -2985,6 +3114,39 @@ class TechnicalServiceWorkflowService
         $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
         $operationControl['completed_earning_snapshot'] = $this->buildCompletedEarningSnapshotPayload($request);
         $request->operation_control_payload = $operationControl;
+    }
+
+    public function finalizeCompletedEarningSnapshotForOpsPayoutApproval(
+        TechnicalServiceRequest $request,
+        ?Authenticatable $user = null,
+    ): TechnicalServiceRequest {
+        if ($request->completed_at === null && $request->installation_completed_at === null) {
+            return $request;
+        }
+
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $snapshot = is_array($operationControl['completed_earning_snapshot'] ?? null)
+            ? $operationControl['completed_earning_snapshot']
+            : $this->buildCompletedEarningSnapshotPayload($request);
+        $currentStatus = mb_strtolower(trim((string) ($snapshot['status'] ?? $snapshot['payout_status'] ?? '')));
+        $messageStatus = mb_strtolower(trim((string) ($snapshot['earning_message_status'] ?? '')));
+        $finalizedStatus = in_array($currentStatus, ['sent', 'submitted'], true)
+            || in_array($messageStatus, ['sent', 'submitted'], true)
+            ? 'sent'
+            : 'finalized';
+
+        $snapshot['status'] = $finalizedStatus;
+        $snapshot['status_label'] = $this->assignmentOfferStatusLabel($finalizedStatus);
+        $snapshot['payout_status'] = 'confirmed';
+        $snapshot['payout_status_label'] = $this->locksmithPayoutStatusLabel('confirmed');
+        $snapshot['finalized_at'] = now()->toISOString();
+        $snapshot['finalized_by_user_id'] = $user?->id;
+        $snapshot['finalization_source'] = 'ops_final_payout_approval';
+
+        $operationControl['completed_earning_snapshot'] = $snapshot;
+        $request->forceFill(['operation_control_payload' => $operationControl])->save();
+
+        return $request->refresh();
     }
 
     /**
@@ -3713,6 +3875,128 @@ class TechnicalServiceWorkflowService
     }
 
     /**
+     * @return array<string, mixed>|null
+     */
+    private function technicianRevisionOfferPayload(TechnicalServiceRequest $request): ?array
+    {
+        if (! $request->relationLoaded('partnerJobActions')) {
+            return null;
+        }
+
+        $action = $request->partnerJobActions
+            ->first(fn (TechnicalServicePartnerJobAction $item): bool => $item->action === TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED
+                && ! $this->actionResolvedForNewWork($item)
+                && ! $this->recordPredatesActiveReopen($request, $item->created_at ?? $item->updated_at));
+
+        if (! $action instanceof TechnicalServicePartnerJobAction) {
+            return null;
+        }
+
+        $payload = is_array($action->payload) ? $action->payload : [];
+        $laborAmount = $this->nullableFloat($payload['labor_amount'] ?? null);
+        $routeFeeAmount = $this->nullableFloat($payload['route_fee_amount'] ?? null);
+        $totalAmount = round(($laborAmount ?? 0.0) + ($routeFeeAmount ?? 0.0), 2);
+        $status = $this->technicianRevisionOfferStatus($request, $action);
+        $technician = $action->technician ?: $request->technicianRecord;
+
+        return [
+            'exists' => true,
+            'id' => $action->id,
+            'status' => $status,
+            'status_label' => match ($status) {
+                'pending' => 'Operasyon yanıtı bekliyor',
+                'resolved' => 'Yanıtlandı',
+                'accepted' => 'Kabul edildi',
+                'rejected' => 'Reddedildi',
+                'countered' => 'Karşı teklif verildi',
+                default => TechnicalServiceUiLabelService::statusLabel($status),
+            },
+            'technician_id' => $action->technical_service_technician_id ?? $request->technical_service_technician_id,
+            'technician_name' => TechnicalServiceUiLabelService::displayName($technician?->name ?? $request->technician_name),
+            'labor_earning' => $laborAmount,
+            'route_earning' => $routeFeeAmount,
+            'total_earning' => $totalAmount,
+            'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? $action->note),
+            'requested_at' => $this->dateTimeString($action->created_at),
+            'resolved_at' => isset($payload['resolved_at']) ? (string) $payload['resolved_at'] : null,
+            'resolved_by' => $payload['resolved_by_user_id'] ?? null,
+            'source' => 'partner_portal',
+        ];
+    }
+
+    private function technicianRevisionOfferStatus(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): string
+    {
+        $payload = is_array($action->payload) ? $action->payload : [];
+        if (($payload['revision_status'] ?? null) === 'resolved' || isset($payload['resolved_assignment_offer_id'])) {
+            return 'resolved';
+        }
+
+        if ($action->status === TechnicalServicePartnerJobAction::STATUS_APPLIED) {
+            return 'resolved';
+        }
+
+        if ($action->status === TechnicalServicePartnerJobAction::STATUS_REJECTED) {
+            return 'rejected';
+        }
+
+        if ($this->priceRevisionResolvedByAssignmentOffer($request, $action)) {
+            return 'resolved';
+        }
+
+        return 'pending';
+    }
+
+    private function actionResolvedForNewWork(TechnicalServicePartnerJobAction $action): bool
+    {
+        $payload = is_array($action->payload) ? $action->payload : [];
+
+        return (bool) ($payload['resolved_by_reassignment'] ?? false)
+            || isset($payload['service_visit_created']);
+    }
+
+    private function priceRevisionResolvedByAssignmentOffer(TechnicalServiceRequest $request, TechnicalServicePartnerJobAction $action): bool
+    {
+        if ($action->action !== TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED) {
+            return false;
+        }
+
+        $offer = $request->latestAssignmentOffer;
+        if (! $offer instanceof TechnicalServiceAssignmentOffer) {
+            return false;
+        }
+
+        $actionTechnicianId = (int) ($action->technical_service_technician_id ?? 0);
+        if ($actionTechnicianId > 0 && $actionTechnicianId !== (int) $offer->technical_service_technician_id) {
+            return false;
+        }
+
+        $metadata = is_array($offer->metadata) ? $offer->metadata : [];
+        $resolvedIds = collect($metadata['resolved_price_revision_action_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->values();
+        if ($resolvedIds->contains((int) $action->id)) {
+            return true;
+        }
+
+        $revisedAt = $offer->updated_at;
+        if (isset($metadata['revised_at'])) {
+            try {
+                $revisedAt = CarbonImmutable::parse((string) $metadata['revised_at']);
+            } catch (\Throwable) {
+                $revisedAt = $offer->updated_at;
+            }
+        }
+
+        $actionAt = $action->created_at ?? $action->updated_at;
+
+        return $offer->status === TechnicalServiceAssignmentOffer::STATUS_REVISED
+            && $revisedAt instanceof CarbonInterface
+            && $actionAt instanceof CarbonInterface
+            && $revisedAt->greaterThanOrEqualTo($actionAt);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function technicianRecordDisplayPayload(TechnicalServiceTechnician $technician): array
@@ -3962,72 +4246,26 @@ class TechnicalServiceWorkflowService
      */
     private function serviceVisitHistoryPayload(TechnicalServiceRequest $request): ?array
     {
-        $rootMrn = (string) ($request->root_mrn ?: ($request->parent_request_id ? $request->parentRequest?->mrn : $request->mrn));
+        $rootMrn = $this->canonicalServiceVisitRootMrn($request);
         $isServiceVisit = filled($request->service_code) || $request->parent_request_id !== null;
-        $root = $this->rootFinancialRequest($request);
-        $siblings = collect();
-
-        if (array_key_exists((int) $request->id, $this->rootFinancialRequestsCache)) {
-            $records = $this->rootFinancialRequests($request);
-            $root = $root instanceof TechnicalServiceRequest
-                ? $root
-                : $records->first(fn (TechnicalServiceRequest $record): bool => $record->parent_request_id === null);
-            $siblings = $records
-                ->reject(fn (TechnicalServiceRequest $record): bool => $root instanceof TechnicalServiceRequest && (int) $record->id === (int) $root->id)
-                ->sortBy([
-                    ['service_sequence', 'asc'],
-                    ['id', 'asc'],
-                ])
-                ->take(12)
-                ->values();
-            $this->loadServiceVisitHistoryRelations($records);
-        } elseif ($rootMrn !== '') {
-            $root = TechnicalServiceRequest::query()
-                ->with([
-                    'events' => fn ($query) => $query->latest()->limit(8),
-                    'partRequests' => fn ($query) => $query->latest()->limit(6),
-                ])
-                ->where('mrn', $rootMrn)
-                ->first();
-
-            if (! $root instanceof TechnicalServiceRequest && $request->parentRequest instanceof TechnicalServiceRequest) {
-                $root = $request->parentRequest;
-            }
-        }
-
-        if ($root instanceof TechnicalServiceRequest && ! array_key_exists((int) $request->id, $this->rootFinancialRequestsCache)) {
-            $siblings = TechnicalServiceRequest::query()
-                ->with([
-                    'technicianRecord',
-                    'uploads',
-                    'events' => fn ($query) => $query->latest()->limit(8),
-                    'partRequests' => fn ($query) => $query->latest()->limit(6),
-                ])
-                ->where(function ($query) use ($root, $rootMrn): void {
-                    $query->where('parent_request_id', $root->id);
-
-                    if ($rootMrn !== '') {
-                        $query->orWhere('root_mrn', $rootMrn);
-                    }
-                })
-                ->orderBy('service_sequence')
-                ->orderBy('id')
-                ->limit(12)
-                ->get();
-            $root->loadMissing(['technicianRecord', 'uploads']);
-        }
+        $root = $this->canonicalServiceVisitRootRequest($request, $rootMrn);
+        $directParent = $this->directServiceVisitParent($request);
+        $historyRequests = $this->canonicalServiceVisitHistoryRequests($request, $root, $rootMrn);
+        $rootId = $root instanceof TechnicalServiceRequest ? (int) $root->id : null;
+        $siblings = $historyRequests
+            ->reject(fn (TechnicalServiceRequest $record): bool => (int) $record->id === (int) $request->id)
+            ->reject(fn (TechnicalServiceRequest $record): bool => $rootId !== null && (int) $record->id === $rootId)
+            ->values();
 
         if (! $isServiceVisit && $siblings->isEmpty()) {
             return null;
         }
 
         $partRequestSerializer = app(TechnicalServicePartRequestService::class);
-        $historyRequests = collect([$root])
-            ->filter(fn ($record): bool => $record instanceof TechnicalServiceRequest)
-            ->merge($siblings)
-            ->unique('id')
-            ->values();
         $this->loadServiceVisitHistoryRelations($historyRequests);
+        $historyItems = $historyRequests
+            ->map(fn (TechnicalServiceRequest $record): array => $this->serviceVisitHistoryItem($record, $request, $root))
+            ->values();
 
         return [
             'root_mrn' => $rootMrn !== '' ? $rootMrn : null,
@@ -4035,6 +4273,10 @@ class TechnicalServiceWorkflowService
             'reason' => $request->service_visit_reason,
             'reason_label' => TechnicalServiceUiLabelService::serviceVisitReasonLabel($request->service_visit_reason),
             'parent_request' => $root instanceof TechnicalServiceRequest ? $this->serviceVisitRequestSummary($root) : null,
+            'root_request' => $root instanceof TechnicalServiceRequest ? $this->serviceVisitRequestSummary($root) : null,
+            'direct_parent_request' => $directParent instanceof TechnicalServiceRequest ? $this->serviceVisitRequestSummary($directParent) : null,
+            'current_request' => $this->serviceVisitRequestSummary($request),
+            'items' => $historyItems->all(),
             'parent_events' => $this->serviceVisitTimelineEvents($historyRequests),
             'parent_part_requests' => $historyRequests
                 ->flatMap(fn (TechnicalServiceRequest $record) => $record->partRequests)
@@ -4049,9 +4291,230 @@ class TechnicalServiceWorkflowService
                 ->values()
                 ->all(),
             'history_records' => $historyRequests
-                ->map(fn (TechnicalServiceRequest $record): array => $this->serviceVisitHistoryRecord($record))
+                ->map(fn (TechnicalServiceRequest $record): array => [
+                    ...$this->serviceVisitHistoryRecord($record),
+                    ...$this->serviceVisitHistoryItem($record, $request, $root),
+                ])
                 ->values()
                 ->all(),
+        ];
+    }
+
+    private function canonicalServiceVisitRootMrn(TechnicalServiceRequest $request): string
+    {
+        if (filled($request->root_mrn)) {
+            return (string) $request->root_mrn;
+        }
+
+        $root = $this->canonicalServiceVisitRootRequest($request, '');
+
+        if ($root instanceof TechnicalServiceRequest) {
+            return (string) $root->mrn;
+        }
+
+        return (string) ($request->parent_request_id === null ? $request->mrn : ($request->parentRequest?->root_mrn ?: $request->parentRequest?->mrn ?: ''));
+    }
+
+    private function canonicalServiceVisitRootRequest(TechnicalServiceRequest $request, string $rootMrn): ?TechnicalServiceRequest
+    {
+        if ($request->parent_request_id === null && ! filled($request->service_code)) {
+            return $request;
+        }
+
+        if ($rootMrn !== '') {
+            $root = TechnicalServiceRequest::query()
+                ->with([
+                    'technicianRecord',
+                    'uploads',
+                    'events' => fn ($query) => $query->latest()->limit(8),
+                    'partRequests' => fn ($query) => $query->latest()->limit(6),
+                ])
+                ->where('mrn', $rootMrn)
+                ->orderByRaw('case when parent_request_id is null then 0 else 1 end')
+                ->oldest('id')
+                ->first();
+
+            if ($root instanceof TechnicalServiceRequest) {
+                return $root;
+            }
+        }
+
+        $visited = [];
+        $cursor = $this->directServiceVisitParent($request);
+        $depth = 0;
+
+        while ($cursor instanceof TechnicalServiceRequest && $depth < 16) {
+            $cursorId = (int) $cursor->id;
+            if (isset($visited[$cursorId])) {
+                return null;
+            }
+
+            $visited[$cursorId] = true;
+
+            if ($cursor->parent_request_id === null) {
+                return $rootMrn === '' || (string) $cursor->mrn === $rootMrn
+                    ? $cursor
+                    : null;
+            }
+
+            if ($rootMrn !== '' && (string) $cursor->mrn === $rootMrn) {
+                return $cursor;
+            }
+
+            $cursor = $cursor->parentRequest instanceof TechnicalServiceRequest
+                ? $cursor->parentRequest
+                : TechnicalServiceRequest::query()->find($cursor->parent_request_id);
+            $depth++;
+        }
+
+        return null;
+    }
+
+    private function directServiceVisitParent(TechnicalServiceRequest $request): ?TechnicalServiceRequest
+    {
+        if ($request->parent_request_id === null) {
+            return null;
+        }
+
+        if ($request->parentRequest instanceof TechnicalServiceRequest) {
+            return $request->parentRequest;
+        }
+
+        return TechnicalServiceRequest::query()->find($request->parent_request_id);
+    }
+
+    /**
+     * @return Collection<int, TechnicalServiceRequest>
+     */
+    private function canonicalServiceVisitHistoryRequests(TechnicalServiceRequest $request, ?TechnicalServiceRequest $root, string $rootMrn): Collection
+    {
+        $records = collect([$root, $request])
+            ->filter(fn ($record): bool => $record instanceof TechnicalServiceRequest);
+
+        if ($rootMrn !== '') {
+            $records = $records->merge(TechnicalServiceRequest::query()
+                ->with([
+                    'technicianRecord',
+                    'uploads',
+                    'events' => fn ($query) => $query->latest()->limit(8),
+                    'partRequests' => fn ($query) => $query->latest()->limit(6),
+                ])
+                ->where('root_mrn', $rootMrn)
+                ->orderBy('service_sequence')
+                ->orderBy('id')
+                ->limit(48)
+                ->get());
+        }
+
+        $records = $records->merge($this->serviceVisitParentChain($request));
+
+        if ($root instanceof TechnicalServiceRequest) {
+            $records = $records->merge(TechnicalServiceRequest::query()
+                ->with([
+                    'technicianRecord',
+                    'uploads',
+                    'events' => fn ($query) => $query->latest()->limit(8),
+                    'partRequests' => fn ($query) => $query->latest()->limit(6),
+                ])
+                ->where('parent_request_id', $root->id)
+                ->orderBy('service_sequence')
+                ->orderBy('id')
+                ->limit(48)
+                ->get());
+        }
+
+        $rootId = $root instanceof TechnicalServiceRequest ? (int) $root->id : null;
+
+        return $records
+            ->filter(fn ($record): bool => $record instanceof TechnicalServiceRequest)
+            ->unique(fn (TechnicalServiceRequest $record): int => (int) $record->id)
+            ->sort(fn (TechnicalServiceRequest $left, TechnicalServiceRequest $right): int => $this->serviceVisitHistorySortKey($left, $rootId) <=> $this->serviceVisitHistorySortKey($right, $rootId))
+            ->values();
+    }
+
+    /**
+     * @return Collection<int, TechnicalServiceRequest>
+     */
+    private function serviceVisitParentChain(TechnicalServiceRequest $request): Collection
+    {
+        $records = collect();
+        $visited = [];
+        $cursor = $this->directServiceVisitParent($request);
+        $depth = 0;
+
+        while ($cursor instanceof TechnicalServiceRequest && $depth < 16) {
+            $cursorId = (int) $cursor->id;
+            if (isset($visited[$cursorId])) {
+                break;
+            }
+
+            $visited[$cursorId] = true;
+            $records->push($cursor);
+
+            if ($cursor->parent_request_id === null) {
+                break;
+            }
+
+            $cursor = $cursor->parentRequest instanceof TechnicalServiceRequest
+                ? $cursor->parentRequest
+                : TechnicalServiceRequest::query()->find($cursor->parent_request_id);
+            $depth++;
+        }
+
+        return $records;
+    }
+
+    /**
+     * @return array{0:int,1:int,2:int,3:int}
+     */
+    private function serviceVisitHistorySortKey(TechnicalServiceRequest $request, ?int $rootId): array
+    {
+        $isRoot = $rootId !== null && (int) $request->id === $rootId;
+        $createdAt = $request->created_at instanceof CarbonInterface ? $request->created_at->getTimestamp() : 0;
+
+        return [
+            $isRoot ? 0 : 1,
+            $isRoot ? 0 : $this->serviceVisitSequenceForSort($request),
+            $createdAt,
+            (int) $request->id,
+        ];
+    }
+
+    private function serviceVisitSequenceForSort(TechnicalServiceRequest $request): int
+    {
+        if ((int) $request->service_sequence > 0) {
+            return (int) $request->service_sequence;
+        }
+
+        $code = (string) ($request->service_code ?: $request->mrn);
+        if (preg_match('/-(\d{3,})$/', $code, $matches) === 1) {
+            return (int) ltrim($matches[1], '0') ?: 0;
+        }
+
+        return 9999;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function serviceVisitHistoryItem(TechnicalServiceRequest $record, TechnicalServiceRequest $current, ?TechnicalServiceRequest $root): array
+    {
+        $isRoot = $root instanceof TechnicalServiceRequest && (int) $record->id === (int) $root->id;
+        $isCurrent = (int) $record->id === (int) $current->id;
+        $sequence = $isRoot ? 0 : $this->serviceVisitSequenceForSort($record);
+        $reasonLabel = $isRoot
+            ? 'Montaj'
+            : TechnicalServiceUiLabelService::serviceVisitReasonLabel($record->service_visit_reason);
+        $statusLabel = TechnicalServiceUiLabelService::cleanDisplayText($record->workflow_status ?: $record->status);
+
+        return [
+            'code' => $record->service_code ?: $record->mrn,
+            'type' => $isRoot ? 'root_mrn' : 'srv',
+            'label' => $isRoot ? 'Ana talep' : 'Servis ziyareti',
+            'reason' => $reasonLabel,
+            'status_label' => $statusLabel,
+            'is_current' => $isCurrent,
+            'sequence' => $sequence,
         ];
     }
 

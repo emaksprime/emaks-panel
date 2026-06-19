@@ -9,6 +9,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceEarningService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Validation\ValidationException;
@@ -298,6 +299,55 @@ class TechnicalServiceEarningTest extends TestCase
         $this->assertSame('2100.00', $earning->grand_total);
         $this->assertDatabaseMissing('technical_service_earning_items', [
             'technical_service_request_id' => $child->id,
+        ]);
+    }
+
+    public function test_cancel_review_request_is_earning_excluded_from_active_technician_earnings(): void
+    {
+        $technician = $this->technician(['name' => 'Cancel Review Usta']);
+        $included = $this->request([
+            'mrn' => 'MRN-CANCEL-REVIEW-INCLUDED',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => '2026-05-04 11:00:00',
+            'installation_completed_at' => '2026-05-04 11:00:00',
+        ]);
+        $excluded = $this->request([
+            'mrn' => 'MRN-CANCEL-REVIEW-EXCLUDED',
+            'technical_service_technician_id' => $technician->id,
+            'technician_name' => $technician->name,
+            'status' => 'Tamamlandı',
+            'workflow_status' => 'Tamamlandı',
+            'completed_at' => '2026-05-06 11:00:00',
+            'installation_completed_at' => '2026-05-06 11:00:00',
+            'pending_reason' => TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON,
+            'operation_control_payload' => [
+                TechnicalServiceWorkflowService::CANCELLATION_REVIEW_KEY => [
+                    'status' => 'pending',
+                    'reason' => 'Müşteri iptal istedi',
+                ],
+            ],
+        ]);
+        $this->assignmentOffer($included, [
+            'labor_amount' => 2000,
+            'route_fee_amount' => 100,
+            'total_amount' => 2100,
+        ]);
+        $this->assignmentOffer($excluded, [
+            'labor_amount' => 1500,
+            'route_fee_amount' => 300,
+            'total_amount' => 1800,
+        ]);
+
+        $period = app(TechnicalServiceEarningService::class)->calculatePeriod(2026, 5);
+        $earning = $period->earnings()->firstOrFail()->fresh();
+
+        $this->assertSame(1, $earning->job_count);
+        $this->assertSame('2100.00', $earning->grand_total);
+        $this->assertDatabaseMissing('technical_service_earning_items', [
+            'technical_service_request_id' => $excluded->id,
         ]);
     }
 

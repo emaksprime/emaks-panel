@@ -25,6 +25,49 @@ export type ServiceRequestVisibleSections = {
   }>
 }
 
+export type ServiceRequestCancelContext = {
+  exists: boolean
+  is_cancelled?: boolean
+  is_cancel_review?: boolean
+  is_reopened?: boolean
+  cancelled_request_id?: number | string | null
+  cancelled_code?: string | null
+  previous_cancelled_request_id?: number | string | null
+  previous_cancelled_code?: string | null
+  root_mrn?: string | null
+  customer_name?: string | null
+  phone?: string | null
+  city?: string | null
+  district?: string | null
+  product_name?: string | null
+  product_model?: string | null
+  serial_no?: string | null
+  activation_code?: string | null
+  last_technician_name?: string | null
+  last_technician_phone?: string | null
+  last_appointment_at?: string | null
+  cancel_reason?: string | null
+  previous_cancel_reason?: string | null
+  cancelled_at?: string | null
+  previous_cancelled_at?: string | null
+  cancelled_by_label?: string | null
+  earning_excluded?: boolean
+  earning_excluded_label?: string | null
+  previous_stage_label?: string | null
+  current_stage_label?: string | null
+  current_request_id?: number | string | null
+  current_code?: string | null
+  related_current_request_id?: number | string | null
+  related_current_code?: string | null
+  next_ops_message?: string | null
+  summary?: string | null
+}
+
+export type ServiceRequestCurrentStageSummary = {
+  label?: string | null
+  summary?: string | null
+}
+
 export type ServicePriority = 'Düşük' | 'Orta' | 'Yüksek' | 'Kritik'
 
 export type ServiceRequest = {
@@ -77,6 +120,7 @@ export type ServiceRequest = {
   routeQuote?: ServiceRequestRouteQuote | null
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
+  technicianRevisionOffer?: ServiceRequestTechnicianRevisionOffer | null
   earningBreakdown?: ServiceRequestEarningBreakdown | null
   financeSummary?: ServiceRequestFinanceSummary | null
   partnerPortalActions?: ServiceRequestPartnerPortalAction[]
@@ -94,6 +138,8 @@ export type ServiceRequest = {
   actionReason?: string | null
   actionFilterKeys?: string[]
   operationalState?: ServiceRequestOperationalState | null
+  cancelContext?: ServiceRequestCancelContext | null
+  currentStageSummary?: ServiceRequestCurrentStageSummary | null
   visibleSections?: ServiceRequestVisibleSections | null
   serviceVisitHistory?: ServiceRequestServiceVisitHistory | null
   auditLogs?: ServiceRequestAuditLog[] | null
@@ -129,6 +175,13 @@ export type ServiceRequestServiceVisitSummary = {
   service_visit_reason_label?: string | null
   status?: string | null
   workflow_status?: string | null
+  code?: string | null
+  type?: 'root_mrn' | 'srv' | string | null
+  label?: string | null
+  reason?: string | null
+  status_label?: string | null
+  is_current?: boolean | null
+  sequence?: number | string | null
   completed_at?: string | null
   created_at?: string | null
   latest_event?: string | null
@@ -154,6 +207,10 @@ export type ServiceRequestServiceVisitHistory = {
   reason?: string | null
   reason_label?: string | null
   parent_request?: ServiceRequestServiceVisitSummary | null
+  root_request?: ServiceRequestServiceVisitSummary | null
+  direct_parent_request?: ServiceRequestServiceVisitSummary | null
+  current_request?: ServiceRequestServiceVisitSummary | null
+  items?: ServiceRequestServiceVisitSummary[]
   parent_events?: ServiceRequestEvent[]
   parent_part_requests?: ServiceRequestPartRequest[]
   sibling_service_visits?: ServiceRequestServiceVisitSummary[]
@@ -216,6 +273,23 @@ export type ServiceRequestAssignmentOffer = {
   message_text?: string | null
   job_link?: string | null
   dispatch_status?: string | null
+}
+
+export type ServiceRequestTechnicianRevisionOffer = {
+  exists: boolean
+  id?: number | string | null
+  status: 'pending' | 'accepted' | 'rejected' | 'countered' | 'resolved' | string
+  status_label?: string | null
+  technician_id?: number | string | null
+  technician_name?: string | null
+  labor_earning?: number | null
+  route_earning?: number | null
+  total_earning?: number | null
+  note?: string | null
+  requested_at?: string | null
+  resolved_at?: string | null
+  resolved_by?: number | string | null
+  source?: 'partner_portal' | 'ops_update' | 'assignment_offer' | 'event_payload' | string | null
 }
 
 export type ServiceRequestEarningBreakdownRow = {
@@ -384,6 +458,7 @@ export type ServiceRequestPartRequest = {
   source_partner_action_id?: number | string | null
   status: string
   status_label: string
+  next_action_label?: string | null
   part_name: string
   part_code?: string | null
   quantity: number
@@ -407,6 +482,10 @@ export type ServiceRequestPartRequest = {
   total_amount_label?: string | null
   customer_message?: string | null
   charge_status?: string | null
+  is_payment_required?: boolean
+  is_payment_paid?: boolean
+  can_ship?: boolean
+  can_create_service_visit?: boolean
   payment_id?: number | string | null
   payment_url?: string | null
   payment_reference?: string | null

@@ -192,6 +192,7 @@ type ApiTechnicalServiceRequest = {
   previous_field_completion_documents?: ServiceRequest['previousFieldCompletionDocuments']
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
+  technician_revision_offer?: ServiceRequest['technicianRevisionOffer']
   earning_breakdown?: ServiceRequest['earningBreakdown']
   finance_summary?: ServiceRequest['financeSummary']
   partner_portal_actions?: ServiceRequest['partnerPortalActions']
@@ -209,6 +210,8 @@ type ApiTechnicalServiceRequest = {
   action_reason?: string | null
   action_filter_keys?: string[]
   operational_state?: ServiceRequest['operationalState']
+  cancel_context?: ServiceRequest['cancelContext']
+  current_stage_summary?: ServiceRequest['currentStageSummary']
   visible_sections?: ServiceRequest['visibleSections']
   service_visit_history?: ServiceRequest['serviceVisitHistory']
   document?: unknown
@@ -236,6 +239,8 @@ type ApiOperationControlUpdate = {
   action_reason?: string | null
   action_filter_keys?: string[]
   attention?: ServiceRequest['attention']
+  cancel_context?: ServiceRequest['cancelContext'] | null
+  current_stage_summary?: ServiceRequest['currentStageSummary'] | null
   visible_sections?: ServiceRequest['visibleSections'] | null
   next_action?: string | null
   next_action_payload?: ServiceRequest['nextActionPayload'] | null
@@ -932,6 +937,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
+    technicianRevisionOffer: request.technician_revision_offer ?? null,
     earningBreakdown: request.earning_breakdown ?? null,
     financeSummary: request.finance_summary ?? null,
     partnerPortalActions: request.partner_portal_actions ?? [],
@@ -949,6 +955,8 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     actionReason: request.action_reason ?? request.operational_state?.action_reason ?? request.operational_state?.attention_reason ?? null,
     actionFilterKeys: request.action_filter_keys ?? request.operational_state?.action_filter_keys ?? [],
     operationalState: request.operational_state ?? null,
+    cancelContext: request.cancel_context ?? null,
+    currentStageSummary: request.current_stage_summary ?? null,
     visibleSections: request.visible_sections ?? null,
     serviceVisitHistory: request.service_visit_history ?? null,
     attention: request.attention ?? null,
@@ -977,6 +985,12 @@ function applyOperationControlUpdate(request: ServiceRequest, update: ApiOperati
     operationalState: Object.prototype.hasOwnProperty.call(update, 'operational_state')
       ? update.operational_state ?? null
       : request.operationalState,
+    cancelContext: Object.prototype.hasOwnProperty.call(update, 'cancel_context')
+      ? update.cancel_context ?? null
+      : request.cancelContext,
+    currentStageSummary: Object.prototype.hasOwnProperty.call(update, 'current_stage_summary')
+      ? update.current_stage_summary ?? null
+      : request.currentStageSummary,
     kanbanColumn: Object.prototype.hasOwnProperty.call(update, 'kanban_column')
       ? update.kanban_column ?? null
       : request.kanbanColumn,

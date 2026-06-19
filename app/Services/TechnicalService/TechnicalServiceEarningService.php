@@ -294,7 +294,20 @@ class TechnicalServiceEarningService
     {
         return $request->cancelled_at !== null
             || $this->statusIncludes($request->status, 'ptal')
-            || $this->statusIncludes($request->workflow_status, 'ptal');
+            || $this->statusIncludes($request->workflow_status, 'ptal')
+            || $this->isCancellationReviewRequest($request);
+    }
+
+    private function isCancellationReviewRequest(TechnicalServiceRequest $request): bool
+    {
+        $operationControl = is_array($request->operation_control_payload) ? $request->operation_control_payload : [];
+        $review = $operationControl[TechnicalServiceWorkflowService::CANCELLATION_REVIEW_KEY]
+            ?? $operationControl['cancellation_review']
+            ?? null;
+        $reviewStatus = is_array($review) ? (string) ($review['status'] ?? '') : '';
+
+        return (string) $request->pending_reason === TechnicalServiceWorkflowService::CANCELLATION_REVIEW_PENDING_REASON
+            || in_array($reviewStatus, ['pending', 'review'], true);
     }
 
     private function statusIncludes(?string $value, string $needle): bool

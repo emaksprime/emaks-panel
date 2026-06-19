@@ -265,17 +265,17 @@ const actionCodeLabels: Record<string, string> = {
   part_request_created: 'Parça talebi oluşturuldu',
   part_requested: 'Parça talebi oluşturuldu',
   part_approved: 'Parça talebi onaylandı',
-  part_ordered: 'Parça tedarik ediliyor',
+  part_ordered: 'Parça tedarikte',
   part_sent: 'Parça gönderildi',
   part_received: 'Parça teslim alındı',
   part_request_approved: 'Parça talebi onaylandı',
-  part_request_ordered: 'Parça tedarik ediliyor',
+  part_request_ordered: 'Parça tedarikte',
   part_request_sent: 'Parça gönderildi',
   part_request_received: 'Parça teslim alındı',
-  part_request_service_visit_required: 'Operasyon servis planlıyor',
-  part_request_service_visit_created: 'Servis kaydı oluşturuldu',
+  part_request_service_visit_required: 'Parça sonrası servis gerekli',
+  part_request_service_visit_created: 'Parça sonrası servis oluşturuldu',
   part_request_rejected: 'Parça talebi reddedildi',
-  part_request_srv_created: 'Servis kaydı oluşturuldu',
+  part_request_srv_created: 'Parça sonrası servis oluşturuldu',
   service_visit_created: 'Servis kaydı oluşturuldu',
   srv_created: 'Servis kaydı oluşturuldu',
   srv_child_created: 'Servis kaydı oluşturuldu',
@@ -1515,6 +1515,8 @@ export function ServiceRequestDetails({
   const doorPhotos = request.doorPhotos ?? []
   const routeQuote = request.routeQuote ?? null
   const assignmentOffer = request.assignmentOffer ?? null
+  const technicianRevisionOffer = request.technicianRevisionOffer?.exists ? request.technicianRevisionOffer : null
+  const technicianRevisionOfferPending = technicianRevisionOffer?.status === 'pending'
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
   const selectedTechnicianIdString = selectedTechnicianId ? String(selectedTechnicianId) : null
   const requestTechnicianIdString = request.technicianId !== null && request.technicianId !== undefined
@@ -3130,6 +3132,21 @@ export function ServiceRequestDetails({
   const displayedNextActionSeverity = isAssignedPartnerActionStage ? 'neutral' : nextActionPayload?.severity
   const displayedNextActionHeader = isAssignedPartnerActionStage ? 'Süreç Bilgisi' : 'Sıradaki Operasyon Aksiyonu'
   const showNextActionPrimaryButton = Boolean(nextActionPayload?.primary_action && !isAssignedPartnerActionStage)
+  const cancelContext = request.cancelContext?.exists ? request.cancelContext : null
+  const isCancelledOrReviewContext = Boolean(cancelContext?.is_cancelled || cancelContext?.is_cancel_review)
+  const cancelSummaryRows = cancelContext
+    ? [
+      { label: 'İptal edilen iş', value: cancelContext.cancelled_code ?? cancelContext.previous_cancelled_code ?? request.mrn },
+      { label: 'Müşteri', value: cancelContext.customer_name ?? request.customer },
+      { label: 'Seri / aktivasyon', value: [cancelContext.serial_no, cancelContext.activation_code].filter(Boolean).join(' / ') },
+      { label: 'Son usta', value: [cancelContext.last_technician_name, cancelContext.last_technician_phone].filter(Boolean).join(' / ') },
+      { label: 'Son randevu', value: cancelContext.last_appointment_at ? dateTimeOrEmpty(cancelContext.last_appointment_at, '-') : null },
+      { label: 'İptal nedeni', value: cancelContext.cancel_reason ?? cancelContext.previous_cancel_reason ?? null },
+      { label: 'İptal zamanı', value: cancelContext.cancelled_at ? dateTimeOrEmpty(cancelContext.cancelled_at, '-') : null },
+      { label: 'Hakediş durumu', value: cancelContext.earning_excluded_label ?? (cancelContext.earning_excluded ? 'İptal nedeniyle hakedişe dahil değil' : null) },
+      { label: 'Şu anki aşama', value: cancelContext.current_stage_label ?? request.currentStageSummary?.label ?? null },
+    ].filter((row) => displayOrEmpty(row.value, '') !== '')
+    : []
   const scrollToNextActionSection = (target: NextActionSectionTarget) => {
     const targetRef = {
       operation: operationInfoRef,
@@ -3485,31 +3502,62 @@ export function ServiceRequestDetails({
           ) : null}
         </section>
 
+        {cancelContext ? (
+          <section className="order-[15] rounded-3xl border border-rose-200 bg-rose-50 p-4 text-rose-950 shadow-sm lg:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-rose-700">İptal Özeti</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-950">
+                  {cancelContext.is_cancel_review ? 'İptal talebi incelemede' : cancelContext.is_cancelled ? 'İş iptal edildi' : 'Önceki iş iptal edildi'}
+                </h3>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-rose-900">
+                  {cancelContext.summary ?? cancelContext.next_ops_message ?? 'İptal bağlamı operasyon için saklanıyor.'}
+                </p>
+              </div>
+              <Badge variant={cancelContext.is_cancel_review ? 'warning' : 'destructive'}>
+                {cancelContext.current_stage_label ?? 'İptal edildi'}
+              </Badge>
+            </div>
+            {cancelSummaryRows.length > 0 ? (
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {cancelSummaryRows.map((row) => (
+                  <MiniMetric key={row.label} label={row.label} value={displayOrEmpty(row.value, '-')} />
+                ))}
+              </div>
+            ) : null}
+            {cancelContext.next_ops_message ? (
+              <p className="mt-4 rounded-2xl border border-rose-100 bg-white/70 px-3 py-2 text-sm font-medium text-rose-900">
+                {cancelContext.next_ops_message}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+
         {serviceVisitHistory ? (
           <details className="order-[85] rounded-3xl border border-violet-100 bg-violet-50 p-4 text-sm text-violet-950 shadow-sm lg:p-5">
             <summary className="flex cursor-pointer list-none flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">SRV / Ana MRN Geçmişi</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">MRN / SRV geçmiş kayıtları</p>
                 <h3 className="mt-1 text-lg font-bold text-slate-950">
                   {serviceVisitHistory.service_code ? `Servis ziyareti: ${serviceVisitHistory.service_code}` : 'Ana talep servis geçmişi'}
                 </h3>
                 <p className="mt-1 text-sm text-violet-800">
-                  Ana talep: {serviceVisitHistory.root_mrn ?? serviceVisitHistory.parent_request?.mrn ?? '-'}
+                  Ana talep: {serviceVisitHistory.root_request?.mrn ?? serviceVisitHistory.root_mrn ?? serviceVisitHistory.parent_request?.mrn ?? '-'}
                   {serviceVisitHistory.reason_label ? ` · ${serviceVisitHistory.reason_label}` : ''}
                 </p>
               </div>
-              {serviceVisitHistory.parent_request ? (
+              {serviceVisitHistory.direct_parent_request ?? serviceVisitHistory.parent_request ? (
                 <Badge variant="outline">
-                  Parent: {serviceVisitHistory.parent_request.mrn}
+                  Parent: {(serviceVisitHistory.direct_parent_request ?? serviceVisitHistory.parent_request)?.mrn}
                 </Badge>
               ) : null}
             </summary>
             <div className="mt-4 grid gap-3 lg:grid-cols-3">
-              {(serviceVisitHistory.parent_request?.workflow_status || serviceVisitHistory.parent_request?.status) ? (
+              {((serviceVisitHistory.root_request ?? serviceVisitHistory.parent_request)?.workflow_status || (serviceVisitHistory.root_request ?? serviceVisitHistory.parent_request)?.status) ? (
                 <MiniMetric
                   label="Ana iş durumu"
-                  value={displayOrEmpty(serviceVisitHistory.parent_request?.workflow_status ?? serviceVisitHistory.parent_request?.status, '-')}
-                  hint={serviceVisitHistory.parent_request?.completed_at ? `Tamamlandı: ${dateTimeOrEmpty(serviceVisitHistory.parent_request.completed_at, '-')}` : undefined}
+                  value={displayOrEmpty((serviceVisitHistory.root_request ?? serviceVisitHistory.parent_request)?.workflow_status ?? (serviceVisitHistory.root_request ?? serviceVisitHistory.parent_request)?.status, '-')}
+                  hint={(serviceVisitHistory.root_request ?? serviceVisitHistory.parent_request)?.completed_at ? `Tamamlandı: ${dateTimeOrEmpty((serviceVisitHistory.root_request ?? serviceVisitHistory.parent_request)?.completed_at, '-')}` : undefined}
                 />
               ) : null}
               <MiniMetric label="SRV kodu" value={displayOrEmpty(serviceVisitHistory.service_code, 'Ana talep')} />
@@ -3532,9 +3580,12 @@ export function ServiceRequestDetails({
                 {serviceVisitHistoryRecords.map((record) => (
                   <div key={String(record.id)} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
                     <div className="min-w-0">
-                      <p className="truncate font-semibold text-slate-800">{record.service_code || record.mrn}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate font-semibold text-slate-800">{record.code || record.service_code || record.mrn}</p>
+                        {record.is_current ? <Badge variant="outline">Bu kayıt</Badge> : null}
+                      </div>
                       <p className="mt-0.5 text-xs text-slate-600">
-                        {[record.service_visit_reason_label, record.workflow_status ?? record.status, record.completed_at ? `Tamamlandı: ${dateTimeOrEmpty(record.completed_at, '-')}` : null].filter(Boolean).join(' · ')}
+                        {[record.label, record.reason ?? record.service_visit_reason_label, record.status_label ?? record.workflow_status ?? record.status, record.completed_at ? `Tamamlandı: ${dateTimeOrEmpty(record.completed_at, '-')}` : null].filter(Boolean).join(' · ')}
                       </p>
                     </div>
                     <Button type="button" size="sm" variant="outline" onClick={() => setHistoryRecordId(record.id)}>
@@ -3560,6 +3611,7 @@ export function ServiceRequestDetails({
           </details>
         ) : null}
 
+        {!isCancelledOrReviewContext ? (
         <section className={['order-20 rounded-3xl border p-4 shadow-sm lg:p-5', nextActionTone(displayedNextActionSeverity)].join(' ')}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -3618,6 +3670,7 @@ export function ServiceRequestDetails({
             </div>
           </details>
         </section>
+        ) : null}
 
         {shouldRenderWarrantySection ? (
           <section className="order-23 grid gap-3 rounded-3xl border border-emerald-100 bg-emerald-50/80 p-4 text-sm text-emerald-950 shadow-sm lg:p-5">
@@ -4112,8 +4165,11 @@ export function ServiceRequestDetails({
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <p className="max-w-3xl text-sm text-slate-600">
-                Seçili usta, yol hakedişi ve atama aksiyonları aynı akışta takip edilir.
+                {isCancelledOrReviewContext
+                  ? 'İptal bağlamında son usta ve hakediş bilgisi salt okunur gösterilir.'
+                  : 'Seçili usta, yol hakedişi ve atama aksiyonları aynı akışta takip edilir.'}
               </p>
+              {!isCancelledOrReviewContext ? (
               <Button
                 type="button"
                 variant="outline"
@@ -4123,8 +4179,9 @@ export function ServiceRequestDetails({
               >
                 {hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
+              ) : null}
             </div>
-            {canReassignAfterReview ? (
+            {!isCancelledOrReviewContext && canReassignAfterReview ? (
               <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                 <div>
                   <p className="font-semibold">Aynı MRN ile yeniden işleme al</p>
@@ -4150,7 +4207,7 @@ export function ServiceRequestDetails({
                 </div>
               </div>
             ) : null}
-            {mountPaymentReceived ? (
+            {!isCancelledOrReviewContext && mountPaymentReceived ? (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
                 <p className="font-semibold">Montaj ödemesi alındı. Servis ataması yapılabilir.</p>
                 <p className="mt-1">{mountPaymentStageLabel}{mountPaymentAmountLabel !== '-' ? ` · Alınan ödeme: ${mountPaymentAmountLabel}` : ''}</p>
@@ -4237,6 +4294,10 @@ export function ServiceRequestDetails({
                   const partnerMessage = partRequestPartnerMessages[partKey] ?? ''
                   const provider = partRequestProviders[partKey] ?? ''
                   const tracking = partRequestTrackings[partKey] ?? ''
+                  const paymentRequired = partRequest.is_payment_required === true
+                    || (partRequest.charge_decision === 'chargeable' && partRequest.is_payment_paid !== true && partRequest.charge_status !== 'paid')
+                  const canShipPart = partRequest.can_ship !== false && !paymentRequired
+                  const showShipmentInputs = (partRequest.status === 'approved' || partRequest.status === 'ordered') && canShipPart
                   const transition = (status: string) => onPartRequestTransition?.(partRequest.id, {
                     status,
                     note: note || null,
@@ -4261,6 +4322,9 @@ export function ServiceRequestDetails({
                       </div>
                       {partRequest.ops_note ? <p className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-700">Ops notu: {partRequest.ops_note}</p> : null}
                       {partRequest.partner_message ? <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">Partner mesajı: {partRequest.partner_message}</p> : null}
+                      {partRequest.next_action_label && partRequest.next_action_label !== partRequest.status_label ? (
+                        <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900">Sıradaki aksiyon: {partRequest.next_action_label}</p>
+                      ) : null}
                       {partRequest.charge_decision_label ? (
                         <div className="rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-900">
                           <p className="font-semibold">{partRequest.charge_decision_label}</p>
@@ -4292,7 +4356,7 @@ export function ServiceRequestDetails({
                             <Input value={note} onChange={(event) => setPartRequestNotes((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Operasyon notu" />
                             <Input value={partnerMessage} onChange={(event) => setPartRequestPartnerMessages((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Partner'a gösterilecek mesaj" />
                           </div>
-                          {(partRequest.status === 'approved' || partRequest.status === 'ordered') ? (
+                          {showShipmentInputs ? (
                             <div className="grid gap-2 sm:grid-cols-2">
                               <Input value={provider} onChange={(event) => setPartRequestProviders((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Kargo / sağlayıcı" />
                               <Input value={tracking} onChange={(event) => setPartRequestTrackings((current) => ({ ...current, [partKey]: event.target.value }))} placeholder="Takip no" />
@@ -4308,7 +4372,7 @@ export function ServiceRequestDetails({
                             {partRequest.status === 'approved' ? (
                               <Button type="button" variant="outline" onClick={() => void transition('ordered')}>Tedarikte işaretle</Button>
                             ) : null}
-                            {(partRequest.status === 'approved' || partRequest.status === 'ordered') ? (
+                            {(partRequest.status === 'approved' || partRequest.status === 'ordered') && canShipPart ? (
                               <Button type="button" onClick={() => void transition('sent')}>Gönderildi işaretle</Button>
                             ) : null}
                             {partRequest.status === 'received' ? (
@@ -4436,8 +4500,45 @@ export function ServiceRequestDetails({
                     </div>
                   </div>
                 ))}
+                {technicianRevisionOffer ? (
+                  <div className={[
+                    'grid gap-3 rounded-xl border p-3',
+                    technicianRevisionOfferPending
+                      ? 'border-amber-200 bg-amber-50 text-amber-950'
+                      : 'border-slate-200 bg-white text-slate-900',
+                  ].join(' ')}>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-semibold">Ustanın revize teklifi</p>
+                        <p className="mt-1 text-xs">
+                          {displayOrEmpty(technicianRevisionOffer.technician_name, 'Usta bilgisi yok')} · {dateTimeOrEmpty(technicianRevisionOffer.requested_at, 'Tarih yok')}
+                        </p>
+                      </div>
+                      <Badge variant={technicianRevisionOfferPending ? 'warning' : 'outline'}>
+                        {technicianRevisionOffer.status_label ?? (technicianRevisionOfferPending ? 'Operasyon yanıtı bekliyor' : 'Yanıtlandı')}
+                      </Badge>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <MiniMetric label="Teklif işçilik" value={formatMoneyValue(technicianRevisionOffer.labor_earning ?? null)} />
+                      <MiniMetric label="Teklif yol" value={formatMoneyValue(technicianRevisionOffer.route_earning ?? null)} />
+                      <MiniMetric label="Teklif toplam" value={formatMoneyValue(technicianRevisionOffer.total_earning ?? null)} />
+                    </div>
+                    {technicianRevisionOffer.note ? (
+                      <p className="rounded-lg bg-white/70 px-3 py-2 text-xs font-semibold">
+                        Not: {technicianRevisionOffer.note}
+                      </p>
+                    ) : null}
+                    <p className="text-xs">
+                      Bu teklif onaylanan hakedişi otomatik değiştirmez; aşağıdaki onaylanan hakediş kartı canonical kaynaktır.
+                    </p>
+                  </div>
+                ) : null}
                 {assignmentOffer ? (
                   <div className="grid gap-3 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-emerald-950">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-semibold">Onaylanan hakediş</p>
+                      <Badge variant="positive">{assignmentOfferStatusLabel(assignmentOffer.status)}</Badge>
+                    </div>
                     <div className="grid gap-2 sm:grid-cols-4">
                       <MiniMetric label="İşçilik" value={formatMoneyValue(assignmentOffer.labor_amount)} />
                       <MiniMetric label="Yol" value={formatMoneyValue(assignmentOffer.route_fee_amount)} />
@@ -4854,6 +4955,7 @@ export function ServiceRequestDetails({
                   {technicianEarningMessageError}
                 </div>
               ) : null}
+              {!isCancelledOrReviewContext ? (
               <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <div className="grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)]">
                   <label className="grid gap-1 text-xs font-semibold text-slate-600">
@@ -4915,8 +5017,9 @@ export function ServiceRequestDetails({
                   </Button>
                 </div>
               </div>
+              ) : null}
             </div>
-            {combinedAssignmentBlockerMessages.length > 0 ? (
+            {!isCancelledOrReviewContext && combinedAssignmentBlockerMessages.length > 0 ? (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                 <p className="font-semibold">Atama için tamamlanması gerekenler</p>
                 <ul className="mt-2 list-disc space-y-1 pl-5">
@@ -4926,6 +5029,7 @@ export function ServiceRequestDetails({
                 </ul>
               </div>
             ) : null}
+            {!isCancelledOrReviewContext ? (
             <div className="flex flex-wrap justify-end gap-2">
               {hasAssignmentChange ? (
                 <Badge variant="warning">Atama değişikliği hazır</Badge>
@@ -4946,6 +5050,7 @@ export function ServiceRequestDetails({
                 {assignLoading ? 'Kaydediliyor...' : hasAssignedTechnician ? 'Atamayı Güncelle' : 'Servis Ata'}
               </Button>
             </div>
+            ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               {hasAssignedTechnician && optionalMetricValue(request.technician) ? <MiniMetric label="Atanan servis" value={optionalMetricValue(request.technician)} /> : null}
               {hasAssignedTechnician && optionalMetricValue(request.technicianPhone) ? <MiniMetric label="Servis telefonu" value={optionalMetricValue(request.technicianPhone)} /> : null}

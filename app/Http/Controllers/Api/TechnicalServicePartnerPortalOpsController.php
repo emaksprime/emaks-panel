@@ -477,6 +477,24 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ];
                 $target->forceFill(['operation_control_payload' => $operationPayload])->save();
             });
+
+        $approvedIds = collect($approval['approved_request_ids'] ?? [])
+            ->map(fn (mixed $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+
+        if ($approvedIds->isEmpty()) {
+            return;
+        }
+
+        TechnicalServiceRequest::query()
+            ->whereIn('id', $approvedIds->all())
+            ->lockForUpdate()
+            ->get()
+            ->each(function (TechnicalServiceRequest $approved) use ($request): void {
+                $this->workflow->finalizeCompletedEarningSnapshotForOpsPayoutApproval($approved, $request->user());
+            });
     }
 
     public function updateAssignmentOffer(
@@ -493,71 +511,145 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'note' => ['nullable', 'string', 'max:2000'],
         ]);
 
-        $laborAmount = round((float) $validated['labor_amount'], 2);
-        $routeFeeAmount = round((float) $validated['route_fee_amount'], 2);
-        $totalAmount = isset($validated['total_amount'])
-            ? round((float) $validated['total_amount'], 2)
-            : round($laborAmount + $routeFeeAmount, 2);
-        $metadata = is_array($assignmentOffer->metadata) ? $assignmentOffer->metadata : [];
-        $metadata['message_payload'] = $this->assignmentOfferMessagePayload($technicalServiceRequest, $assignmentOffer->technician, [
-            'labor_amount' => $laborAmount,
-            'route_fee_amount' => $routeFeeAmount,
-            'total_amount' => $totalAmount,
-            'currency' => $assignmentOffer->currency,
-            'note' => $validated['note'] ?? null,
-        ]);
-        $metadata['revised_at'] = now()->toISOString();
-        $metadata['revised_by_user_id'] = $request->user()?->id;
-        $technicianPhone = $assignmentOffer->technician?->phone_e164
-            ?: ($assignmentOffer->technician?->phone_display ?: $assignmentOffer->technician?->phone);
-        $dispatch = $this->messages->send(
-            'price_revision_response_technician',
-            'technician',
-            $technicianPhone,
-            $this->assignmentOfferMessageText($metadata['message_payload'] ?? []),
-            [
-                ...(is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : []),
-                'manual_ui_send' => true,
-            ],
-            $technicalServiceRequest,
-            $request->user(),
-            null,
-            $assignmentOffer,
-        );
-        $metadata['message_dispatch'] = [
-            'id' => $dispatch->id,
-            'status' => $dispatch->status,
-        ];
-
-        $assignmentOffer->forceFill([
-            'labor_amount' => $laborAmount,
-            'route_fee_amount' => $routeFeeAmount,
-            'total_amount' => $totalAmount,
-            'status' => TechnicalServiceAssignmentOffer::STATUS_REVISED,
-            'note' => $validated['note'] ?? null,
-            'metadata' => $metadata,
-        ])->save();
-
-        $technicalServiceRequest->events()->create([
-            'event_type' => 'assignment_offer_revised',
-            'title' => 'Usta hakediş bilgisi revize edildi',
-            'note' => $validated['note'] ?? null,
-            'from_status' => $technicalServiceRequest->workflow_status,
-            'to_status' => $technicalServiceRequest->workflow_status,
-            'author_user_id' => $request->user()?->id,
-            'metadata' => [
-                'assignment_offer_id' => $assignmentOffer->id,
+        $result = DB::transaction(function () use ($technicalServiceRequest, $assignmentOffer, $validated, $request): array {
+            $assignmentOffer->refresh()->loadMissing('technician');
+            $job = $technicalServiceRequest->refresh();
+            $laborAmount = round((float) $validated['labor_amount'], 2);
+            $routeFeeAmount = round((float) $validated['route_fee_amount'], 2);
+            $totalAmount = isset($validated['total_amount'])
+                ? round((float) $validated['total_amount'], 2)
+                : round($laborAmount + $routeFeeAmount, 2);
+            $metadata = is_array($assignmentOffer->metadata) ? $assignmentOffer->metadata : [];
+            $metadata['message_payload'] = $this->assignmentOfferMessagePayload($job, $assignmentOffer->technician, [
                 'labor_amount' => $laborAmount,
                 'route_fee_amount' => $routeFeeAmount,
                 'total_amount' => $totalAmount,
-                'message_payload' => $metadata['message_payload'],
-            ],
-        ]);
+                'currency' => $assignmentOffer->currency,
+                'note' => $validated['note'] ?? null,
+            ]);
+            $metadata['revised_at'] = now()->toISOString();
+            $metadata['revised_by_user_id'] = $request->user()?->id;
+            $technicianPhone = $assignmentOffer->technician?->phone_e164
+                ?: ($assignmentOffer->technician?->phone_display ?: $assignmentOffer->technician?->phone);
+            $dispatch = $this->messages->send(
+                'price_revision_response_technician',
+                'technician',
+                $technicianPhone,
+                $this->assignmentOfferMessageText($metadata['message_payload'] ?? []),
+                [
+                    ...(is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : []),
+                    'manual_ui_send' => true,
+                ],
+                $job,
+                $request->user(),
+                null,
+                $assignmentOffer,
+            );
+            $metadata['message_dispatch'] = [
+                'id' => $dispatch->id,
+                'status' => $dispatch->status,
+            ];
 
-        return response()->json([
-            'status' => 'revised',
-            'request' => $this->workflow->serialize($technicalServiceRequest->refresh(), true),
-        ]);
+            $assignmentOffer->forceFill([
+                'labor_amount' => $laborAmount,
+                'route_fee_amount' => $routeFeeAmount,
+                'total_amount' => $totalAmount,
+                'status' => TechnicalServiceAssignmentOffer::STATUS_REVISED,
+                'note' => $validated['note'] ?? null,
+                'metadata' => $metadata,
+            ])->save();
+
+            $resolvedPriceRevisionActionIds = $this->resolvePendingPriceRevisionActions(
+                $job,
+                $assignmentOffer,
+                $request,
+                [
+                    'labor_amount' => $laborAmount,
+                    'route_fee_amount' => $routeFeeAmount,
+                    'total_amount' => $totalAmount,
+                    'note' => $validated['note'] ?? null,
+                ],
+            );
+            if ($resolvedPriceRevisionActionIds !== []) {
+                $metadata['resolved_price_revision_action_ids'] = $resolvedPriceRevisionActionIds;
+                $metadata['revision_response_status'] = 'resolved';
+                $assignmentOffer->forceFill(['metadata' => $metadata])->save();
+            }
+
+            $job->events()->create([
+                'event_type' => 'assignment_offer_revised',
+                'title' => $resolvedPriceRevisionActionIds === []
+                    ? 'Usta hakediş bilgisi revize edildi'
+                    : 'Hakediş revize talebi yanıtlandı',
+                'note' => $validated['note'] ?? null,
+                'from_status' => $job->workflow_status,
+                'to_status' => $job->workflow_status,
+                'author_user_id' => $request->user()?->id,
+                'metadata' => [
+                    'assignment_offer_id' => $assignmentOffer->id,
+                    'labor_amount' => $laborAmount,
+                    'route_fee_amount' => $routeFeeAmount,
+                    'total_amount' => $totalAmount,
+                    'message_payload' => $metadata['message_payload'],
+                    'resolved_price_revision_action_ids' => $resolvedPriceRevisionActionIds,
+                ],
+            ]);
+
+            return [
+                'status' => 'revised',
+                'request' => $this->workflow->serialize($job->refresh(), true),
+            ];
+        });
+
+        return response()->json($result);
+    }
+
+    /**
+     * @param  array<string, mixed>  $amounts
+     * @return list<int>
+     */
+    private function resolvePendingPriceRevisionActions(
+        TechnicalServiceRequest $job,
+        TechnicalServiceAssignmentOffer $assignmentOffer,
+        Request $request,
+        array $amounts,
+    ): array {
+        $technicianId = (int) $assignmentOffer->technical_service_technician_id;
+        $actions = TechnicalServicePartnerJobAction::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('action', TechnicalServicePartnerJobAction::ACTION_PRICE_REVISION_REQUESTED)
+            ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW)
+            ->where(function ($query) use ($technicianId): void {
+                $query->whereNull('technical_service_technician_id');
+                if ($technicianId > 0) {
+                    $query->orWhere('technical_service_technician_id', $technicianId);
+                }
+            })
+            ->lockForUpdate()
+            ->get();
+
+        return $actions
+            ->map(function (TechnicalServicePartnerJobAction $action) use ($assignmentOffer, $request, $amounts): int {
+                $payload = is_array($action->payload) ? $action->payload : [];
+                $payload['revision_status'] = 'resolved';
+                $payload['resolved_at'] = now()->toISOString();
+                $payload['resolved_by_user_id'] = $request->user()?->id;
+                $payload['resolved_assignment_offer_id'] = $assignmentOffer->id;
+                $payload['resolved_labor_amount'] = round((float) ($amounts['labor_amount'] ?? 0), 2);
+                $payload['resolved_route_fee_amount'] = round((float) ($amounts['route_fee_amount'] ?? 0), 2);
+                $payload['resolved_total_amount'] = round((float) ($amounts['total_amount'] ?? 0), 2);
+                $payload['resolved_note'] = $amounts['note'] ?? null;
+                $payload['ops_review_required'] = false;
+
+                $action->forceFill([
+                    'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+                    'payload' => $payload,
+                ])->save();
+
+                return (int) $action->id;
+            })
+            ->values()
+            ->all();
     }
 
     public function resendCustomerApprovalRequest(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
