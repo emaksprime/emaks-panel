@@ -533,9 +533,31 @@ class TechnicalServiceController extends Controller
             'operation_control_checked_at' => now(),
         ])->save();
 
-        return response()->json([
-            'operation_control_update' => $this->workflowService->operationControlUpdatePayload($technicalServiceRequest->refresh()),
-        ]);
+        $technicalServiceRequest->refresh();
+        $responsePayload = [
+            'operation_control_update' => $this->workflowService->operationControlUpdatePayload($technicalServiceRequest),
+        ];
+
+        if ($this->operationControlChangeAffectsAssignmentReadiness(array_keys($validated))) {
+            $responsePayload['request'] = $this->workflowService->serialize($technicalServiceRequest, true);
+        }
+
+        return response()->json($responsePayload);
+    }
+
+    /**
+     * @param  array<int, string>  $changedKeys
+     */
+    private function operationControlChangeAffectsAssignmentReadiness(array $changedKeys): bool
+    {
+        return collect($changedKeys)->intersect([
+            'payment_checked',
+            'address_checked',
+            'door_photos_checked',
+            'missing_info',
+            'customer_call_required',
+            'schedule_update_required',
+        ])->isNotEmpty();
     }
 
     public function routeQuote(

@@ -1429,8 +1429,8 @@ export default function MountRequestV2({
 
                                     {(allowMultiProductRequest || form.data.multiple_products) && (
                                         <FormAccordionCard
-                                            title="Ek ürün / seri"
-                                            summary="Aynı faturadaki diğer ürünler için montaj seçimi"
+                                            title="Diğer serileri kontrol et"
+                                            summary="Aynı faturadaki diğer ürünler için seri uygunluğu ve montaj seçimi"
                                             tone="serial"
                                             defaultOpen={form.data.multiple_products || viewState === 'multi_product_ready'}
                                         >
@@ -1456,7 +1456,7 @@ export default function MountRequestV2({
                                                 }}
                                                 className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-500"
                                             />
-                                            Bu adres için birden fazla ürün montaj talebim var
+                                            Diğer serileri kontrol et ve bu adres için ek montaj talebi oluştur
                                         </label>
                                     )}
 
@@ -1494,7 +1494,7 @@ export default function MountRequestV2({
                                                 onClick={() => setMultiProductModalOpen(true)}
                                                 className="w-fit rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100"
                                             >
-                                                Ürün listesini aç
+                                                Diğer serileri kontrol et
                                             </button>
                                             <div className="grid gap-2">
                                                 {multiProductOptions.map((item) => {
@@ -1656,8 +1656,8 @@ export default function MountRequestV2({
                         <div className="grid max-h-[90vh] w-full max-w-2xl gap-4 overflow-auto rounded-2xl bg-white p-5 shadow-2xl">
                             <div className="flex items-start justify-between gap-3">
                                 <div>
-                                    <h2 className="text-lg font-semibold text-slate-950">Bu adreste montaj istediğiniz diğer ürünleri seçin</h2>
-                                    <p className="mt-1 text-sm text-slate-600">Sadece bu talep için seçilebilir ürünler gösterilir.</p>
+                                    <h2 className="text-lg font-semibold text-slate-950">Diğer serileri kontrol et</h2>
+                                    <p className="mt-1 text-sm text-slate-600">Sadece bu talep için seçilebilir seri ve ürünler gösterilir.</p>
                                 </div>
                                 <button
                                     type="button"

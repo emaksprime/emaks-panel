@@ -867,7 +867,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Müşteri konumu eksik',
             'Atanan servis',
             'Servis telefonu',
-            'Faturadaki diğer serileri gör',
+            'Diğer serileri kontrol et',
             'Usta hakedişi / yol düzenle',
             'Usta yol hakedişi',
             'Seri No Sorgu',

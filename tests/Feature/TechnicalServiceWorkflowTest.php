@@ -606,6 +606,25 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.cancel_context.summary', 'Önceki iş MRN-CANCEL-CONTEXT-REOPEN iptal edildi. Şu an: Yeniden açıldı.');
     }
 
+    public function test_request_detail_get_does_not_create_route_quotes(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'customer_city' => 'Eskişehir',
+            'customer_district' => 'Beylikova',
+            'location_latitude' => 39.686,
+            'location_longitude' => 31.205,
+        ]);
+
+        $beforeCount = TechnicalServiceRouteQuote::query()->count();
+
+        $this->actingAs($this->adminUser())
+            ->getJson("/api/technical-service/requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('request.id', $request->id);
+
+        $this->assertSame($beforeCount, TechnicalServiceRouteQuote::query()->count());
+    }
+
     public function test_cancel_context_does_not_fuzzy_link_unrelated_requests(): void
     {
         $this->technicalServiceRequest([
@@ -3249,7 +3268,8 @@ class TechnicalServiceWorkflowTest extends TestCase
                 'note' => 'Operasyon kontrolü tamamlandı.',
             ])
             ->assertOk()
-            ->assertJsonMissingPath('request')
+            ->assertJsonPath('request.id', $request->id)
+            ->assertJsonPath('request.assignment_blockers.messages', [])
             ->assertJsonPath('operation_control_update.id', $request->id)
             ->assertJsonPath('operation_control_update.operation_control.payment_checked', 'yes')
             ->assertJsonPath('operation_control_update.operation_control.door_photos_checked', 'compatible')
@@ -3272,7 +3292,43 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen');
     }
 
-    public function test_door_compatible_action_uses_lightweight_response_payload(): void
+    public function test_operation_control_note_action_uses_lightweight_response_payload(): void
+    {
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'operation_control_payload' => [
+                'payment_checked' => 'yes',
+                'address_checked' => 'yes',
+                'door_photos_checked' => 'unreviewed',
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/operation-control", [
+                'note' => 'Sadece operasyon notu güncellendi.',
+            ])
+            ->assertOk()
+            ->assertJsonMissingPath('request')
+            ->assertJsonPath('operation_control_update.id', $request->id)
+            ->assertJsonPath('operation_control_update.operation_control.note', 'Sadece operasyon notu güncellendi.')
+            ->assertJsonStructure([
+                'operation_control_update' => [
+                    'id',
+                    'operation_control',
+                    'assignment_blockers',
+                    'allowed_workflow_actions',
+                    'allowed_workflow_transitions',
+                    'operational_state',
+                    'visible_sections',
+                    'next_action',
+                    'next_action_payload',
+                ],
+            ]);
+    }
+
+    public function test_door_compatible_operation_control_response_refreshes_assignment_ready_request_payload(): void
     {
         $user = $this->adminUser();
         $request = $this->technicalServiceRequest([
@@ -3290,26 +3346,41 @@ class TechnicalServiceWorkflowTest extends TestCase
                 'door_photos_checked' => 'compatible',
             ])
             ->assertOk()
-            ->assertJsonMissingPath('request')
-            ->assertJsonPath('operation_control_update.id', $request->id)
-            ->assertJsonPath('operation_control_update.operation_control.door_photos_checked', 'compatible')
-            ->assertJsonPath('operation_control_update.assignment_blockers.door_photo_check_required', false)
-            ->assertJsonStructure([
-                'operation_control_update' => [
-                    'id',
-                    'operation_control',
-                    'assignment_blockers',
-                    'allowed_workflow_actions',
-                    'allowed_workflow_transitions',
-                    'operational_state',
-                    'visible_sections',
-                    'next_action',
-                    'next_action_payload',
-                ],
-            ]);
+            ->assertJsonPath('request.id', $request->id)
+            ->assertJsonPath('request.operation_control.door_photos_checked', 'compatible')
+            ->assertJsonPath('request.assignment_blockers.door_photo_check_required', false)
+            ->assertJsonPath('request.assignment_blockers.messages', [])
+            ->assertJsonPath('operation_control_update.assignment_blockers.door_photo_check_required', false);
     }
 
-    public function test_door_compatible_action_performance_query_budget(): void
+    public function test_payment_yes_operation_control_response_refreshes_assignment_ready_request_payload(): void
+    {
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'status' => 'Yeni',
+            'workflow_status' => 'Yeni Talep',
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+                'address_checked' => 'yes',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+
+        $this->actingAs($user)
+            ->patchJson("/api/technical-service/requests/{$request->id}/operation-control", [
+                'payment_checked' => 'yes',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.id', $request->id)
+            ->assertJsonPath('request.operation_control.payment_checked', 'yes')
+            ->assertJsonPath('request.assignment_blockers.payment_check_required', false)
+            ->assertJsonPath('request.assignment_blockers.messages', [])
+            ->assertJsonPath('operation_control_update.assignment_blockers.messages', []);
+    }
+
+    public function test_operation_control_note_action_performance_query_budget(): void
     {
         $user = $this->adminUser();
         $request = $this->technicalServiceRequest([
@@ -3329,13 +3400,13 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->actingAs($user)
             ->patchJson("/api/technical-service/requests/{$request->id}/operation-control", [
-                'door_photos_checked' => 'compatible',
+                'note' => 'Sadece operasyon notu güncellendi.',
             ])
             ->assertOk()
             ->assertJsonMissingPath('request')
-            ->assertJsonPath('operation_control_update.operation_control.door_photos_checked', 'compatible');
+            ->assertJsonPath('operation_control_update.operation_control.note', 'Sadece operasyon notu güncellendi.');
 
-        $this->assertLessThan(80, $queryCount, "Door compatible operation-control action used {$queryCount} queries.");
+        $this->assertLessThan(80, $queryCount, "Operation-control note action used {$queryCount} queries.");
     }
 
     public function test_assign_endpoint_uses_selected_technician_and_returns_fresh_payload(): void
@@ -4708,13 +4779,13 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Ödeme aşaması',
             'Ödeme tutarı',
             'Ödeme referansı',
-            'Faturadaki diğer serileri gör',
+            'Diğer serileri kontrol et',
             'Talep edilen seriler',
             'Aynı faturadaki diğer seriler',
             'Müşteriye gösterilmeyen seriler',
             'İade gelen seriler',
             'Müşteriye gösterilmedi',
-            'Tekrar kontrol et',
+            'Serileri kontrol et',
             'Tüm uygun serileri montaja ekle',
             'Montaja ekle',
             'Çıkar',

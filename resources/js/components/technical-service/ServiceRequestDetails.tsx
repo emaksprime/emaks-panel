@@ -5248,15 +5248,15 @@ export function ServiceRequestDetails({
           </DetailPanel>
         {shouldRenderInvoiceSerialsPanel ? (
         <DetailPanel
-          title="Faturadaki diğer serileri gör"
-          summary={invoiceSerials?.check_error ? 'Fatura seri kontrolü bekliyor' : 'Talep edilen, gizlenen ve iade seri hareketleri'}
+          title="Diğer serileri kontrol et"
+          summary={invoiceSerials?.check_error ? 'Fatura seri kontrolü bekliyor' : 'Talep edilen, seçilebilir, gizlenen ve iade seri hareketleri'}
           tone="serial"
           open={invoiceSerialsOpen}
           onOpenChange={setInvoiceSerialsOpen}
           className={opsSectionClass('invoiceSerials', activeOpsSection)}
         >
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-sm text-slate-600">Fatura seri sorgusu operasyon için yenilenebilir; müşteriye gizli satırlar gösterilmez.</p>
+            <p className="text-sm text-slate-600">Diğer serileri kontrol et; uygun olanları aynı montaj kapsamına ekle, gizli ve iade satırları ayrı takip et.</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -5273,7 +5273,7 @@ export function ServiceRequestDetails({
                 onClick={() => onInvoiceSerialRecheck?.()}
                 disabled={invoiceSerialRecheckInFlight || !onInvoiceSerialRecheck}
               >
-                {invoiceSerialRecheckInFlight ? 'Kontrol ediliyor...' : 'Tekrar kontrol et'}
+                {invoiceSerialRecheckInFlight ? 'Kontrol ediliyor...' : 'Serileri kontrol et'}
               </Button>
               <Button
                 type="button"
