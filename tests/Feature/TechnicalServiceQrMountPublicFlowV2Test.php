@@ -153,6 +153,140 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertDatabaseCount('technical_service_qr_links', 1);
     }
 
+    public function test_qr_create_allows_manual_product_when_serial_unresolved(): void
+    {
+        $this->fakeContextThrows();
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => 'K193LGS61E221207B34767',
+                'product_name' => 'Akıllı Kilit',
+                'product_model' => 'DDL720',
+                'brand' => 'Emaks Prime',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('created', true)
+            ->assertJsonPath('context.product_name', 'Akıllı Kilit')
+            ->assertJsonPath('context.product_model', 'DDL720')
+            ->assertJsonPath('context.brand', 'Emaks Prime')
+            ->assertJsonPath('context.resolution_status', 'manual_fallback')
+            ->assertJsonPath('context.resolution_source', 'manual_fallback')
+            ->assertJsonPath('context.ops_review_required', true)
+            ->assertJsonPath('warning', 'Mikro seri kaydı bulunamadı; manuel ürün bilgisiyle QR oluşturuldu.');
+
+        $this->assertDatabaseHas('technical_service_qr_links', [
+            'serial_number' => 'K193LGS61E221207B34767',
+            'product_name' => 'Akıllı Kilit',
+            'product_model' => 'DDL720',
+            'brand' => 'Emaks Prime',
+        ]);
+    }
+
+    public function test_qr_create_allows_manual_product_when_resolver_has_no_product_name(): void
+    {
+        $this->fakeContextWithoutProduct();
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => 'QR-PARTIAL-MANUAL-001',
+                'product_name' => 'Manuel Kilit',
+                'model' => 'DDL720',
+                'brand' => 'Emaks Prime',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('context.product_name', 'Manuel Kilit')
+            ->assertJsonPath('context.product_model', 'DDL720')
+            ->assertJsonPath('context.resolution_status', 'partial_with_manual')
+            ->assertJsonPath('context.resolution_source', 'partial_mikro_manual')
+            ->assertJsonPath('context.warning', 'Mikro seri kaydı kısmi geldi; manuel ürün bilgisiyle QR oluşturuldu.');
+    }
+
+    public function test_qr_create_requires_product_name_when_serial_unresolved(): void
+    {
+        $this->fakeContextWithoutProduct();
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => 'QR-MISSING-MANUAL-PRODUCT',
+                'product_model' => 'DDL720',
+                'brand' => 'Emaks Prime',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['serial_number'])
+            ->assertJsonPath('errors.serial_number.0', 'Seri Mikro’da çözülemedi. QR oluşturmak için ürün adı girin.');
+
+        $this->assertDatabaseCount('technical_service_qr_links', 0);
+    }
+
+    public function test_qr_create_normalizes_serial_for_duplicate_guard(): void
+    {
+        $this->fakeContextThrows();
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => 'QRSPACE001',
+                'product_name' => 'İlk Kilit',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('link.serial_number', 'QRSPACE001');
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => " qr space\u{200B}001 ",
+                'product_name' => 'İkinci Kilit',
+            ])
+            ->assertOk()
+            ->assertJsonPath('created', false)
+            ->assertJsonPath('duplicate', true)
+            ->assertJsonPath('link.product_name', 'İlk Kilit');
+
+        $this->assertDatabaseCount('technical_service_qr_links', 1);
+    }
+
+    public function test_qr_bulk_preview_counts_manual_fallback_rows(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $csv = implode("\n", [
+            'seri_no,product_name,model,brand',
+            'BULK-MANUAL-001,Manuel Kilit,DDL720,Emaks Prime',
+            'BULK-MANUAL-002,,DDL720,Emaks Prime',
+        ]);
+
+        $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products/bulk', [
+                'csv_text' => $csv,
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.created', 1)
+            ->assertJsonPath('summary.failed', 1)
+            ->assertJsonPath('summary.manual_fallback', 1)
+            ->assertJsonPath('results.0.context.resolution_status', 'manual_fallback')
+            ->assertJsonPath('results.1.status', 'failed');
+
+        $this->assertDatabaseCount('technical_service_qr_links', 1);
+    }
+
+    public function test_serial_resolver_response_has_clear_status_and_warning(): void
+    {
+        $this->fakeContextWithoutProduct();
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->getJson('/api/technical-service/qr-products/serial-context?serial_number=QR-RESOLVE-WARNING')
+            ->assertOk()
+            ->assertJsonPath('context.serial_number', 'QR-RESOLVE-WARNING')
+            ->assertJsonPath('context.product_name', null)
+            ->assertJsonPath('context.resolution_status', 'requires_manual_product')
+            ->assertJsonPath('context.requires_manual_product', true)
+            ->assertJsonPath('context.warning', 'Seri Mikro’da çözülemedi. QR oluşturmak için ürün adı girin.');
+    }
+
     public function test_ops_qr_product_bulk_csv_creates_and_skips_duplicates(): void
     {
         $user = User::factory()->create(['role_code' => 'admin']);
@@ -1225,6 +1359,23 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                         'stock_code' => null,
                         'context_payload' => ['source' => 'test_missing_product'],
                     ];
+                }
+            },
+        );
+    }
+
+    private function fakeContextThrows(): void
+    {
+        $this->app->instance(
+            SerialProductContextResolver::class,
+            new class extends SerialProductContextResolver {
+                public function __construct()
+                {
+                }
+
+                public function resolve(string $serialNumber, array $knownContext = []): array
+                {
+                    throw new \RuntimeException('Fixture Mikro resolver failed.');
                 }
             },
         );

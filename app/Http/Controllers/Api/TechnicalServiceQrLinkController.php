@@ -87,18 +87,22 @@ class TechnicalServiceQrLinkController extends Controller
     {
         $data = $request->validate([
             'serial_number' => ['required', 'string', 'max:255'],
+            'product_name' => ['nullable', 'string', 'max:255'],
+            'product_model' => ['nullable', 'string', 'max:255'],
+            'model' => ['nullable', 'string', 'max:255'],
+            'brand' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $context = $resolver->resolve($data['serial_number']);
+        $serialNumber = $this->normalizeSerial($data['serial_number']);
 
-        if (! $this->nullableText($context['product_name'] ?? null)) {
+        if ($serialNumber === null) {
             throw ValidationException::withMessages([
-                'serial_number' => 'Seri bağlamı çözülemedi. Bu seri için ürün adı bulunamadı.',
+                'serial_number' => 'Seri no zorunludur.',
             ]);
         }
 
         return response()->json([
-            'context' => $this->contextPayload($context),
+            'context' => $this->contextPayload($this->resolveContext($serialNumber, $data, $resolver, true, false)),
         ]);
     }
 
@@ -122,6 +126,7 @@ class TechnicalServiceQrLinkController extends Controller
             'public_url' => $this->publicUrl($link),
             'created' => $created,
             'duplicate' => ! $created,
+            'warning' => $context['warning'] ?? null,
         ], $created ? 201 : 200);
     }
 
@@ -152,6 +157,7 @@ class TechnicalServiceQrLinkController extends Controller
             'updated' => 0,
             'skipped' => 0,
             'failed' => 0,
+            'manual_fallback' => 0,
         ];
         $previewLimit = 20;
 
@@ -163,11 +169,15 @@ class TechnicalServiceQrLinkController extends Controller
                 $result = [
                     'row' => $index + 2,
                     'status' => $created ? 'created' : 'skipped_duplicate',
-                    'message' => $created ? 'QR oluşturuldu.' : 'Aynı seri için aktif QR zaten var.',
+                    'message' => $context['warning'] ?? ($created ? 'QR oluşturuldu.' : 'Aynı seri için aktif QR zaten var.'),
                     'link' => $this->linkPayload($link),
                     'context' => $this->contextPayload($context),
                 ];
                 $summary[$created ? 'created' : 'skipped']++;
+
+                if (in_array($context['resolution_status'] ?? null, ['manual_fallback', 'partial_with_manual'], true)) {
+                    $summary['manual_fallback']++;
+                }
             } catch (ValidationException $exception) {
                 $result = [
                     'row' => $index + 2,
@@ -249,8 +259,8 @@ class TechnicalServiceQrLinkController extends Controller
 
         $existing = TechnicalServiceQrLink::query()
             ->where('status', TechnicalServiceQrLink::STATUS_ACTIVE)
-            ->whereRaw('upper(serial_number) = ?', [$serialNumber])
-            ->first();
+            ->get()
+            ->first(fn (TechnicalServiceQrLink $link): bool => $this->normalizeSerial($link->serial_number) === $serialNumber);
 
         if ($existing instanceof TechnicalServiceQrLink) {
             return [$existing, $this->contextFromLink($existing), false];
@@ -261,7 +271,7 @@ class TechnicalServiceQrLinkController extends Controller
 
         if ($productName === null) {
             throw ValidationException::withMessages([
-                'serial_number' => 'Seri bağlamı çözülemedi. Bu seri için ürün adı bulunamadı.',
+                'serial_number' => 'Seri Mikro’da çözülemedi. QR oluşturmak için ürün adı girin.',
             ]);
         }
 
@@ -305,6 +315,11 @@ class TechnicalServiceQrLinkController extends Controller
             'latest_event_type' => $context['latest_event_type'] ?? null,
             'latest_valid_sale_exists' => $context['latest_valid_sale_exists'] ?? false,
             'stock_code' => $context['stock_code'] ?? null,
+            'resolution_status' => $context['resolution_status'] ?? 'unknown',
+            'resolution_source' => $context['resolution_source'] ?? null,
+            'warning' => $context['warning'] ?? null,
+            'requires_manual_product' => $context['requires_manual_product'] ?? false,
+            'ops_review_required' => $context['ops_review_required'] ?? false,
         ];
     }
 
@@ -317,26 +332,60 @@ class TechnicalServiceQrLinkController extends Controller
         array $data,
         SerialProductContextResolver $resolver,
         bool $allowResolverFallback,
+        bool $enforceProductName = true,
     ): array {
         $manualProductName = $this->nullableText($data['product_name'] ?? null);
         $manualProductModel = $this->nullableText($data['product_model'] ?? $data['model'] ?? null);
         $manualBrand = $this->nullableText($data['brand'] ?? null);
         $context = [];
+        $resolverFailed = false;
 
         if ($allowResolverFallback || $manualProductName === null) {
             try {
                 $context = $resolver->resolve($serialNumber);
             } catch (\Throwable) {
                 $context = [];
+                $resolverFailed = true;
             }
+        }
+
+        $resolverProductName = $this->nullableText($context['product_name'] ?? null);
+        $productName = $resolverProductName ?? $manualProductName;
+        $productModel = $this->nullableText($context['product_model'] ?? null) ?? $manualProductModel;
+        $brand = $this->nullableText($context['brand'] ?? null) ?? $manualBrand;
+        $hasResolverEvidence = $context !== [] && ! $resolverFailed;
+        $resolutionStatus = 'resolved';
+        $resolutionSource = 'mikro_resolver';
+        $warning = null;
+        $requiresManualProduct = false;
+        $opsReviewRequired = false;
+
+        if ($resolverProductName === null && $manualProductName !== null) {
+            $resolutionStatus = $hasResolverEvidence ? 'partial_with_manual' : 'manual_fallback';
+            $resolutionSource = $hasResolverEvidence ? 'partial_mikro_manual' : ($allowResolverFallback ? 'manual_fallback' : 'manual_csv');
+            $warning = $hasResolverEvidence
+                ? 'Mikro seri kaydı kısmi geldi; manuel ürün bilgisiyle QR oluşturuldu.'
+                : 'Mikro seri kaydı bulunamadı; manuel ürün bilgisiyle QR oluşturuldu.';
+            $opsReviewRequired = true;
+        } elseif ($resolverProductName === null) {
+            $resolutionStatus = 'requires_manual_product';
+            $resolutionSource = $resolverFailed ? 'mikro_resolver_failed' : ($hasResolverEvidence ? 'partial_mikro' : 'mikro_not_found');
+            $warning = 'Seri Mikro’da çözülemedi. QR oluşturmak için ürün adı girin.';
+            $requiresManualProduct = true;
+        }
+
+        if ($enforceProductName && $productName === null) {
+            throw ValidationException::withMessages([
+                'serial_number' => 'Seri Mikro’da çözülemedi. QR oluşturmak için ürün adı girin.',
+            ]);
         }
 
         return [
             ...$context,
             'serial_number' => $serialNumber,
-            'product_name' => $this->nullableText($context['product_name'] ?? null) ?? $manualProductName,
-            'product_model' => $this->nullableText($context['product_model'] ?? null) ?? $manualProductModel,
-            'brand' => $this->nullableText($context['brand'] ?? null) ?? $manualBrand,
+            'product_name' => $productName,
+            'product_model' => $productModel,
+            'brand' => $brand,
             'activation_code' => $context['activation_code'] ?? null,
             'sale_mount_status' => $context['sale_mount_status'] ?? 'unknown',
             'suggested_link_type' => $context['suggested_link_type'] ?? TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
@@ -345,6 +394,11 @@ class TechnicalServiceQrLinkController extends Controller
             'latest_event_type' => $context['latest_event_type'] ?? null,
             'latest_valid_sale_exists' => $context['latest_valid_sale_exists'] ?? false,
             'stock_code' => $context['stock_code'] ?? null,
+            'resolution_status' => $resolutionStatus,
+            'resolution_source' => $resolutionSource,
+            'warning' => $warning,
+            'requires_manual_product' => $requiresManualProduct,
+            'ops_review_required' => $opsReviewRequired,
         ];
     }
 
@@ -364,6 +418,11 @@ class TechnicalServiceQrLinkController extends Controller
             'brand' => $link->brand,
             'suggested_link_type' => $link->link_type,
             'sale_mount_status' => $storedContext['sale_mount_status'] ?? 'unknown',
+            'resolution_status' => $storedContext['resolution_status'] ?? 'resolved',
+            'resolution_source' => $storedContext['resolution_source'] ?? null,
+            'warning' => $storedContext['warning'] ?? null,
+            'requires_manual_product' => $storedContext['requires_manual_product'] ?? false,
+            'ops_review_required' => $storedContext['ops_review_required'] ?? false,
         ];
     }
 
@@ -456,7 +515,13 @@ class TechnicalServiceQrLinkController extends Controller
     {
         $value = $this->nullableText($value);
 
-        return $value === null ? null : mb_strtoupper($value, 'UTF-8');
+        if ($value === null) {
+            return null;
+        }
+
+        $value = preg_replace('/[\s\p{Z}\x{200B}\x{200C}\x{200D}\x{FEFF}]+/u', '', $value) ?? $value;
+
+        return mb_strtoupper($value, 'UTF-8');
     }
 
     private function linkTypeLabel(?string $value): string

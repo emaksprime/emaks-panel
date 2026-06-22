@@ -21,6 +21,11 @@ type SerialContext = {
   latest_event_type: string | null
   latest_valid_sale_exists: boolean
   stock_code: string | null
+  resolution_status?: string | null
+  resolution_source?: string | null
+  warning?: string | null
+  requires_manual_product?: boolean
+  ops_review_required?: boolean
 }
 
 type QrProductLink = {
@@ -50,6 +55,7 @@ type LinkResponse = {
   context: SerialContext
   created: boolean
   duplicate: boolean
+  warning?: string | null
 }
 
 type BulkResult = {
@@ -68,6 +74,7 @@ type BulkResponse = {
     updated?: number
     skipped: number
     failed: number
+    manual_fallback?: number
   }
   results: BulkResult[]
   errors?: BulkResult[]
@@ -135,7 +142,9 @@ function InfoTile({ label, value }: { label: string; value: string | number | nu
   )
 }
 
-function StatusMessage({ message }: { message: { type: 'idle' | 'loading' | 'success' | 'error'; text: string } }) {
+type StatusMessageState = { type: 'idle' | 'loading' | 'success' | 'warning' | 'error'; text: string }
+
+function StatusMessage({ message }: { message: StatusMessageState }) {
   if (!message.text) {
     return null
   }
@@ -144,6 +153,7 @@ function StatusMessage({ message }: { message: { type: 'idle' | 'loading' | 'suc
     idle: 'border-slate-200 bg-slate-50 text-slate-700',
     loading: 'border-blue-200 bg-blue-50 text-blue-700',
     success: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    warning: 'border-amber-200 bg-amber-50 text-amber-900',
     error: 'border-rose-200 bg-rose-50 text-rose-700',
   }[message.type]
 
@@ -178,7 +188,7 @@ export default function TechnicalServiceQrProducts() {
   const [csvText, setCsvText] = useState(emptyCsv)
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [bulkResults, setBulkResults] = useState<BulkResponse | null>(null)
-  const [message, setMessage] = useState<{ type: 'idle' | 'loading' | 'success' | 'error'; text: string }>({ type: 'idle', text: '' })
+  const [message, setMessage] = useState<StatusMessageState>({ type: 'idle', text: '' })
   const [loading, setLoading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -270,17 +280,35 @@ export default function TechnicalServiceQrProducts() {
 
     try {
       const params = new URLSearchParams({ serial_number: serialNumber.trim() })
+
+      if (productName.trim()) {
+        params.set('product_name', productName.trim())
+      }
+
+      if (productModel.trim()) {
+        params.set('product_model', productModel.trim())
+      }
+
+      if (brand.trim()) {
+        params.set('brand', brand.trim())
+      }
+
       const response = (await apiRequest(`/api/technical-service/qr-products/serial-context?${params.toString()}`)) as { context: SerialContext }
       setContext(response.context)
-      setProductName(response.context.product_name ?? '')
-      setProductModel(response.context.product_model ?? '')
-      setBrand(response.context.brand ?? '')
-      setMessage({ type: 'success', text: 'Seri bağlamı çözüldü.' })
+      setProductName(response.context.product_name ?? productName)
+      setProductModel(response.context.product_model ?? productModel)
+      setBrand(response.context.brand ?? brand)
+      setMessage({
+        type: response.context.warning ? 'warning' : 'success',
+        text: response.context.warning ?? 'Seri bağlamı çözüldü.',
+      })
     } catch (error) {
       setContext(null)
       setMessage({
-        type: 'error',
-        text: error instanceof Error ? error.message : 'Seri bağlamı çözülemedi. Manuel ürün bilgisiyle QR oluşturabilirsiniz.',
+        type: productName.trim() ? 'warning' : 'error',
+        text: productName.trim()
+          ? 'Seri Mikro’da çözülemedi. Manuel ürün bilgisiyle QR oluşturabilirsiniz.'
+          : (error instanceof Error ? error.message : 'Seri Mikro’da çözülemedi. QR oluşturmak için ürün adı girin.'),
       })
     }
   }
@@ -308,8 +336,8 @@ export default function TechnicalServiceQrProducts() {
       setContext(response.context)
       setSelectedLink(response.link)
       setMessage({
-        type: 'success',
-        text: response.duplicate ? 'Bu seri için aktif QR zaten vardı; mevcut kayıt açıldı.' : 'QR oluşturuldu.',
+        type: response.warning ? 'warning' : 'success',
+        text: response.warning ?? (response.duplicate ? 'Bu seri için aktif QR zaten vardı; mevcut kayıt açıldı.' : 'QR oluşturuldu.'),
       })
       setPage(1)
       await loadLinks(1)
@@ -531,6 +559,7 @@ export default function TechnicalServiceQrProducts() {
                     <InfoTile label="Güncellenen" value={bulkResults.summary.updated ?? 0} />
                     <InfoTile label="Duplicate" value={bulkResults.summary.skipped} />
                     <InfoTile label="Hatalı" value={bulkResults.summary.failed} />
+                    <InfoTile label="Manuel fallback" value={bulkResults.summary.manual_fallback ?? 0} />
                   </div>
                   {bulkResults.meta?.results_truncated ? (
                     <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
