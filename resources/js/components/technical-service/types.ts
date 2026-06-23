@@ -769,12 +769,16 @@ export type ServiceRequestAssignmentBlockers = {
 export type ServiceRequestInvoiceSerial = {
   id?: number | string | null
   serial_number?: string | null
+  normalized_serial?: string | null
   product_name?: string | null
   product_model?: string | null
+  model?: string | null
   brand?: string | null
+  color?: string | null
   stock_code?: string | null
   invoice_series?: string | null
   invoice_number?: string | null
+  invoice_display_no?: string | null
   customer_selected?: boolean
   customer_selectable?: boolean
   customer_visible?: boolean
@@ -795,6 +799,8 @@ export type ServiceRequestInvoiceSerial = {
   return_date?: string | null
   return_document_no?: string | null
   is_current_latest_sale?: boolean | null
+  current_latest_sale_invoice_series?: string | null
+  current_latest_sale_invoice_number?: string | null
   latest_sale_conflict?: boolean
   operation_warning?: string | null
   warning_labels?: string[]

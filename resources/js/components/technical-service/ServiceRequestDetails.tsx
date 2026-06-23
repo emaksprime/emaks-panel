@@ -257,6 +257,7 @@ const actionCodeLabels: Record<string, string> = {
   manual_fee: 'Manuel ücret girildi',
   payment_paid: 'Ödeme alındı',
   mount_payment_paid: 'Ödeme alındı',
+  mount_payment_link_created: 'Ödeme linki oluşturuldu',
   payment_pending: 'Ödeme bekleniyor',
   payment_failed: 'Ödeme başarısız',
   final_check: 'Son kontrol bekliyor',
@@ -1023,10 +1024,50 @@ const InvoiceSerialRow = ({
   </div>
 )
 
+const normalizeInvoiceSerialSearch = (value: unknown): string => String(value ?? '').toLocaleLowerCase('tr-TR')
+
+const invoiceSerialMatchesSearch = (serial: ServiceRequestInvoiceSerial, normalizedSearch: string): boolean => {
+  if (!normalizedSearch) {
+    return true
+  }
+
+  return [
+    serial.serial_number,
+    serial.normalized_serial,
+    serial.product_name,
+    serial.product_model,
+    serial.brand,
+    serial.model,
+    serial.color,
+    serial.invoice_display_no,
+    serial.invoice_number,
+    serial.invoice_series,
+    serial.current_latest_sale_invoice_series,
+    serial.current_latest_sale_invoice_number,
+    serial.mount_status_label,
+    serial.hidden_reason_label,
+    serial.operation_warning,
+  ].some((value) => normalizeInvoiceSerialSearch(value).includes(normalizedSearch))
+}
+
+const filterInvoiceSerials = (
+  items: ServiceRequestInvoiceSerial[] | undefined,
+  normalizedSearch: string,
+): ServiceRequestInvoiceSerial[] => {
+  if (!items || items.length === 0) {
+    return []
+  }
+
+  return normalizedSearch
+    ? items.filter((serial) => invoiceSerialMatchesSearch(serial, normalizedSearch))
+    : items
+}
+
 const InvoiceSerialSection = ({
   title,
   items,
   totalCount,
+  searchActive = false,
   onAdd,
   onRemove,
   actionInFlight,
@@ -1034,28 +1075,17 @@ const InvoiceSerialSection = ({
   title: string
   items?: ServiceRequestInvoiceSerial[]
   totalCount?: number
+  searchActive?: boolean
   onAdd?: (serialId: number | string) => void | Promise<void>
   onRemove?: (serialId: number | string) => void | Promise<void>
   actionInFlight?: string | null
 }) => {
-  const [search, setSearch] = useState('')
-
   if (!items || items.length === 0) {
     return null
   }
 
-  const normalizedSearch = search.trim().toLocaleLowerCase('tr-TR')
-  const filteredItems = normalizedSearch
-    ? items.filter((serial) => [
-      serial.serial_number,
-      serial.product_name,
-      serial.product_model,
-      serial.brand,
-      serial.color,
-    ].some((value) => String(value ?? '').toLocaleLowerCase('tr-TR').includes(normalizedSearch)))
-    : items
   const effectiveTotal = totalCount ?? items.length
-  const hasMore = effectiveTotal > items.length
+  const hasMore = !searchActive && effectiveTotal > items.length
 
   return (
     <section className="grid gap-3">
@@ -1066,12 +1096,6 @@ const InvoiceSerialSection = ({
             Toplam {effectiveTotal} kayıt. {hasMore ? `İlk ${items.length} kayıt gösteriliyor.` : `${items.length} kayıt gösteriliyor.`}
           </p>
         </div>
-        <Input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Seri veya ürün ara"
-          className="sm:max-w-xs"
-        />
       </div>
       {hasMore ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
@@ -1079,7 +1103,7 @@ const InvoiceSerialSection = ({
         </div>
       ) : null}
       <div className="grid gap-3">
-        {filteredItems.map((serial, index) => (
+        {items.map((serial, index) => (
           <InvoiceSerialRow
             key={`${serial.serial_number ?? 'serial'}-${index}`}
             serial={serial}
@@ -1088,11 +1112,6 @@ const InvoiceSerialSection = ({
             actionInFlight={actionInFlight}
           />
         ))}
-        {filteredItems.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-            Aramaya uygun seri bulunamadı.
-          </div>
-        ) : null}
       </div>
     </section>
   )
@@ -1508,6 +1527,11 @@ export function ServiceRequestDetails({
   const invoiceSerialsOpen = invoiceSerialsOpenByRequest[request.id] ?? defaultOpenOpsSections.has('invoiceSerials')
   const setInvoiceSerialsOpen = (open: boolean) => {
     setInvoiceSerialsOpenByRequest((current) => ({ ...current, [request.id]: open }))
+  }
+  const [invoiceSerialSearchByRequest, setInvoiceSerialSearchByRequest] = useState<Record<string, string>>({})
+  const invoiceSerialSearch = invoiceSerialSearchByRequest[request.id] ?? ''
+  const setInvoiceSerialSearch = (value: string) => {
+    setInvoiceSerialSearchByRequest((current) => ({ ...current, [request.id]: value }))
   }
   const [productInfoOpenByRequest, setProductInfoOpenByRequest] = useState<Record<string, boolean>>({})
   const productInfoOpen = productInfoOpenByRequest[request.id] ?? defaultOpenOpsSections.has('product')
@@ -2228,6 +2252,19 @@ export function ServiceRequestDetails({
     ?? invoiceSerials?.selected_serials?.length
     ?? 0
   const shouldRenderInvoiceSerialsPanel = Boolean(invoiceSerials?.check_error || invoiceSerialTotalCount > 0)
+  const normalizedInvoiceSerialSearch = invoiceSerialSearch.trim().toLocaleLowerCase('tr-TR')
+  const invoiceSerialSearchActive = normalizedInvoiceSerialSearch.length > 0
+  const filteredRequestedInvoiceSerials = filterInvoiceSerials(invoiceSerials?.selected_serials, normalizedInvoiceSerialSearch)
+  const filteredOtherInvoiceSerials = filterInvoiceSerials(invoiceSerials?.other_serials, normalizedInvoiceSerialSearch)
+  const filteredHiddenInvoiceSerials = filterInvoiceSerials(invoiceSerials?.hidden_serials, normalizedInvoiceSerialSearch)
+  const filteredReturnedInvoiceSerials = filterInvoiceSerials(invoiceSerials?.returned_serials, normalizedInvoiceSerialSearch)
+  const hasAnyFilteredInvoiceSerial = [
+    filteredRequestedInvoiceSerials,
+    filteredOtherInvoiceSerials,
+    filteredHiddenInvoiceSerials,
+    filteredReturnedInvoiceSerials,
+  ].some((items) => items.length > 0)
+  const showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && !hasAnyFilteredInvoiceSerial
   const shouldRenderHistoryPanel = Boolean((request.auditLogs ?? []).length > 0 || events.length > 0)
   const shouldShowPartCreateAction = canCreatePartRequest && (partRequests.length > 0 || servicePartChargeSectionVisible || activePartRequests.length > 0)
   const shouldShowFinalReasonMetrics = Boolean(request.pendingReason || request.cancellationReason)
@@ -2377,7 +2414,8 @@ export function ServiceRequestDetails({
     }
 
     if (extraPaymentAmount === null || extraPaymentAmount <= 0) {
-      setRouteFeeEditorMessage('Ek ödeme tutarı 0 TL ise ödeme linki gerekmez.')
+      setRouteFeeEditorOpen(true)
+      setRouteFeeEditorMessage('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.')
 
       return
     }
@@ -2398,6 +2436,39 @@ export function ServiceRequestDetails({
 
     await onExtraMountPaymentCreate(payload)
     setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
+  }
+  const handleCreatePaymentLinkAction = async () => {
+    scrollToNextActionSection('assignment')
+
+    if (extraMountPayment?.payment_url) {
+      setRouteFeeEditorOpen(true)
+      setRouteFeeEditorMessage('Ödeme linki zaten var. Mevcut linki kullanın.')
+
+      return
+    }
+
+    if (!onExtraMountPaymentCreate) {
+      setRouteFeeEditorMessage('Ödeme linki oluşturma servisi bağlı değil.')
+
+      return
+    }
+
+    if (!selectedTechnician) {
+      setRouteFeeEditorOpen(false)
+      setRouteFeeEditorMessage('Ödeme linki için önce usta seçin.')
+
+      return
+    }
+
+    openRouteFeeEditor()
+
+    if (!canCreateExtraPayment) {
+      setRouteFeeEditorMessage('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.')
+
+      return
+    }
+
+    await handleExtraPaymentCreate()
   }
   const handleCustomerChargeCreate = async () => {
     if (!onExtraMountPaymentCreate) {
@@ -3386,8 +3457,7 @@ export function ServiceRequestDetails({
     }
 
     if (action === 'create_payment_link') {
-      setRouteFeeEditorOpen(true)
-      scrollToNextActionSection('assignment')
+      void handleCreatePaymentLinkAction()
 
       return
     }
@@ -4894,8 +4964,8 @@ export function ServiceRequestDetails({
                   <div className="grid gap-3 rounded-2xl border border-blue-200 bg-white p-3 text-sm text-slate-700">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
-                        <p className="font-semibold text-slate-950">Usta hakedişi / yol düzenle</p>
-                        <p className="mt-1 text-xs text-slate-500">Bu panel hesaplanan yol bilgisini operasyon notuyla birlikte gözden geçirmek içindir.</p>
+                        <p className="font-semibold text-slate-950">Ödeme tutarı / yol düzenle</p>
+                        <p className="mt-1 text-xs text-slate-500">Ödeme linki için tutar zorunludur; 0 TL link oluşturulmaz.</p>
                       </div>
                       <Button type="button" size="sm" variant="ghost" onClick={() => setRouteFeeEditorOpen(false)}>
                         İptal
@@ -4937,7 +5007,7 @@ export function ServiceRequestDetails({
                         <Input type="number" min="0" step="0.01" value={routeFeeAmountInput} onChange={(event) => handleRouteFeeAmountChange(event.target.value)} />
                       </label>
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                        Usta yol hakedişi olarak kaydedilecek tutar
+                        Ödeme linki tutarı
                         <Input type="number" min="0" step="0.01" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
                       </label>
                     </div>
@@ -5284,6 +5354,24 @@ export function ServiceRequestDetails({
               </Button>
             </div>
           </div>
+          <div className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center">
+            <Input
+              value={invoiceSerialSearch}
+              onChange={(event) => setInvoiceSerialSearch(event.target.value)}
+              placeholder="Seri, ürün, model, marka veya fatura ara"
+              className="sm:max-w-md"
+            />
+            {invoiceSerialSearchActive ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setInvoiceSerialSearch('')}
+                className="sm:w-auto"
+              >
+                Aramayı temizle
+              </Button>
+            ) : null}
+          </div>
           {differentAddressInfoOpen ? (
             <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm font-semibold text-blue-900">
               Seçili seriler için farklı adres talebi sonraki fazda açılacak.
@@ -5304,10 +5392,15 @@ export function ServiceRequestDetails({
               Fatura seri kontrolü bekliyor. Tekrar kontrol et aksiyonu ile sorgu yenilenebilir.
             </div>
           ) : null}
-          <InvoiceSerialSection title="Talep edilen seriler" items={invoiceSerials?.selected_serials} totalCount={invoiceSerials?.selected_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
-          <InvoiceSerialSection title="Aynı faturadaki diğer seriler" items={invoiceSerials?.other_serials} totalCount={invoiceSerials?.other_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
-          <InvoiceSerialSection title="Müşteriye gösterilmeyen seriler" items={invoiceSerials?.hidden_serials} totalCount={invoiceSerials?.hidden_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
-          <InvoiceSerialSection title="İade gelen seriler" items={invoiceSerials?.returned_serials} totalCount={invoiceSerials?.returned_serial_count} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          {showInvoiceSerialNoSearchResult ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+              Bu aramada seri bulunamadı. Serileri kontrol et ile Mikro sorgusunu yenileyin.
+            </div>
+          ) : null}
+          <InvoiceSerialSection title="Talep edilen seriler" items={filteredRequestedInvoiceSerials} totalCount={invoiceSerials?.selected_serial_count} searchActive={invoiceSerialSearchActive} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="Aynı faturadaki diğer seriler" items={filteredOtherInvoiceSerials} totalCount={invoiceSerials?.other_serial_count} searchActive={invoiceSerialSearchActive} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="Müşteriye gösterilmeyen seriler" items={filteredHiddenInvoiceSerials} totalCount={invoiceSerials?.hidden_serial_count} searchActive={invoiceSerialSearchActive} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
+          <InvoiceSerialSection title="İade gelen seriler" items={filteredReturnedInvoiceSerials} totalCount={invoiceSerials?.returned_serial_count} searchActive={invoiceSerialSearchActive} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
           {!(invoiceSerials?.all_invoice_serials?.length) && !invoiceSerials?.check_error ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
               Fatura seri hareketi henüz kaydedilmedi.

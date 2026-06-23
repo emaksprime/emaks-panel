@@ -30,7 +30,7 @@ return [
     ],
 
     'technical_service' => [
-        'invoice_serials_mode' => env('TECHNICAL_SERVICE_INVOICE_SERIALS_MODE', 'disabled'),
+        'invoice_serials_mode' => env('TECHNICAL_SERVICE_INVOICE_SERIALS_MODE', 'gateway'),
     ],
 
     'partner_portal' => [

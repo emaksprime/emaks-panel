@@ -2,11 +2,18 @@
 
 namespace App\Services\TechnicalService;
 
+use App\Models\DataSource;
 use App\Models\TechnicalServiceRequestSerial;
+use App\Services\N8nPanelDataGateway;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class MikroInvoiceSerialsService
 {
+    public const SOURCE_INVOICE_SERIALS = 'technical_service_invoice_serials';
+
+    private const SOURCE_SERIAL_CHECK = 'technical_service_serial_check';
+
     private const RESPONSIBILITY_CODE_BLOCKED = [
         'PROJE',
         'BAYI SATIS',
@@ -18,6 +25,7 @@ class MikroInvoiceSerialsService
     public function __construct(
         private readonly ?string $mode = null,
         private readonly ?string $fixturePath = null,
+        private readonly ?N8nPanelDataGateway $gateway = null,
     ) {
     }
 
@@ -27,8 +35,9 @@ class MikroInvoiceSerialsService
     public function forSerial(string $serialNo): array
     {
         $serialNo = trim($serialNo);
+        $mode = $this->invoiceSerialsMode();
 
-        if ($this->invoiceSerialsMode() === 'fixture') {
+        if ($mode === 'fixture') {
             $rows = $this->normalizeRows($this->fixtureRowsForSerial($serialNo), $serialNo);
 
             return [
@@ -49,6 +58,34 @@ class MikroInvoiceSerialsService
                 ],
                 'request' => [
                     'serial_no' => $serialNo,
+                ],
+            ];
+        }
+
+        if ($mode === 'gateway') {
+            $gatewayResult = $this->gatewayRowsForSerial($serialNo);
+            $rows = $this->normalizeRows($gatewayResult['rows'], $serialNo);
+
+            return [
+                'rows' => $rows,
+                'all_invoice_serials' => $rows,
+                'selectable_customer_serials' => array_values(array_filter(
+                    $rows,
+                    fn (array $row): bool => (bool) ($row['customer_selectable'] ?? false),
+                )),
+                'returned_serials' => array_values(array_filter(
+                    $rows,
+                    fn (array $row): bool => (bool) ($row['is_returned'] ?? false),
+                )),
+                'meta' => [
+                    'status' => 'gateway',
+                    'source' => self::SOURCE_INVOICE_SERIALS,
+                    'message' => 'Fatura seri kontrolü Mikro gateway üzerinden okundu.',
+                    ...($gatewayResult['meta'] ?? []),
+                ],
+                'request' => [
+                    'serial_no' => $serialNo,
+                    ...($gatewayResult['request'] ?? []),
                 ],
             ];
         }
@@ -78,10 +115,276 @@ class MikroInvoiceSerialsService
     private function invoiceSerialsMode(): string
     {
         $mode = strtolower(trim((string) (
-            $this->mode ?? config('services.technical_service.invoice_serials_mode', 'disabled')
+            $this->mode ?? config('services.technical_service.invoice_serials_mode', 'gateway')
         )));
 
-        return in_array($mode, ['disabled', 'fixture'], true) ? $mode : 'disabled';
+        if ($this->mode === null && $mode === 'fixture' && ! app()->environment('testing')) {
+            return 'gateway';
+        }
+
+        return in_array($mode, ['disabled', 'fixture', 'gateway'], true) ? $mode : 'gateway';
+    }
+
+    /**
+     * @return array{rows:array<int,array<string,mixed>>,meta?:array<string,mixed>,request?:array<string,mixed>}
+     */
+    private function gatewayRowsForSerial(string $serialNo): array
+    {
+        $gateway = $this->gateway ?? app(N8nPanelDataGateway::class);
+        $dataSource = $this->invoiceSerialsDataSource();
+        $result = $gateway->run(self::SOURCE_INVOICE_SERIALS, [
+            'serial_no' => $serialNo,
+            'bypass_cache' => true,
+        ], $dataSource);
+
+        $rows = $result['rows'] ?? [];
+
+        return [
+            'rows' => is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [],
+            'meta' => is_array($result['meta'] ?? null) ? $result['meta'] : [],
+            'request' => is_array($result['request'] ?? null) ? $result['request'] : [],
+        ];
+    }
+
+    private function invoiceSerialsDataSource(): DataSource
+    {
+        $queryTemplateKey = 'query'.'_template';
+        $allowedParamsKey = 'allowed'.'_params';
+        $connectionMetaKey = 'connection'.'_meta';
+
+        $persisted = DataSource::query()
+            ->where('code', self::SOURCE_INVOICE_SERIALS)
+            ->where('active', true)
+            ->first();
+
+        if ($persisted && trim((string) $persisted->getAttribute($queryTemplateKey)) !== '') {
+            return $persisted;
+        }
+
+        $serialCheck = DataSource::query()
+            ->where('code', self::SOURCE_SERIAL_CHECK)
+            ->where('active', true)
+            ->first();
+
+        if (! $serialCheck) {
+            throw new RuntimeException('Teknik servis seri kontrol veri kaynağı aktif değil.');
+        }
+
+        $dataSource = new DataSource();
+        $dataSource->forceFill([
+            'code' => self::SOURCE_INVOICE_SERIALS,
+            'name' => 'Teknik Servis Fatura Seri Sorgu',
+            'db_type' => 'n8n_json',
+            $queryTemplateKey => $this->invoiceSerialsSql(),
+            $allowedParamsKey => ['serial_no', 'bypass_cache'],
+            $connectionMetaKey => $serialCheck->getAttribute($connectionMetaKey) ?? [],
+            'active' => true,
+        ]);
+
+        return $dataSource;
+    }
+
+    private function invoiceSerialsSql(): string
+    {
+        return <<<'SQL'
+WITH query_params AS (
+    SELECT NULLIF(LTRIM(RTRIM(N'[[serial_no]]')), N'') AS serial_no
+),
+ArananSeriSonSatis AS (
+    SELECT TOP 1
+        CH.ChHar_SeriNo AS SeriNo,
+        STH.sth_tarih AS SatisTarihi,
+        STH.sth_evrakno_seri AS EvrakSeri,
+        STH.sth_evrakno_sira AS EvrakSira,
+        STH.sth_cari_kodu AS CariKodu,
+        C.cari_unvan1 AS CariAdi,
+        STH.sth_stok_kod AS StokKodu
+    FROM dbo.CIHAZ_HAREKETLERI CH WITH (NOLOCK)
+    CROSS JOIN query_params qp
+    INNER JOIN dbo.STOK_HAREKETLERI STH WITH (NOLOCK)
+        ON STH.sth_Guid = CH.ChHar_master_uid
+    LEFT JOIN dbo.CARI_HESAPLAR C WITH (NOLOCK)
+        ON C.cari_kod = STH.sth_cari_kodu
+    WHERE qp.serial_no IS NOT NULL
+      AND LTRIM(RTRIM(CH.ChHar_SeriNo)) = qp.serial_no
+      AND STH.sth_cins = 0
+      AND STH.sth_tip = 1
+      AND STH.sth_evraktip IN (1, 4)
+    ORDER BY STH.sth_tarih DESC, STH.sth_evrakno_sira DESC, STH.sth_Guid DESC
+),
+FaturaSatirlari AS (
+    SELECT
+        STH.sth_Guid AS HareketGuid,
+        STH.sth_tarih AS SatisTarihi,
+        STH.sth_evrakno_seri AS EvrakSeri,
+        STH.sth_evrakno_sira AS EvrakSira,
+        STH.sth_cari_kodu AS CariKodu,
+        C.cari_unvan1 AS CariAdi,
+        C.cari_grup_kodu AS CariGrupKodu,
+        CG.crg_isim AS CariGrupAdi,
+        STH.sth_stok_kod AS StokKodu,
+        STK.sto_isim AS StokAdi,
+        CAST(
+            COALESCE(
+                NULLIF(LTRIM(RTRIM(STH.sth_cari_srm_merkezi)), N''),
+                NULLIF(LTRIM(RTRIM(STH.sth_stok_srm_merkezi)), N'')
+            ) AS NVARCHAR(50)
+        ) AS sorumluluk_kodu,
+        STK.sto_model_kodu AS ModelKodu,
+        MDL.mdl_ismi AS ModelAdi,
+        STK.sto_marka_kodu AS MarkaKodu,
+        MRK.mrk_ismi AS MarkaAdi,
+        DEP.dep_adi AS DepoAdi
+    FROM ArananSeriSonSatis REF
+    INNER JOIN dbo.STOK_HAREKETLERI STH WITH (NOLOCK)
+        ON STH.sth_evrakno_seri = REF.EvrakSeri
+       AND STH.sth_evrakno_sira = REF.EvrakSira
+       AND STH.sth_cari_kodu = REF.CariKodu
+       AND STH.sth_tarih = REF.SatisTarihi
+       AND STH.sth_cins = 0
+       AND STH.sth_tip = 1
+       AND STH.sth_evraktip IN (1, 4)
+    LEFT JOIN dbo.CARI_HESAPLAR C WITH (NOLOCK)
+        ON C.cari_kod = STH.sth_cari_kodu
+    LEFT JOIN dbo.CARI_HESAP_GRUPLARI CG WITH (NOLOCK)
+        ON CG.crg_kod = C.cari_grup_kodu
+    LEFT JOIN dbo.STOKLAR STK WITH (NOLOCK)
+        ON STK.sto_kod = STH.sth_stok_kod
+    LEFT JOIN dbo.STOK_MODEL_TANIMLARI MDL WITH (NOLOCK)
+        ON MDL.mdl_kodu = STK.sto_model_kodu
+    LEFT JOIN dbo.STOK_MARKALARI MRK WITH (NOLOCK)
+        ON MRK.mrk_kod = STK.sto_marka_kodu
+    LEFT JOIN dbo.DEPOLAR DEP WITH (NOLOCK)
+        ON DEP.dep_no = STH.sth_giris_depo_no
+),
+FaturaSerileri AS (
+    SELECT
+        F.*,
+        CH.ChHar_SeriNo AS FaturaSeriNo
+    FROM FaturaSatirlari F
+    INNER JOIN dbo.CIHAZ_HAREKETLERI CH WITH (NOLOCK)
+        ON CH.ChHar_master_uid = F.HareketGuid
+),
+SeriHareketleri AS (
+    SELECT
+        CH.ChHar_SeriNo AS SeriNo,
+        STH.sth_Guid AS HareketGuid,
+        STH.sth_tarih AS HareketTarihi,
+        STH.sth_tip AS HareketTip,
+        STH.sth_evraktip AS EvrakTip,
+        STH.sth_evrakno_seri AS EvrakSeri,
+        STH.sth_evrakno_sira AS EvrakSira,
+        STH.sth_cari_kodu AS CariKodu,
+        C.cari_unvan1 AS CariAdi,
+        STH.sth_stok_kod AS StokKodu,
+        STK.sto_isim AS StokAdi,
+        CAST(
+            COALESCE(
+                NULLIF(LTRIM(RTRIM(STH.sth_cari_srm_merkezi)), N''),
+                NULLIF(LTRIM(RTRIM(STH.sth_stok_srm_merkezi)), N'')
+            ) AS NVARCHAR(50)
+        ) AS sorumluluk_kodu,
+        ROW_NUMBER() OVER (
+            PARTITION BY CH.ChHar_SeriNo
+            ORDER BY STH.sth_tarih DESC, STH.sth_evrakno_sira DESC, STH.sth_Guid DESC
+        ) AS HareketSira,
+        MAX(CASE
+            WHEN STH.sth_tip = 1
+             AND STH.sth_cins = 0
+             AND STH.sth_evraktip IN (1, 4)
+            THEN STH.sth_tarih
+        END) OVER (PARTITION BY CH.ChHar_SeriNo) AS SonSatisTarihi
+    FROM dbo.CIHAZ_HAREKETLERI CH WITH (NOLOCK)
+    INNER JOIN dbo.STOK_HAREKETLERI STH WITH (NOLOCK)
+        ON STH.sth_Guid = CH.ChHar_master_uid
+    LEFT JOIN dbo.CARI_HESAPLAR C WITH (NOLOCK)
+        ON C.cari_kod = STH.sth_cari_kodu
+    LEFT JOIN dbo.STOKLAR STK WITH (NOLOCK)
+        ON STK.sto_kod = STH.sth_stok_kod
+    WHERE EXISTS (
+        SELECT 1
+        FROM FaturaSerileri FS
+        WHERE FS.FaturaSeriNo = CH.ChHar_SeriNo
+    )
+),
+FaturaSeriSatirlari AS (
+    SELECT
+        FS.*,
+        IADE.HareketTarihi AS IadeTarihi,
+        IADE.EvrakSeri AS IadeEvrakSeri,
+        IADE.EvrakSira AS IadeEvrakSira,
+        CASE
+            WHEN IADE.SeriNo IS NOT NULL THEN N'Bu seri için son hareket iade/red görünüyor'
+            ELSE NULL
+        END AS IadeNotu,
+        SON_SATIS.HareketTarihi AS GuncelSonSatisTarihi,
+        SON_SATIS.EvrakSeri AS GuncelSonSatisEvrakSeri,
+        SON_SATIS.EvrakSira AS GuncelSonSatisEvrakSira,
+        SON_SATIS.CariKodu AS GuncelSonSatisCariKodu,
+        SON_SATIS.CariAdi AS GuncelSonSatisCariAdi,
+        CASE
+            WHEN SON_SATIS.HareketGuid = FS.HareketGuid THEN N'Evet'
+            ELSE N'Hayır'
+        END AS BuFaturaSonSatisMi
+    FROM FaturaSerileri FS
+    OUTER APPLY (
+        SELECT TOP 1 SH.*
+        FROM SeriHareketleri SH
+        WHERE SH.SeriNo = FS.FaturaSeriNo
+          AND SH.HareketTip = 0
+          AND SH.HareketTarihi >= FS.SatisTarihi
+        ORDER BY SH.HareketTarihi DESC, SH.EvrakSira DESC, SH.HareketGuid DESC
+    ) IADE
+    OUTER APPLY (
+        SELECT TOP 1 SH.*
+        FROM SeriHareketleri SH
+        WHERE SH.SeriNo = FS.FaturaSeriNo
+          AND SH.HareketTip = 1
+          AND SH.EvrakTip IN (1, 4)
+        ORDER BY SH.HareketTarihi DESC, SH.EvrakSira DESC, SH.HareketGuid DESC
+    ) SON_SATIS
+)
+SELECT
+    qp.serial_no AS [Aranan Seri No],
+    F.FaturaSeriNo AS [Faturadaki Seri No],
+    CASE
+        WHEN F.IadeNotu IS NOT NULL THEN N'İade/Red'
+        WHEN F.BuFaturaSonSatisMi = N'Hayır' THEN N'Güncel Son Satış Değil'
+        ELSE N'Uygun'
+    END AS [Seri Durumu],
+    F.SatisTarihi AS [Satış Tarihi],
+    F.EvrakSeri AS [Satış Evrak Seri],
+    F.EvrakSira AS [Satış Evrak Sıra],
+    F.CariKodu AS [Satış Cari Kodu],
+    F.CariAdi AS [Satış Cari Adı],
+    F.CariGrupKodu AS [Satış Cari Grup Kodu],
+    F.CariGrupAdi AS [Satış Cari Grup Adı],
+    F.StokKodu AS [Stok Kodu],
+    F.StokAdi AS [Stok Adı],
+    F.ModelKodu AS [Model Kodu],
+    F.ModelAdi AS [Model Adı],
+    F.MarkaKodu AS [Marka Kodu],
+    F.MarkaAdi AS [Marka Adı],
+    F.DepoAdi AS [Depo Adı],
+    F.IadeTarihi AS [İade Tarihi],
+    F.IadeEvrakSeri AS [İade Evrak Seri],
+    F.IadeEvrakSira AS [İade Evrak Sıra],
+    F.IadeNotu AS [İade Notu],
+    F.BuFaturaSonSatisMi AS [Bu Fatura Bu Seri İçin Son Satış mı],
+    F.GuncelSonSatisTarihi AS [Serinin Güncel Son Satış Tarihi],
+    F.GuncelSonSatisEvrakSeri AS [Serinin Güncel Son Satış Evrak Seri],
+    F.GuncelSonSatisEvrakSira AS [Serinin Güncel Son Satış Evrak Sıra],
+    F.GuncelSonSatisCariKodu AS [Serinin Güncel Son Satış Cari Kodu],
+    F.GuncelSonSatisCariAdi AS [Serinin Güncel Son Satış Cari Adı],
+    F.sorumluluk_kodu AS [Sorumluluk Kodu],
+    F.sorumluluk_kodu AS sorumluluk_kodu
+FROM FaturaSeriSatirlari F
+CROSS JOIN query_params qp
+ORDER BY
+    CASE WHEN F.FaturaSeriNo = qp.serial_no THEN 0 ELSE 1 END,
+    F.StokAdi,
+    F.FaturaSeriNo;
+SQL;
     }
 
     /**

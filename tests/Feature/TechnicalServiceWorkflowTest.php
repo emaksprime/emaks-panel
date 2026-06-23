@@ -2190,6 +2190,21 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertLessThan($operationPanelPosition, $actionPosition);
     }
 
+    public function test_ops_mount_payment_link_primary_action_calls_backend_or_shows_blocker(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('const handleCreatePaymentLinkAction = async () =>', $source);
+        $this->assertStringContainsString('await handleExtraPaymentCreate()', $source);
+        $this->assertStringContainsString("if (action === 'create_payment_link')", $source);
+        $this->assertStringContainsString('void handleCreatePaymentLinkAction()', $source);
+        $this->assertStringContainsString('Ödeme linki zaten var. Mevcut linki kullanın.', $source);
+        $this->assertStringContainsString('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.', $source);
+        $this->assertStringContainsString('Ödeme tutarı / yol düzenle', $source);
+        $this->assertStringContainsString('Ödeme linki tutarı', $source);
+    }
+
     public function test_service_part_payment_page_uses_tl_label_not_try(): void
     {
         $source = file_get_contents(resource_path('js/pages/public/mount-payment.tsx'));
@@ -4787,6 +4802,10 @@ class TechnicalServiceWorkflowTest extends TestCase
             'Müşteriye gösterilmedi',
             'Serileri kontrol et',
             'Tüm uygun serileri montaja ekle',
+            'Seri, ürün, model, marka veya fatura ara',
+            'Bu aramada seri bulunamadı. Serileri kontrol et ile Mikro sorgusunu yenileyin.',
+            'hasAnyFilteredInvoiceSerial',
+            'showInvoiceSerialNoSearchResult',
             'Montaja ekle',
             'Çıkar',
             'İade - eklenemez',
@@ -4817,6 +4836,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         }
 
         $this->assertStringNotContainsString('Montaj / Servis Durumu', $detailsSource);
+        $this->assertStringNotContainsString('Aramaya uygun seri bulunamadı.', $detailsSource);
         $this->assertStringNotContainsString('Operasyon Kontrolü', $detailsSource);
         $this->assertStringNotContainsString('Ek Operasyon Kontrolleri', $detailsSource);
         $this->assertStringNotContainsString('Stok Kodu', $detailsSource);
@@ -4887,6 +4907,34 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringNotContainsString('loadRequests(', $handlerSource);
         $this->assertStringNotContainsString('loadSummary(', $handlerSource);
         $this->assertStringContainsString('operation_control_update', $handlerSource);
+    }
+
+    public function test_serial_family_other_serial_search_no_result_message_is_panel_scoped(): void
+    {
+        $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($detailsSource);
+        $this->assertStringContainsString('filterInvoiceSerials', $detailsSource);
+        $this->assertStringContainsString('invoiceSerialMatchesSearch', $detailsSource);
+        $this->assertStringContainsString('filteredRequestedInvoiceSerials', $detailsSource);
+        $this->assertStringContainsString('filteredHiddenInvoiceSerials', $detailsSource);
+        $this->assertStringContainsString('hasAnyFilteredInvoiceSerial', $detailsSource);
+        $this->assertStringContainsString('showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && !hasAnyFilteredInvoiceSerial', $detailsSource);
+        $this->assertStringContainsString('Seri, ürün, model, marka veya fatura ara', $detailsSource);
+        $this->assertStringContainsString('Bu aramada seri bulunamadı. Serileri kontrol et ile Mikro sorgusunu yenileyin.', $detailsSource);
+        $this->assertStringNotContainsString('Aramaya uygun seri bulunamadı.', $detailsSource);
+    }
+
+    public function test_payment_amount_modal_requires_positive_amount_before_link_create(): void
+    {
+        $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($detailsSource);
+        $this->assertStringContainsString('Ödeme linki tutarı', $detailsSource);
+        $this->assertStringContainsString('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.', $detailsSource);
+        $this->assertStringContainsString('Ödeme linki için tutar zorunludur; 0 TL link oluşturulmaz.', $detailsSource);
+        $this->assertStringContainsString('Ödeme linki oluştur', $detailsSource);
+        $this->assertStringContainsString('Ödeme linki zaten var. Mevcut linki kullanın.', $detailsSource);
     }
 
     private function adminUser(): User

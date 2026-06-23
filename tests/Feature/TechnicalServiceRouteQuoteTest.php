@@ -540,6 +540,45 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringNotContainsString('/mount-payment/fake/', $payment->payment_url);
         $this->assertSame('fake', $payment->provider);
         $this->assertSame('local', $payment->raw_payload['provider_environment']);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'mount_payment_link_created',
+            'title' => 'Ödeme linki oluşturuldu',
+        ]);
+    }
+
+    public function test_extra_mount_fee_payment_link_reuses_existing_pending_session(): void
+    {
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+
+        $payload = [
+            'technician_id' => $technician->id,
+            'selected_serial_ids' => [$serial->id],
+            'amount' => 150,
+            'currency' => 'TRY',
+            'purpose' => 'mount_extra',
+        ];
+
+        $firstResponse = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", $payload)
+            ->assertCreated()
+            ->assertJsonPath('payment.reused', false);
+
+        $firstPaymentId = $firstResponse->json('payment.id');
+        $firstPaymentUrl = $firstResponse->json('payment.payment_url');
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", $payload)
+            ->assertOk()
+            ->assertJsonPath('message', 'Ödeme linki zaten var.')
+            ->assertJsonPath('payment.id', $firstPaymentId)
+            ->assertJsonPath('payment.payment_url', $firstPaymentUrl)
+            ->assertJsonPath('payment.reused', true);
+
+        $this->assertSame(1, TechnicalServiceMountPayment::query()->count());
+        $this->assertSame(1, $request->events()->where('event_type', 'mount_payment_link_created')->count());
     }
 
     public function test_payment_status_endpoint_returns_fresh_request_and_next_action(): void
@@ -781,7 +820,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'activeRouteQuote',
             'Usta ↔ müşteri düz çizgi mesafesi',
             'Google Routes tek yön mesafesi',
-            'Usta yol hakedişi olarak kaydedilecek tutar',
+            'Ödeme linki tutarı',
             'Ödeme linki oluştur',
             'WhatsApp ile gönder',
             'Teknik detay',

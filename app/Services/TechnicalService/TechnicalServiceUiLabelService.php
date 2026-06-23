@@ -55,6 +55,7 @@ class TechnicalServiceUiLabelService
             'manual_fee' => 'Manuel ücret girildi',
             'payment_paid',
             'mount_payment_paid' => 'Ödeme alındı',
+            'mount_payment_link_created' => 'Ödeme linki oluşturuldu',
             'customer_charge_paid' => 'Müşteri servis/parça ödemesi alındı',
             'payment_pending' => 'Ödeme bekleniyor',
             'payment_failed' => 'Ödeme başarısız',

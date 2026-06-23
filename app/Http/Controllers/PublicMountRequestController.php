@@ -594,7 +594,7 @@ class PublicMountRequestController extends Controller
                 ? $existing['all_invoice_serials']
                 : [];
 
-            if ($invoiceSerialsService->mode() !== 'fixture' || $existingRows !== []) {
+            if ($existingRows !== []) {
                 return $session;
             }
         }

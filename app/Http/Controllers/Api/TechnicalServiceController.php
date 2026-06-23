@@ -719,6 +719,67 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $source = $isCustomerCharge ? 'operation_customer_charge' : 'operation_extra_mount_fee';
+        $selectedSerialIds = $validSerialIds->sort()->values()->all();
+        $paymentPayload = [
+            'source' => $source,
+            'provider_environment' => $paymentProviderManager->environment(),
+            'technical_service_request_id' => $technicalServiceRequest->id,
+            'root_request_id' => $technicalServiceRequest->parent_request_id ?: $technicalServiceRequest->id,
+            'mrn' => $technicalServiceRequest->mrn,
+            'service_code' => $technicalServiceRequest->service_code,
+            'route_quote_id' => $validated['route_quote_id'] ?? null,
+            'technician_id' => isset($validated['technician_id']) ? (int) $validated['technician_id'] : null,
+            'selected_serial_ids' => $selectedSerialIds,
+            'reason' => $validated['reason'] ?? $purpose,
+            'purpose' => $purpose,
+            'charge_type' => $purpose,
+            'service_amount' => $serviceAmount,
+            'part_amount' => $partAmount,
+            'total_amount' => $totalAmount,
+            'message_template' => $validated['message_template'] ?? null,
+            'note' => $validated['note'] ?? null,
+        ];
+
+        if (! $isCustomerCharge) {
+            $existingPayment = TechnicalServiceMountPayment::query()
+                ->where('technical_service_mount_session_id', $session->id)
+                ->where('technical_service_request_id', $technicalServiceRequest->id)
+                ->where('status', TechnicalServiceMountPayment::STATUS_PENDING)
+                ->latest('id')
+                ->get()
+                ->first(function (TechnicalServiceMountPayment $candidate) use ($currency, $selectedSerialIds, $source, $totalAmount): bool {
+                    $payload = is_array($candidate->raw_payload) ? $candidate->raw_payload : [];
+                    $candidateSerialIds = collect($payload['selected_serial_ids'] ?? [])
+                        ->map(fn (mixed $id): int => (int) $id)
+                        ->filter(fn (int $id): bool => $id > 0)
+                        ->sort()
+                        ->values()
+                        ->all();
+
+                    return ($payload['source'] ?? null) === $source
+                        && strtoupper((string) $candidate->currency) === $currency
+                        && abs(((float) $candidate->amount) - $totalAmount) < 0.01
+                        && $candidateSerialIds === $selectedSerialIds;
+                });
+
+            if ($existingPayment instanceof TechnicalServiceMountPayment) {
+                return response()->json([
+                    'ok' => true,
+                    'message' => 'Ödeme linki zaten var.',
+                    'payment' => [
+                        'id' => $existingPayment->id,
+                        'status' => $existingPayment->status,
+                        'amount' => (float) $existingPayment->amount,
+                        'currency' => $existingPayment->currency,
+                        'payment_url' => $existingPayment->payment_url,
+                        'reused' => true,
+                    ],
+                    'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+                ]);
+            }
+        }
+
         $payment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
             'technical_service_request_id' => $technicalServiceRequest->id,
@@ -727,25 +788,7 @@ class TechnicalServiceController extends Controller
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'amount' => $totalAmount,
             'currency' => $currency,
-            'raw_payload' => [
-                'source' => $isCustomerCharge ? 'operation_customer_charge' : 'operation_extra_mount_fee',
-                'provider_environment' => $paymentProviderManager->environment(),
-                'technical_service_request_id' => $technicalServiceRequest->id,
-                'root_request_id' => $technicalServiceRequest->parent_request_id ?: $technicalServiceRequest->id,
-                'mrn' => $technicalServiceRequest->mrn,
-                'service_code' => $technicalServiceRequest->service_code,
-                'route_quote_id' => $validated['route_quote_id'] ?? null,
-                'technician_id' => isset($validated['technician_id']) ? (int) $validated['technician_id'] : null,
-                'selected_serial_ids' => $validSerialIds->all(),
-                'reason' => $validated['reason'] ?? $purpose,
-                'purpose' => $purpose,
-                'charge_type' => $purpose,
-                'service_amount' => $serviceAmount,
-                'part_amount' => $partAmount,
-                'total_amount' => $totalAmount,
-                'message_template' => $validated['message_template'] ?? null,
-                'note' => $validated['note'] ?? null,
-            ],
+            'raw_payload' => $paymentPayload,
         ]);
         try {
             $paymentProviderManager->createPayment($payment);
@@ -760,10 +803,10 @@ class TechnicalServiceController extends Controller
 
         if (! $isCustomerCharge) {
             $technicalServiceRequest->forceFill([
-            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
-            'mount_payment_label' => 'Ek ödeme bekleniyor',
-            'mount_payment_provider' => $payment->provider,
-            'mount_payment_reference' => $payment->provider_reference,
+                'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+                'mount_payment_label' => 'Ek ödeme bekleniyor',
+                'mount_payment_provider' => $payment->provider,
+                'mount_payment_reference' => $payment->provider_reference,
             ])->save();
         }
 
@@ -786,6 +829,25 @@ class TechnicalServiceController extends Controller
                 });
         }
 
+        $technicalServiceRequest->events()->create([
+            'event_type' => 'mount_payment_link_created',
+            'title' => 'Ödeme linki oluşturuldu',
+            'note' => $isCustomerCharge
+                ? 'Müşteri servis/parça ödemesi için ödeme linki oluşturuldu.'
+                : 'Ek montaj ödemesi için ödeme linki oluşturuldu.',
+            'from_status' => $technicalServiceRequest->workflow_status,
+            'to_status' => $technicalServiceRequest->workflow_status,
+            'author_user_id' => $request->user()?->id,
+            'metadata' => [
+                'payment_id' => $payment->id,
+                'provider' => $payment->provider,
+                'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'source' => $source,
+                'selected_serial_ids' => $selectedSerialIds,
+            ],
+        ]);
+
         $requestPayload = $this->workflowService->serialize($technicalServiceRequest->refresh(), true);
 
         return response()->json([
@@ -796,6 +858,7 @@ class TechnicalServiceController extends Controller
                 'amount' => (float) $payment->amount,
                 'currency' => $payment->currency,
                 'payment_url' => $payment->payment_url,
+                'reused' => false,
             ],
             'request' => $requestPayload,
         ], 201);

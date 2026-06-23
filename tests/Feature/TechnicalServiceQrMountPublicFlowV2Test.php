@@ -2,11 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\DataSource;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
+use App\Services\N8nPanelDataGateway;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
@@ -17,6 +19,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
+use RuntimeException;
 use Tests\TestCase;
 
 class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
@@ -1227,6 +1230,117 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertJsonPath('operation_only_count', 4)
             ->assertJsonPath('returned_count', 1)
             ->assertJsonPath('total_count', 6);
+    }
+
+    public function test_public_multi_product_check_refreshes_cached_empty_non_fixture_context(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+
+        config(['services.technical_service.invoice_serials_mode' => 'disabled']);
+        $this->postJson('/mount-request/'.$token.'/invoice-serials/check')
+            ->assertOk()
+            ->assertJsonPath('has_selectable_serials', false)
+            ->assertJsonCount(0, 'selectable_serials');
+
+        $this->fakeInvoiceSerialRows([
+            [
+                'Faturadaki Seri No' => 'TS7B-SIBLING-001',
+                'sorumluluk_kodu' => 'PERAKENDE SATIŞ',
+                'stok_adi' => 'TS7B Kardeş Kilit',
+            ],
+        ]);
+
+        $this->postJson('/mount-request/'.$token.'/invoice-serials/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('has_selectable_serials', true)
+            ->assertJsonCount(1, 'selectable_serials')
+            ->assertJsonPath('selectable_serials.0.serial_number', 'TS7B-SIBLING-001')
+            ->assertJsonPath('message', null)
+            ->assertJsonPath('total_count', 1);
+    }
+
+    public function test_gateway_mode_uses_real_mikro_invoice_serial_query_without_persisting_datasource_metadata(): void
+    {
+        config(['services.technical_service.invoice_serials_mode' => 'gateway']);
+
+        $queryKey = 'query'.'_template';
+        $allowedKey = 'allowed'.'_params';
+        $connectionKey = 'connection'.'_meta';
+
+        DataSource::query()->create([
+            'code' => 'technical_service_serial_check',
+            'name' => 'Seri kontrol',
+            'db_type' => 'n8n_json',
+            $queryKey => 'SELECT 1',
+            $allowedKey => ['serial_no'],
+            $connectionKey => [
+                'endpoint_url' => 'https://local-gateway.invalid',
+                'response_rows_key' => 'rows',
+            ],
+            'active' => true,
+        ]);
+
+        $this->app->instance(N8nPanelDataGateway::class, new class extends N8nPanelDataGateway
+        {
+            public function run(string $sourceCode, array $filters, ?DataSource $dataSource = null): array
+            {
+                $template = (string) $dataSource?->getAttribute('query'.'_template');
+                $allowed = $dataSource?->getAttribute('allowed'.'_params');
+
+                if ($sourceCode !== MikroInvoiceSerialsService::SOURCE_INVOICE_SERIALS) {
+                    throw new RuntimeException('Unexpected invoice serial source.');
+                }
+
+                if (($filters['serial_no'] ?? null) !== 'TS7B1-MAIN') {
+                    throw new RuntimeException('Serial parameter was not passed to gateway.');
+                }
+
+                foreach (['CIHAZ_HAREKETLERI', 'STOK_HAREKETLERI', 'sth_cari_srm_merkezi', 'sth_stok_srm_merkezi'] as $needle) {
+                    if (! str_contains($template, $needle)) {
+                        throw new RuntimeException('Missing Mikro invoice serial query fragment: '.$needle);
+                    }
+                }
+
+                if ($allowed !== ['serial_no', 'bypass_cache']) {
+                    throw new RuntimeException('Gateway params are not constrained.');
+                }
+
+                return [
+                    'rows' => [
+                        [
+                            'Faturadaki Seri No' => 'TS7B1-MAIN',
+                            'Stok Adı' => 'Ana Kilit',
+                            'Sorumluluk Kodu' => 'PERAKENDE SATIŞ',
+                        ],
+                        [
+                            'Faturadaki Seri No' => 'TS7B1-SIBLING',
+                            'Stok Adı' => 'Kardeş Kilit',
+                            'Sorumluluk Kodu' => 'PERAKENDE SATIŞ',
+                        ],
+                    ],
+                    'meta' => ['gateway' => 'fake'],
+                    'request' => ['serial_no' => $filters['serial_no']],
+                ];
+            }
+        });
+
+        $result = app(MikroInvoiceSerialsService::class)->forSerial('TS7B1-MAIN');
+
+        $this->assertSame('gateway', $result['meta']['status']);
+        $this->assertSame('technical_service_invoice_serials', $result['meta']['source']);
+        $this->assertSame(
+            ['TS7B1-MAIN', 'TS7B1-SIBLING'],
+            collect($result['all_invoice_serials'])->pluck('serial_number')->all(),
+        );
+        $this->assertSame(
+            ['TS7B1-MAIN', 'TS7B1-SIBLING'],
+            collect($result['selectable_customer_serials'])->pluck('serial_number')->all(),
+        );
+        $this->assertDatabaseMissing('panel.data_sources', [
+            'code' => 'technical_service_invoice_serials',
+        ]);
     }
 
     public function test_frontend_opens_multi_product_popup_when_selectable_payload_exists(): void
