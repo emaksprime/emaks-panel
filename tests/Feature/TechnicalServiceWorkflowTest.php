@@ -417,6 +417,149 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_srv_missing_photo_does_not_block_all_ops_actions(): void
+    {
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-MISSING-PHOTO-PARENT',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $srv = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-MISSING-PHOTO-CHILD',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_code' => 'SRV-MISSING-PHOTO-001',
+            'service_type' => 'Servis',
+            'workflow_status' => 'Eksik Bilgi / Fotoğraf Bekleyen',
+            'status' => 'Devam Ediyor',
+            'missing_info_reason' => 'Dış kapı fotoğrafı eksik.',
+            'document_status' => 'bekleniyor',
+            'photo_status' => 'bekleniyor',
+        ]);
+
+        $actions = app(TechnicalServiceWorkflowService::class)->allowedActionsFor($srv);
+
+        $this->assertArrayHasKey('mark_missing_info', $actions);
+        $this->assertArrayHasKey('missing_info_reviewed', $actions);
+        $this->assertArrayHasKey('customer_called', $actions);
+        $this->assertArrayHasKey('customer_unreachable', $actions);
+        $this->assertArrayHasKey('cancel', $actions);
+        $this->assertSame("SRV'yi İptal Et", $actions['cancel']['label']);
+    }
+
+    public function test_srv_missing_photo_can_be_marked_reviewed_by_ops(): void
+    {
+        $srv = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-MISSING-PHOTO-REVIEWED',
+            'service_code' => 'SRV-MISSING-PHOTO-002',
+            'service_type' => 'Servis',
+            'workflow_status' => 'Eksik Bilgi / Fotoğraf Bekleyen',
+            'status' => 'Devam Ediyor',
+            'missing_info_reason' => 'Fotoğraf yanlışlıkla eksik işaretlendi.',
+            'document_status' => 'bekleniyor',
+            'photo_status' => 'bekleniyor',
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->patchJson("/api/technical-service/requests/{$srv->id}/workflow", [
+                'action' => 'missing_info_reviewed',
+                'note' => 'Fotoğraf kontrol edildi.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Müşteri Aranacak');
+
+        $srv->refresh();
+        $this->assertNull($srv->missing_info_reason);
+        $this->assertSame('tamam', $srv->document_status);
+        $this->assertSame('tamam', $srv->photo_status);
+        $actions = app(TechnicalServiceWorkflowService::class)->allowedActionsFor($srv->fresh());
+        $this->assertArrayHasKey('cancel', $actions);
+        $this->assertSame("SRV'yi İptal Et", $actions['cancel']['label']);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $srv->id,
+            'event_type' => 'missing_info_reviewed',
+            'title' => 'Eksik fotoğraf kontrol edildi',
+        ]);
+    }
+
+    public function test_ops_can_cancel_active_srv_child_with_reason_without_cancelling_root_mrn(): void
+    {
+        $parent = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-CANCEL-PARENT',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+        ]);
+        $srv = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-CANCEL-CHILD',
+            'parent_request_id' => $parent->id,
+            'root_mrn' => $parent->mrn,
+            'service_code' => 'SRV-CANCEL-001',
+            'service_type' => 'Servis',
+            'workflow_status' => 'Planlı',
+            'status' => 'Randevulu',
+            'technician_approval_status' => 'onayladı',
+        ]);
+        $offer = TechnicalServiceAssignmentOffer::query()->create([
+            'technical_service_request_id' => $srv->id,
+            'technical_service_technician_id' => null,
+            'labor_amount' => 3000,
+            'route_fee_amount' => 500,
+            'total_amount' => 3500,
+            'currency' => 'TRY',
+            'status' => TechnicalServiceAssignmentOffer::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$srv->id}/status", [
+                'status' => 'İptal',
+                'note' => 'SRV yanlışlıkla açıldı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.operational_state.is_cancellation_review', true);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$srv->id}/status", [
+                'status' => 'İptal',
+                'note' => 'SRV iptal onaylandı.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'İptal');
+
+        $this->assertSame('Planlı', $parent->fresh()->workflow_status);
+        $this->assertNull($parent->fresh()->cancelled_at);
+        $this->assertNotNull($srv->fresh()->cancelled_at);
+        $this->assertSame(TechnicalServiceAssignmentOffer::STATUS_CANCELLED, $offer->fresh()->status);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $srv->id,
+            'event_type' => 'cancellation_confirmed',
+            'title' => 'İş iptal edildi',
+        ]);
+    }
+
+    public function test_completed_srv_cancel_is_blocked_with_clear_reason(): void
+    {
+        $srv = $this->technicalServiceRequest([
+            'mrn' => 'MRN-SRV-COMPLETED-CANCEL-BLOCKED',
+            'service_code' => 'SRV-CANCEL-002',
+            'service_type' => 'Servis',
+            'workflow_status' => 'Tamamlandı',
+            'status' => 'Tamamlandı',
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$srv->id}/status", [
+                'status' => 'İptal',
+                'note' => 'Yanlışlıkla iptal denemesi.',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('status');
+
+        $this->assertSame('Tamamlandı', $srv->fresh()->workflow_status);
+        $this->assertNull($srv->fresh()->cancelled_at);
+    }
+
     public function test_confirming_cancel_review_finalizes_cancel_and_cancels_assignment_offer(): void
     {
         $request = $this->technicalServiceRequest([

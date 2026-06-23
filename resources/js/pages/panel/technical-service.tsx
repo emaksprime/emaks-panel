@@ -363,6 +363,7 @@ const CLOSURE_REASONS = [
   'Müşterinin kapısı uygun değildi',
   'Müşteri siparişi iptal etti',
   'Müşteri randevuya gelmedi / evde yoktu',
+  'SRV yanlışlıkla açıldı',
   'Ürün / seri numarası uyumsuz',
   'Servis ücreti kabul edilmedi',
   'Diğer',
@@ -2709,10 +2710,17 @@ export function TechnicalServiceOperationCenter() {
       'customer_rejected',
       'wrong_number',
       'customer_requested_cancel',
+      'mark_missing_info',
     ].includes(action)) {
       setContactAction(action)
       setContactDialogOpen(true)
       setContactError(null)
+
+      return
+    }
+
+    if (action === 'cancel') {
+      openCompleteDialog()
 
       return
     }
@@ -2838,6 +2846,25 @@ export function TechnicalServiceOperationCenter() {
 
       if (contactAction === 'customer_requested_cancel') {
         payload.cancellation_reason = contactCancellationReason || null
+      }
+
+      if (contactAction === 'mark_missing_info') {
+        await apiRequest(`/api/technical-service/requests/${selectedId}/workflow`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            action: contactAction,
+            missing_info_reason: contactNote || null,
+            note: contactNote || null,
+          }),
+        })
+
+        setContactDialogOpen(false)
+        handleContactReset()
+        await loadRequests()
+        await loadSummary()
+        await loadRequestDetail(selectedId)
+
+        return
       }
 
       await apiRequest(`/api/technical-service/requests/${selectedId}/contact-log`, {
@@ -4933,7 +4960,17 @@ export function TechnicalServiceOperationCenter() {
           }}>
             <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>{contactAction ? contactAction : 'Müşteri İletişimi'}</DialogTitle>
+                <DialogTitle>{({
+                  customer_called: 'Müşteri Arandı',
+                  customer_unreachable: 'Ulaşılamadı',
+                  customer_callback_scheduled: 'Tekrar Arama Planla',
+                  customer_confirmation_pending: 'Onay Bekliyor',
+                  customer_confirmed: 'Müşteri Onayladı',
+                  customer_rejected: 'Müşteri Reddetti',
+                  wrong_number: 'Yanlış Numara',
+                  customer_requested_cancel: 'İptal Talebi',
+                  mark_missing_info: 'Eksik foto notunu düzelt',
+                } as Record<string, string>)[contactAction ?? ''] ?? 'Müşteri İletişimi'}</DialogTitle>
                 <DialogDescription>
                   {modalDisplayMrn ? `${modalDisplayMrn} için müşteri iletişimi kaydı oluşturun.` : 'Seçili talep yok.'}
                 </DialogDescription>

@@ -921,7 +921,41 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             ]);
         }
 
-        return $slots[$index];
+        return $this->normalizeAppointmentSlot($slots[$index]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $slot
+     * @return array<string, mixed>
+     */
+    private function normalizeAppointmentSlot(array $slot): array
+    {
+        $slotCode = (string) ($slot['slot'] ?? $slot['proposed_slot'] ?? '');
+        $range = $this->timeRangeFromSlotCode($slotCode);
+
+        $slot['date'] = $slot['date'] ?? $slot['proposed_date'] ?? null;
+        $slot['start_time'] = $slot['start_time'] ?? $slot['proposed_time_start'] ?? ($range['start_time'] ?? $this->legacySlotStartTime($slotCode));
+        $slot['end_time'] = $slot['end_time'] ?? $slot['proposed_time_end'] ?? ($range['end_time'] ?? $this->legacySlotEndTime($slotCode));
+        $slot['label'] = $slot['label'] ?? $slot['slot_label'] ?? $slot['slot'] ?? null;
+
+        return $slot;
+    }
+
+    /**
+     * @return array{start_time:string,end_time:string}|null
+     */
+    private function timeRangeFromSlotCode(string $slot): ?array
+    {
+        $compact = str_replace([' ', '–', '—'], ['', '-', '-'], trim($slot));
+
+        if (preg_match('/^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/', $compact, $matches) !== 1) {
+            return null;
+        }
+
+        return [
+            'start_time' => "{$matches[1]}:{$matches[2]}",
+            'end_time' => "{$matches[3]}:{$matches[4]}",
+        ];
     }
 
     private function legacySlotStartTime(string $slot): string

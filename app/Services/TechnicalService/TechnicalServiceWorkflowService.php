@@ -142,6 +142,7 @@ class TechnicalServiceWorkflowService
     {
         return [
             'mark_missing_info' => 'Eksik Bilgi / Fotoğraf',
+            'missing_info_reviewed' => 'Eksik fotoğraf kontrol edildi',
             'customer_called' => 'Müşteri Arandı',
             'customer_unreachable' => 'Ulaşılamadı',
             'customer_callback_scheduled' => 'Tekrar Arama Planla',
@@ -184,25 +185,25 @@ class TechnicalServiceWorkflowService
     {
         return [
             'Yeni Talep' => ['Eksik Bilgi / Fotoğraf Bekleyen', 'Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Usta Onayı Bekleyen'],
-            'Eksik Bilgi / Fotoğraf Bekleyen' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen'],
-            'Müşteri Aranacak' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede'],
-            'Müşteriye Ulaşılamadı' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede'],
-            'Müşteri Onayı Bekleyen' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayladı', 'Usta Onayı Bekleyen', 'Beklemede'],
-            'Müşteri Onayladı' => ['Randevu Planlandı', 'Beklemede'],
-            'Randevu Planlandı' => ['Yeni Talep', 'Usta Ataması Bekleyen', 'Usta Onayı Bekleyen', 'Beklemede', 'Tamamlandı'],
-            'Usta Ataması Bekleyen' => ['Usta Onayı Bekleyen', 'Usta Tarih Revize Talebi', 'Beklemede'],
-            'Usta Onayı Bekleyen' => ['Planlı', 'Usta Tarih Revize Talebi', 'Beklemede'],
-            'Usta Tarih Revize Talebi' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Randevu Planlandı', 'Usta Onayı Bekleyen'],
+            'Eksik Bilgi / Fotoğraf Bekleyen' => ['Eksik Bilgi / Fotoğraf Bekleyen', 'Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'İptal'],
+            'Müşteri Aranacak' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede', 'İptal'],
+            'Müşteriye Ulaşılamadı' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Beklemede', 'İptal'],
+            'Müşteri Onayı Bekleyen' => ['Müşteriye Ulaşılamadı', 'Müşteri Onayladı', 'Usta Onayı Bekleyen', 'Beklemede', 'İptal'],
+            'Müşteri Onayladı' => ['Randevu Planlandı', 'Beklemede', 'İptal'],
+            'Randevu Planlandı' => ['Yeni Talep', 'Usta Ataması Bekleyen', 'Usta Onayı Bekleyen', 'Beklemede', 'Tamamlandı', 'İptal'],
+            'Usta Ataması Bekleyen' => ['Usta Onayı Bekleyen', 'Usta Tarih Revize Talebi', 'Beklemede', 'İptal'],
+            'Usta Onayı Bekleyen' => ['Planlı', 'Usta Tarih Revize Talebi', 'Beklemede', 'İptal'],
+            'Usta Tarih Revize Talebi' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Müşteri Onayladı', 'Randevu Planlandı', 'Usta Onayı Bekleyen', 'İptal'],
             'Planlı' => ['Usta Onayı Bekleyen', 'Yolda', 'Sahada', 'Beklemede', 'İptal'],
             'Yolda' => ['Sahada', 'Beklemede', 'İptal'],
-            'Sahada' => ['Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı', 'Parça Bekleniyor', 'Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil'],
+            'Sahada' => ['Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı', 'Parça Bekleniyor', 'Beklemede', 'Müşteri Yerinde Yok', 'Montaj Yeri Hazır Değil', 'İptal'],
             'Beklemede' => ['Müşteri Aranacak', 'Müşteri Onayı Bekleyen', 'Randevu Planlandı', 'Usta Ataması Bekleyen', 'Parça Bekleniyor', 'İptal'],
             'Müşteri Yerinde Yok' => ['Randevu Planlandı', 'Müşteri Aranacak', 'İptal'],
             'Montaj Yeri Hazır Değil' => ['Randevu Planlandı', 'Beklemede', 'İptal'],
-            'Parça Bekleniyor' => ['Randevu Planlandı', 'Belge / Fotoğraf Bekleyen', 'Beklemede'],
-            'Belge / Fotoğraf Bekleyen' => ['Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı'],
-            'Müşteri Kapanış Onayı Bekleyen' => ['Tamamlandı', 'Belge / Fotoğraf Bekleyen'],
-            'Son Kontrol' => ['Tamamlandı', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen'],
+            'Parça Bekleniyor' => ['Randevu Planlandı', 'Belge / Fotoğraf Bekleyen', 'Beklemede', 'İptal'],
+            'Belge / Fotoğraf Bekleyen' => ['Müşteri Kapanış Onayı Bekleyen', 'Tamamlandı', 'Beklemede', 'İptal'],
+            'Müşteri Kapanış Onayı Bekleyen' => ['Tamamlandı', 'Belge / Fotoğraf Bekleyen', 'İptal'],
+            'Son Kontrol' => ['Tamamlandı', 'Belge / Fotoğraf Bekleyen', 'Müşteri Kapanış Onayı Bekleyen', 'İptal'],
             'Tamamlandı' => ['Yeni Talep'],
             'İptal' => ['Yeni Talep'],
         ];
@@ -223,8 +224,11 @@ class TechnicalServiceWorkflowService
                 'customer_unreachable' => 'Müşteriye Ulaşılamadı',
             ],
             'Eksik Bilgi / Fotoğraf Bekleyen' => [
+                'mark_missing_info' => 'Eksik Bilgi / Fotoğraf Bekleyen',
+                'missing_info_reviewed' => 'Müşteri Aranacak',
                 'customer_called' => 'Müşteri Onayı Bekleyen',
                 'customer_unreachable' => 'Müşteriye Ulaşılamadı',
+                'cancel' => 'İptal',
             ],
             'Müşteri Aranacak' => [
                 'customer_called' => 'Müşteri Onayı Bekleyen',
@@ -269,6 +273,11 @@ class TechnicalServiceWorkflowService
             'Usta Onayı Bekleyen' => [
                 'technician_revision_requested' => 'Usta Tarih Revize Talebi',
             ],
+            'Usta Tarih Revize Talebi' => [
+                'schedule_planned' => 'Randevu Planlandı',
+                'assign_technician' => 'Usta Onayı Bekleyen',
+                'cancel' => 'İptal',
+            ],
             'Planlı' => [
                 'on_the_way' => 'Yolda',
                 'on_site' => 'Sahada',
@@ -299,6 +308,7 @@ class TechnicalServiceWorkflowService
                 'field_marked_incomplete' => 'Beklemede',
                 'second_visit_required' => 'Beklemede',
                 'field_completed' => 'Tamamlandı',
+                'cancel' => 'İptal',
             ],
             'Beklemede' => [
                 'customer_called' => 'Müşteri Onayı Bekleyen',
@@ -321,29 +331,48 @@ class TechnicalServiceWorkflowService
                 'schedule_planned' => 'Randevu Planlandı',
                 'document_pending' => 'Belge / Fotoğraf Bekleyen',
                 'photos_updated' => 'Parça Bekleniyor',
+                'cancel' => 'İptal',
             ],
             'Belge / Fotoğraf Bekleyen' => [
                 'closure_pending' => 'Müşteri Kapanış Onayı Bekleyen',
                 'complete' => 'Tamamlandı',
                 'photos_updated' => 'Belge / Fotoğraf Bekleyen',
                 'field_completed' => 'Tamamlandı',
+                'cancel' => 'İptal',
             ],
             'Müşteri Kapanış Onayı Bekleyen' => [
                 'document_pending' => 'Belge / Fotoğraf Bekleyen',
                 'complete' => 'Tamamlandı',
                 'customer_closure_approved' => 'Müşteri Kapanış Onayı Bekleyen',
                 'field_completed' => 'Tamamlandı',
+                'cancel' => 'İptal',
             ],
         ];
 
         foreach ($map[$status] ?? [] as $action => $target) {
             $actions[$action] = [
-                'label' => self::actionLabels()[$action] ?? $action,
+                'label' => $this->actionLabelForRequest($request, $action),
                 'target' => $target,
             ];
         }
 
+        if ($this->isServiceVisitRequest($request) && ! in_array($status, self::TERMINAL_STATUSES, true)) {
+            $actions['cancel'] = [
+                'label' => $this->actionLabelForRequest($request, 'cancel'),
+                'target' => 'İptal',
+            ];
+        }
+
         return $actions;
+    }
+
+    private function actionLabelForRequest(TechnicalServiceRequest $request, string $action): string
+    {
+        if ($action === 'cancel' && $this->isServiceVisitRequest($request)) {
+            return "SRV'yi İptal Et";
+        }
+
+        return self::actionLabels()[$action] ?? $action;
     }
 
     public function currentWorkflowStatus(TechnicalServiceRequest $request): string
@@ -977,6 +1006,15 @@ class TechnicalServiceWorkflowService
                 }
                 if (isset($payload['document_status'])) {
                     $request->document_status = (string) $payload['document_status'];
+                }
+                if (
+                    $current === 'Belge / Fotoğraf Bekleyen'
+                    && $this->photoStatusForCounts($request)
+                    && in_array($request->document_status, ['tamamlandı', 'tamam', 'gerekli_degil'], true)
+                ) {
+                    $request->workflow_status = 'Müşteri Kapanış Onayı Bekleyen';
+                    $request->customer_closure_approval_status = $request->customer_closure_approval_status ?? 'bekliyor';
+                    $request->missing_info_reason = null;
                 }
                 $actionType = 'photos_updated';
                 break;
@@ -1691,6 +1729,15 @@ class TechnicalServiceWorkflowService
                 case 'customer_requested_cancel':
                     $request->customer_contact_status = 'iptal_talebi';
                     $request->cancellation_reason = $payload['cancellation_reason'] ?? $payload['note'] ?? $request->cancellation_reason;
+                    break;
+                case 'missing_info_reviewed':
+                    $request->missing_info_reason = null;
+                    $request->document_status = in_array($request->document_status, ['bekleniyor', 'eksik', null], true)
+                        ? 'tamam'
+                        : $request->document_status;
+                    $request->photo_status = in_array($request->photo_status, ['bekleniyor', 'eksik', null], true)
+                        ? 'tamam'
+                        : $request->photo_status;
                     break;
             }
         }

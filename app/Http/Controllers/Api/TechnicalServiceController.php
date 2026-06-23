@@ -268,6 +268,12 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        if ($isCancelRequest && ! $isCancellationReview && $this->isCompletedServiceVisitRequest($technicalServiceRequest, $previousLegacyStatus)) {
+            throw ValidationException::withMessages([
+                'status' => 'Tamamlanmış SRV iptali için admin düzeltme akışı kullanılmalı.',
+            ]);
+        }
+
         if ($isCancelRequest && ! $isCancellationReview && ! $this->isCancelledStatusValue($previousLegacyStatus)) {
             $technicalServiceRequest = $this->workflowService->startCancellationReview(
                 $technicalServiceRequest,
@@ -369,6 +375,19 @@ class TechnicalServiceController extends Controller
             || $this->isCancelledStatusValue($request->workflow_status)
             || $this->isCompletedStatusValue($request->status)
             || $this->isCompletedStatusValue($request->workflow_status);
+    }
+
+    private function isCompletedServiceVisitRequest(TechnicalServiceRequest $request, ?string $previousLegacyStatus = null): bool
+    {
+        $isServiceVisit = $request->parent_request_id !== null || filled($request->service_code);
+
+        return $isServiceVisit
+            && (
+                $request->completed_at !== null
+                || $this->isCompletedStatusValue($previousLegacyStatus)
+                || $this->isCompletedStatusValue($request->status)
+                || $this->isCompletedStatusValue($request->workflow_status)
+            );
     }
 
     private function isCompletedStatusValue(?string $status): bool

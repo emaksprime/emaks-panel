@@ -8394,6 +8394,46 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNotContains('Randevu önerisi bekliyor', $labels);
     }
 
+    public function test_ops_can_approve_revision_card_slot_payload_without_start_time(): void
+    {
+        $scope = $this->partnerPortalScopeFixture();
+        $scope['jobA']->forceFill([
+            'workflow_status' => 'Usta Onayı Bekleyen',
+            'status' => 'Atandı',
+        ])->save();
+        $admin = $this->userWithRole('admin', true);
+        $proposalDate = now()->addDay()->toDateString();
+        $action = TechnicalServicePartnerJobAction::query()->create([
+            'technical_service_request_id' => $scope['jobA']->id,
+            'partner_id' => $scope['partnerA']->id,
+            'user_id' => $scope['userA']->id,
+            'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
+            'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
+            'payload' => [
+                'slots' => [
+                    ['date' => $proposalDate, 'slot' => '15:00-16:00'],
+                ],
+            ],
+        ]);
+
+        $this->actingAs($admin)
+            ->postJson("/api/technical-service/requests/{$scope['jobA']->id}/partner-appointment-proposals/{$action->id}/approve", [
+                'note' => 'Revize randevu onaylandı.',
+                'selected_slot_index' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_APPLIED)
+            ->assertJsonPath('request.workflow_status', 'Planlı')
+            ->assertJsonPath('request.scheduled_time', '15:00');
+
+        $this->assertSame($proposalDate, $scope['jobA']->fresh()->scheduled_date?->toDateString());
+        $this->assertSame('15:00', $scope['jobA']->fresh()->scheduled_time);
+        $this->assertDatabaseHas('technical_service_partner_job_actions', [
+            'id' => $action->id,
+            'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
+        ]);
+    }
+
     public function test_action_after_transition_sorts_card_near_top(): void
     {
         (new B2BPartnerPermissionSeeder)->run();

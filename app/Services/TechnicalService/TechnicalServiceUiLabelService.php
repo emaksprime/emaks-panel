@@ -80,6 +80,7 @@ class TechnicalServiceUiLabelService
             'technician_earning_message_sent' => 'Hakediş bilgisi gönderildi',
             'customer_called' => 'Müşteri arandı',
             'contact_customer_called' => 'Müşteri arandı',
+            'missing_info_reviewed' => 'Eksik fotoğraf kontrol edildi',
             'technical_support' => 'Teknik destek istendi',
             'partner_portal_support_requested' => 'Ek talep oluşturuldu',
             'second_visit_required' => 'Tekrar randevu gerekli',

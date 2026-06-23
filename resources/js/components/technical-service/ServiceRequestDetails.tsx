@@ -3560,7 +3560,7 @@ export function ServiceRequestDetails({
       return
     }
 
-    if (action === 'complete') {
+    if (action === 'complete' || action === 'cancel') {
       onComplete?.()
 
       return
@@ -4621,7 +4621,7 @@ export function ServiceRequestDetails({
                             const date = String(slot.date ?? slot.proposed_date ?? '')
                             const start = String(slot.start_time ?? '')
                             const end = String(slot.end_time ?? '')
-                            const legacyLabel = String(slot.slot_label ?? '')
+                            const legacyLabel = String(slot.slot ?? slot.slot_label ?? '')
                             const label = [date, start && end ? `${start} - ${end}` : legacyLabel].filter(Boolean).join(' · ')
 
                             return (
