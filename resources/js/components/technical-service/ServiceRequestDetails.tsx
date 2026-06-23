@@ -1063,6 +1063,49 @@ const filterInvoiceSerials = (
     : items
 }
 
+const invoiceSerialIdentity = (serial: ServiceRequestInvoiceSerial, index: number): string => {
+  if (serial.id !== null && serial.id !== undefined) {
+    return `id:${String(serial.id)}`
+  }
+
+  const normalizedSerial = String(serial.normalized_serial ?? serial.serial_number ?? '').trim()
+  const invoiceNo = String(serial.invoice_display_no ?? `${serial.invoice_series ?? ''}-${serial.invoice_number ?? ''}`).trim()
+
+  return normalizedSerial !== '' || invoiceNo !== '' ? `${normalizedSerial}|${invoiceNo}` : `row:${index}`
+}
+
+const uniqueInvoiceSerialRows = (rows: ServiceRequestInvoiceSerial[]): ServiceRequestInvoiceSerial[] => {
+  const seen = new Set<string>()
+
+  return rows.filter((serial, index) => {
+    const key = invoiceSerialIdentity(serial, index)
+
+    if (seen.has(key)) {
+      return false
+    }
+
+    seen.add(key)
+
+    return true
+  })
+}
+
+const invoiceSerialIsSelected = (serial: ServiceRequestInvoiceSerial): boolean => Boolean(serial.customer_selected || serial.operation_added)
+
+const invoiceSerialIsReturned = (serial: ServiceRequestInvoiceSerial): boolean => Boolean(serial.is_returned)
+
+const invoiceSerialIsOther = (serial: ServiceRequestInvoiceSerial): boolean => (
+  !invoiceSerialIsSelected(serial)
+  && !invoiceSerialIsReturned(serial)
+  && serial.customer_visible === true
+)
+
+const invoiceSerialIsHidden = (serial: ServiceRequestInvoiceSerial): boolean => (
+  !invoiceSerialIsSelected(serial)
+  && !invoiceSerialIsReturned(serial)
+  && serial.customer_visible !== true
+)
+
 const InvoiceSerialSection = ({
   title,
   items,
@@ -2254,17 +2297,35 @@ export function ServiceRequestDetails({
   const shouldRenderInvoiceSerialsPanel = Boolean(invoiceSerials?.check_error || invoiceSerialTotalCount > 0)
   const normalizedInvoiceSerialSearch = invoiceSerialSearch.trim().toLocaleLowerCase('tr-TR')
   const invoiceSerialSearchActive = normalizedInvoiceSerialSearch.length > 0
-  const filteredRequestedInvoiceSerials = filterInvoiceSerials(invoiceSerials?.selected_serials, normalizedInvoiceSerialSearch)
-  const filteredOtherInvoiceSerials = filterInvoiceSerials(invoiceSerials?.other_serials, normalizedInvoiceSerialSearch)
-  const filteredHiddenInvoiceSerials = filterInvoiceSerials(invoiceSerials?.hidden_serials, normalizedInvoiceSerialSearch)
-  const filteredReturnedInvoiceSerials = filterInvoiceSerials(invoiceSerials?.returned_serials, normalizedInvoiceSerialSearch)
-  const hasAnyFilteredInvoiceSerial = [
-    filteredRequestedInvoiceSerials,
-    filteredOtherInvoiceSerials,
-    filteredHiddenInvoiceSerials,
-    filteredReturnedInvoiceSerials,
-  ].some((items) => items.length > 0)
-  const showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && !hasAnyFilteredInvoiceSerial
+  const canonicalInvoiceSerialRows = uniqueInvoiceSerialRows(invoiceSerials?.all_invoice_serials ?? [])
+  const hasCanonicalInvoiceSerialRows = canonicalInvoiceSerialRows.length > 0
+  const sourceRequestedInvoiceSerials = hasCanonicalInvoiceSerialRows
+    ? canonicalInvoiceSerialRows.filter(invoiceSerialIsSelected)
+    : invoiceSerials?.selected_serials ?? []
+  const sourceOtherInvoiceSerials = hasCanonicalInvoiceSerialRows
+    ? canonicalInvoiceSerialRows.filter(invoiceSerialIsOther)
+    : invoiceSerials?.other_serials ?? []
+  const sourceHiddenInvoiceSerials = hasCanonicalInvoiceSerialRows
+    ? canonicalInvoiceSerialRows.filter(invoiceSerialIsHidden)
+    : invoiceSerials?.hidden_serials ?? []
+  const sourceReturnedInvoiceSerials = hasCanonicalInvoiceSerialRows
+    ? canonicalInvoiceSerialRows.filter(invoiceSerialIsReturned)
+    : invoiceSerials?.returned_serials ?? []
+  const allSearchableInvoiceSerials = hasCanonicalInvoiceSerialRows
+    ? canonicalInvoiceSerialRows
+    : uniqueInvoiceSerialRows([
+      ...sourceRequestedInvoiceSerials,
+      ...sourceOtherInvoiceSerials,
+      ...sourceHiddenInvoiceSerials,
+      ...sourceReturnedInvoiceSerials,
+    ])
+  const filteredRequestedInvoiceSerials = filterInvoiceSerials(sourceRequestedInvoiceSerials, normalizedInvoiceSerialSearch)
+  const filteredOtherInvoiceSerials = filterInvoiceSerials(sourceOtherInvoiceSerials, normalizedInvoiceSerialSearch)
+  const filteredHiddenInvoiceSerials = filterInvoiceSerials(sourceHiddenInvoiceSerials, normalizedInvoiceSerialSearch)
+  const filteredReturnedInvoiceSerials = filterInvoiceSerials(sourceReturnedInvoiceSerials, normalizedInvoiceSerialSearch)
+  const filteredAllSearchableInvoiceSerials = filterInvoiceSerials(allSearchableInvoiceSerials, normalizedInvoiceSerialSearch)
+  const hasAnyFilteredInvoiceSerial = filteredAllSearchableInvoiceSerials.length > 0
+  const showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && allSearchableInvoiceSerials.length > 0 && !hasAnyFilteredInvoiceSerial
   const shouldRenderHistoryPanel = Boolean((request.auditLogs ?? []).length > 0 || events.length > 0)
   const shouldShowPartCreateAction = canCreatePartRequest && (partRequests.length > 0 || servicePartChargeSectionVisible || activePartRequests.length > 0)
   const shouldShowFinalReasonMetrics = Boolean(request.pendingReason || request.cancellationReason)
@@ -5401,7 +5462,7 @@ export function ServiceRequestDetails({
           <InvoiceSerialSection title="Aynı faturadaki diğer seriler" items={filteredOtherInvoiceSerials} totalCount={invoiceSerials?.other_serial_count} searchActive={invoiceSerialSearchActive} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
           <InvoiceSerialSection title="Müşteriye gösterilmeyen seriler" items={filteredHiddenInvoiceSerials} totalCount={invoiceSerials?.hidden_serial_count} searchActive={invoiceSerialSearchActive} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
           <InvoiceSerialSection title="İade gelen seriler" items={filteredReturnedInvoiceSerials} totalCount={invoiceSerials?.returned_serial_count} searchActive={invoiceSerialSearchActive} onAdd={onInvoiceSerialAdd} onRemove={onInvoiceSerialRemove} actionInFlight={invoiceSerialActionInFlight} />
-          {!(invoiceSerials?.all_invoice_serials?.length) && !invoiceSerials?.check_error ? (
+          {allSearchableInvoiceSerials.length === 0 && !invoiceSerials?.check_error ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
               Fatura seri hareketi henüz kaydedilmedi.
             </div>

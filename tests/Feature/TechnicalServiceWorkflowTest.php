@@ -5059,10 +5059,14 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertIsString($detailsSource);
         $this->assertStringContainsString('filterInvoiceSerials', $detailsSource);
         $this->assertStringContainsString('invoiceSerialMatchesSearch', $detailsSource);
+        $this->assertStringContainsString('canonicalInvoiceSerialRows', $detailsSource);
+        $this->assertStringContainsString('allSearchableInvoiceSerials', $detailsSource);
+        $this->assertStringContainsString('sourceHiddenInvoiceSerials = hasCanonicalInvoiceSerialRows', $detailsSource);
         $this->assertStringContainsString('filteredRequestedInvoiceSerials', $detailsSource);
         $this->assertStringContainsString('filteredHiddenInvoiceSerials', $detailsSource);
+        $this->assertStringContainsString('filteredAllSearchableInvoiceSerials', $detailsSource);
         $this->assertStringContainsString('hasAnyFilteredInvoiceSerial', $detailsSource);
-        $this->assertStringContainsString('showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && !hasAnyFilteredInvoiceSerial', $detailsSource);
+        $this->assertStringContainsString('showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && allSearchableInvoiceSerials.length > 0 && !hasAnyFilteredInvoiceSerial', $detailsSource);
         $this->assertStringContainsString('Seri, ürün, model, marka veya fatura ara', $detailsSource);
         $this->assertStringContainsString('Bu aramada seri bulunamadı. Serileri kontrol et ile Mikro sorgusunu yenileyin.', $detailsSource);
         $this->assertStringNotContainsString('Aramaya uygun seri bulunamadı.', $detailsSource);
