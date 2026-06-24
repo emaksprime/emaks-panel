@@ -17,7 +17,7 @@ class PublicMountPaymentController extends Controller
     {
         $payment = $this->paymentForToken($token);
         $serviceRequest = $payment->technicalServiceRequest;
-        $mountFormUrl = $this->mountFormUrl($payment);
+        $mountFormUrl = $this->mountFormUrl($request, $payment);
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
 
         return Inertia::render('public/mount-payment', [
@@ -37,7 +37,7 @@ class PublicMountPaymentController extends Controller
                 'payment_url' => $payment->payment_url,
                 'mount_form_url' => $mountFormUrl,
                 'fake_approve_url' => $this->canShowFakeApprove($payment)
-                    ? route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference])
+                    ? route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference], false)
                     : null,
             ],
             'requestSummary' => [
@@ -52,7 +52,7 @@ class PublicMountPaymentController extends Controller
         ]);
     }
 
-    public function approve(string $token, TechnicalServicePaymentSettlementService $settlementService): RedirectResponse
+    public function approve(Request $request, string $token, TechnicalServicePaymentSettlementService $settlementService): RedirectResponse
     {
         $payment = $this->paymentForToken($token);
         abort_unless($this->canShowFakeApprove($payment), 404);
@@ -62,11 +62,11 @@ class PublicMountPaymentController extends Controller
         ]);
 
         $freshPayment = $payment->fresh(['session.qrLink']);
-        $mountFormUrl = $freshPayment instanceof TechnicalServiceMountPayment
-            ? $this->mountFormUrl($freshPayment)
+        $mountFormPath = $freshPayment instanceof TechnicalServiceMountPayment
+            ? $this->mountFormPath($freshPayment)
             : null;
-        if ($mountFormUrl !== null) {
-            return redirect($mountFormUrl);
+        if ($mountFormPath !== null) {
+            return new RedirectResponse($mountFormPath);
         }
 
         return redirect()->route('mount-payment.show', ['token' => $token]);
@@ -86,7 +86,14 @@ class PublicMountPaymentController extends Controller
             && $this->fakeApproveEnabled();
     }
 
-    private function mountFormUrl(TechnicalServiceMountPayment $payment): ?string
+    private function mountFormUrl(Request $request, TechnicalServiceMountPayment $payment): ?string
+    {
+        $path = $this->mountFormPath($payment);
+
+        return $path === null ? null : $request->getUriForPath($path);
+    }
+
+    private function mountFormPath(TechnicalServiceMountPayment $payment): ?string
     {
         if ($payment->technical_service_request_id !== null) {
             return null;
@@ -103,7 +110,7 @@ class PublicMountPaymentController extends Controller
             return null;
         }
 
-        return route('mount-request.show', ['token' => $qrLink->publicToken()]);
+        return route('mount-request.form', ['token' => $qrLink->publicToken()], false);
     }
 
     private function fakeApproveEnabled(): bool

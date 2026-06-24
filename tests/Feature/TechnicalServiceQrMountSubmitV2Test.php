@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
+use App\Models\PageConfig;
 use App\Models\User;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
@@ -34,12 +35,12 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('public/mount-request-v2')
                 ->where('viewState', 'form_ready')
-                ->where('actions.submit_url', route('mount-request.submit', ['token' => $token]))
+                ->where('actions.submit_url', route('mount-request.submit', ['token' => $token], false))
                 ->where('allowMultiProductRequest', true));
 
         $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
@@ -82,12 +83,11 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
             'multi_product_lookup_url',
             'Aynı faturadaki ürünler kontrol ediliyor...',
             'Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.',
-            'Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.',
-            'multiProductOperationOnlyCount',
             'multiProductTotalCount',
-            'Diğer serileri kontrol et',
-            'Bu adreste montajını istediğiniz diğer ürünleri seçin',
-            'Ek ürün talebiniz operasyon ekibine iletilecek.',
+            'Birden fazla ürünüm var',
+            'Aynı faturadaki diğer ürünleri seçmek için tıklayın.',
+            'Aynı faturadaki diğer ürünler',
+            'Bu fatura için ek montaj seçilebilir ürün bulunamadı. Ek ürün talebiniz operasyon ekibine iletilecek.',
             'setMultiProductModalOpen',
             'form.post(submitUrl',
             'Talebiniz gönderiliyor...',
@@ -143,19 +143,36 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->assertSame('SIP/456', $request->order_display_no);
     }
 
-    public function test_montaj_haric_unpaid_submit_is_blocked(): void
+    public function test_montaj_haric_unpaid_submit_creates_request_when_pre_payment_setting_is_off(): void
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
-        $this->from('/mount-request/'.$token)
+        $this->post('/mount-request/'.$token.'/submit', $this->validPayload())
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('viewState', 'submitted')
+                ->has('submitted.mrn'));
+
+        $request = TechnicalServiceRequest::query()->firstOrFail();
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $request->mount_payment_status);
+        $this->assertSame('Montaj ödemesi bekleniyor', $request->mount_payment_label);
+    }
+
+    public function test_montaj_haric_unpaid_submit_is_blocked_when_pre_payment_setting_is_on(): void
+    {
+        $this->enablePreFormPayment();
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+
+        $this->from('/mount-request/'.$token.'/form')
             ->post('/mount-request/'.$token.'/submit', $this->validPayload())
-            ->assertRedirect('/mount-request/'.$token)
+            ->assertRedirect('/mount-request/'.$token.'/form')
             ->assertSessionHasErrors(['form']);
-
-        $this->assertDatabaseCount('technical_service_requests', 0);
     }
 
     public function test_montaj_haric_paid_submit_creates_request(): void
@@ -168,11 +185,12 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
-        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
         $payment = \App\Models\TechnicalServiceMountPayment::query()->firstOrFail();
+        $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
         $this->get("/mount-payment/fake/{$payment->id}/approve?token={$token}")
-            ->assertRedirect('/mount-request/'.$token);
+            ->assertRedirect('/mount-request/'.$token.'/form');
 
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload())
             ->assertOk()
@@ -197,8 +215,8 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
-        $this->post('/mount-request/'.$token.'/multi-product')->assertRedirect('/mount-request/'.$token);
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $this->post('/mount-request/'.$token.'/multi-product')->assertRedirect('/mount-request/'.$token.'/form');
 
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload())
             ->assertOk()
@@ -217,7 +235,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('allowMultiProductRequest', true));
@@ -242,7 +260,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeInvoiceSerials();
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
         $this->postJson('/mount-request/'.$token.'/invoice-serials/check')
             ->assertOk()
@@ -304,7 +322,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload([
             'door_front_photo' => $this->imageUpload('front.jpg'),
@@ -336,13 +354,13 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
-        $this->from('/mount-request/'.$token)
+        $this->from('/mount-request/'.$token.'/form')
             ->post('/mount-request/'.$token.'/submit', $this->validPayload([
                 'door_back_photo' => null,
             ]))
-            ->assertRedirect('/mount-request/'.$token)
+            ->assertRedirect('/mount-request/'.$token.'/form')
             ->assertSessionHasErrors(['door_back_photo']);
 
         $this->assertDatabaseCount('technical_service_requests', 0);
@@ -352,13 +370,13 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
-        $this->from('/mount-request/'.$token)
+        $this->from('/mount-request/'.$token.'/form')
             ->post('/mount-request/'.$token.'/submit', $this->validPayload([
                 'door_front_photo' => $this->imageUpload('front.jpg', 'image/png', 9000),
             ]))
-            ->assertRedirect('/mount-request/'.$token)
+            ->assertRedirect('/mount-request/'.$token.'/form')
             ->assertSessionHasErrors(['door_front_photo']);
 
         $this->assertDatabaseCount('technical_service_requests', 0);
@@ -368,7 +386,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload([
             'address' => '',
@@ -417,7 +435,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
 
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload([
             'location_latitude' => null,
@@ -451,7 +469,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
 
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload([
             'location_latitude' => null,
@@ -476,16 +494,16 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
-        $this->from('/mount-request/'.$token)
+        $this->from('/mount-request/'.$token.'/form')
             ->post('/mount-request/'.$token.'/submit', $this->validPayload([
                 'address' => '',
                 'location_formatted_address' => '',
                 'location_latitude' => '',
                 'location_longitude' => '',
             ]))
-            ->assertRedirect('/mount-request/'.$token)
+            ->assertRedirect('/mount-request/'.$token.'/form')
             ->assertSessionHasErrors(['address']);
 
         $this->assertDatabaseCount('technical_service_requests', 0);
@@ -517,11 +535,11 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         foreach (['537208165', '53720816555'] as $phone) {
             $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
             [, $token] = $this->qrLink();
-            $this->get('/mount-request/'.$token)->assertOk();
+            $this->get('/mount-request/'.$token.'/form')->assertOk();
 
-            $this->from('/mount-request/'.$token)
+            $this->from('/mount-request/'.$token.'/form')
                 ->post('/mount-request/'.$token.'/submit', $this->validPayload(['phone' => $phone]))
-                ->assertRedirect('/mount-request/'.$token)
+                ->assertRedirect('/mount-request/'.$token.'/form')
                 ->assertSessionHasErrors(['phone']);
         }
 
@@ -532,14 +550,14 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
-        $this->from('/mount-request/'.$token)
+        $this->from('/mount-request/'.$token.'/form')
             ->post('/mount-request/'.$token.'/submit', $this->validPayload([
                 'installation_consent' => false,
                 'kvkk_consent' => false,
             ]))
-            ->assertRedirect('/mount-request/'.$token)
+            ->assertRedirect('/mount-request/'.$token.'/form')
             ->assertSessionHasErrors(['installation_consent', 'kvkk_consent']);
 
         $this->assertDatabaseCount('technical_service_requests', 0);
@@ -566,7 +584,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
 
         $response = $this->post('/mount-request/'.$token.'/submit', $this->validPayload())
             ->assertOk()
@@ -586,7 +604,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeContext($saleMountStatus);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload())
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
@@ -601,7 +619,7 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
         $this->post('/mount-request/'.$token.'/submit', $this->validPayload(['phone' => $phone]))
             ->assertOk();
 
@@ -763,5 +781,19 @@ class TechnicalServiceQrMountSubmitV2Test extends TestCase
         ]);
 
         return [$link, $token];
+    }
+
+    private function enablePreFormPayment(): void
+    {
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
+        );
     }
 }

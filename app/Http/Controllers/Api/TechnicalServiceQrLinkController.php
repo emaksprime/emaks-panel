@@ -226,14 +226,14 @@ class TechnicalServiceQrLinkController extends Controller
         ]);
     }
 
-    public function svg(TechnicalServiceQrLink $link): Response
+    public function svg(Request $request, TechnicalServiceQrLink $link): Response
     {
         $writer = new Writer(new ImageRenderer(
             new RendererStyle(360, 2),
             new SvgImageBackEnd(),
         ));
 
-        return response($writer->writeString($this->publicUrl($link)), 200, [
+        return response($writer->writeString($this->publicUrl($link, $request)), 200, [
             'Content-Type' => 'image/svg+xml; charset=UTF-8',
             'Cache-Control' => 'no-store',
         ]);
@@ -506,9 +506,56 @@ class TechnicalServiceQrLinkController extends Controller
         ];
     }
 
-    private function publicUrl(TechnicalServiceQrLink $link): string
+    private function publicUrl(TechnicalServiceQrLink $link, ?Request $request = null): string
     {
+        $baseUrl = $this->publicBaseUrl($request);
+
+        if ($baseUrl !== null) {
+            return $baseUrl.'/'.ltrim($link->publicPath(), '/');
+        }
+
         return PartnerPortalPublicUrl::url($link->publicPath());
+    }
+
+    private function publicBaseUrl(?Request $request): ?string
+    {
+        if (! $request instanceof Request) {
+            return null;
+        }
+
+        $baseUrl = $this->nullableText($request->query('public_base_url'));
+
+        if ($baseUrl === null) {
+            return null;
+        }
+
+        if (! preg_match('#^https?://#i', $baseUrl)) {
+            return null;
+        }
+
+        $parts = parse_url($baseUrl);
+
+        if (! is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            return null;
+        }
+
+        $scheme = strtolower((string) $parts['scheme']);
+
+        if (! in_array($scheme, ['http', 'https'], true)) {
+            return null;
+        }
+
+        $normalized = $scheme.'://'.strtolower((string) $parts['host']);
+
+        if (! empty($parts['port'])) {
+            $normalized .= ':'.(int) $parts['port'];
+        }
+
+        if (! empty($parts['path'])) {
+            $normalized .= '/'.trim((string) $parts['path'], '/');
+        }
+
+        return rtrim($normalized, '/');
     }
 
     private function normalizeSerial(mixed $value): ?string

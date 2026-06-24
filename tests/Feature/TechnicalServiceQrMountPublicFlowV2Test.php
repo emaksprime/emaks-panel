@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\DataSource;
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
@@ -406,6 +407,357 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertSee('<svg', false);
     }
 
+    public function test_ops_qr_product_svg_endpoint_can_encode_public_base_url_override(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+        ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
+            'serial_number' => 'QR-SVG-BASE-001',
+            'product_name' => 'Emaks Prime Test Kilit',
+            'product_model' => 'DDL720',
+            'brand' => 'EMAKS PRIME',
+        ]);
+
+        $defaultSvg = $this->actingAs($user)
+            ->get('/api/technical-service/qr-products/'.$link->id.'/svg')
+            ->assertOk()
+            ->getContent();
+
+        $overrideSvg = $this->actingAs($user)
+            ->get('/api/technical-service/qr-products/'.$link->id.'/svg?public_base_url='.rawurlencode('http://panel.test:8000'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertNotSame($defaultSvg, $overrideSvg);
+    }
+
+    public function test_qr_products_page_allows_simple_public_form_base_url_override(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-qr-products.tsx'));
+        $this->assertIsString($source);
+
+        foreach ([
+            'Public form base URL',
+            'Bu QR şu linki açacak',
+            'Telefon bu URL’ye erişemez',
+            'technical-service-qr-public-form-base-url',
+            'public_base_url',
+            'selectedPublicUrl',
+            'qrSvgUrlForLink',
+            'Telefon konumu test edilecekse HTTPS test URL’si girin',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $source);
+        }
+
+        $forbiddenLanExample = implode('.', ['10', '0', '28', '64']);
+
+        $this->assertStringNotContainsString($forbiddenLanExample, $source);
+    }
+
+    public function test_public_qr_accepts_https_base_url_for_location_testing(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-qr-products.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString("['http:', 'https:']", $source);
+        $this->assertStringContainsString('Telefon konumu test edilecekse HTTPS test URL’si girin', $source);
+        $this->assertStringContainsString('QR önizleme ve QR görseli bu HTTPS base ile üretilir.', $source);
+    }
+
+    public function test_qr_encoded_url_matches_https_public_base(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-qr-products.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('const params = new URLSearchParams({ public_base_url: normalizedBase })', $source);
+        $this->assertStringContainsString('return `${link.qr_svg_url}?${params.toString()}`', $source);
+        $this->assertStringContainsString('{selectedPublicUrl}', $source);
+    }
+
+    public function test_public_mount_request_get_does_not_require_auth(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [$link, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-request-v2')
+                ->where('viewState', 'checking')
+                ->has('csrfToken')
+                ->where('actions.check_url', '/mount-request/'.$token.'/check')
+                ->where('actions.form_url', '/mount-request/'.$token.'/form')
+                ->where('product.serial_number', $link->serial_number));
+    }
+
+    public function test_public_mount_request_action_urls_are_relative_for_lan_hosts(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('actions.create_payment_url', '/mount-request/'.$token.'/payment')
+                ->where('actions.multi_product_url', '/mount-request/'.$token.'/multi-product')
+                ->where('actions.multi_product_lookup_url', '/mount-request/'.$token.'/invoice-serials/check')
+                ->where('actions.submit_url', '/mount-request/'.$token.'/submit'));
+    }
+
+    public function test_admin_technical_service_api_requires_auth(): void
+    {
+        $this->getJson('/api/technical-service/requests')
+            ->assertUnauthorized();
+    }
+
+    public function test_vite_dev_server_origin_can_be_configured_for_lan_public_form_assets(): void
+    {
+        $source = file_get_contents(base_path('vite.config.ts'));
+        $this->assertIsString($source);
+
+        foreach ([
+            'VITE_DEV_SERVER_ORIGIN',
+            'server:',
+            'origin: devServerOrigin',
+            'localDevCorsOrigins',
+            'cors:',
+            'hmr:',
+            'clientPort',
+        ] as $expectedText) {
+            $this->assertStringContainsString($expectedText, $source);
+        }
+
+        $this->assertStringNotContainsString('10.0.28.64', $source);
+    }
+
+    public function test_env_example_documents_lan_vite_origin_without_hardcoded_ip(): void
+    {
+        $source = file_get_contents(base_path('.env.example'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('VITE_DEV_SERVER_ORIGIN=', $source);
+        $this->assertStringContainsString('http://YOUR-LAN-IP:5173', $source);
+        $this->assertStringNotContainsString('10.0.28.64', $source);
+    }
+
+    public function test_public_mount_form_reads_csrf_from_stable_prop(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('csrfToken?: string;', $source);
+        $this->assertStringContainsString("csrfToken = '',", $source);
+        $this->assertStringContainsString('const csrfValue = csrfToken;', $source);
+        $this->assertStringNotContainsString('const csrfValue = csrfToken();', $source);
+        $this->assertStringNotContainsString('document.querySelector<HTMLMetaElement>(\'meta[name="csrf-token"]\')', $source);
+    }
+
+    public function test_public_pages_use_customer_layout_without_panel_navigation(): void
+    {
+        $appSource = file_get_contents(resource_path('js/app.tsx'));
+        $layoutSource = file_get_contents(resource_path('js/layouts/public-layout.tsx'));
+        $formSource = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+
+        $this->assertIsString($appSource);
+        $this->assertIsString($layoutSource);
+        $this->assertIsString($formSource);
+
+        $this->assertStringContainsString("case name.startsWith('public/')", $appSource);
+        $this->assertStringContainsString('return PublicLayout;', $appSource);
+        $this->assertStringNotContainsString('AppLayout', $layoutSource);
+        $this->assertStringNotContainsString('Operasyon Paneli', $formSource);
+        $this->assertStringContainsString('Emaks Prime Teknik Servis', $formSource);
+        $this->assertStringContainsString('Montaj formuna yönlendiriliyorsunuz', $formSource);
+        $this->assertStringContainsString('Cihaz bilgileriniz kontrol ediliyor', $formSource);
+    }
+
+    public function test_qr_redirect_operational_status_copy_is_present_on_public_customer_page(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('Montaj formuna yönlendiriliyorsunuz', $source);
+        $this->assertStringContainsString('Cihaz bilgileriniz kontrol ediliyor', $source);
+        $this->assertStringContainsString('actions?.check_url', $source);
+        $this->assertStringContainsString('router.visit(nextUrl', $source);
+    }
+
+    public function test_location_modal_handles_insecure_context(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('function geolocationUnavailableMessage()', $source);
+        $this->assertStringContainsString('!window.isSecureContext', $source);
+        $this->assertStringContainsString('Telefon konumunu kullanmak için HTTPS bağlantı gerekir.', $source);
+        $this->assertStringContainsString('HTTPS test bağlantısı kullanabilirsiniz.', $source);
+        $this->assertStringContainsString('Public form base URL alanına HTTPS test URL’si girildiğinde QR bu URL ile üretilebilir.', $source);
+    }
+
+    public function test_public_location_secure_context_allows_geolocation_attempt(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('const localDesktopHost', $source);
+        $this->assertStringContainsString('return null;', $source);
+        $this->assertStringContainsString('navigator.geolocation.getCurrentPosition', $source);
+    }
+
+    public function test_public_form_submit_allows_manual_address_without_geolocation(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('Harita yerine elle adres girişi kullanılacak.', $source);
+        $this->assertStringContainsString('İl, ilçe ve açık adres alanlarını doldurarak devam edebilirsiniz.', $source);
+        $this->assertStringContainsString('address:', $source);
+    }
+
+    public function test_location_modal_handles_geolocation_timeout(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('error.code === error.TIMEOUT', $source);
+        $this->assertStringContainsString('Konum alınamadı. Adresi elle girebilirsiniz.', $source);
+    }
+
+    public function test_map_load_failure_shows_manual_address_fallback(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('setMapUnavailable(true)', $source);
+        $this->assertStringContainsString('Harita yüklenemedi. Adresi elle girebilirsiniz.', $source);
+        $this->assertStringContainsString('Harita yerine elle adres girişi kullanılacak.', $source);
+        $this->assertStringContainsString('if (geolocationUnavailableMessage())', $source);
+        $this->assertStringContainsString('}, [locationModalOpen]);', $source);
+    }
+
+    public function test_public_form_does_not_show_other_serials_section_by_default(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringNotContainsString('DİĞER SERİLERİ KONTROL ET', $source);
+        $this->assertStringContainsString('Birden fazla ürünüm var', $source);
+        $this->assertStringContainsString('Aynı faturadaki diğer ürünleri seçmek için tıklayın.', $source);
+    }
+
+    public function test_public_multiple_products_button_opens_modal(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('const openMultiProductModal = () =>', $source);
+        $this->assertStringContainsString('setMultiProductLookupRequested(true)', $source);
+        $this->assertStringContainsString('setMultiProductLookupAttempt((current) => current + 1)', $source);
+        $this->assertStringContainsString('setMultiProductModalOpen(items.length > 0)', $source);
+        $this->assertStringContainsString('Aynı faturadaki diğer ürünler', $source);
+        $this->assertStringContainsString('Seçili ürünleri talebe ekle', $source);
+    }
+
+    public function test_public_form_does_not_auto_open_multi_product_modal(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('const [multiProductLookupRequested, setMultiProductLookupRequested] = useState(false);', $source);
+        $this->assertStringContainsString('if (!multiProductLookupRequested) {', $source);
+        $this->assertStringNotContainsString('}, [form.data.multiple_products, actions?.multi_product_lookup_url', $source);
+        $this->assertStringContainsString('setMultiProductModalOpen(false);', $source);
+    }
+
+    public function test_public_form_does_not_open_empty_multi_product_modal(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('setMultiProductModalOpen(items.length > 0)', $source);
+        $this->assertStringContainsString('items.length > 0 ? \'\' : (payload.message || MULTI_PRODUCT_NO_SELECTABLE_MESSAGE)', $source);
+        $this->assertStringContainsString('Bu fatura için ek montaj seçilebilir ürün bulunamadı. Ek ürün talebiniz operasyon ekibine iletilecek.', $source);
+    }
+
+    public function test_public_multi_product_gateway_timeout_shows_inline_message(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('const MULTI_PRODUCT_LOOKUP_TIMEOUT_MS = 15000;', $source);
+        $this->assertStringContainsString('const abortController = new AbortController();', $source);
+        $this->assertStringContainsString('abortController.abort();', $source);
+        $this->assertStringContainsString('Ek ürünler şu anda kontrol edilemedi. Talebiniz operasyon ekibine iletilecek.', $source);
+        $this->assertStringContainsString('setMultiProductModalOpen(false);', $source);
+    }
+
+    public function test_public_multi_product_retry_restarts_lookup(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringContainsString('const [multiProductLookupAttempt, setMultiProductLookupAttempt] = useState(0);', $source);
+        $this->assertStringContainsString('setMultiProductLookupAttempt((current) => current + 1)', $source);
+        $this->assertStringContainsString('Tekrar kontrol et', $source);
+        $this->assertStringContainsString('multiProductLookupAttempt,', $source);
+    }
+
+    public function test_public_multi_serial_modal_hides_internal_rows(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
+        $this->assertIsString($source);
+
+        $this->assertStringNotContainsString('Müşteriye gösterilmedi', $source);
+        $this->assertStringNotContainsString('operation_only_count', $source);
+        $this->assertStringContainsString('payload.selectable_serials', $source);
+    }
+
+    public function test_public_payment_button_redirects_to_relative_payment_route_not_app_url(): void
+    {
+        config(['app.url' => 'http://127.0.0.1:8000']);
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $response = $this
+            ->withServerVariables(['HTTP_HOST' => '10.0.28.64:8000'])
+            ->post('/mount-request/'.$token.'/payment');
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $response->assertRedirect('/mount-payment/'.$payment->provider_reference);
+        $this->assertStringNotContainsString('127.0.0.1', (string) $response->headers->get('Location'));
+    }
+
+    public function test_public_multiple_product_button_redirects_to_relative_form_route_not_app_url(): void
+    {
+        config(['app.url' => 'http://127.0.0.1:8000']);
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $response = $this
+            ->withServerVariables(['HTTP_HOST' => '10.0.28.64:8000'])
+            ->post('/mount-request/'.$token.'/multi-product');
+
+        $response->assertRedirect('/mount-request/'.$token.'/form');
+        $this->assertStringNotContainsString('127.0.0.1', (string) $response->headers->get('Location'));
+    }
+
+    public function test_admin_can_toggle_pre_form_payment_setting_without_new_schema(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->patchJson('/api/technical-service/qr-flow-settings', [
+                'pre_form_payment_for_mount_excluded_enabled' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('settings.pre_form_payment_for_mount_excluded_enabled', true)
+            ->assertJsonPath('settings.key', 'technical_service.qr.pre_form_payment_for_mount_excluded_enabled');
+
+        $this->assertDatabaseHas('panel.page_configs', [
+            'page_code' => 'technical_service_admin',
+        ]);
+    }
+
     public function test_partner_user_cannot_access_ops_qr_product_management_api(): void
     {
         $portalUser = User::factory()->create(['role_code' => 'b2b_locksmith']);
@@ -434,15 +786,74 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('public/mount-request-v2')
-                ->where('viewState', 'form_ready')
+                ->where('viewState', 'checking')
                 ->where('product.product_name', 'Emaks Prime Test Kilit')
-                ->where('product.serial_number', $link->serial_number));
+                ->where('product.serial_number', $link->serial_number)
+                ->where('actions.check_url', '/mount-request/'.$token.'/check')
+                ->where('actions.form_url', '/mount-request/'.$token.'/form'));
+
+        $this->assertDatabaseCount('technical_service_mount_sessions', 0);
+
+        $this->postJson('/mount-request/'.$token.'/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('target_url', '/mount-request/'.$token.'/form')
+            ->assertJsonPath('view_state', 'form_ready');
 
         $this->assertDatabaseCount('technical_service_mount_sessions', 1);
 
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->postJson('/mount-request/'.$token.'/check')->assertOk();
 
         $this->assertDatabaseCount('technical_service_mount_sessions', 1);
+    }
+
+    public function test_public_qr_opens_interstitial_before_form(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-request-v2')
+                ->where('viewState', 'checking')
+                ->where('message', 'Cihaz bilgileriniz kontrol ediliyor.')
+                ->where('actions.check_url', '/mount-request/'.$token.'/check')
+                ->where('actions.form_url', '/mount-request/'.$token.'/form'));
+    }
+
+    public function test_public_qr_background_check_runs(): void
+    {
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+
+        $this->postJson('/mount-request/'.$token.'/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('view_state', 'form_ready')
+            ->assertJsonPath('target_url', '/mount-request/'.$token.'/form')
+            ->assertJsonPath('message', 'Montaj talep formunuz açılmaya hazır.');
+
+        $this->assertDatabaseCount('technical_service_mount_sessions', 1);
+    }
+
+    public function test_public_qr_check_failure_still_opens_form_with_warning(): void
+    {
+        $this->fakeContextThrows();
+        [, $token] = $this->qrLink();
+
+        $this->postJson('/mount-request/'.$token.'/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('view_state', 'check_pending')
+            ->assertJsonPath('target_url', '/mount-request/'.$token.'/form')
+            ->assertJsonPath('message', 'Cihaz bilgileri tam doğrulanamadı; operasyon ekibi kontrol edecektir.');
+
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('viewState', 'check_pending')
+                ->where('message', 'Cihaz bilgileri tam doğrulanamadı; operasyon ekibi kontrol edecektir.'));
     }
 
     public function test_public_mount_request_updates_qr_scan_metrics(): void
@@ -469,7 +880,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'form_ready')
@@ -479,6 +890,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
     public function test_in_stock_current_state_requires_payment_before_form(): void
     {
+        $this->enablePreFormPayment();
         $this->fakeContext(
             TechnicalServiceMountSession::SALE_CHECK_FAILED,
             TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
@@ -486,7 +898,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         );
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'payment_required')
@@ -496,6 +908,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
     public function test_unsold_serial_redirects_to_payment_decision(): void
     {
+        $this->enablePreFormPayment();
         $this->fakeContext(
             TechnicalServiceMountSession::SALE_NOT_FOUND,
             TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
@@ -503,7 +916,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         );
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'payment_required')
@@ -513,6 +926,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
     public function test_paid_unsold_serial_opens_mount_form(): void
     {
+        $this->enablePreFormPayment();
         config([
             'payments.provider' => 'fake',
             'payments.enable_fake_approve' => true,
@@ -524,17 +938,18 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         );
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page->where('viewState', 'payment_required'));
 
-        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
         $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+        $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
 
         $this->get("/mount-payment/fake/{$payment->id}/approve?token={$token}")
-            ->assertRedirect('/mount-request/'.$token);
+            ->assertRedirect('/mount-request/'.$token.'/form');
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'form_ready')
@@ -628,17 +1043,18 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertDontSee('Montaj durumu', false);
     }
 
     public function test_payment_required_public_page_shows_payment_message(): void
     {
+        $this->enablePreFormPayment();
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('public/mount-request-v2')
@@ -647,12 +1063,99 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                 ->where('statusLabel', 'Montaj ödemesi gerekli'));
     }
 
-    public function test_montaj_haric_unpaid_context_shows_payment_decision_screen(): void
+    public function test_setting_off_mount_excluded_opens_form_with_payment_context(): void
     {
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-request-v2')
+                ->where('viewState', 'form_ready')
+                ->where('message', 'Montaj talep formunuz açılmaya hazır.')
+                ->where('statusLabel', 'Montaj ödemesi gerekli')
+                ->where('allowMultiProductRequest', true));
+
+        $session = TechnicalServiceMountSession::query()->firstOrFail();
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $session->mount_payment_status);
+        $this->assertSame(TechnicalServiceMountSession::ENTRY_SINGLE_PRODUCT, $session->customer_entry_mode);
+    }
+
+    public function test_setting_on_mount_excluded_routes_payment_first(): void
+    {
+        $this->enablePreFormPayment();
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->postJson('/mount-request/'.$token.'/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('view_state', 'payment_required')
+            ->assertJsonPath('target_url', '/mount-request/'.$token.'/payment')
+            ->assertJsonPath('message', 'Bu ürün için montaj ödemesi gereklidir.');
+
+        $session = TechnicalServiceMountSession::query()->firstOrFail();
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $session->mount_payment_status);
+        $this->assertSame(TechnicalServiceMountSession::DECISION_READY, $session->decision_status);
+
+        $this->get('/mount-request/'.$token.'/payment')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-request-v2')
+                ->where('viewState', 'payment_required')
+                ->where('message', 'Bu ürün için montaj ödemesi gereklidir.')
+                ->where('actions.create_payment_url', '/mount-request/'.$token.'/payment'));
+    }
+
+    public function test_pre_form_payment_setting_on_mount_included_opens_form(): void
+    {
+        $this->enablePreFormPayment();
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+
+        $this->postJson('/mount-request/'.$token.'/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('view_state', 'form_ready')
+            ->assertJsonPath('target_url', '/mount-request/'.$token.'/form')
+            ->assertJsonPath('message', 'Montaj talep formunuz açılmaya hazır.');
+    }
+
+    public function test_public_payment_step_redirects_to_form_when_payment_not_required(): void
+    {
+        $this->enablePreFormPayment();
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token.'/payment')
+            ->assertRedirect('/mount-request/'.$token.'/form');
+    }
+
+    public function test_unresolved_serial_does_not_hard_block_form(): void
+    {
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_CHECK_FAILED,
+            TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'unknown',
+        );
+        [, $token] = $this->qrLink();
+
+        $this->postJson('/mount-request/'.$token.'/check')
+            ->assertOk()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('view_state', 'check_pending')
+            ->assertJsonPath('target_url', '/mount-request/'.$token.'/form')
+            ->assertJsonPath('message', 'Seri / montaj kontrolü şu anda tamamlanamadı. Formu doldurabilirsiniz; operasyon ekibi kontrolü tamamlayacaktır.');
+    }
+
+    public function test_montaj_haric_unpaid_context_shows_payment_decision_screen(): void
+    {
+        $this->enablePreFormPayment();
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'payment_required')
@@ -662,14 +1165,15 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
 
     public function test_montaj_haric_unpaid_screen_has_payment_and_multi_product_actions(): void
     {
+        $this->enablePreFormPayment();
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('actions.payment_label', 'Montaj ödemesi yap')
-                ->where('actions.multi_product_label', 'Birden fazla ürün için montaj talebim var'));
+                ->where('actions.multi_product_label', 'Birden fazla ürünüm var'));
     }
 
     public function test_multi_product_without_payment_updates_session_and_shows_multi_form_decision(): void
@@ -677,14 +1181,14 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
-        $this->post('/mount-request/'.$token.'/multi-product')->assertRedirect('/mount-request/'.$token);
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $this->post('/mount-request/'.$token.'/multi-product')->assertRedirect('/mount-request/'.$token.'/form');
 
         $session = TechnicalServiceMountSession::query()->firstOrFail();
         $this->assertSame(TechnicalServiceMountSession::ENTRY_MULTI_PRODUCT_WITHOUT_PAYMENT, $session->customer_entry_mode);
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_SKIPPED_MULTI_PRODUCT, $session->mount_payment_status);
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'multi_product_ready')
@@ -701,14 +1205,15 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
-        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
 
         $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+        $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
 
         $this->get("/mount-payment/fake/{$payment->id}/approve?token={$token}")
-            ->assertRedirect('/mount-request/'.$token);
+            ->assertRedirect('/mount-request/'.$token.'/form');
 
         $payment->refresh();
         $session = $payment->session->refresh();
@@ -716,7 +1221,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_PAID, $session->mount_payment_status);
         $this->assertSame(TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT, $session->customer_entry_mode);
 
-        $this->get('/mount-request/'.$token)
+        $this->get('/mount-request/'.$token.'/form')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'form_ready')
@@ -733,18 +1238,19 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
         $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+        $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
 
         $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
-            ->assertRedirect('/mount-request/'.$token);
+            ->assertRedirect('/mount-request/'.$token.'/form');
 
         $this->get('/mount-payment/'.$payment->provider_reference)
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('public/mount-payment')
                 ->where('payment.status', TechnicalServiceMountPayment::STATUS_PAID)
-                ->where('payment.mount_form_url', route('mount-request.show', ['token' => $token]))
+                ->where('payment.mount_form_url', route('mount-request.form', ['token' => $token]))
                 ->where('requestSummary.serial_number', 'QR-V2-PUBLIC-001')
                 ->where('requestSummary.product_name', 'Emaks Prime Test Kilit'));
     }
@@ -762,11 +1268,12 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
             [, $token] = $this->qrLink();
 
-            $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+            $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
             $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+            $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
 
             $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
-                ->assertRedirect('/mount-request/'.$token);
+                ->assertRedirect('/mount-request/'.$token.'/form');
 
             $this->submitMountRequest($token)->assertOk();
 
@@ -795,11 +1302,12 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
             [, $token] = $this->qrLink();
 
-            $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+            $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
             $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+            $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
 
             $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
-                ->assertRedirect('/mount-request/'.$token);
+                ->assertRedirect('/mount-request/'.$token.'/form');
 
             $this->submitMountRequest($token)->assertOk();
 
@@ -829,19 +1337,20 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
-        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
 
         $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+        $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
 
         $this->get('/mount-payment/'.$payment->provider_reference)
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('public/mount-payment')
-                ->where('payment.fake_approve_url', route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference])));
+                ->where('payment.fake_approve_url', route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference], false)));
 
         $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
-            ->assertRedirect('/mount-request/'.$token);
+            ->assertRedirect('/mount-request/'.$token.'/form');
 
         $payment->refresh();
 
@@ -859,10 +1368,11 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
-        $this->post('/mount-request/'.$token.'/payment')->assertRedirect('/mount-request/'.$token);
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $paymentResponse = $this->post('/mount-request/'.$token.'/payment');
 
         $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+        $paymentResponse->assertRedirect('/mount-payment/'.$payment->provider_reference);
 
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
         $this->assertNotEmpty($payment->provider_reference);
@@ -885,7 +1395,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
         [, $token] = $this->qrLink();
 
-        $this->get('/mount-request/'.$token)->assertOk();
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
         $this->withSession(['_token' => 'test-csrf'])
             ->post('/mount-request/'.$token.'/payment', ['_token' => 'test-csrf'])
             ->assertNotFound();
@@ -1175,7 +1685,7 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertOk()
             ->assertJsonPath('has_selectable_serials', false)
             ->assertJsonCount(0, 'selectable_serials')
-            ->assertJsonPath('message', 'Ek ürün talebiniz operasyon ekibine iletilecek.');
+            ->assertJsonPath('message', 'Bu fatura için ek montaj seçilebilir ürün bulunamadı. Ek ürün talebiniz operasyon ekibine iletilecek.');
     }
 
     public function test_fixture_mode_public_popup_only_returns_customer_selectable_invoice_serials(): void
@@ -1343,18 +1853,19 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         ]);
     }
 
-    public function test_frontend_opens_multi_product_popup_when_selectable_payload_exists(): void
+    public function test_frontend_opens_customer_safe_multi_product_popup(): void
     {
         $source = file_get_contents(resource_path('js/pages/public/mount-request-v2.tsx'));
         $this->assertIsString($source);
 
-        $this->assertStringContainsString('items.length > 0 || Boolean(payload.has_selectable_serials)', $source);
-        $this->assertStringContainsString('setMultiProductModalOpen(hasSelectableSerials)', $source);
-        $this->assertStringContainsString('Diğer serileri kontrol et', $source);
-        $this->assertStringContainsString('Bu adreste montajını istediğiniz diğer ürünleri seçin', $source);
+        $this->assertStringContainsString('setMultiProductModalOpen(items.length > 0)', $source);
+        $this->assertStringContainsString('setMultiProductLookupRequested(true)', $source);
+        $this->assertStringNotContainsString('Diğer serileri kontrol et', $source);
+        $this->assertStringContainsString('Aynı faturadaki diğer ürünler', $source);
         $this->assertStringContainsString('Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.', $source);
-        $this->assertStringContainsString('Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.', $source);
-        $this->assertStringContainsString('Ek ürün talebiniz operasyon ekibine iletilecek.', $source);
+        $this->assertStringNotContainsString('Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.', $source);
+        $this->assertStringContainsString('Bu fatura için ek montaj seçilebilir ürün bulunamadı. Ek ürün talebiniz operasyon ekibine iletilecek.', $source);
+        $this->assertStringContainsString('Ek ürünler şu anda kontrol edilemedi. Talebiniz operasyon ekibine iletilecek.', $source);
     }
 
     private function createRequestWithMrn(string $mrn): TechnicalServiceRequest
@@ -1493,6 +2004,20 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
                     throw new \RuntimeException('Fixture Mikro resolver failed.');
                 }
             },
+        );
+    }
+
+    private function enablePreFormPayment(): void
+    {
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
         );
     }
 

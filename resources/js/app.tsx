@@ -5,6 +5,7 @@ import { initializeTheme } from '@/hooks/use-appearance';
 import AppLayout from '@/layouts/app-layout';
 import AuthLayout from '@/layouts/auth-layout';
 import PartnerPortalLayout from '@/layouts/partner-portal-layout';
+import PublicLayout from '@/layouts/public-layout';
 import SettingsLayout from '@/layouts/settings/layout';
 
 const appName = import.meta.env.VITE_APP_NAME || 'Emaks Prime Panel';
@@ -19,6 +20,8 @@ createInertiaApp({
                 return [AppLayout, SettingsLayout];
             case name.startsWith('partner/'):
                 return PartnerPortalLayout;
+            case name.startsWith('public/'):
+                return PublicLayout;
             default:
                 return AppLayout;
         }

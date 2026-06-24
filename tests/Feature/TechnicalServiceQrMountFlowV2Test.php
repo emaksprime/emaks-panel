@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceRequest;
 use App\Services\TechnicalService\MountFlowDecisionService;
 use App\Services\TechnicalService\MountRequestSubmitService;
@@ -63,7 +64,7 @@ class TechnicalServiceQrMountFlowV2Test extends TestCase
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_NOT_REQUIRED, $session->fresh()->mount_payment_status);
     }
 
-    public function test_montaj_haric_unpaid_session_decision_shows_payment(): void
+    public function test_montaj_haric_unpaid_session_decision_opens_form_when_pre_payment_setting_is_off(): void
     {
         $session = $this->mountSession([
             'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
@@ -71,10 +72,23 @@ class TechnicalServiceQrMountFlowV2Test extends TestCase
 
         $decision = app(MountFlowDecisionService::class)->decide($session);
 
-        $this->assertSame(MountFlowDecisionService::DECISION_SHOW_PAYMENT, $decision['decision']);
+        $this->assertSame(MountFlowDecisionService::DECISION_SHOW_FORM, $decision['decision']);
         $session->refresh();
         $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $session->mount_payment_status);
         $this->assertSame(TechnicalServiceMountSession::ENTRY_SINGLE_PRODUCT, $session->customer_entry_mode);
+    }
+
+    public function test_montaj_haric_unpaid_session_decision_shows_payment_when_pre_payment_setting_is_on(): void
+    {
+        $this->enablePreFormPayment();
+        $session = $this->mountSession([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+        ]);
+
+        $decision = app(MountFlowDecisionService::class)->decide($session);
+
+        $this->assertSame(MountFlowDecisionService::DECISION_SHOW_PAYMENT, $decision['decision']);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $session->fresh()->mount_payment_status);
     }
 
     public function test_montaj_haric_paid_session_decision_opens_form(): void
@@ -213,5 +227,19 @@ class TechnicalServiceQrMountFlowV2Test extends TestCase
         $session->forceFill($overrides)->save();
 
         return $session->fresh();
+    }
+
+    private function enablePreFormPayment(): void
+    {
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
+        );
     }
 }

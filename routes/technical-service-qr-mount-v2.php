@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceQrFlowSettingsController;
 use App\Http\Controllers\Api\TechnicalServiceQrLinkController;
 use App\Http\Controllers\PublicMountPaymentController;
 use App\Http\Controllers\PublicMountRequestController;
@@ -10,6 +11,15 @@ use Inertia\Inertia;
 Route::get('mount-request/{token}', [PublicMountRequestController::class, 'show'])
     ->where('token', '[^/]+')
     ->name('mount-request.show');
+Route::post('mount-request/{token}/check', [PublicMountRequestController::class, 'check'])
+    ->where('token', '[^/]+')
+    ->name('mount-request.check');
+Route::get('mount-request/{token}/form', [PublicMountRequestController::class, 'form'])
+    ->where('token', '[^/]+')
+    ->name('mount-request.form');
+Route::get('mount-request/{token}/payment', [PublicMountRequestController::class, 'paymentStep'])
+    ->where('token', '[^/]+')
+    ->name('mount-request.payment.step');
 Route::post('mount-request/{token}/payment', [PublicMountRequestController::class, 'createFakePayment'])
     ->where('token', '[^/]+')
     ->name('mount-request.payment.create');
@@ -55,6 +65,12 @@ Route::middleware(['auth', 'panel.session'])
         Route::get('qr-products/{link}/svg', [TechnicalServiceQrLinkController::class, 'svg'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.qr-products.svg');
+        Route::get('qr-flow-settings', [TechnicalServiceQrFlowSettingsController::class, 'show'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.qr-flow-settings.show');
+        Route::patch('qr-flow-settings', [TechnicalServiceQrFlowSettingsController::class, 'update'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.qr-flow-settings.update');
         Route::post('requests/{technicalServiceRequest}/technicians/{technician}/route-quote', [TechnicalServiceController::class, 'routeQuote'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.technicians.route-quote');

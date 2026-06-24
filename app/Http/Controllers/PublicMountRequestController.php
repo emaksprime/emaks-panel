@@ -15,6 +15,7 @@ use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use App\Services\Payments\PaymentProviderManager;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
@@ -22,6 +23,80 @@ use Inertia\Inertia;
 class PublicMountRequestController extends Controller
 {
     public function show(
+        Request $request,
+        string $token,
+    ) {
+        $link = TechnicalServiceQrLink::findActiveByToken($token);
+
+        if (! $link instanceof TechnicalServiceQrLink) {
+            return Inertia::render('public/mount-request-v2', [
+                'viewState' => 'invalid_link',
+                'message' => 'Montaj talep linki geçersiz veya süresi dolmuş.',
+                'csrfToken' => csrf_token(),
+            ])->toResponse($request)->setStatusCode(404);
+        }
+
+        $link->markScanned();
+
+        return Inertia::render('public/mount-request-v2', [
+            'viewState' => 'checking',
+            'message' => 'Cihaz bilgileriniz kontrol ediliyor.',
+            'product' => [
+                'product_name' => $link->product_name,
+                'product_model' => $link->product_model,
+                'serial_number' => $link->serial_number,
+                'brand' => $link->brand,
+            ],
+            'actions' => [
+                'check_url' => route('mount-request.check', ['token' => $token], false),
+                'form_url' => route('mount-request.form', ['token' => $token], false),
+            ],
+            'csrfToken' => csrf_token(),
+        ]);
+    }
+
+    public function check(
+        Request $request,
+        string $token,
+        SerialProductContextResolver $contextResolver,
+        MountSessionEnrichmentService $enrichmentService,
+        MountFlowDecisionService $decisionService,
+    ): JsonResponse {
+        $link = TechnicalServiceQrLink::findActiveByToken($token);
+
+        if (! $link instanceof TechnicalServiceQrLink) {
+            return response()->json([
+                'ok' => false,
+                'view_state' => 'invalid_link',
+                'target_url' => route('mount-request.show', ['token' => $token], false),
+                'message' => 'Montaj talep linki geçersiz veya süresi dolmuş.',
+            ], 404);
+        }
+
+        try {
+            $session = $this->prepareSession($link, $contextResolver, $enrichmentService);
+            $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
+
+            return response()->json([
+                'ok' => true,
+                'view_state' => $this->viewState($decision['decision']),
+                'target_url' => $this->targetUrlForDecision($decision['decision'], $token),
+                'message' => $this->message($decision['decision'], $session->fresh(['qrLink', 'payments'])),
+            ]);
+        } catch (\Throwable) {
+            $session = $this->applyFallbackContext($link, $enrichmentService);
+            $decisionService->decide($session->fresh(['qrLink', 'payments']));
+
+            return response()->json([
+                'ok' => true,
+                'view_state' => 'check_pending',
+                'target_url' => route('mount-request.form', ['token' => $token], false),
+                'message' => 'Cihaz bilgileri tam doğrulanamadı; operasyon ekibi kontrol edecektir.',
+            ]);
+        }
+    }
+
+    public function form(
         Request $request,
         string $token,
         SerialProductContextResolver $contextResolver,
@@ -34,6 +109,7 @@ class PublicMountRequestController extends Controller
             return Inertia::render('public/mount-request-v2', [
                 'viewState' => 'invalid_link',
                 'message' => 'Montaj talep linki geçersiz veya süresi dolmuş.',
+                'csrfToken' => csrf_token(),
             ])->toResponse($request)->setStatusCode(404);
         }
 
@@ -42,37 +118,36 @@ class PublicMountRequestController extends Controller
 
         $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
         $session = $session->fresh(['qrLink', 'payments']);
-        $payment = $this->latestPayment($session);
 
-        return Inertia::render('public/mount-request-v2', [
-            'viewState' => $this->viewState($decision['decision']),
-            'message' => $this->message($decision['decision'], $session),
-            'product' => [
-                'product_name' => $session->context_payload['product_name'] ?? $link->product_name,
-                'product_model' => $session->context_payload['product_model'] ?? $link->product_model,
-                'serial_number' => $link->serial_number,
-                'brand' => $session->context_payload['brand'] ?? $link->brand,
-            ],
-            'statusLabel' => $this->statusLabel($session),
-            'actions' => [
-                'payment_label' => 'Montaj ödemesi yap',
-                'multi_product_label' => 'Birden fazla ürün için montaj talebim var',
-                'continue_label' => 'Forma Devam Et',
-                'create_payment_url' => route('mount-request.payment.create', ['token' => $token]),
-                'multi_product_url' => route('mount-request.multi-product', ['token' => $token]),
-                'multi_product_lookup_url' => route('mount-request.invoice-serials.check', ['token' => $token]),
-                'submit_url' => route('mount-request.submit', ['token' => $token]),
-            ],
-            'payment' => $payment instanceof TechnicalServiceMountPayment ? [
-                'amount' => number_format((float) $payment->amount, 2, '.', ''),
-                'currency' => $payment->currency,
-                'payment_url' => $payment->payment_url,
-                'fake_approve_url' => $this->fakePaymentEnabled()
-                    ? route('mount-payment.fake.approve', ['payment' => $payment, 'token' => $token])
-                    : null,
-            ] : null,
-            'allowMultiProductRequest' => $this->allowMultiProductRequest($session),
-        ]);
+        return $this->renderFormPage($token, $link, $session, $decision['decision']);
+    }
+
+    public function paymentStep(
+        Request $request,
+        string $token,
+        SerialProductContextResolver $contextResolver,
+        MountSessionEnrichmentService $enrichmentService,
+        MountFlowDecisionService $decisionService,
+    ) {
+        $link = TechnicalServiceQrLink::findActiveByToken($token);
+
+        if (! $link instanceof TechnicalServiceQrLink) {
+            return Inertia::render('public/mount-request-v2', [
+                'viewState' => 'invalid_link',
+                'message' => 'Montaj talep linki geçersiz veya süresi dolmuş.',
+                'csrfToken' => csrf_token(),
+            ])->toResponse($request)->setStatusCode(404);
+        }
+
+        $link->markScanned();
+        $session = $this->prepareSession($link, $contextResolver, $enrichmentService);
+        $decision = $decisionService->decide($session->fresh(['qrLink', 'payments']));
+
+        if ($decision['decision'] !== MountFlowDecisionService::DECISION_SHOW_PAYMENT) {
+            return $this->redirectToCurrentHost($request, 'mount-request.form', ['token' => $token]);
+        }
+
+        return $this->renderFormPage($token, $link, $session->fresh(['qrLink', 'payments']), $decision['decision']);
     }
 
     public function submit(
@@ -150,7 +225,7 @@ class PublicMountRequestController extends Controller
         ]);
     }
 
-    public function createFakePayment(string $token, PaymentProviderManager $paymentProviderManager): RedirectResponse
+    public function createFakePayment(Request $request, string $token, PaymentProviderManager $paymentProviderManager): RedirectResponse
     {
         abort_unless($this->fakePaymentProviderEnabled(), 404);
 
@@ -179,10 +254,10 @@ class PublicMountRequestController extends Controller
             'decision_status' => TechnicalServiceMountSession::DECISION_READY,
         ])->save();
 
-        return redirect()->route('mount-request.show', ['token' => $token]);
+        return $this->redirectToCurrentHost($request, 'mount-payment.show', ['token' => $payment->provider_reference]);
     }
 
-    public function chooseMultiProduct(string $token): RedirectResponse
+    public function chooseMultiProduct(Request $request, string $token): RedirectResponse
     {
         $link = $this->linkOrFail($token);
         $session = $this->sessionForLink($link);
@@ -193,7 +268,7 @@ class PublicMountRequestController extends Controller
             'decision_status' => TechnicalServiceMountSession::DECISION_FORM_OPEN,
         ])->save();
 
-        return redirect()->route('mount-request.show', ['token' => $token]);
+        return $this->redirectToCurrentHost($request, 'mount-request.form', ['token' => $token]);
     }
 
     public function multiProductOptions(
@@ -296,7 +371,7 @@ class PublicMountRequestController extends Controller
                 'per_page' => $perPage,
                 'last_page' => $lastPage,
             ],
-            'message' => $hasSelectableSerials ? null : 'Ek ürün talebiniz operasyon ekibine iletilecek.',
+            'message' => $hasSelectableSerials ? null : 'Bu fatura için ek montaj seçilebilir ürün bulunamadı. Ek ürün talebiniz operasyon ekibine iletilecek.',
         ]);
     }
 
@@ -317,7 +392,7 @@ class PublicMountRequestController extends Controller
         $token = $request->query('token');
 
         if (is_string($token) && $token !== '') {
-            return redirect()->route('mount-request.show', ['token' => $token]);
+            return $this->redirectToCurrentHost($request, 'mount-request.form', ['token' => $token]);
         }
 
         return redirect('/');
@@ -437,6 +512,34 @@ class PublicMountRequestController extends Controller
         ]);
     }
 
+    private function applyFallbackContext(
+        TechnicalServiceQrLink $link,
+        MountSessionEnrichmentService $enrichmentService,
+    ): TechnicalServiceMountSession {
+        $session = $this->sessionForLink($link);
+
+        if ((int) $session->check_attempt_count !== 0) {
+            return $session;
+        }
+
+        return $enrichmentService->applyContext($session, [
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_CHECK_FAILED,
+            'product_name' => $link->product_name,
+            'product_model' => $link->product_model,
+            'brand' => $link->brand,
+            'activation_code' => null,
+            'invoice_customer_type' => 'unknown',
+            'current_serial_state' => 'unknown',
+            'has_current_sale' => false,
+            'latest_event_type' => null,
+            'latest_valid_sale_exists' => false,
+            'stock_code' => null,
+            'resolver_payload' => [
+                'source' => 'public_qr_check_failed',
+            ],
+        ]);
+    }
+
     private function assertCanSubmit(TechnicalServiceMountSession $session, string $decision): void
     {
         $allowedDecision = in_array($decision, [
@@ -445,11 +548,7 @@ class PublicMountRequestController extends Controller
             MountFlowDecisionService::DECISION_SHOW_CHECK_FAILED_BUT_ALLOW_SUBMIT,
         ], true);
 
-        $unpaidSingleProduct = $this->requiresPaymentBeforeForm($session)
-            && $session->mount_payment_status !== TechnicalServiceMountSession::PAYMENT_PAID
-            && $session->customer_entry_mode !== TechnicalServiceMountSession::ENTRY_MULTI_PRODUCT_WITHOUT_PAYMENT;
-
-        if (! $allowedDecision || $unpaidSingleProduct) {
+        if (! $allowedDecision) {
             throw ValidationException::withMessages([
                 'form' => 'Montaj ödemesi tamamlanmadan form gönderilemez.',
             ]);
@@ -684,9 +783,63 @@ class PublicMountRequestController extends Controller
         };
     }
 
+    private function targetUrlForDecision(string $decision, string $token): string
+    {
+        if ($decision === MountFlowDecisionService::DECISION_SHOW_PAYMENT) {
+            return route('mount-request.payment.step', ['token' => $token], false);
+        }
+
+        return route('mount-request.form', ['token' => $token], false);
+    }
+
+    private function renderFormPage(
+        string $token,
+        TechnicalServiceQrLink $link,
+        TechnicalServiceMountSession $session,
+        string $decision,
+    ) {
+        $payment = $this->latestPayment($session);
+
+        return Inertia::render('public/mount-request-v2', [
+            'viewState' => $this->viewState($decision),
+            'message' => $this->message($decision, $session),
+            'product' => [
+                'product_name' => $session->context_payload['product_name'] ?? $link->product_name,
+                'product_model' => $session->context_payload['product_model'] ?? $link->product_model,
+                'serial_number' => $link->serial_number,
+                'brand' => $session->context_payload['brand'] ?? $link->brand,
+            ],
+            'statusLabel' => $this->statusLabel($session),
+            'actions' => [
+                'payment_label' => 'Montaj ödemesi yap',
+                'multi_product_label' => 'Birden fazla ürünüm var',
+                'continue_label' => 'Forma Devam Et',
+                'create_payment_url' => route('mount-request.payment.create', ['token' => $token], false),
+                'multi_product_url' => route('mount-request.multi-product', ['token' => $token], false),
+                'multi_product_lookup_url' => route('mount-request.invoice-serials.check', ['token' => $token], false),
+                'submit_url' => route('mount-request.submit', ['token' => $token], false),
+            ],
+            'payment' => $payment instanceof TechnicalServiceMountPayment ? [
+                'amount' => number_format((float) $payment->amount, 2, '.', ''),
+                'currency' => $payment->currency,
+                'payment_url' => $payment->payment_url,
+                'fake_approve_url' => $this->fakePaymentEnabled()
+                    ? route('mount-payment.fake.approve', ['payment' => $payment, 'token' => $token], false)
+                    : null,
+            ] : null,
+            'allowMultiProductRequest' => $this->allowMultiProductRequest($session),
+            'csrfToken' => csrf_token(),
+        ]);
+    }
+
     private function message(string $decision, ?TechnicalServiceMountSession $session = null): string
     {
         $currentState = $this->nullableString($session?->context_payload['current_serial_state'] ?? null);
+        $resolverSource = $this->nullableString($session?->context_payload['resolver_payload']['source'] ?? null);
+
+        if ($resolverSource === 'public_qr_check_failed') {
+            return 'Cihaz bilgileri tam doğrulanamadı; operasyon ekibi kontrol edecektir.';
+        }
 
         if ($decision !== MountFlowDecisionService::DECISION_SHOW_PAYMENT && $currentState === 'in_stock_or_center') {
             return 'Bu ürünün satış bilgisi henüz doğrulanamadı. Talebiniz operasyon ekibi tarafından kontrol edilecektir.';
@@ -732,11 +885,7 @@ class PublicMountRequestController extends Controller
 
     private function allowMultiProductRequest(TechnicalServiceMountSession $session): bool
     {
-        return in_array($session->sale_mount_status, [
-            TechnicalServiceMountSession::SALE_MONTAJ_DAHIL,
-            TechnicalServiceMountSession::SALE_MONTAJ_SONRADAN_DAHIL,
-        ], true)
-            && $session->customer_entry_mode !== TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT;
+        return $session->customer_entry_mode !== TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT;
     }
 
     private function requiresPaymentBeforeForm(TechnicalServiceMountSession $session): bool
@@ -769,5 +918,13 @@ class PublicMountRequestController extends Controller
         $value = trim((string) $value);
 
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * @param array<string, mixed> $parameters
+     */
+    private function redirectToCurrentHost(Request $request, string $routeName, array $parameters): RedirectResponse
+    {
+        return new RedirectResponse(route($routeName, $parameters, false));
     }
 }

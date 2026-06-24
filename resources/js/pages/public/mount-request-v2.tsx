@@ -1,4 +1,4 @@
-import { Head, useForm } from '@inertiajs/react';
+import { Head, router, useForm } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
@@ -52,6 +52,8 @@ type Actions = {
     payment_label?: string;
     multi_product_label?: string;
     continue_label?: string;
+    check_url?: string;
+    form_url?: string;
     create_payment_url?: string;
     multi_product_url?: string;
     multi_product_lookup_url?: string;
@@ -118,7 +120,6 @@ type MultiProductLookupResponse = {
     blocked_count?: number;
     returned_count?: number;
     total_count?: number;
-    operation_only_count?: number;
     meta?: {
         total: number;
         page: number;
@@ -131,6 +132,7 @@ type MultiProductLookupResponse = {
 type Props = {
     viewState:
         | 'invalid_link'
+        | 'checking'
         | 'form_ready'
         | 'payment_required'
         | 'multi_product_ready'
@@ -144,9 +146,15 @@ type Props = {
     payment?: Payment | null;
     submitted?: Submitted | null;
     allowMultiProductRequest?: boolean;
+    csrfToken?: string;
 };
 
 const PHONE_ERROR = 'Telefon numarası +90 sonrası 10 hane olmalıdır.';
+const MULTI_PRODUCT_NO_SELECTABLE_MESSAGE =
+    'Bu fatura için ek montaj seçilebilir ürün bulunamadı. Ek ürün talebiniz operasyon ekibine iletilecek.';
+const MULTI_PRODUCT_LOOKUP_FAILED_MESSAGE =
+    'Ek ürünler şu anda kontrol edilemedi. Talebiniz operasyon ekibine iletilecek.';
+const MULTI_PRODUCT_LOOKUP_TIMEOUT_MS = 15000;
 
 const INSTALLATION_CONSENT_TEXT = `Değerli Müşterimiz,
 Akıllı kilidin kapınıza kurulumu öncesinde, teknik ekibimiz tarafından kapı üzerinde geri dönüşümü olmayan değişiklikler yapılması gerektiğini size bildirmek isteriz. Bu değişiklikler arasında delik açma veya kapıda onarımlar bulunabilir. Bu değişikliklerin, akıllı kilidin uygun bir şekilde kurulması ve çalışması için gerekli olduğunu bilmeniz gerekmektedir. Bu mesajdaki kuralları ve bilgileri kabul ederseniz şartları onaylamış olursunuz.
@@ -276,14 +284,6 @@ function draftKey(): string | null {
     return `mount-request-v2:draft:${window.location.pathname}`;
 }
 
-function csrfToken(): string {
-    if (typeof document === 'undefined') {
-        return '';
-    }
-
-    return document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '';
-}
-
 function formatFileSize(bytes: number): string {
     if (bytes >= 1024 * 1024) {
         return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -353,6 +353,39 @@ function loadGoogleMapsScript(): Promise<void> {
     });
 }
 
+const HTTPS_LOCATION_REQUIRED_MESSAGE =
+    'Telefon konumunu kullanmak için HTTPS bağlantı gerekir. Şu an yerel HTTP bağlantısındasınız. Adresi elle girebilir veya HTTPS test bağlantısı kullanabilirsiniz.';
+
+const HTTPS_LOCATION_HELPER_MESSAGE =
+    'Lokal Wi-Fi testinde konum için HTTPS gerekir. Public form base URL alanına HTTPS test URL’si girildiğinde QR bu URL ile üretilebilir.';
+
+function geolocationUnavailableMessage(): string | null {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined' || !navigator.geolocation) {
+        return 'Bu tarayıcı konum paylaşımını desteklemiyor. Adresi elle girebilirsiniz.';
+    }
+
+    const host = window.location.hostname;
+    const localDesktopHost = host === 'localhost' || host.startsWith('127.') || host === '::1';
+
+    if (!window.isSecureContext && !localDesktopHost) {
+        return HTTPS_LOCATION_REQUIRED_MESSAGE;
+    }
+
+    return null;
+}
+
+function geolocationErrorMessage(error: GeolocationPositionError): string {
+    if (error.code === error.PERMISSION_DENIED) {
+        return 'Konum izni verilmedi. Adresi elle girebilirsiniz.';
+    }
+
+    if (error.code === error.TIMEOUT) {
+        return 'Konum alınamadı. Adresi elle girebilirsiniz.';
+    }
+
+    return 'Konum alınamadı. Adresi elle girebilirsiniz.';
+}
+
 function addressComponent(components: any[] | undefined, types: string[]): string {
     const component = components?.find((item) => types.some((type) => item.types?.includes(type)));
 
@@ -368,12 +401,15 @@ export default function MountRequestV2({
     payment,
     submitted,
     allowMultiProductRequest = false,
+    csrfToken = '',
 }: Props) {
     const invalid = viewState === 'invalid_link';
+    const checking = viewState === 'checking';
     const paymentRequired = viewState === 'payment_required';
     const submittedSuccessfully = viewState === 'submitted';
     const formReady = viewState === 'form_ready' || viewState === 'check_pending' || viewState === 'multi_product_ready';
-    const csrfValue = csrfToken();
+    const csrfValue = csrfToken;
+    const [checkStatus, setCheckStatus] = useState('Cihaz bilgileriniz kontrol ediliyor...');
     const [submitStatus, setSubmitStatus] = useState('');
     const [submitError, setSubmitError] = useState('');
     const [draftRestored, setDraftRestored] = useState(false);
@@ -381,7 +417,8 @@ export default function MountRequestV2({
     const [multiProductLoading, setMultiProductLoading] = useState(false);
     const [multiProductModalOpen, setMultiProductModalOpen] = useState(false);
     const [multiProductNotice, setMultiProductNotice] = useState('');
-    const [multiProductOperationOnlyCount, setMultiProductOperationOnlyCount] = useState(0);
+    const [multiProductLookupRequested, setMultiProductLookupRequested] = useState(false);
+    const [multiProductLookupAttempt, setMultiProductLookupAttempt] = useState(0);
     const [multiProductTotalCount, setMultiProductTotalCount] = useState(0);
     const [multiProductSelectableTotal, setMultiProductSelectableTotal] = useState(0);
     const [multiProductSearch, setMultiProductSearch] = useState('');
@@ -389,6 +426,7 @@ export default function MountRequestV2({
     const [multiProductMeta, setMultiProductMeta] = useState({ total: 0, page: 1, per_page: 20, last_page: 1 });
     const [locationModalOpen, setLocationModalOpen] = useState(false);
     const [locationStatus, setLocationStatus] = useState('');
+    const [mapUnavailable, setMapUnavailable] = useState(false);
     const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false);
     const [districtSearch, setDistrictSearch] = useState('');
     const [districtDropdownOpen, setDistrictDropdownOpen] = useState(false);
@@ -432,6 +470,71 @@ export default function MountRequestV2({
     const filteredDistrictOptions = districtSearchTerm
         ? districtOptions.filter((district) => district.normalizedName.includes(districtSearchTerm))
         : districtOptions;
+
+    useEffect(() => {
+        if (!checking) {
+            return;
+        }
+
+        let ignore = false;
+        const formUrl = actions?.form_url;
+        const visitForm = (targetUrl?: string | null) => {
+            const nextUrl = targetUrl || formUrl;
+
+            if (!nextUrl || ignore) {
+                return;
+            }
+
+            window.setTimeout(() => {
+                if (!ignore) {
+                    router.visit(nextUrl, { preserveScroll: false });
+                }
+            }, 600);
+        };
+
+        if (!actions?.check_url) {
+            queueMicrotask(() => {
+                if (!ignore) {
+                    setCheckStatus('Cihaz bilgileri tam doğrulanamadı; operasyon ekibi kontrol edecektir.');
+                }
+            });
+            visitForm(formUrl);
+
+            return () => {
+                ignore = true;
+            };
+        }
+
+        fetch(new URL(actions.check_url, window.location.origin).toString(), {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'X-CSRF-TOKEN': csrfValue,
+            },
+            credentials: 'same-origin',
+        })
+            .then((response) => response.ok ? response.json() : Promise.reject(new Error('check_failed')))
+            .then((payload: { target_url?: string | null; message?: string | null }) => {
+                if (ignore) {
+                    return;
+                }
+
+                setCheckStatus(payload.message || 'Form açılıyor...');
+                visitForm(payload.target_url);
+            })
+            .catch(() => {
+                if (ignore) {
+                    return;
+                }
+
+                setCheckStatus('Cihaz bilgileri tam doğrulanamadı; operasyon ekibi kontrol edecektir.');
+                visitForm(formUrl);
+            });
+
+        return () => {
+            ignore = true;
+        };
+    }, [actions?.check_url, actions?.form_url, checking, csrfValue]);
 
     const handleCityChange = (value: string) => {
         setDistrictSearch('');
@@ -528,17 +631,30 @@ export default function MountRequestV2({
     };
 
     const openLocationModal = () => {
+        const unavailableMessage = geolocationUnavailableMessage();
+
         setLocationModalOpen(true);
-        setLocationStatus(
+        setMapUnavailable(Boolean(unavailableMessage) || !GOOGLE_MAPS_API_KEY);
+        setLocationStatus(unavailableMessage ?? (
             GOOGLE_MAPS_API_KEY
                 ? 'Konum seçildiğinde adres bilgileri otomatik doldurulur. Eksik alan varsa tamamlayabilirsiniz.'
-                : 'Konum seçimi şu anda kullanılamıyor. Adresi elle girebilirsiniz.',
-        );
+                : 'Harita yüklenemedi. Adresi elle girebilirsiniz.'
+        ));
     };
 
     const useCurrentLocation = () => {
-        if (!navigator.geolocation || !GOOGLE_MAPS_API_KEY) {
-            setLocationStatus('Konum seçimi şu anda kullanılamıyor. Adresi elle girebilirsiniz.');
+        const unavailableMessage = geolocationUnavailableMessage();
+
+        if (unavailableMessage) {
+            setMapUnavailable(true);
+            setLocationStatus(unavailableMessage);
+
+            return;
+        }
+
+        if (!GOOGLE_MAPS_API_KEY) {
+            setMapUnavailable(true);
+            setLocationStatus('Harita yüklenemedi. Adresi elle girebilirsiniz.');
 
             return;
         }
@@ -546,7 +662,10 @@ export default function MountRequestV2({
         setLocationStatus('Mevcut konumunuz alınıyor...');
         navigator.geolocation.getCurrentPosition(
             (position) => reverseGeocodeLocation(position.coords.latitude, position.coords.longitude),
-            () => setLocationStatus('Konum alınamadı. Adresi elle girebilirsiniz.'),
+            (error) => {
+                setMapUnavailable(true);
+                setLocationStatus(geolocationErrorMessage(error));
+            },
             { enableHighAccuracy: true, timeout: 10000 },
         );
     };
@@ -714,11 +833,12 @@ export default function MountRequestV2({
     }, [form.data, storageKey, submittedSuccessfully]);
 
     useEffect(() => {
-        if (!form.data.multiple_products) {
+        if (!multiProductLookupRequested) {
             return;
         }
 
         let ignore = false;
+        const abortController = new AbortController();
         const runSoon = (callback: () => void) => window.setTimeout(() => {
             if (!ignore) {
                 callback();
@@ -730,7 +850,7 @@ export default function MountRequestV2({
                 setMultiProductLoading(false);
                 setMultiProductOptions([]);
                 setMultiProductModalOpen(false);
-                setMultiProductNotice('Ek ürün talebiniz operasyon ekibine iletilecek.');
+                setMultiProductNotice(MULTI_PRODUCT_LOOKUP_FAILED_MESSAGE);
                 setMultiProductSelectableTotal(0);
                 setMultiProductMeta({ total: 0, page: 1, per_page: 20, last_page: 1 });
             });
@@ -741,6 +861,9 @@ export default function MountRequestV2({
             };
         }
 
+        const timeoutTimer = window.setTimeout(() => {
+            abortController.abort();
+        }, MULTI_PRODUCT_LOOKUP_TIMEOUT_MS);
         const loadingTimer = window.setTimeout(() => {
             if (ignore) {
                 return;
@@ -761,11 +884,12 @@ export default function MountRequestV2({
             method: 'POST',
             headers: {
                 Accept: 'application/json',
-                'X-CSRF-TOKEN': csrfToken(),
+                'X-CSRF-TOKEN': csrfValue,
             },
             credentials: 'same-origin',
+            signal: abortController.signal,
         })
-            .then((response) => response.ok ? response.json() : { selectable_serials: [], items: [] })
+            .then((response) => response.ok ? response.json() : Promise.reject(new Error('lookup_failed')))
             .then((payload: MultiProductLookupResponse) => {
                 if (!ignore) {
                     const sourceItems = Array.isArray(payload.selectable_serials)
@@ -774,28 +898,28 @@ export default function MountRequestV2({
                             ? payload.items
                             : [];
                     const items = sourceItems.filter((item) => typeof item?.serial_number === 'string' && item.serial_number.trim() !== '');
-                    const hasSelectableSerials = items.length > 0 || Boolean(payload.has_selectable_serials);
                     setMultiProductOptions(items);
-                    setMultiProductOperationOnlyCount(typeof payload.operation_only_count === 'number' ? payload.operation_only_count : 0);
                     setMultiProductTotalCount(typeof payload.total_count === 'number' ? payload.total_count : 0);
                     setMultiProductSelectableTotal(typeof payload.selectable_total === 'number' ? payload.selectable_total : items.length);
                     setMultiProductMeta(payload.meta ?? { total: items.length, page: multiProductPage, per_page: 20, last_page: 1 });
-                    setMultiProductModalOpen(hasSelectableSerials);
-                    setMultiProductNotice(hasSelectableSerials ? '' : (payload.message || 'Ek ürün talebiniz operasyon ekibine iletilecek.'));
+                    setMultiProductModalOpen(items.length > 0);
+                    setMultiProductNotice(items.length > 0 ? '' : (payload.message || MULTI_PRODUCT_NO_SELECTABLE_MESSAGE));
                 }
             })
             .catch(() => {
                 if (!ignore) {
                     setMultiProductOptions([]);
-                    setMultiProductOperationOnlyCount(0);
                     setMultiProductTotalCount(0);
                     setMultiProductSelectableTotal(0);
                     setMultiProductMeta({ total: 0, page: 1, per_page: 20, last_page: 1 });
                     setMultiProductModalOpen(false);
-                    setMultiProductNotice('Ek ürün talebiniz operasyon ekibine iletilecek.');
+                    setMultiProductNotice(MULTI_PRODUCT_LOOKUP_FAILED_MESSAGE);
                 }
             })
             .finally(() => {
+                window.clearTimeout(timeoutTimer);
+                window.clearTimeout(loadingTimer);
+
                 if (!ignore) {
                     setMultiProductLoading(false);
                 }
@@ -803,17 +927,33 @@ export default function MountRequestV2({
 
         return () => {
             ignore = true;
+            abortController.abort();
+            window.clearTimeout(timeoutTimer);
             window.clearTimeout(loadingTimer);
         };
-    }, [form.data.multiple_products, actions?.multi_product_lookup_url, multiProductPage, multiProductSearch]);
+    }, [
+        multiProductLookupRequested,
+        multiProductLookupAttempt,
+        actions?.multi_product_lookup_url,
+        csrfValue,
+        multiProductPage,
+        multiProductSearch,
+    ]);
 
     useEffect(() => {
         if (!locationModalOpen) {
             return;
         }
 
+        if (geolocationUnavailableMessage()) {
+            return;
+        }
+
         if (!GOOGLE_MAPS_API_KEY) {
-            queueMicrotask(() => setLocationStatus('Konum seçimi şu anda kullanılamıyor. Adresi elle girebilirsiniz.'));
+            queueMicrotask(() => {
+                setMapUnavailable(true);
+                setLocationStatus('Harita yüklenemedi. Adresi elle girebilirsiniz.');
+            });
 
             return;
         }
@@ -828,7 +968,8 @@ export default function MountRequestV2({
             })
             .catch(() => {
                 if (!ignore) {
-                    setLocationStatus('Konum seçimi şu anda kullanılamıyor. Adresi elle girebilirsiniz.');
+                    setMapUnavailable(true);
+                    setLocationStatus('Harita yüklenemedi. Adresi elle girebilirsiniz.');
                 }
             });
 
@@ -838,7 +979,7 @@ export default function MountRequestV2({
     }, [locationModalOpen]);
 
     useEffect(() => {
-        if (!locationModalOpen || !googleMapsLoaded || !window.google?.maps || !mapRef.current || !searchInputRef.current) {
+        if (mapUnavailable || !locationModalOpen || !googleMapsLoaded || !window.google?.maps || !mapRef.current || !searchInputRef.current) {
             return;
         }
 
@@ -874,7 +1015,7 @@ export default function MountRequestV2({
         });
         // Map setup should rerun only when the modal opens after the Google script is ready.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [googleMapsLoaded, locationModalOpen]);
+    }, [googleMapsLoaded, locationModalOpen, mapUnavailable]);
 
     const clearDraft = () => {
         if (storageKey) {
@@ -885,6 +1026,8 @@ export default function MountRequestV2({
         setMultiProductOptions([]);
         setMultiProductModalOpen(false);
         setMultiProductNotice('');
+        setMultiProductLookupRequested(false);
+        setMultiProductLookupAttempt(0);
         setMultiProductSelectableTotal(0);
         setMultiProductSearch('');
         setMultiProductPage(1);
@@ -903,6 +1046,26 @@ export default function MountRequestV2({
         }
 
         form.setData('selected_invoice_serials', Array.from(current));
+    };
+
+    const openMultiProductModal = () => {
+        form.setData('multiple_products', true);
+        setMultiProductOptions([]);
+        setMultiProductSelectableTotal(0);
+        setMultiProductTotalCount(0);
+        setMultiProductMeta({ total: 0, page: 1, per_page: 20, last_page: 1 });
+        setMultiProductPage(1);
+        setMultiProductSearch('');
+        setMultiProductModalOpen(false);
+        setMultiProductLoading(true);
+        setMultiProductNotice('');
+        setMultiProductLookupRequested(true);
+        setMultiProductLookupAttempt((current) => current + 1);
+    };
+
+    const closeMultiProductModal = () => {
+        setMultiProductLookupRequested(false);
+        setMultiProductModalOpen(false);
     };
 
     const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -997,6 +1160,14 @@ export default function MountRequestV2({
             </div>
         </div>
     ) : null;
+    let multiProductButtonLabel = actions?.multi_product_label ?? 'Birden fazla ürünüm var';
+
+    if (multiProductLoading) {
+        multiProductButtonLabel = 'Aynı faturadaki ürünler kontrol ediliyor...';
+    } else if (multiProductNotice) {
+        multiProductButtonLabel = 'Tekrar kontrol et';
+    }
+
     const multiProductListControls = (
         <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1038,6 +1209,41 @@ export default function MountRequestV2({
             </div>
         </div>
     );
+
+    if (checking) {
+        return (
+            <>
+                <Head title="Montaj Formuna Yönlendiriliyorsunuz" />
+                <main className="min-h-screen bg-slate-100 px-4 py-10">
+                    <section className="mx-auto grid max-w-xl place-items-center gap-6 rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+                        <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
+                                Emaks Prime Teknik Servis
+                            </p>
+                            <h1 className="mt-3 text-2xl font-semibold text-slate-950">
+                                Montaj formuna yönlendiriliyorsunuz
+                            </h1>
+                            <p className="mt-2 text-sm font-semibold text-slate-600">
+                                Cihaz bilgileriniz kontrol ediliyor
+                            </p>
+                        </div>
+                        <div className="h-11 w-11 animate-spin rounded-full border-4 border-blue-100 border-t-blue-700" aria-hidden="true" />
+                        <p className="max-w-md text-sm leading-6 text-slate-600">
+                            {checkStatus || message || 'Lütfen bekleyin.'}
+                        </p>
+                        {actions?.form_url ? (
+                            <a
+                                href={actions.form_url}
+                                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+                            >
+                                Formu aç
+                            </a>
+                        ) : null}
+                    </section>
+                </main>
+            </>
+        );
+    }
 
     return (
         <>
@@ -1427,105 +1633,33 @@ export default function MountRequestV2({
                                     <input type="hidden" name="location_formatted_address" value={form.data.location_formatted_address} />
                                     <input type="hidden" name="location_map_url" value={form.data.location_map_url} />
 
-                                    {(allowMultiProductRequest || form.data.multiple_products) && (
-                                        <FormAccordionCard
-                                            title="Diğer serileri kontrol et"
-                                            summary="Aynı faturadaki diğer ürünler için seri uygunluğu ve montaj seçimi"
-                                            tone="serial"
-                                            defaultOpen={form.data.multiple_products || viewState === 'multi_product_ready'}
-                                        >
                                     {allowMultiProductRequest && (
-                                        <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-900">
-                                            <input
-                                                type="checkbox"
-                                                checked={form.data.multiple_products}
-                                                onChange={(event) => {
-                                                    form.setData('multiple_products', event.target.checked);
-
-                                                    if (!event.target.checked) {
-                                                        setMultiProductOptions([]);
-                                                        setMultiProductOperationOnlyCount(0);
-                                                        setMultiProductTotalCount(0);
-                                                        setMultiProductModalOpen(false);
-                                                        setMultiProductNotice('');
-                                                        form.setData('selected_invoice_serials', []);
-                                                    } else {
-                                                        setMultiProductLoading(Boolean(actions?.multi_product_lookup_url));
-                                                        setMultiProductNotice(actions?.multi_product_lookup_url ? '' : 'Ek ürün talebiniz operasyon ekibine iletilecek.');
-                                                    }
-                                                }}
-                                                className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-500"
-                                            />
-                                            Diğer serileri kontrol et ve bu adres için ek montaj talebi oluştur
-                                        </label>
-                                    )}
-
-                                    {form.data.multiple_products && multiProductLoading && (
-                                        <p className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-800">
-                                            Aynı faturadaki ürünler kontrol ediliyor...
-                                        </p>
-                                    )}
-
-                                    {form.data.multiple_products && !multiProductLoading && multiProductNotice && (
-                                        <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
-                                            {multiProductNotice}
-                                        </p>
-                                    )}
-
-                                    {form.data.multiple_products && multiProductOptions.length > 0 && !multiProductModalOpen && (
-                                        <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4">
-                                            {multiProductTotalCount > 1 ? (
-                                                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
-                                                    <p>Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.</p>
-                                                    {multiProductOperationOnlyCount > multiProductOptions.length ? (
-                                                        <p className="mt-1 text-xs text-emerald-800">
-                                                            Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.
-                                                        </p>
-                                                    ) : null}
+                                        <section className="grid gap-3 rounded-2xl border border-violet-100 bg-violet-50/70 p-4 shadow-sm">
+                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                <div>
+                                                    <p className="text-sm font-semibold uppercase tracking-[0.08em] text-slate-700">
+                                                        Birden fazla ürünüm var
+                                                    </p>
+                                                    <p className="mt-1 text-sm leading-5 text-slate-600">
+                                                        Aynı faturadaki diğer ürünleri seçmek için tıklayın.
+                                                    </p>
                                                 </div>
-                                            ) : null}
-                                            <p className="text-sm font-semibold text-slate-900">
-                                                Bu adreste montajını istediğiniz diğer ürünleri seçin.
-                                            </p>
-                                            {selectedInvoiceSerialsPanel}
-                                            {multiProductListControls}
-                                            <button
-                                                type="button"
-                                                onClick={() => setMultiProductModalOpen(true)}
-                                                className="w-fit rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100"
-                                            >
-                                                Diğer serileri kontrol et
-                                            </button>
-                                            <div className="grid gap-2">
-                                                {multiProductOptions.map((item) => {
-                                                    const serialNumber = item.serial_number ?? '';
-
-                                                    if (!serialNumber) {
-                                                        return null;
-                                                    }
-
-                                                    return (
-                                                        <label key={serialNumber} className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={form.data.selected_invoice_serials.includes(serialNumber)}
-                                                                onChange={(event) => toggleSelectedInvoiceSerial(serialNumber, event.target.checked)}
-                                                                className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-500"
-                                                            />
-                                                            <span>
-                                                                <span className="block font-semibold text-slate-950">{item.product_name || 'Ürün bilgisi'}</span>
-                                                                <span className="block text-xs text-slate-500">
-                                                                    Seri no: {serialNumber}
-                                                                    {item.product_model ? ` · Model: ${item.product_model}` : ''}
-                                                                </span>
-                                                            </span>
-                                                        </label>
-                                                    );
-                                                })}
+                                                <button
+                                                    type="button"
+                                                    onClick={openMultiProductModal}
+                                                    disabled={multiProductLoading}
+                                                    className="w-fit rounded-lg bg-violet-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                                >
+                                                    {multiProductButtonLabel}
+                                                </button>
                                             </div>
-                                        </div>
-                                    )}
-                                        </FormAccordionCard>
+                                            {selectedInvoiceSerialsPanel}
+                                            {form.data.multiple_products && !multiProductModalOpen && multiProductNotice ? (
+                                                <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+                                                    {multiProductNotice}
+                                                </p>
+                                            ) : null}
+                                        </section>
                                     )}
 
                                     <FormAccordionCard
@@ -1656,12 +1790,12 @@ export default function MountRequestV2({
                         <div className="grid max-h-[90vh] w-full max-w-2xl gap-4 overflow-auto rounded-2xl bg-white p-5 shadow-2xl">
                             <div className="flex items-start justify-between gap-3">
                                 <div>
-                                    <h2 className="text-lg font-semibold text-slate-950">Diğer serileri kontrol et</h2>
-                                    <p className="mt-1 text-sm text-slate-600">Sadece bu talep için seçilebilir seri ve ürünler gösterilir.</p>
+                                    <h2 className="text-lg font-semibold text-slate-950">Aynı faturadaki diğer ürünler</h2>
+                                    <p className="mt-1 text-sm text-slate-600">Montaj istediğiniz ek ürünleri seçebilirsiniz.</p>
                                 </div>
                                 <button
                                     type="button"
-                                    onClick={() => setMultiProductModalOpen(false)}
+                                    onClick={closeMultiProductModal}
                                     className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                                 >
                                     Kapat
@@ -1670,15 +1804,20 @@ export default function MountRequestV2({
                             {multiProductTotalCount > 1 ? (
                                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
                                     <p>Bu faturada birden fazla ürün görünüyor. Montaj istediğiniz ürünleri seçebilirsiniz.</p>
-                                    {multiProductOperationOnlyCount > multiProductOptions.length ? (
-                                        <p className="mt-1 text-xs text-emerald-800">
-                                            Operasyon ekibi diğer ürünleri ayrıca kontrol edebilir.
-                                        </p>
-                                    ) : null}
                                 </div>
                             ) : null}
                             {selectedInvoiceSerialsPanel}
                             {multiProductListControls}
+                            {multiProductLoading ? (
+                                <p className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-800">
+                                    Aynı faturadaki ürünler kontrol ediliyor...
+                                </p>
+                            ) : null}
+                            {!multiProductLoading && multiProductNotice ? (
+                                <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+                                    {multiProductNotice}
+                                </p>
+                            ) : null}
                             <div className="grid gap-2">
                                 {multiProductOptions.map((item) => {
                                     const serialNumber = item.serial_number ?? '';
@@ -1708,10 +1847,10 @@ export default function MountRequestV2({
                             </div>
                             <button
                                 type="button"
-                                onClick={() => setMultiProductModalOpen(false)}
+                                onClick={closeMultiProductModal}
                                 className="w-fit rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
                             >
-                                Seçimi tamamla
+                                Seçili ürünleri talebe ekle
                             </button>
                         </div>
                     </div>
@@ -1723,7 +1862,7 @@ export default function MountRequestV2({
                                 <div>
                                     <h2 className="text-lg font-semibold text-slate-950">Konumumu ekle</h2>
                                     <p className="mt-1 text-sm text-slate-600">
-                                        Adres arayabilir, haritadan seçebilir veya mevcut konumunuzu kullanabilirsiniz.
+                                        Konum kullanılamıyorsa adresi elle girebilirsiniz.
                                     </p>
                                 </div>
                                 <button
@@ -1740,19 +1879,32 @@ export default function MountRequestV2({
                                 </p>
                             ) : null}
                             <div className="grid gap-3">
-                                <input
-                                    ref={searchInputRef}
-                                    type="text"
-                                    placeholder="Adres ara"
-                                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                                    disabled={!GOOGLE_MAPS_API_KEY}
-                                />
-                                <div ref={mapRef} className="h-72 rounded-xl border border-slate-200 bg-slate-100" />
+                                {mapUnavailable ? (
+                                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                                        <p className="font-semibold">Harita yerine elle adres girişi kullanılacak.</p>
+                                        <p className="mt-1 leading-6">
+                                            {locationStatus === HTTPS_LOCATION_REQUIRED_MESSAGE
+                                                ? HTTPS_LOCATION_HELPER_MESSAGE
+                                                : 'Harita yüklenemedi. Adresi elle girebilirsiniz. İl, ilçe ve açık adres alanlarını doldurarak devam edebilirsiniz.'}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <input
+                                            ref={searchInputRef}
+                                            type="text"
+                                            placeholder="Adres ara"
+                                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                                        />
+                                        <div ref={mapRef} className="h-72 rounded-xl border border-slate-200 bg-slate-100" />
+                                    </>
+                                )}
                                 <div className="flex flex-wrap gap-2">
                                     <button
                                         type="button"
                                         onClick={useCurrentLocation}
-                                        className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+                                        disabled={mapUnavailable}
+                                        className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                         Mevcut konumumu kullan
                                     </button>

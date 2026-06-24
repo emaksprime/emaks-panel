@@ -15,6 +15,11 @@ class MountFlowDecisionService
     public const DECISION_SHOW_CHECK_FAILED_BUT_ALLOW_SUBMIT = 'show_check_failed_but_allow_submit';
     public const DECISION_SHOW_UNKNOWN_ERROR = 'show_unknown_error';
 
+    public function __construct(
+        private readonly QrPublicFlowSettingsService $settings,
+    ) {
+    }
+
     /**
      * @return array{decision:string,sale_mount_status:?string,mount_payment_status:?string,customer_entry_mode:?string,decision_status:?string}
      */
@@ -55,6 +60,16 @@ class MountFlowDecisionService
                 $session->forceFill([
                     'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
                     'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_PAID_SINGLE_PRODUCT,
+                    'decision_status' => TechnicalServiceMountSession::DECISION_FORM_OPEN,
+                ])->save();
+
+                return $this->decision($session->fresh(), self::DECISION_SHOW_FORM);
+            }
+
+            if (! $this->settings->preFormPaymentEnabled()) {
+                $session->forceFill([
+                    'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+                    'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_SINGLE_PRODUCT,
                     'decision_status' => TechnicalServiceMountSession::DECISION_FORM_OPEN,
                 ])->save();
 
