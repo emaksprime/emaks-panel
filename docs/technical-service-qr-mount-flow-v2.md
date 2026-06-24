@@ -478,9 +478,20 @@ Adres ek alanları:
 Bu iş canlıya alınırken unutulmaması gerekenler:
 
 - Coolify env:
+  - APP_URL=https://dashboard.emaksprime.com.tr
+  - PUBLIC_APP_URL=https://dashboard.emaksprime.com.tr
+  - PUBLIC_QR_BASE_URL=https://dashboard.emaksprime.com.tr
+  - PUBLIC_PAYMENT_BASE_URL=https://dashboard.emaksprime.com.tr
   - VITE_GOOGLE_MAPS_API_KEY
   - VITE_GOOGLE_MAPS_LANGUAGE=tr
   - VITE_GOOGLE_MAPS_REGION=TR
+
+- Public URL sözleşmesi:
+  - QR public form linkleri `PUBLIC_QR_BASE_URL` üzerinden üretilir.
+  - Ödeme linkleri `PUBLIC_PAYMENT_BASE_URL` üzerinden üretilir.
+  - Canlıda localhost, 127.0.0.1, 10.*, 192.168.* veya 172.16-31.* public QR/ödeme URL'si kabul edilmez.
+  - Lokal Wi-Fi testinde LAN IP sadece panelde girilen local override olarak kullanılabilir; canlı varsayılan olamaz.
+  - QR önizlemede görünen URL ile QR görseline encode edilen URL aynı olmalıdır.
 
 - Browser key restriction:
   - https://dashboard.emaksprime.com.tr/*

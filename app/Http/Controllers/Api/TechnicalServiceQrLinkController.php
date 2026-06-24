@@ -510,11 +510,13 @@ class TechnicalServiceQrLinkController extends Controller
     {
         $baseUrl = $this->publicBaseUrl($request);
 
-        if ($baseUrl !== null) {
-            return $baseUrl.'/'.ltrim($link->publicPath(), '/');
+        try {
+            return PartnerPortalPublicUrl::qrUrl($link->publicPath(), $baseUrl);
+        } catch (\InvalidArgumentException $exception) {
+            throw ValidationException::withMessages([
+                'public_base_url' => $exception->getMessage(),
+            ]);
         }
-
-        return PartnerPortalPublicUrl::url($link->publicPath());
     }
 
     private function publicBaseUrl(?Request $request): ?string
@@ -529,33 +531,7 @@ class TechnicalServiceQrLinkController extends Controller
             return null;
         }
 
-        if (! preg_match('#^https?://#i', $baseUrl)) {
-            return null;
-        }
-
-        $parts = parse_url($baseUrl);
-
-        if (! is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
-            return null;
-        }
-
-        $scheme = strtolower((string) $parts['scheme']);
-
-        if (! in_array($scheme, ['http', 'https'], true)) {
-            return null;
-        }
-
-        $normalized = $scheme.'://'.strtolower((string) $parts['host']);
-
-        if (! empty($parts['port'])) {
-            $normalized .= ':'.(int) $parts['port'];
-        }
-
-        if (! empty($parts['path'])) {
-            $normalized .= '/'.trim((string) $parts['path'], '/');
-        }
-
-        return rtrim($normalized, '/');
+        return PartnerPortalPublicUrl::normalizeBaseUrl($baseUrl);
     }
 
     private function normalizeSerial(mixed $value): ?string

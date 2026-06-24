@@ -547,6 +547,33 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         ]);
     }
 
+    public function test_payment_public_extra_mount_fee_payment_link_uses_public_payment_base_url(): void
+    {
+        config([
+            'services.public_urls.payment_base_url' => 'https://payments.example.test',
+            'services.public_urls.app_url' => 'https://app.example.test',
+            'app.url' => 'https://app-url.example.test',
+        ]);
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 150,
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertCreated();
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->assertSame($payment->payment_url, $response->json('payment.payment_url'));
+        $this->assertStringStartsWith('https://payments.example.test/mount-payment/', $payment->payment_url);
+    }
+
     public function test_extra_mount_fee_payment_link_reuses_existing_pending_session(): void
     {
         $user = $this->adminUser();

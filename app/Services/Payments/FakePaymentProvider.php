@@ -3,6 +3,7 @@
 namespace App\Services\Payments;
 
 use App\Models\TechnicalServiceMountPayment;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Str;
 
 class FakePaymentProvider implements PaymentProviderInterface
@@ -17,7 +18,7 @@ class FakePaymentProvider implements PaymentProviderInterface
             'provider' => 'fake',
             'provider_reference' => $reference,
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
-            'payment_url' => route('mount-payment.show', ['token' => $reference]),
+            'payment_url' => PartnerPortalPublicUrl::paymentUrl(route('mount-payment.show', ['token' => $reference], false)),
             'raw_payload' => $payload,
         ])->save();
 

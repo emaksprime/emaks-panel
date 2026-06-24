@@ -33,6 +33,12 @@ return [
         'invoice_serials_mode' => env('TECHNICAL_SERVICE_INVOICE_SERIALS_MODE', 'gateway'),
     ],
 
+    'public_urls' => [
+        'app_url' => env('PUBLIC_APP_URL'),
+        'qr_base_url' => env('PUBLIC_QR_BASE_URL'),
+        'payment_base_url' => env('PUBLIC_PAYMENT_BASE_URL'),
+    ],
+
     'partner_portal' => [
         'public_url' => env('PARTNER_PORTAL_PUBLIC_URL', env('APP_URL')),
     ],

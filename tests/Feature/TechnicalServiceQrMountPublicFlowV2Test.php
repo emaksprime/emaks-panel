@@ -14,6 +14,7 @@ use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -471,6 +472,88 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         $this->assertStringContainsString('const params = new URLSearchParams({ public_base_url: normalizedBase })', $source);
         $this->assertStringContainsString('return `${link.qr_svg_url}?${params.toString()}`', $source);
         $this->assertStringContainsString('{selectedPublicUrl}', $source);
+    }
+
+    public function test_live_qr_public_url_uses_public_qr_base_url(): void
+    {
+        config([
+            'services.public_urls.qr_base_url' => 'https://qr.example.test',
+            'services.public_urls.app_url' => 'https://app.example.test',
+            'app.url' => 'https://app-url.example.test',
+        ]);
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_DAHIL);
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $response = $this->actingAs($user)
+            ->postJson('/api/technical-service/qr-products', [
+                'serial_number' => 'QR-LIVE-BASE-001',
+                'product_name' => 'Emaks Prime Test Kilit',
+            ])
+            ->assertCreated();
+
+        $this->assertSame('https://qr.example.test'.$response->json('path'), $response->json('public_url'));
+    }
+
+    public function test_live_public_urls_use_dashboard_domain_when_configured(): void
+    {
+        config([
+            'services.public_urls.app_url' => 'https://dashboard.emaksprime.com.tr',
+            'services.public_urls.qr_base_url' => 'https://dashboard.emaksprime.com.tr',
+            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
+            'app.url' => 'https://fallback.example.test',
+        ]);
+
+        $this->assertSame(
+            'https://dashboard.emaksprime.com.tr/mount-request/live-token',
+            PartnerPortalPublicUrl::qrUrl('/mount-request/live-token'),
+        );
+        $this->assertSame(
+            'https://dashboard.emaksprime.com.tr/mount-payment/live-token',
+            PartnerPortalPublicUrl::paymentUrl('/mount-payment/live-token'),
+        );
+    }
+
+    public function test_production_qr_url_rejects_localhost(): void
+    {
+        $this->app->detectEnvironment(fn (): string => 'production');
+        config(['services.public_urls.qr_base_url' => 'http://127.0.0.1:8000']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Production QR public URL localhost veya özel ağ IP');
+
+        PartnerPortalPublicUrl::qrUrl('/mount-request/local-token');
+    }
+
+    public function test_production_payment_url_rejects_localhost(): void
+    {
+        $this->app->detectEnvironment(fn (): string => 'production');
+        config(['services.public_urls.payment_base_url' => 'http://localhost:8000']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Production payment public URL localhost veya özel ağ IP');
+
+        PartnerPortalPublicUrl::paymentUrl('/mount-payment/local-token');
+    }
+
+    public function test_production_public_url_rejects_private_lan_ip(): void
+    {
+        $this->app->detectEnvironment(fn (): string => 'production');
+        config(['services.public_urls.qr_base_url' => 'http://192.168.1.20:8000']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Production QR public URL localhost veya özel ağ IP');
+
+        PartnerPortalPublicUrl::qrUrl('/mount-request/private-token');
+    }
+
+    public function test_local_public_form_base_override_allowed_in_local_only(): void
+    {
+        $this->app->detectEnvironment(fn (): string => 'local');
+
+        $this->assertSame(
+            'http://10.0.0.50:8000/mount-request/local-token',
+            PartnerPortalPublicUrl::qrUrl('/mount-request/local-token', 'http://10.0.0.50:8000'),
+        );
     }
 
     public function test_public_mount_request_get_does_not_require_auth(): void
