@@ -30,6 +30,7 @@ use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
 use App\Services\TechnicalService\TechnicalServiceCancelContextService;
+use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
@@ -54,6 +55,7 @@ class TechnicalServiceController extends Controller
         private readonly EvolutionWhatsAppMessageService $messages,
         private readonly TechnicalServiceCodeGenerator $codeGenerator,
         private readonly TechnicalServiceServiceVisitService $serviceVisitService,
+        private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlementService,
     ) {
     }
 
@@ -717,10 +719,25 @@ class TechnicalServiceController extends Controller
             ->pluck('id')
             ->map(fn (mixed $id): int => (int) $id)
             ->values();
+        $selectedSerialSnapshots = TechnicalServiceRequestSerial::query()
+            ->where('technical_service_request_id', $technicalServiceRequest->id)
+            ->whereIn('id', $validSerialIds)
+            ->orderBy('id')
+            ->get(['id', 'mrn', 'linked_mrn', 'serial_number', 'customer_phone'])
+            ->map(fn (TechnicalServiceRequestSerial $serial): array => [
+                'id' => $serial->id,
+                'mrn' => $serial->mrn,
+                'linked_mrn' => $serial->linked_mrn,
+                'serial_number' => $serial->serial_number,
+                'customer_phone' => $serial->customer_phone,
+            ])
+            ->values()
+            ->all();
         $currency = strtoupper($validated['currency'] ?? 'TRY');
         $purpose = (string) ($validated['purpose'] ?? $validated['reason'] ?? 'mount_extra');
         $isCustomerCharge = in_array($purpose, ['service_payment', 'part_payment', 'service_and_part_payment'], true);
-        if (! $isCustomerCharge && ! isset($validated['technician_id'])) {
+        $technicianRequired = ! $isCustomerCharge && ! in_array($purpose, ['mount_extra', 'manual_mount_payment'], true);
+        if ($technicianRequired && ! isset($validated['technician_id'])) {
             throw ValidationException::withMessages([
                 'technician_id' => 'Ek montaj ödeme linki için usta seçimi zorunludur.',
             ]);
@@ -746,13 +763,22 @@ class TechnicalServiceController extends Controller
             'technical_service_request_id' => $technicalServiceRequest->id,
             'root_request_id' => $technicalServiceRequest->parent_request_id ?: $technicalServiceRequest->id,
             'mrn' => $technicalServiceRequest->mrn,
+            'request_code' => $technicalServiceRequest->mrn,
+            'root_mrn' => $technicalServiceRequest->root_mrn ?: $technicalServiceRequest->mrn,
             'service_code' => $technicalServiceRequest->service_code,
+            'serial_number' => $technicalServiceRequest->serial_number,
+            'customer_name' => $technicalServiceRequest->customer_name,
+            'customer_phone' => $technicalServiceRequest->customer_phone,
+            'customer_city' => $technicalServiceRequest->customer_city,
+            'customer_district' => $technicalServiceRequest->customer_district,
             'route_quote_id' => $validated['route_quote_id'] ?? null,
             'technician_id' => isset($validated['technician_id']) ? (int) $validated['technician_id'] : null,
             'selected_serial_ids' => $selectedSerialIds,
+            'selected_serials' => $selectedSerialSnapshots,
             'reason' => $validated['reason'] ?? $purpose,
             'purpose' => $purpose,
             'charge_type' => $purpose,
+            'amount_source' => $isCustomerCharge ? 'manual_customer_charge' : 'manual_ops_amount',
             'service_amount' => $serviceAmount,
             'part_amount' => $partAmount,
             'total_amount' => $totalAmount,
@@ -792,6 +818,7 @@ class TechnicalServiceController extends Controller
                         'amount' => (float) $existingPayment->amount,
                         'currency' => $existingPayment->currency,
                         'payment_url' => $existingPayment->payment_url,
+                        'amount_source' => $payload['amount_source'] ?? 'manual_ops_amount',
                         'reused' => true,
                     ],
                     'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
@@ -877,6 +904,7 @@ class TechnicalServiceController extends Controller
                 'amount' => (float) $payment->amount,
                 'currency' => $payment->currency,
                 'payment_url' => $payment->payment_url,
+                'amount_source' => $paymentPayload['amount_source'],
                 'reused' => false,
             ],
             'request' => $requestPayload,
@@ -901,6 +929,120 @@ class TechnicalServiceController extends Controller
             ],
             'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
         ]);
+    }
+
+    public function cancelMountPayment(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceMountPayment $payment
+    ): JsonResponse {
+        abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        $validated = $request->validate([
+            'reason' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        if ($payment->status === TechnicalServiceMountPayment::STATUS_PAID) {
+            throw ValidationException::withMessages([
+                'payment' => 'Ödenmiş ödeme kaydı bu aşamada iptal edilemez.',
+            ]);
+        }
+
+        if ($payment->status === TechnicalServiceMountPayment::STATUS_CANCELLED) {
+            return response()->json([
+                'ok' => true,
+                'message' => 'Ödeme linki zaten iptal edilmiş.',
+                'payment' => $this->cancelledMountPaymentResponse($payment->refresh()),
+                'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+            ]);
+        }
+
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+            throw ValidationException::withMessages([
+                'payment' => 'Yalnızca bekleyen ödeme linkleri iptal edilebilir.',
+            ]);
+        }
+
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['cancelled_at'] = now()->toISOString();
+        $payload['cancelled_by_user_id'] = $request->user()?->id;
+        $payload['cancelled_by_name'] = $request->user()?->name;
+        $payload['cancellation_reason'] = $validated['reason'] ?? 'OPS tarafından iptal edildi';
+        $payload['cancel_source'] = 'ops_payment_modal';
+
+        $payment->forceFill([
+            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
+            'raw_payload' => $payload,
+        ])->save();
+
+        $remainingMountPayments = TechnicalServiceMountPayment::query()
+            ->where('technical_service_request_id', $technicalServiceRequest->id)
+            ->whereIn('status', [
+                TechnicalServiceMountPayment::STATUS_PENDING,
+                TechnicalServiceMountPayment::STATUS_PAID,
+            ])
+            ->get()
+            ->reject(function (TechnicalServiceMountPayment $candidate): bool {
+                $candidatePayload = is_array($candidate->raw_payload) ? $candidate->raw_payload : [];
+
+                return ($candidatePayload['source'] ?? null) === 'operation_customer_charge';
+            });
+        $hasPendingMountPayment = $remainingMountPayments
+            ->contains(fn (TechnicalServiceMountPayment $candidate): bool => $candidate->status === TechnicalServiceMountPayment::STATUS_PENDING);
+        $hasPaidMountPayment = $remainingMountPayments
+            ->contains(fn (TechnicalServiceMountPayment $candidate): bool => $candidate->status === TechnicalServiceMountPayment::STATUS_PAID);
+
+        if (! $hasPendingMountPayment) {
+            $technicalServiceRequest->forceFill([
+                'mount_payment_status' => $hasPaidMountPayment
+                    ? TechnicalServiceMountSession::PAYMENT_PAID
+                    : TechnicalServiceMountSession::PAYMENT_CANCELLED,
+                'mount_payment_label' => $hasPaidMountPayment
+                    ? 'Ödeme alındı'
+                    : 'Ödeme linki iptal edildi',
+            ])->save();
+        }
+
+        $technicalServiceRequest->events()->create([
+            'event_type' => 'mount_payment_link_cancelled',
+            'title' => 'Ödeme linki iptal edildi',
+            'note' => $payload['cancellation_reason'],
+            'from_status' => $technicalServiceRequest->workflow_status,
+            'to_status' => $technicalServiceRequest->workflow_status,
+            'author_user_id' => $request->user()?->id,
+            'metadata' => [
+                'payment_id' => $payment->id,
+                'provider' => $payment->provider,
+                'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'source' => $payload['source'] ?? null,
+            ],
+        ]);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Bekleyen ödeme linki iptal edildi.',
+            'payment' => $this->cancelledMountPaymentResponse($payment->refresh()),
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function cancelledMountPaymentResponse(TechnicalServiceMountPayment $payment): array
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+
+        return [
+            'id' => $payment->id,
+            'status' => $payment->status,
+            'amount' => (float) $payment->amount,
+            'currency' => $payment->currency,
+            'payment_url' => $payment->payment_url,
+            'cancelled_at' => $payload['cancelled_at'] ?? null,
+            'cancellation_reason' => $payload['cancellation_reason'] ?? null,
+        ];
     }
 
     public function recheckInvoiceSerials(
@@ -1314,11 +1456,12 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        if ($this->workflowService->requiresMountExclusionAcknowledgement($technicalServiceRequest)) {
-            $mountExclusionNote = trim((string) ($payload['mount_exclusion_note'] ?? ''));
+        $mountExclusionNote = trim((string) ($payload['mount_exclusion_note'] ?? ''));
+        $mountExclusionAcknowledged = (bool) ($payload['mount_exclusion_acknowledged'] ?? false);
+        if ($mountExclusionAcknowledged || $mountExclusionNote !== '') {
             $errors = [];
 
-            if (! (bool) ($payload['mount_exclusion_acknowledged'] ?? false)) {
+            if (! $mountExclusionAcknowledged) {
                 $errors['mount_exclusion_acknowledged'] = 'Montaj hariç çoklu ürün onayı zorunludur.';
             }
 
@@ -1465,6 +1608,10 @@ class TechnicalServiceController extends Controller
 
         if (array_key_exists('travel_amount', $payload)) {
             $assignmentOfferPayload['route_fee_amount'] = $payload['travel_amount'];
+        }
+
+        if (array_key_exists('customer_direct_to_technician_amount', $payload)) {
+            $assignmentOfferPayload['customer_direct_to_technician_amount'] = $payload['customer_direct_to_technician_amount'];
         }
 
         if (array_key_exists('earning_note', $payload)) {
@@ -1853,6 +2000,9 @@ class TechnicalServiceController extends Controller
         $totalAmount = round($laborAmount + $routeFeeAmount, 2);
         $note = trim((string) ($offerPayload['note'] ?? ''));
         $currency = strtoupper(substr((string) ($offerPayload['currency'] ?? 'TRY'), 0, 8)) ?: 'TRY';
+        $customerDirectAmount = array_key_exists('customer_direct_to_technician_amount', $offerPayload)
+            ? $this->nullableSubmittedMoney($offerPayload['customer_direct_to_technician_amount'])
+            : null;
         $messagePayload = $this->technicianAssignmentMessagePayload($request, $technician, [
             'labor_amount' => $laborAmount,
             'route_fee_amount' => $routeFeeAmount,
@@ -1934,6 +2084,17 @@ class TechnicalServiceController extends Controller
             'status' => $dispatch->status,
         ];
         $offer->forceFill(['metadata' => $metadata])->save();
+
+        $this->assignmentSettlementService->persistForAssignment(
+            $request->refresh(),
+            $technician,
+            $offer,
+            $routeQuote,
+            $laborAmount,
+            $routeFeeAmount,
+            $customerDirectAmount,
+            $user,
+        );
 
         return $offer;
     }
@@ -2137,6 +2298,19 @@ class TechnicalServiceController extends Controller
         }
 
         return round(max((float) $value, 0), 2);
+    }
+
+    private function nullableSubmittedMoney(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return round((float) $value, 2);
     }
 
     private function telLink(?string $phone): ?string

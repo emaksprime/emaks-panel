@@ -295,6 +295,11 @@ class TechnicalServiceRequest extends Model
             ]));
     }
 
+    public function settlement(): HasOne
+    {
+        return $this->hasOne(TechnicalServiceSettlement::class, 'technical_service_request_id');
+    }
+
     public function assignmentArchives(): HasMany
     {
         return $this->hasMany(TechnicalServiceAssignmentArchive::class, 'technical_service_request_id');

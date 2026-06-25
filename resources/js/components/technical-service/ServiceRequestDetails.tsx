@@ -46,6 +46,7 @@ const statusVariant = (status: ServiceRequest['status']) => {
 
 type ServiceRequestDetailsProps = {
   request: ServiceRequest
+  opsDetailVisibility?: OpsDetailVisibilitySettings
   displayMrn?: string
   events: ServiceRequestEvent[]
   loading: boolean
@@ -135,6 +136,7 @@ type ServiceRequestDetailsProps = {
   onRouteQuoteCalculate?: () => void | Promise<void>
   onRouteQuoteManualSave?: (payload: ServiceRequestRouteQuoteManualPayload) => void | Promise<void>
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
+  onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
@@ -152,6 +154,18 @@ type ServiceRequestDetailsProps = {
   fieldDocumentReviewError?: string | null
   customerApprovalResendLoading?: boolean
   customerApprovalResendError?: string | null
+}
+
+type OpsDetailVisibilitySettings = {
+  show_mount_excluded_approval_block: boolean
+  show_payment_mount_control_block: boolean
+  show_address_control_block: boolean
+}
+
+const DEFAULT_OPS_DETAIL_VISIBILITY: OpsDetailVisibilitySettings = {
+  show_mount_excluded_approval_block: false,
+  show_payment_mount_control_block: false,
+  show_address_control_block: false,
 }
 
 const eventTime = (timestamp: string): string => {
@@ -1238,6 +1252,29 @@ const assignmentOfferStatusLabel = (status: string | null | undefined): string =
   }
 }
 
+const settlementStatusLabel = (status: string | null | undefined): string => {
+  switch (String(status ?? '').trim()) {
+    case 'calculated':
+      return 'Hesaplandı'
+    case 'admin_review':
+      return 'Admin inceleme'
+    case 'finalized':
+      return 'Kesinleşti'
+    case 'sent':
+      return 'Gönderildi'
+    case 'partial_paid':
+      return 'Kısmi ödendi'
+    case 'paid':
+      return 'Ödendi'
+    case 'excluded':
+      return 'Hakedişe dahil değil'
+    case 'draft':
+      return 'Taslak'
+    default:
+      return displayOrEmpty(status, 'Settlement yok')
+  }
+}
+
 const slaStatusLabel = (status: ServiceRequest['slaStatus']): string => {
   switch (status) {
     case 'yaklaşan':
@@ -1393,6 +1430,7 @@ const parseEventTimestamp = (event: ServiceRequestEvent): number => {
 
 export function ServiceRequestDetails({
   request,
+  opsDetailVisibility = DEFAULT_OPS_DETAIL_VISIBILITY,
   displayMrn,
   events,
   loading,
@@ -1449,6 +1487,7 @@ export function ServiceRequestDetails({
   onRouteQuoteCalculate,
   onRouteQuoteManualSave,
   onExtraMountPaymentCreate,
+  onMountPaymentCancel,
   onTechnicianEarningMessageCreate,
   onAssignSelectedTechnician,
   onPartnerAppointmentProposalApprove,
@@ -1591,6 +1630,7 @@ export function ServiceRequestDetails({
   const setAssignmentInfoOpen = (open: boolean) => {
     setAssignmentInfoOpenByRequest((current) => ({ ...current, [request.id]: open }))
   }
+  const [otherTechniciansModalOpenByRequest, setOtherTechniciansModalOpenByRequest] = useState<Record<string, boolean>>({})
   const [finalCheckOpenByRequest, setFinalCheckOpenByRequest] = useState<Record<string, boolean>>({})
   const finalCheckOpen = finalCheckOpenByRequest[request.id] ?? defaultOpenOpsSections.has('finalCheck')
   const setFinalCheckOpen = (open: boolean) => {
@@ -1637,6 +1677,7 @@ export function ServiceRequestDetails({
   const [customerApprovalCopyMessage, setCustomerApprovalCopyMessage] = useState<string | null>(null)
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
+  const [routeFeeEditorMode, setRouteFeeEditorMode] = useState<'route_fee' | 'payment_link'>('route_fee')
   const [routeFeeEditorMessage, setRouteFeeEditorMessage] = useState<string | null>(null)
   const [routeFeeNote, setRouteFeeNote] = useState('')
   const [routeFeeOneWayKmInput, setRouteFeeOneWayKmInput] = useState('')
@@ -1646,6 +1687,8 @@ export function ServiceRequestDetails({
   const [routeFeeBillableKmInput, setRouteFeeBillableKmInput] = useState('')
   const [routeFeeAmountInput, setRouteFeeAmountInput] = useState('')
   const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
+  const [paymentCancelInFlight, setPaymentCancelInFlight] = useState<number | string | null>(null)
+  const [paymentCancelError, setPaymentCancelError] = useState<string | null>(null)
   const [customerServiceChargeInput, setCustomerServiceChargeInput] = useState('')
   const [customerPartChargeInput, setCustomerPartChargeInput] = useState('')
   const [customerChargeNoteInput, setCustomerChargeNoteInput] = useState('')
@@ -1709,6 +1752,7 @@ export function ServiceRequestDetails({
   const doorPhotos = request.doorPhotos ?? []
   const routeQuote = request.routeQuote ?? null
   const assignmentOffer = request.assignmentOffer ?? null
+  const settlement = request.settlement ?? null
   const technicianRevisionOffer = request.technicianRevisionOffer?.exists ? request.technicianRevisionOffer : null
   const technicianRevisionOfferPending = technicianRevisionOffer?.status === 'pending'
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
@@ -1716,6 +1760,10 @@ export function ServiceRequestDetails({
   const requestTechnicianIdString = request.technicianId !== null && request.technicianId !== undefined
     ? String(request.technicianId)
     : null
+  const topTechnicianSuggestions = technicianSuggestions.slice(0, 4)
+  const remainingTechnicianSuggestions = technicianSuggestions.slice(4)
+  const otherTechnicianCount = remainingTechnicianSuggestions.length
+  const otherTechniciansModalOpen = otherTechniciansModalOpenByRequest[request.id] ?? false
   const selectedTechnicianMatchesRequest = selectedTechnicianIdString
     ? requestTechnicianIdString === selectedTechnicianIdString
     : Boolean(requestTechnicianIdString)
@@ -1865,7 +1913,14 @@ export function ServiceRequestDetails({
     ? activeRouteQuote.straight_line_distance_km
     : null
   const routeSuspicious = Boolean(hasActiveRouteQuote && activeRouteQuote?.suspicious_route)
-  const extraMountPayment = saleAndPayment?.extra_mount_payment ?? null
+  const mountPaymentRecords = saleAndPayment?.mount_payments?.rows ?? []
+  const paidMountPaymentRecords = saleAndPayment?.mount_payments?.paid_rows ?? mountPaymentRecords.filter((payment) => payment.status === 'paid')
+  const pendingMountPaymentRecords = saleAndPayment?.mount_payments?.pending_rows ?? mountPaymentRecords.filter((payment) => payment.status === 'pending')
+  const cancelledMountPaymentRecords = saleAndPayment?.mount_payments?.cancelled_rows ?? mountPaymentRecords.filter((payment) => payment.status === 'cancelled')
+  const latestPendingMountPayment = saleAndPayment?.mount_payments?.latest_pending ?? pendingMountPaymentRecords[0] ?? null
+  const latestPaidMountPayment = saleAndPayment?.mount_payments?.latest_paid ?? paidMountPaymentRecords[0] ?? null
+  const latestCancelledMountPayment = saleAndPayment?.mount_payments?.latest_cancelled ?? cancelledMountPaymentRecords[0] ?? null
+  const extraMountPayment = latestPendingMountPayment ?? saleAndPayment?.extra_mount_payment ?? latestPaidMountPayment
   const customerChargeSummary = saleAndPayment?.customer_charges ?? null
   const paymentSummary = saleAndPayment?.payment_summary ?? null
   const paymentSummaryMount = paymentSummary?.mount ?? null
@@ -1895,7 +1950,37 @@ export function ServiceRequestDetails({
     ),
   )
   const activeFinanceLocksmithPayout = financePayoutMatchesSelectedTechnician ? financeLocksmithPayout : null
+  const existingPendingPaymentAmount = typeof latestPendingMountPayment?.amount === 'number' && Number.isFinite(latestPendingMountPayment.amount) && latestPendingMountPayment.amount > 0
+    ? latestPendingMountPayment.amount
+    : null
+  const pendingOnlinePaymentLink = pendingMountPaymentRecords.length > 0
+  const paidOnlinePaymentLink = paidMountPaymentRecords.length > 0
+  const cancelledOnlinePaymentLink = cancelledMountPaymentRecords.length > 0
+  const paymentLinkActionLabel = paidOnlinePaymentLink
+    ? 'Ödeme Düzenle'
+    : pendingOnlinePaymentLink
+      ? 'Ödeme Düzenle'
+      : 'Ödeme Al'
+  const paymentLinkModalTitle = paidOnlinePaymentLink
+    ? 'Ödeme Düzenle'
+    : pendingOnlinePaymentLink ? 'Ödeme Düzenle' : 'Ödeme Al'
+  const paymentLinkSubmitLabel = extraPaymentCreateLoading
+    ? paidOnlinePaymentLink ? 'Ek ödeme linki hazırlanıyor...' : pendingOnlinePaymentLink ? 'Link güncelleniyor...' : 'Link oluşturuluyor...'
+    : paidOnlinePaymentLink
+      ? pendingOnlinePaymentLink ? 'Ek ödeme linki oluştur / bekleyen linki kullan' : 'Ek ödeme linki oluştur'
+      : pendingOnlinePaymentLink
+      ? 'Bekleyen linki güncelle / yeniden kullan'
+      : 'Link oluştur'
+  const existingPendingPaymentAmountInput = numericInputValue(existingPendingPaymentAmount)
   const extraPaymentAmount = parseNumericInput(routeFeeExtraPaymentInput)
+  const paymentLinkAmountSourceLabel = routeFeeExtraPaymentInput.trim() === ''
+    ? 'Tutar kaynağı: Manuel giriş gerekli'
+    : existingPendingPaymentAmount !== null && routeFeeExtraPaymentInput === existingPendingPaymentAmountInput
+      ? 'Tutar kaynağı: Mevcut ödeme kaydı'
+      : 'Tutar kaynağı: Operasyon manuel girişi'
+  const paymentLinkAmountWarning = routeFeeEditorMode === 'payment_link' && routeFeeExtraPaymentInput.trim() === ''
+    ? 'Ödeme tutarı net değil. Link oluşturmak için tutar girin.'
+    : null
   const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
   const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
   const customerChargeTotalAmount = roundTwo(customerServiceChargeAmount + customerPartChargeAmount)
@@ -1906,10 +1991,10 @@ export function ServiceRequestDetails({
       ? 'part_payment'
       : 'service_payment'
   const canCreateExtraPayment = Boolean(
-    selectedTechnician
-    && onExtraMountPaymentCreate
+    onExtraMountPaymentCreate
     && extraPaymentAmount !== null
-    && extraPaymentAmount > 0,
+    && extraPaymentAmount > 0
+    && (routeFeeEditorMode === 'payment_link' || selectedTechnician)
   )
   const selectedTechnicianCoordinateLabel = formatCoordinatePair(
     selectedTechnician?.latitude ?? selectedTechnician?.startLatitude,
@@ -1949,6 +2034,8 @@ export function ServiceRequestDetails({
   const showAddressControl = showMountOperationControls
     && (visibleSections?.address_control ?? operationControl.show_address_control ?? false) === true
   const showScheduleControl = (visibleSections?.schedule_control ?? operationControl.show_schedule_control ?? showMountOperationControls) === true
+  const showMountExcludedApprovalBlock = Boolean(opsDetailVisibility.show_mount_excluded_approval_block)
+  const showAddressControlBlock = Boolean(opsDetailVisibility.show_address_control_block)
   const paymentControlMissing = showPaymentControl && operationControl.payment_checked !== 'yes'
   const doorPhotoControlMissing = showDoorPhotoControl && (!operationControl.door_photos_checked || operationControl.door_photos_checked === 'unreviewed')
   const [operationInfoOpenByRequest, setOperationInfoOpenByRequest] = useState<Record<string, boolean>>({})
@@ -1968,7 +2055,7 @@ export function ServiceRequestDetails({
     canonicalPaymentStatus?.is_paid
     || saleAndPayment?.mount_payment_received
     || saleAndPayment?.mount_payment_status === 'paid'
-    || extraMountPayment?.status === 'paid',
+    || paidOnlinePaymentLink,
   )
   const mountPaymentStageLabel = displayOrEmpty(
     canonicalPaymentStatus?.stage_label ?? saleAndPayment?.payment_stage_label,
@@ -1980,8 +2067,8 @@ export function ServiceRequestDetails({
       ? formatMoneyValue(saleAndPayment.paid_amount)
       : typeof canonicalPaymentStatus?.amount === 'number' && Number.isFinite(canonicalPaymentStatus.amount)
         ? formatMoneyValue(canonicalPaymentStatus.amount)
-        : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
-          ? formatMoneyValue(extraMountPayment.amount)
+        : typeof saleAndPayment?.mount_payments?.paid_total_amount === 'number' && Number.isFinite(saleAndPayment.mount_payments.paid_total_amount) && saleAndPayment.mount_payments.paid_total_amount > 0
+          ? formatMoneyValue(saleAndPayment.mount_payments.paid_total_amount)
           : '-')
   const paymentCollectionStatusLabel = saleAndPayment?.payment_status_label
     ?? paymentStatusLabel(saleAndPayment?.mount_payment_status, mountPaymentReceived)
@@ -2035,6 +2122,22 @@ export function ServiceRequestDetails({
   )
   const mountExclusionAckComplete = !mountExclusionAckRequired
     || (mountExclusionAcknowledged && mountExclusionNote.trim().length >= 5)
+  const mountExcludedOrPaymentRequired = Boolean(
+    canonicalPaymentRequiresPayment
+    || saleAndPayment?.sale_mount_status === 'montaj_haric'
+    || saleAndPayment?.sale_mount_label === 'Montaj Hariç'
+    || saleAndPayment?.mount_payment_status === 'skipped_multi_product'
+    || saleAndPayment?.mount_payment_status === 'pending',
+  )
+  const shouldShowCustomerPaysTechnicianCard = mountExcludedOrPaymentRequired && !mountPaymentReceived
+  const customerDirectAmountLabel = typeof settlement?.customer_direct_to_technician_amount === 'number'
+    && Number.isFinite(settlement.customer_direct_to_technician_amount)
+    ? formatMoneyValue(settlement.customer_direct_to_technician_amount)
+    : null
+  const companyPayableAmountLabel = typeof settlement?.company_payable_amount === 'number'
+    && Number.isFinite(settlement.company_payable_amount)
+    ? formatMoneyValue(settlement.company_payable_amount)
+    : null
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
   const backendAssignmentBlockersAvailable = request.assignmentBlockers !== undefined && request.assignmentBlockers !== null
   const assignmentRequiresOperationControls = (request.assignmentBlockers?.applies_to_assignment ?? operationControl.applies_to_assignment ?? !isServiceVisitDetail) !== false
@@ -2047,7 +2150,6 @@ export function ServiceRequestDetails({
   const assignmentSubmitDisabled = assignLoading
     || !selectedTechnicianId
     || isAssignmentBlocked
-    || !mountExclusionAckComplete
     || !canSubmitAssign
     || !onAssignSelectedTechnician
   const resolvedSaleMountLabel = saleAndPayment?.sale_mount_label ?? mikroMountCheck?.montaj_durumu ?? '-'
@@ -2060,8 +2162,8 @@ export function ServiceRequestDetails({
     ? financeCustomerCollection.extra_amount
     : typeof paymentSummaryExtra?.amount === 'number' && Number.isFinite(paymentSummaryExtra.amount)
     ? paymentSummaryExtra.amount
-    : extraMountPayment?.status === 'paid' && typeof extraMountPayment.amount === 'number' && Number.isFinite(extraMountPayment.amount)
-      ? extraMountPayment.amount
+    : typeof saleAndPayment?.mount_payments?.paid_extra_amount === 'number' && Number.isFinite(saleAndPayment.mount_payments.paid_extra_amount)
+      ? saleAndPayment.mount_payments.paid_extra_amount
       : 0
   const paidServiceCustomerAmount = typeof financeCustomerCollection?.service_amount === 'number' && Number.isFinite(financeCustomerCollection.service_amount)
     ? financeCustomerCollection.service_amount
@@ -2386,10 +2488,11 @@ export function ServiceRequestDetails({
     const feePerKm = numericInputValue(routeFeePerKm)
     const billable = hasRouteCostEvidence ? numericInputValue(routeBillableKm) : '0'
     const amount = hasRouteCostEvidence ? numericInputValue(routeFeeAmount) : '0'
-    const extraPayment = hasRouteCostEvidence ? numericInputValue(routeFeeAmount) : '0'
+    const extraPayment = existingPendingPaymentAmountInput
     const manualTouched = Boolean(activeRouteQuote?.manual_override)
     const note = activeRouteQuote?.manual_note ?? ''
 
+    setRouteFeeEditorMode('route_fee')
     setRouteFeeOneWayKmInput(oneWay)
     setRouteFeeRoundTripKmInput(roundTrip)
     setRouteFeeThresholdKmInput(threshold)
@@ -2401,6 +2504,32 @@ export function ServiceRequestDetails({
     setRouteFeeNote(note)
     setRouteFeeEditorInitialSnapshot(routeFeeEditorSnapshot(oneWay, roundTrip, threshold, feePerKm, billable, amount, extraPayment, manualTouched, note))
     setRouteFeeEditorMessage(null)
+    setRouteFeeEditorOpen(true)
+  }
+  const openPaymentLinkModal = () => {
+    const oneWay = hasRouteCostEvidence ? numericInputValue(routeOneWayKm) : ''
+    const roundTrip = hasRouteCostEvidence ? numericInputValue(routeRoundTripKm) : ''
+    const threshold = numericInputValue(activeRouteQuote?.threshold_km ?? routeFeeConfigThresholdKm)
+    const feePerKm = numericInputValue(routeFeePerKm)
+    const billable = hasRouteCostEvidence ? numericInputValue(routeBillableKm) : '0'
+    const amount = hasRouteCostEvidence ? numericInputValue(routeFeeAmount) : '0'
+    const paymentAmount = existingPendingPaymentAmountInput
+    const manualTouched = Boolean(activeRouteQuote?.manual_override)
+    const note = activeRouteQuote?.manual_note ?? ''
+
+    setRouteFeeEditorMode('payment_link')
+    setRouteFeeOneWayKmInput(oneWay)
+    setRouteFeeRoundTripKmInput(roundTrip)
+    setRouteFeeThresholdKmInput(threshold)
+    setRouteFeePerKmInput(feePerKm)
+    setRouteFeeBillableKmInput(billable)
+    setRouteFeeAmountInput(amount)
+    setRouteFeeExtraPaymentInput(paymentAmount)
+    setRouteFeeManualAmountTouched(manualTouched)
+    setRouteFeeNote(note)
+    setRouteFeeEditorInitialSnapshot(routeFeeEditorSnapshot(oneWay, roundTrip, threshold, feePerKm, billable, amount, paymentAmount, manualTouched, note))
+    setRouteFeeEditorMessage(paymentAmount === '' ? 'Ödeme tutarı net değil. Link oluşturmak için tutar girin.' : null)
+    setPaymentCancelError(null)
     setRouteFeeEditorOpen(true)
   }
   const handleRouteFeeOneWayChange = (value: string) => {
@@ -2468,7 +2597,13 @@ export function ServiceRequestDetails({
     }
   }
   const handleExtraPaymentCreate = async () => {
-    if (!selectedTechnician || !onExtraMountPaymentCreate) {
+    if (!onExtraMountPaymentCreate) {
+      setRouteFeeEditorMessage('Ödeme linki oluşturma servisi bağlı değil.')
+
+      return
+    }
+
+    if (routeFeeEditorMode !== 'payment_link' && !selectedTechnician) {
       setRouteFeeEditorMessage('Önce usta seçin.')
 
       return
@@ -2487,49 +2622,120 @@ export function ServiceRequestDetails({
 
     const payload: ServiceRequestExtraMountPaymentPayload = {
       route_quote_id: activeRouteQuote?.id ?? null,
-      technician_id: selectedTechnician.id,
+      technician_id: selectedTechnician?.id ?? null,
       selected_serial_ids: selectedSerialIds,
       amount: extraPaymentAmount,
       currency: 'TRY',
-      reason: 'route_fee',
+      reason: routeFeeEditorMode === 'payment_link' ? 'manual_extra' : 'route_fee',
+      purpose: routeFeeEditorMode === 'payment_link' ? 'manual_mount_payment' : 'route_fee',
       note: routeFeeNote.trim() || null,
     }
 
     await onExtraMountPaymentCreate(payload)
+    setPaymentCancelError(null)
     setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
   }
-  const handleCreatePaymentLinkAction = async () => {
-    scrollToNextActionSection('assignment')
-
-    if (extraMountPayment?.payment_url) {
-      setRouteFeeEditorOpen(true)
-      setRouteFeeEditorMessage('Ödeme linki zaten var. Mevcut linki kullanın.')
+  const handlePendingPaymentCancel = async (payment: NonNullable<typeof pendingMountPaymentRecords[number]>) => {
+    if (!payment.id) {
+      setPaymentCancelError('İptal edilecek ödeme kaydı bulunamadı.')
 
       return
     }
 
+    if (!onMountPaymentCancel) {
+      setPaymentCancelError('Ödeme linki iptal servisi bağlı değil.')
+
+      return
+    }
+
+    const confirmed = window.confirm('Bekleyen ödeme linki iptal edilecek. Ödeme alınmadıysa tahsilata eklenmez.')
+
+    if (!confirmed) {
+      return
+    }
+
+    setPaymentCancelInFlight(payment.id)
+    setPaymentCancelError(null)
+
+    try {
+      await onMountPaymentCancel(payment.id, { reason: 'OPS tarafından iptal edildi' })
+      setRouteFeeEditorMessage('Bekleyen ödeme linki iptal edildi.')
+    } catch (caught) {
+      setPaymentCancelError(caught instanceof Error ? caught.message : 'Ödeme linki iptal edilemedi.')
+    } finally {
+      setPaymentCancelInFlight(null)
+    }
+  }
+  const handleCreatePaymentLinkAction = () => {
+    scrollToNextActionSection('assignment')
+
     if (!onExtraMountPaymentCreate) {
+      openPaymentLinkModal()
       setRouteFeeEditorMessage('Ödeme linki oluşturma servisi bağlı değil.')
 
       return
     }
 
-    if (!selectedTechnician) {
-      setRouteFeeEditorOpen(false)
-      setRouteFeeEditorMessage('Ödeme linki için önce usta seçin.')
-
-      return
+    openPaymentLinkModal()
+  }
+  const handleBottomPaymentLinkAction = () => {
+    if (!onExtraMountPaymentCreate) {
+      setRouteFeeEditorMessage('Ödeme linki oluşturma servisi bağlı değil.')
     }
 
-    openRouteFeeEditor()
+    openPaymentLinkModal()
+  }
+  const renderTechnicianSuggestionCard = (technician: NonNullable<ServiceRequestDetailsProps['technicianSuggestions']>[number]) => {
+    const selected = selectedTechnicianId === technician.id
+    const routeMismatch = selected
+      && hasActiveRouteQuote
+      && typeof technician.estimatedRoundTripKm === 'number'
+      && technician.estimatedRoundTripKm > 0
+      && typeof routeRoundTripKm === 'number'
+      && routeRoundTripKm > 0
+      && Math.max(routeRoundTripKm, technician.estimatedRoundTripKm) / Math.min(routeRoundTripKm, technician.estimatedRoundTripKm) > 3
 
-    if (!canCreateExtraPayment) {
-      setRouteFeeEditorMessage('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.')
-
-      return
-    }
-
-    await handleExtraPaymentCreate()
+    return (
+      <div key={technician.id} className={[
+        'grid gap-2 rounded-xl border bg-white p-3 text-sm transition md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
+        selected ? 'border-blue-300 ring-2 ring-blue-100' : 'border-slate-200',
+      ].join(' ')}>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate font-semibold text-slate-950">{technician.name}</span>
+            {technician.recommended ? <Badge variant="positive">Önerilen</Badge> : null}
+            {selected ? <Badge variant="secondary">Seçildi</Badge> : null}
+            {(technician.needsReview || routeMismatch) ? <Badge variant="warning">Kontrol gerekli</Badge> : null}
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            {[technician.phone, technician.location, technician.distanceKmLabel].filter(Boolean).join(' · ')}
+          </p>
+          {optionalMetricValue(technician.addressSummary) ? (
+            <p className="mt-1 truncate text-xs text-slate-500" title={technician.addressSummary ?? undefined}>
+              Adres: {technician.addressSummary}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 md:justify-end">
+          <span className="rounded-full bg-slate-100 px-2 py-1">Öncelik: {displayOrEmpty(String(technician.priority ?? ''), '-')}</span>
+          <span className="rounded-full bg-slate-100 px-2 py-1">İş: {technician.scheduledCount}</span>
+          <Button
+            type="button"
+            size="sm"
+            variant={selected ? 'secondary' : 'outline'}
+            onClick={() => {
+              setRouteFeeEditorMessage(null)
+              setRouteFeeEditorOpen(false)
+              setRouteFeeEditorInitialSnapshot('')
+              setOtherTechniciansModalOpenByRequest((current) => ({ ...current, [request.id]: false }))
+              onTechnicianSelect?.(technician.id, technician.estimatedRoundTripKm ?? null)
+            }}
+          >
+            {selected ? 'Seçildi' : 'Seç'}
+          </Button>
+        </div>
+      </div>
+    )
   }
   const handleCustomerChargeCreate = async () => {
     if (!onExtraMountPaymentCreate) {
@@ -2825,6 +3031,183 @@ export function ServiceRequestDetails({
             <Button type="button" size="sm" onClick={() => void handleCustomerChargeCreate()} disabled={!canCreateCustomerCharge || extraPaymentCreateLoading}>
               {extraPaymentCreateLoading ? 'Link oluşturuluyor...' : 'Link oluştur'}
             </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null
+  const otherTechniciansModal = otherTechniciansModalOpen ? (
+    <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Diğer ustalar">
+      <div className="max-h-[92dvh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-base font-semibold text-slate-950">Diğer ustalar</p>
+            <p className="mt-1 text-xs text-slate-600">İlk 4 öneri ekranda kalır; kalan ustaları buradan seçin.</p>
+          </div>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setOtherTechniciansModalOpenByRequest((current) => ({ ...current, [request.id]: false }))}>
+            Kapat
+          </Button>
+        </div>
+        <div className="mt-4 grid gap-2">
+          {remainingTechnicianSuggestions.length > 0 ? (
+            remainingTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+              Gösterilecek ek usta yok.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  ) : null
+  const paymentLinkEditorModal = routeFeeEditorOpen && routeFeeEditorMode === 'payment_link' ? (
+    <div className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label={paymentLinkModalTitle}>
+      <div className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-blue-100 bg-white p-4 shadow-2xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-base font-semibold text-slate-950">{paymentLinkModalTitle}</p>
+            <p className="mt-1 text-xs text-slate-600">İlk tıklama sadece bu pencereyi açar; ödeme linki yalnızca tutar onaylandıktan sonra oluşturulur.</p>
+          </div>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setRouteFeeEditorOpen(false)}>
+            Kapat
+          </Button>
+        </div>
+        <div className="mt-4 grid gap-3">
+          {paymentLinkAmountWarning ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+              {paymentLinkAmountWarning}
+            </div>
+          ) : null}
+          {paymentCancelError ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-900">
+              {paymentCancelError}
+            </div>
+          ) : null}
+          {paidOnlinePaymentLink ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
+              Ödenmiş kayıtlar salt okunur. Ek tahsilat gerekiyorsa yeni ödeme linki oluşturabilirsiniz.
+            </div>
+          ) : null}
+          <div className="grid gap-2 sm:grid-cols-3">
+            <MiniMetric label="Toplam alınan ödeme" value={saleAndPayment?.mount_payments?.paid_total_amount_label ?? formatMoneyValue(saleAndPayment?.mount_payments?.paid_total_amount ?? 0)} />
+            <MiniMetric label="Bekleyen ödeme linkleri" value={saleAndPayment?.mount_payments?.pending_total_amount_label ?? formatMoneyValue(saleAndPayment?.mount_payments?.pending_total_amount ?? 0)} />
+            <MiniMetric label="İptal edilen linkler" value={cancelledOnlinePaymentLink ? (saleAndPayment?.mount_payments?.cancelled_total_amount_label ?? formatMoneyValue(saleAndPayment?.mount_payments?.cancelled_total_amount ?? 0)) : '0 TL'} />
+          </div>
+          <div className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+            <p className="font-semibold text-slate-900">Talep bilgisi</p>
+            <div className="grid gap-1 sm:grid-cols-2">
+              <span>MRN: {displayMrn ?? request.mrn}</span>
+              <span>Seri: {displayOrEmpty(request.serialNumber, '-')}</span>
+              <span>Müşteri: {displayOrEmpty(request.customer, '-')}</span>
+              <span>Telefon: {displayOrEmpty(request.phone, '-')}</span>
+            </div>
+          </div>
+          {paidMountPaymentRecords.length > 0 ? (
+            <div className="grid gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+              <p className="font-semibold">Ödenmiş tahsilatlar</p>
+              {paidMountPaymentRecords.map((payment) => (
+                <div key={String(payment.id ?? payment.payment_url ?? payment.amount)} className="grid gap-1 rounded-lg border border-emerald-100 bg-white/80 p-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
+                    <Badge variant="secondary">Ödendi</Badge>
+                  </div>
+                  <p>{payment.paid_at ? `Ödeme zamanı: ${dateTimeOrEmpty(payment.paid_at, '-')}` : 'Ödeme zamanı kaydı yok'}</p>
+                  {payment.payment_url ? <p className="break-all text-emerald-800">{payment.payment_url}</p> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {pendingMountPaymentRecords.length > 0 ? (
+            <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+              <p className="font-semibold">Bekleyen linkler</p>
+              {pendingMountPaymentRecords.map((payment) => (
+                <div key={String(payment.id ?? payment.payment_url ?? payment.amount)} className="grid gap-1 rounded-lg border border-amber-100 bg-white/80 p-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
+                    <Badge variant="outline">Bekliyor</Badge>
+                  </div>
+                  {payment.payment_url ? (
+                    <>
+                      <p className="break-all text-amber-900">{payment.payment_url}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(payment.payment_url ?? '')}>
+                          Linki kopyala
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          disabled={paymentCancelInFlight === payment.id}
+                          onClick={() => void handlePendingPaymentCancel(payment)}
+                        >
+                          {paymentCancelInFlight === payment.id ? 'İptal ediliyor...' : 'İptal et'}
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      disabled={paymentCancelInFlight === payment.id}
+                      onClick={() => void handlePendingPaymentCancel(payment)}
+                    >
+                      {paymentCancelInFlight === payment.id ? 'İptal ediliyor...' : 'İptal et'}
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {cancelledMountPaymentRecords.length > 0 ? (
+            <details className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+              <summary className="cursor-pointer font-semibold text-slate-900">
+                İptal edilen linkler ({cancelledMountPaymentRecords.length})
+                {latestCancelledMountPayment?.cancelled_at ? ` · Son iptal: ${dateTimeOrEmpty(latestCancelledMountPayment.cancelled_at, '-')}` : ''}
+              </summary>
+              <div className="mt-2 grid gap-2">
+                {cancelledMountPaymentRecords.map((payment) => (
+                  <div key={String(payment.id ?? payment.payment_url ?? payment.amount)} className="grid gap-1 rounded-lg border border-slate-200 bg-white p-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
+                      <Badge variant="secondary">İptal edildi</Badge>
+                    </div>
+                    {payment.payment_url ? <p className="break-all text-slate-600">{payment.payment_url}</p> : null}
+                    <p>İptal zamanı: {dateTimeOrEmpty(payment.cancelled_at, '-')}</p>
+                    {payment.cancellation_reason ? <p>Neden: {payment.cancellation_reason}</p> : null}
+                    {payment.cancelled_by_name ? <p>İptal eden: {payment.cancelled_by_name}</p> : null}
+                  </div>
+                ))}
+              </div>
+            </details>
+          ) : null}
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px]">
+            <label className="grid gap-1 text-xs font-semibold text-slate-600">
+              {pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı'}
+              <Input type="number" min="0" step="0.01" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+              <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
+            </label>
+            <MiniMetric label="Durum" value={paidOnlinePaymentLink ? 'Ödeme düzenleme' : pendingOnlinePaymentLink ? 'Bekleyen link' : 'Yeni link'} />
+          </div>
+          <label className="grid gap-2 text-sm font-medium text-slate-700">
+            Not
+            <textarea
+              value={routeFeeNote}
+              onChange={(event) => setRouteFeeNote(event.target.value)}
+              className="min-h-[84px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
+              placeholder="Ödeme linki için operasyon notu"
+            />
+          </label>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleExtraPaymentCreate()}
+              disabled={!canCreateExtraPayment || extraPaymentCreateLoading}
+            >
+              {paymentLinkSubmitLabel}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setRouteFeeEditorOpen(false)}>İptal</Button>
           </div>
         </div>
       </div>
@@ -3393,6 +3776,34 @@ export function ServiceRequestDetails({
   const showNextActionPrimaryButton = Boolean(nextActionPayload?.primary_action && !isAssignedPartnerActionStage)
   const cancelContext = request.cancelContext?.exists ? request.cancelContext : null
   const isCancelledOrReviewContext = Boolean(cancelContext?.is_cancelled || cancelContext?.is_cancel_review)
+  const paymentActionWorkflowText = [
+    request.workflowStatus,
+    request.status,
+    request.currentStageSummary?.label,
+    displayedNextActionTitle,
+  ].filter(Boolean).join(' ').toLocaleLowerCase('tr-TR')
+  const paymentActionRelevantByWorkflow = [
+    'iş ustada',
+    'beklemede',
+    'usta onayı',
+    'usta onayi',
+    'usta onayı bekleyen',
+  ].some((label) => paymentActionWorkflowText.includes(label))
+  const hasPaymentManagementContext = Boolean(
+    pendingOnlinePaymentLink
+    || paidOnlinePaymentLink
+    || cancelledOnlinePaymentLink
+    || shouldShowCustomerPaysTechnicianCard
+    || canonicalPaymentRequiresPayment
+    || mountExcludedOrPaymentRequired
+    || nextActionPayload?.primary_action === 'create_payment_link'
+    || paymentActionRelevantByWorkflow
+  )
+  const shouldShowFooterPaymentLinkAction = Boolean(
+    !isActionDisabled
+    && !isCancelledOrReviewContext
+    && hasPaymentManagementContext
+  )
   const cancelSummaryRows = cancelContext
     ? [
       { label: 'İptal edilen iş', value: cancelContext.cancelled_code ?? cancelContext.previous_cancelled_code ?? request.mrn },
@@ -3891,7 +4302,7 @@ export function ServiceRequestDetails({
                     : nextActionPayload.primary_action === 'review_photos'
                       ? 'Kontrole Git'
                       : nextActionPayload.primary_action === 'create_payment_link'
-                        ? 'Ödeme Linki Oluştur'
+                        ? paymentLinkActionLabel
                         : nextActionPayload.primary_action === 'copy_payment_link'
                           ? 'Linki Kopyala'
                           : nextActionPayload.primary_action === 'plan_appointment'
@@ -3991,6 +4402,8 @@ export function ServiceRequestDetails({
         </section>
         ) : null}
         {customerChargeModal}
+        {otherTechniciansModal}
+        {paymentLinkEditorModal}
         {partCreateModal}
         {partDecisionModal}
         {historyRecordModal}
@@ -4226,7 +4639,7 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
 
-          {(showPaymentControl || showAddressControl || showScheduleControl) ? (
+          {(showPaymentControl || (showAddressControl && showAddressControlBlock) || showScheduleControl) ? (
           <div className="grid gap-4 xl:grid-cols-2">
             {showPaymentControl ? (
             <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
@@ -4304,7 +4717,7 @@ export function ServiceRequestDetails({
             </section>
             ) : null}
 
-            {showAddressControl ? (
+            {showAddressControl && showAddressControlBlock ? (
             <section className="grid gap-3 rounded-2xl border border-slate-200 bg-[#F8FAFD] p-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Adres Kontrol Bloğu</p>
@@ -4471,7 +4884,36 @@ export function ServiceRequestDetails({
                 <p className="mt-1">{mountPaymentStageLabel}{mountPaymentAmountLabel !== '-' ? ` · Alınan ödeme: ${mountPaymentAmountLabel}` : ''}</p>
               </div>
             ) : null}
-            {mountExclusionAckRequired ? (
+            {!isCancelledOrReviewContext && shouldShowCustomerPaysTechnicianCard ? (
+              <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <div>
+                  <div>
+                    <p className="font-semibold">
+                      {pendingOnlinePaymentLink ? 'Online ödeme linki bekliyor.' : 'Ödeme müşteriden ustaya yapılacak.'}
+                    </p>
+                    <p className="mt-1 text-xs text-amber-900">
+                      {pendingOnlinePaymentLink
+                        ? 'Bekleyen link ödenirse ustaya doğrudan ödeme bildirimi uygulanmaz.'
+                        : 'Online ödeme alınmadığı için müşteriye bildirilecek tutar usta atama/hakediş bilgisinden takip edilir.'}
+                    </p>
+                  </div>
+                </div>
+                {customerDirectAmountLabel || companyPayableAmountLabel || extraMountPayment?.payment_url ? (
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    {customerDirectAmountLabel ? <MiniMetric label="Müşteriye bildirilecek tutar" value={customerDirectAmountLabel} /> : null}
+                    {companyPayableAmountLabel ? <MiniMetric label="Şirket ödemesi" value={companyPayableAmountLabel} /> : null}
+                    {extraMountPayment?.payment_url ? (
+                      <MiniMetric
+                        label="Bekleyen link"
+                        value={<span className="break-all">{extraMountPayment.payment_url}</span>}
+                        hint={<button type="button" className="font-semibold text-amber-900 underline-offset-4 hover:underline" onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}>Linki kopyala</button>}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {mountExclusionAckRequired && showMountExcludedApprovalBlock ? (
               <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                 <div>
                   <p className="font-semibold">Montaj hariç / çoklu ürün onayı</p>
@@ -4803,6 +5245,19 @@ export function ServiceRequestDetails({
                       <MiniMetric label="Toplam" value={formatMoneyValue(assignmentOffer.total_amount)} />
                       <MiniMetric label="Durum" value={assignmentOfferStatusLabel(assignmentOffer.status)} />
                     </div>
+                    {settlement ? (
+                      <div className="grid gap-2 rounded-xl border border-white/70 bg-white/80 p-3 sm:grid-cols-4">
+                        <MiniMetric label="Müşteriye bildirilecek ödeme" value={formatMoneyValue(settlement.customer_direct_to_technician_amount ?? null)} />
+                        <MiniMetric label="Şirket ödemesi" value={formatMoneyValue(settlement.company_payable_amount ?? null)} />
+                        <MiniMetric label="Fazla bildirim" value={formatMoneyValue(settlement.overpay_warning_amount ?? null)} />
+                        <MiniMetric label="Settlement" value={settlementStatusLabel(settlement.status)} />
+                        {settlement.overpay_requires_review ? (
+                          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 sm:col-span-4">
+                            {settlement.review_reason || 'Müşteriye bildirilen tutar usta hakedişinden yüksek. Admin incelemesi gerekecek.'}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
                     <div className="grid gap-2 sm:grid-cols-[140px_140px_minmax(0,1fr)]">
                       <Input type="number" min="0" step="0.01" value={offerLaborInput} onChange={(event) => setOfferLaborInput(event.target.value)} placeholder={String(assignmentOffer.labor_amount)} />
                       <Input type="number" min="0" step="0.01" value={offerRouteInput} onChange={(event) => setOfferRouteInput(event.target.value)} placeholder={String(assignmentOffer.route_fee_amount)} />
@@ -4849,61 +5304,23 @@ export function ServiceRequestDetails({
                       </p>
                     ) : null}
                   </div>
-                  <Badge variant="outline">{technicianSuggestions.length > 0 ? `${technicianSuggestions.length} öneri` : 'Öneri yok'}</Badge>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{technicianSuggestions.length > 0 ? `${technicianSuggestions.length} öneri` : 'Öneri yok'}</Badge>
+                    {otherTechnicianCount > 0 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setOtherTechniciansModalOpenByRequest((current) => ({ ...current, [request.id]: true }))}
+                      >
+                        Diğer ustalar ({otherTechnicianCount})
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
-                {technicianSuggestions.length > 0 ? (
+                {topTechnicianSuggestions.length > 0 ? (
                   <div className="grid gap-2">
-                    {technicianSuggestions.map((technician) => {
-                      const selected = selectedTechnicianId === technician.id
-                      const routeMismatch = selected
-                        && hasActiveRouteQuote
-                        && typeof technician.estimatedRoundTripKm === 'number'
-                        && technician.estimatedRoundTripKm > 0
-                        && typeof routeRoundTripKm === 'number'
-                        && routeRoundTripKm > 0
-                        && Math.max(routeRoundTripKm, technician.estimatedRoundTripKm) / Math.min(routeRoundTripKm, technician.estimatedRoundTripKm) > 3
-
-                      return (
-                      <div key={technician.id} className={[
-                        'grid gap-2 rounded-xl border bg-white p-3 text-sm transition md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
-                        selected ? 'border-blue-300 ring-2 ring-blue-100' : 'border-slate-200',
-                      ].join(' ')}>
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate font-semibold text-slate-950">{technician.name}</span>
-                            {technician.recommended ? <Badge variant="positive">Önerilen</Badge> : null}
-                            {selected ? <Badge variant="secondary">Seçildi</Badge> : null}
-                            {(technician.needsReview || routeMismatch) ? <Badge variant="warning">Kontrol gerekli</Badge> : null}
-                          </div>
-                          <p className="mt-1 text-xs text-slate-500">
-                            {[technician.phone, technician.location, technician.distanceKmLabel].filter(Boolean).join(' · ')}
-                          </p>
-                          {optionalMetricValue(technician.addressSummary) ? (
-                            <p className="mt-1 truncate text-xs text-slate-500" title={technician.addressSummary ?? undefined}>
-                              Adres: {technician.addressSummary}
-                            </p>
-                          ) : null}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 md:justify-end">
-                          <span className="rounded-full bg-slate-100 px-2 py-1">Öncelik: {displayOrEmpty(String(technician.priority ?? ''), '-')}</span>
-                          <span className="rounded-full bg-slate-100 px-2 py-1">İş: {technician.scheduledCount}</span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={selected ? 'secondary' : 'outline'}
-                            onClick={() => {
-                              setRouteFeeEditorMessage(null)
-                              setRouteFeeEditorOpen(false)
-                              setRouteFeeEditorInitialSnapshot('')
-                              onTechnicianSelect?.(technician.id, technician.estimatedRoundTripKm ?? null)
-                            }}
-                          >
-                            {selected ? 'Seçildi' : 'Seç'}
-                          </Button>
-                        </div>
-                      </div>
-                      )
-                    })}
+                    {topTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))}
                   </div>
                 ) : (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
@@ -5021,18 +5438,34 @@ export function ServiceRequestDetails({
                     </div>
                   </details>
                 ) : null}
-                {routeFeeEditorOpen ? (
+                {routeFeeEditorOpen && routeFeeEditorMode !== 'payment_link' ? (
                   <div className="grid gap-3 rounded-2xl border border-blue-200 bg-white p-3 text-sm text-slate-700">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
-                        <p className="font-semibold text-slate-950">Ödeme tutarı / yol düzenle</p>
-                        <p className="mt-1 text-xs text-slate-500">Ödeme linki için tutar zorunludur; 0 TL link oluşturulmaz.</p>
+                        <p className="font-semibold text-slate-950">
+                          {routeFeeEditorMode === 'payment_link' ? paymentLinkModalTitle : 'Usta hakedişi / yol düzenle'}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {routeFeeEditorMode === 'payment_link'
+                            ? 'İlk tıklama sadece bu pencereyi açar; ödeme linki yalnızca tutar onaylandıktan sonra oluşturulur.'
+                            : 'Usta yol hakedişi ve ödeme linki tutarı ayrı alanlardır.'}
+                        </p>
                       </div>
                       <Button type="button" size="sm" variant="ghost" onClick={() => setRouteFeeEditorOpen(false)}>
                         İptal
                       </Button>
                     </div>
-                    {!selectedTechnician ? (
+                    {paymentLinkAmountWarning ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+                        {paymentLinkAmountWarning}
+                      </div>
+                    ) : null}
+                    {routeFeeEditorMode === 'payment_link' && paidOnlinePaymentLink ? (
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
+                        Ödenmiş kayıtlar salt okunur. Ek tahsilat gerekiyorsa yeni ödeme linki oluşturabilirsiniz.
+                      </div>
+                    ) : null}
+                    {routeFeeEditorMode !== 'payment_link' && !selectedTechnician ? (
                       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
                         Önce usta seçin.
                       </div>
@@ -5070,6 +5503,7 @@ export function ServiceRequestDetails({
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
                         Ödeme linki tutarı
                         <Input type="number" min="0" step="0.01" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+                        <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
                       </label>
                     </div>
                     <label className="grid gap-2 text-sm font-medium text-slate-700">
@@ -5084,7 +5518,7 @@ export function ServiceRequestDetails({
                     {extraMountPayment?.payment_url ? (
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
                         <p className="font-semibold">
-                          {extraMountPayment.status === 'paid' ? 'Ödeme onaylandı' : 'Ödeme linki oluşturuldu'}
+                          {extraMountPayment.status === 'paid' ? 'Ödeme onaylandı' : 'Mevcut bekleyen ödeme linki var'}
                         </p>
                         <p className="mt-1 break-all">{extraMountPayment.payment_url}</p>
                         <div className="mt-2 flex flex-wrap gap-2">
@@ -5106,7 +5540,7 @@ export function ServiceRequestDetails({
                         onClick={() => void handleExtraPaymentCreate()}
                         disabled={!canCreateExtraPayment || extraPaymentCreateLoading}
                       >
-                        {extraPaymentCreateLoading ? 'Link oluşturuluyor...' : 'Ödeme linki oluştur'}
+                        {paymentLinkSubmitLabel}
                       </Button>
                       <Button type="button" variant="secondary" onClick={() => setRouteFeeEditorOpen(false)}>İptal</Button>
                       <Button type="button" onClick={() => void handleRouteFeeManualSave()} disabled={!selectedTechnician || !routeFeeEditorHasChanges || routeQuoteManualSaveLoading || !onRouteQuoteManualSave}>
@@ -6115,6 +6549,7 @@ export function ServiceRequestDetails({
       {(() => {
         const visibleFooterWorkflowActions = isActionDisabled ? [] : footerWorkflowActions
         const showFooterBar = visibleFooterWorkflowActions.length > 0
+          || shouldShowFooterPaymentLinkAction
           || (!isActionDisabled && Boolean(finalCheckCompletionAction))
           || (!isActionDisabled && canReassignAfterReview)
           || (!isActionDisabled && Boolean(whatsappHref))
@@ -6139,6 +6574,17 @@ export function ServiceRequestDetails({
               {workflowActionInFlight === actionKey ? 'İşleniyor...' : action.label}
             </Button>
           ))}
+          {shouldShowFooterPaymentLinkAction ? (
+            <Button
+              data-testid="bottom-payment-link-action"
+              className="h-9 w-full text-xs sm:text-sm lg:w-auto"
+              type="button"
+              variant={paidOnlinePaymentLink || pendingOnlinePaymentLink ? 'default' : 'outline'}
+              onClick={handleBottomPaymentLinkAction}
+            >
+              {paymentLinkActionLabel}
+            </Button>
+          ) : null}
           {!isActionDisabled && finalCheckCompletionAction ? (
             <Button
               className="h-9 w-full text-xs sm:text-sm lg:w-auto"

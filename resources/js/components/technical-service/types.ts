@@ -120,6 +120,7 @@ export type ServiceRequest = {
   routeQuote?: ServiceRequestRouteQuote | null
   nextActionPayload?: ServiceRequestNextAction | null
   assignmentOffer?: ServiceRequestAssignmentOffer | null
+  settlement?: ServiceRequestSettlement | null
   technicianRevisionOffer?: ServiceRequestTechnicianRevisionOffer | null
   earningBreakdown?: ServiceRequestEarningBreakdown | null
   financeSummary?: ServiceRequestFinanceSummary | null
@@ -166,6 +167,32 @@ export type ServiceRequest = {
     last_action_at?: string | null
     action?: string | null
   } | null
+}
+
+export type ServiceRequestSettlement = {
+  id: number | string
+  technical_service_request_id?: number | string | null
+  technical_service_assignment_offer_id?: number | string | null
+  technical_service_technician_id?: number | string | null
+  b2b_partner_id?: number | string | null
+  currency?: string | null
+  labor_earning_amount?: number | null
+  route_earning_amount?: number | null
+  technician_earning_total?: number | null
+  customer_collection_amount?: number | null
+  customer_direct_to_technician_amount?: number | null
+  customer_direct_assumed_paid_amount?: number | null
+  company_payable_amount?: number | null
+  company_paid_amount?: number | null
+  company_remaining_amount?: number | null
+  overpay_warning_amount?: number | null
+  overpay_requires_review?: boolean
+  review_reason?: string | null
+  status?: string | null
+  settlement_source?: string | null
+  metadata?: Record<string, unknown> | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export type ServiceRequestAuditLog = {
@@ -617,6 +644,7 @@ export type ServiceRequestSaleAndPayment = {
   ops_payment_check_label?: string | null
   payment_status?: ServiceRequestPaymentStatus | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
+  mount_payments?: ServiceRequestMountPaymentSummary | null
   customer_charges?: ServiceRequestCustomerChargeSummary | null
   payment_summary?: ServiceRequestPaymentSummary | null
   technician_earning_message?: ServiceRequestTechnicianEarningMessage | null
@@ -641,6 +669,10 @@ export type ServiceRequestPaymentSummary = {
   has_service_charge?: boolean
   has_part_charge?: boolean
   has_extra_charge?: boolean
+  paid_customer_payment_total?: number | null
+  paid_customer_payment_total_label?: string | null
+  pending_customer_payment_total?: number | null
+  pending_customer_payment_total_label?: string | null
 }
 
 export type ServiceRequestPaymentStatus = {
@@ -657,17 +689,58 @@ export type ServiceRequestPaymentStatus = {
 
 export type ServiceRequestExtraMountPayment = {
   id?: number | string | null
+  request_id?: number | string | null
+  mrn?: string | null
+  request_code?: string | null
+  root_mrn?: string | null
+  serial_number?: string | null
+  customer_name?: string | null
+  customer_phone?: string | null
   status?: string | null
+  status_label?: string | null
   amount?: number | null
+  amount_label?: string | null
   currency?: string | null
   payment_url?: string | null
   provider?: string | null
   provider_reference?: string | null
   paid_at?: string | null
+  cancelled_at?: string | null
+  cancelled_by_name?: string | null
+  cancellation_reason?: string | null
+  source?: string | null
+  amount_source?: string | null
   reason?: string | null
   purpose?: string | null
   note?: string | null
+  is_extra_payment?: boolean
+  readonly?: boolean
+  can_cancel?: boolean
   selected_serial_ids?: Array<number | string>
+}
+
+export type ServiceRequestMountPaymentSummary = {
+  rows?: ServiceRequestExtraMountPayment[]
+  paid_rows?: ServiceRequestExtraMountPayment[]
+  pending_rows?: ServiceRequestExtraMountPayment[]
+  cancelled_rows?: ServiceRequestExtraMountPayment[]
+  latest?: ServiceRequestExtraMountPayment | null
+  latest_paid?: ServiceRequestExtraMountPayment | null
+  latest_pending?: ServiceRequestExtraMountPayment | null
+  latest_cancelled?: ServiceRequestExtraMountPayment | null
+  paid_total_amount?: number
+  paid_total_amount_label?: string
+  pending_total_amount?: number
+  pending_total_amount_label?: string
+  cancelled_total_amount?: number
+  cancelled_total_amount_label?: string
+  paid_mount_amount?: number
+  paid_mount_amount_label?: string
+  paid_extra_amount?: number
+  paid_extra_amount_label?: string
+  has_paid?: boolean
+  has_pending?: boolean
+  has_cancelled?: boolean
 }
 
 export type ServiceRequestCustomerCharge = {
@@ -740,6 +813,7 @@ export type ServiceRequestOperationControl = {
   is_service_visit?: boolean
   applies_to_assignment?: boolean
   payment_required_for_assignment?: boolean
+  pre_form_payment_control_enabled?: boolean
   show_mount_controls?: boolean
   show_payment_control?: boolean
   show_door_photo_control?: boolean
@@ -763,6 +837,7 @@ export type ServiceRequestAssignmentBlockers = {
   mount_exclusion_ack_required?: boolean
   mount_payment_received?: boolean
   applies_to_assignment?: boolean
+  payment_decision?: string | null
   messages?: string[]
 }
 

@@ -124,7 +124,8 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $workflow = $this->source('app/Services/TechnicalService/TechnicalServiceWorkflowService.php');
 
         $this->assertStringContainsString('const showAddressControl', $source);
-        $this->assertStringContainsString('{showAddressControl ? (', $source);
+        $this->assertStringContainsString('const showAddressControlBlock', $source);
+        $this->assertStringContainsString('{showAddressControl && showAddressControlBlock ? (', $source);
         $this->assertStringContainsString('show_address_control?: boolean', $types);
         $this->assertStringContainsString("\$result['show_address_control'] = \$addressControlActionable", $workflow);
     }

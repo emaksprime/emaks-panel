@@ -841,6 +841,48 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
         ]);
     }
 
+    public function test_admin_can_toggle_ops_detail_visibility_settings_without_new_schema(): void
+    {
+        $user = User::factory()->create(['role_code' => 'admin']);
+
+        $this->actingAs($user)
+            ->patchJson('/api/technical-service/qr-flow-settings', [
+                'ops_detail_visibility' => [
+                    'show_mount_excluded_approval_block' => true,
+                    'show_payment_mount_control_block' => true,
+                    'show_address_control_block' => false,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('settings.ops_detail_visibility.show_mount_excluded_approval_block', true)
+            ->assertJsonPath('settings.ops_detail_visibility.show_payment_mount_control_block', true)
+            ->assertJsonPath('settings.ops_detail_visibility.show_address_control_block', false)
+            ->assertJsonPath(
+                'settings.ops_detail_visibility.keys.show_mount_excluded_approval_block',
+                'technical_service.ops_detail.show_mount_excluded_approval_block'
+            );
+
+        $config = PageConfig::query()
+            ->where('page_code', 'technical_service_admin')
+            ->firstOrFail();
+
+        $this->assertTrue(data_get($config->layout_json, 'technical_service.ops_detail.show_mount_excluded_approval_block'));
+        $this->assertTrue(data_get($config->layout_json, 'technical_service.ops_detail.show_payment_mount_control_block'));
+        $this->assertFalse(data_get($config->layout_json, 'technical_service.ops_detail.show_address_control_block'));
+    }
+
+    public function test_admin_settings_page_contains_ops_detail_visibility_toggles(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/panel/technical-service-admin.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('OPS detay görünürlüğü', $source);
+        $this->assertStringContainsString('Montaj hariç / çoklu ürün onayı bloğunu göster', $source);
+        $this->assertStringContainsString('Ödeme / montaj kontrol bloğunu göster', $source);
+        $this->assertStringContainsString('Adres kontrol bloğunu göster', $source);
+        $this->assertStringContainsString('updateOpsDetailVisibility', $source);
+    }
+
     public function test_partner_user_cannot_access_ops_qr_product_management_api(): void
     {
         $portalUser = User::factory()->create(['role_code' => 'b2b_locksmith']);

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerTechnician;
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
@@ -1900,7 +1901,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
     }
 
-    public function test_mount_excluded_multi_product_assignment_requires_acknowledgement(): void
+    public function test_mount_excluded_multi_product_assignment_does_not_require_hidden_acknowledgement(): void
     {
         $user = $this->adminUser();
         $technician = TechnicalServiceTechnician::query()->create([
@@ -1927,11 +1928,10 @@ class TechnicalServiceWorkflowTest extends TestCase
                 'technical_service_technician_id' => $technician->id,
                 'travel_round_trip_km' => 12,
             ])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors([
-                'mount_exclusion_acknowledged',
-                'mount_exclusion_note',
-            ]);
+            ->assertOk()
+            ->assertJsonPath('request.technical_service_technician_id', $technician->id)
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.operation_control.mount_exclusion_acknowledgement.required', false);
     }
 
     public function test_mount_excluded_multi_product_assignment_persists_acknowledgement(): void
@@ -2172,6 +2172,290 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame('Form üzerinden ödeme alındı', $request->fresh()->mount_payment_label);
     }
 
+    public function test_customer_collection_sums_multiple_paid_mount_payments_and_excludes_pending_links(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'mount_payment_label' => 'Montaj ödemesi bekleniyor',
+        ]);
+        $session = $this->mountSessionForRequest($request);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-mount-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 1000,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/paid-main',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'public_form_payment',
+                'technical_service_request_id' => $request->id,
+                'request_code' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+            ],
+        ]);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-extra-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 500,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/paid-extra',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'manual_mount_payment',
+                'amount_source' => 'manual_ops_amount',
+                'technical_service_request_id' => $request->id,
+                'request_code' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+            ],
+        ]);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 700,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/pending-extra',
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'manual_mount_payment',
+                'amount_source' => 'manual_ops_amount',
+                'technical_service_request_id' => $request->id,
+                'request_code' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+            ],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame(1500.0, (float) $payload['sale_and_payment']['mount_payments']['paid_total_amount']);
+        $this->assertSame(700.0, (float) $payload['sale_and_payment']['mount_payments']['pending_total_amount']);
+        $this->assertCount(2, $payload['sale_and_payment']['mount_payments']['paid_rows']);
+        $this->assertCount(1, $payload['sale_and_payment']['mount_payments']['pending_rows']);
+        $this->assertSame(1500.0, (float) $payload['sale_and_payment']['payment_summary']['total_customer_collection']);
+        $this->assertSame(1500.0, (float) $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(1000.0, (float) $payload['finance_summary']['current_visit']['customer_collection']['mount_amount']);
+        $this->assertSame(500.0, (float) $payload['finance_summary']['current_visit']['customer_collection']['extra_amount']);
+        $this->assertSame(1500.0, (float) $payload['total_customer_collected']);
+    }
+
+    public function test_payment_cancel_marks_pending_link_cancelled_and_excludes_it_from_pending_and_paid_totals(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'mount_payment_label' => 'Montaj ödemesi bekleniyor',
+        ]);
+        $session = $this->mountSessionForRequest($request);
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-pending-cancel-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 700,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/pending-cancel',
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'purpose' => 'manual_mount_payment',
+                'amount_source' => 'manual_ops_amount',
+                'technical_service_request_id' => $request->id,
+                'request_code' => $request->mrn,
+                'root_mrn' => $request->root_mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+            ],
+        ]);
+
+        $response = $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/cancel", [
+                'reason' => 'OPS test iptali',
+            ])
+            ->assertOk();
+
+        $payment->refresh();
+        $payload = $response->json('request');
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $payment->status);
+        $this->assertSame('OPS test iptali', $payment->raw_payload['cancellation_reason']);
+        $this->assertNotEmpty($payment->raw_payload['cancelled_at']);
+        $this->assertSame($request->mrn, $payment->raw_payload['request_code']);
+        $this->assertSame($request->serial_number, $payment->raw_payload['serial_number']);
+        $this->assertSame($request->customer_name, $payment->raw_payload['customer_name']);
+        $this->assertSame($request->customer_phone, $payment->raw_payload['customer_phone']);
+        $this->assertSame(0.0, (float) $payload['sale_and_payment']['mount_payments']['pending_total_amount']);
+        $this->assertSame(0.0, (float) $payload['sale_and_payment']['mount_payments']['paid_total_amount']);
+        $this->assertSame(700.0, (float) $payload['sale_and_payment']['mount_payments']['cancelled_total_amount']);
+        $this->assertCount(0, $payload['sale_and_payment']['mount_payments']['pending_rows']);
+        $this->assertCount(1, $payload['sale_and_payment']['mount_payments']['cancelled_rows']);
+        $this->assertSame(0.0, (float) $payload['finance_summary']['current_visit']['customer_collection']['total_amount']);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_CANCELLED, $request->fresh()->mount_payment_status);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'mount_payment_link_cancelled',
+        ]);
+    }
+
+    public function test_cancelled_payment_link_remains_in_history_and_second_cancel_is_idempotent(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ]);
+        $session = $this->mountSessionForRequest($request);
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
+            'amount' => 400,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/cancelled-history',
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'request_code' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+                'cancelled_at' => now()->toISOString(),
+                'cancellation_reason' => 'Önceki iptal',
+            ],
+        ]);
+
+        $response = $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/cancel")
+            ->assertOk();
+
+        $payload = $response->json('request');
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $payment->fresh()->status);
+        $this->assertSame('Ödeme linki zaten iptal edilmiş.', $response->json('message'));
+        $this->assertSame(400.0, (float) $payload['sale_and_payment']['mount_payments']['cancelled_total_amount']);
+        $this->assertCount(1, $payload['sale_and_payment']['mount_payments']['cancelled_rows']);
+        $this->assertSame($request->mrn, $payload['sale_and_payment']['mount_payments']['cancelled_rows'][0]['request_code']);
+        $this->assertSame($request->serial_number, $payload['sale_and_payment']['mount_payments']['cancelled_rows'][0]['serial_number']);
+    }
+
+    public function test_cancelling_paid_payment_is_rejected_without_mutating_paid_total(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+        ]);
+        $session = $this->mountSessionForRequest($request);
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-cancel-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 900,
+            'currency' => 'TRY',
+            'paid_at' => now(),
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/paid-no-cancel',
+            'raw_payload' => [
+                'source' => 'operation_extra_mount_fee',
+                'request_code' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+            ],
+        ]);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/cancel")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['payment']);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->fresh()->status);
+        $this->assertSame(900.0, (float) $payload['sale_and_payment']['mount_payments']['paid_total_amount']);
+        $this->assertSame(0.0, (float) $payload['sale_and_payment']['mount_payments']['pending_total_amount']);
+        $this->assertSame(0.0, (float) $payload['sale_and_payment']['mount_payments']['cancelled_total_amount']);
+    }
+
+    public function test_extra_payment_multiple_payment_state_can_create_additional_pending_link_without_increasing_collected_total(): void
+    {
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
+            'mount_payment_label' => 'Montaj ödemesi alındı',
+            'mount_payment_provider' => 'fake',
+            'mount_payment_reference' => 'fake-paid-1000',
+            'mount_payment_paid_at' => now(),
+        ]);
+        $session = $this->mountSessionForRequest($request);
+        $paidPayment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-paid-1000',
+            'status' => TechnicalServiceMountPayment::STATUS_PAID,
+            'amount' => 1000,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/paid-existing',
+            'paid_at' => now(),
+            'raw_payload' => [
+                'source' => 'public_form_payment',
+                'technical_service_request_id' => $request->id,
+                'request_code' => $request->mrn,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+            ],
+        ]);
+
+        $response = $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'amount' => 450,
+                'currency' => 'TRY',
+                'purpose' => 'manual_mount_payment',
+                'reason' => 'manual_extra',
+                'note' => 'Ek ödeme linki',
+            ])
+            ->assertCreated();
+
+        $pendingPaymentId = $response->json('payment.id');
+        $pendingPayment = TechnicalServiceMountPayment::query()->findOrFail($pendingPaymentId);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $pendingPayment->status);
+        $this->assertSame($request->id, $pendingPayment->technical_service_request_id);
+        $this->assertSame('operation_extra_mount_fee', $pendingPayment->raw_payload['source']);
+        $this->assertSame($request->mrn, $pendingPayment->raw_payload['request_code']);
+        $this->assertSame($request->serial_number, $pendingPayment->raw_payload['serial_number']);
+        $this->assertSame($request->customer_name, $pendingPayment->raw_payload['customer_name']);
+        $this->assertSame($request->customer_phone, $pendingPayment->raw_payload['customer_phone']);
+
+        $payload = $response->json('request');
+
+        $this->assertSame(1000.0, (float) $payload['sale_and_payment']['mount_payments']['paid_total_amount']);
+        $this->assertSame(450.0, (float) $payload['sale_and_payment']['mount_payments']['pending_total_amount']);
+        $this->assertSame(1000.0, (float) $payload['sale_and_payment']['payment_summary']['total_customer_collection']);
+        $this->assertSame($paidPayment->id, $payload['sale_and_payment']['mount_payments']['latest_paid']['id']);
+        $this->assertSame($pendingPayment->id, $payload['sale_and_payment']['mount_payments']['latest_pending']['id']);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $paidPayment->fresh()->status);
+    }
+
     public function test_missing_paid_payment_falls_back_safely_without_fake_collection(): void
     {
         $request = $this->technicalServiceRequest([
@@ -2333,19 +2617,125 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertLessThan($operationPanelPosition, $actionPosition);
     }
 
-    public function test_ops_mount_payment_link_primary_action_calls_backend_or_shows_blocker(): void
+    public function test_ops_mount_payment_link_primary_action_opens_modal_before_backend_call(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
-        $this->assertStringContainsString('const handleCreatePaymentLinkAction = async () =>', $source);
-        $this->assertStringContainsString('await handleExtraPaymentCreate()', $source);
+        $this->assertStringContainsString('const handleCreatePaymentLinkAction = () =>', $source);
+        $this->assertStringContainsString('openPaymentLinkModal()', $source);
         $this->assertStringContainsString("if (action === 'create_payment_link')", $source);
         $this->assertStringContainsString('void handleCreatePaymentLinkAction()', $source);
-        $this->assertStringContainsString('Ödeme linki zaten var. Mevcut linki kullanın.', $source);
-        $this->assertStringContainsString('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.', $source);
-        $this->assertStringContainsString('Ödeme tutarı / yol düzenle', $source);
+        $this->assertStringNotContainsString('await handleExtraPaymentCreate()', $source);
+        $this->assertStringContainsString('İlk tıklama sadece bu pencereyi açar; ödeme linki yalnızca tutar onaylandıktan sonra oluşturulur.', $source);
+        $this->assertStringContainsString('Ödeme Al', $source);
         $this->assertStringContainsString('Ödeme linki tutarı', $source);
+    }
+
+    public function test_payment_source_for_mount_payment_link_is_explicit_and_not_route_fee_default(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('const existingPendingPaymentAmount = typeof latestPendingMountPayment?.amount', $source);
+        $this->assertStringContainsString("const extraPayment = existingPendingPaymentAmountInput", $source);
+        $this->assertStringContainsString("const paymentAmount = existingPendingPaymentAmountInput", $source);
+        $this->assertStringContainsString('Tutar kaynağı: Manuel giriş gerekli', $source);
+        $this->assertStringContainsString('Tutar kaynağı: Mevcut ödeme kaydı', $source);
+        $this->assertStringContainsString('Tutar kaynağı: Operasyon manuel girişi', $source);
+        $this->assertStringContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $source);
+        $this->assertStringNotContainsString('const extraPayment = hasRouteCostEvidence ? numericInputValue(routeFeeAmount) :', $source);
+    }
+
+    public function test_ops_detail_hides_legacy_control_blocks_by_default(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('showMountExcludedApprovalBlock', $source);
+        $this->assertStringContainsString('showAddressControlBlock', $source);
+        $this->assertStringContainsString('mountExclusionAckRequired && showMountExcludedApprovalBlock', $source);
+        $this->assertStringContainsString('{showPaymentControl ? (', $source);
+        $this->assertStringNotContainsString('showPaymentControl && showPaymentMountControlBlock', $source);
+        $this->assertStringContainsString('showAddressControl && showAddressControlBlock', $source);
+        $this->assertStringContainsString('show_mount_excluded_approval_block: false', $source);
+        $this->assertStringContainsString('show_payment_mount_control_block: false', $source);
+        $this->assertStringContainsString('show_address_control_block: false', $source);
+    }
+
+    public function test_assignment_section_shows_customer_pays_technician_compact_card(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('shouldShowCustomerPaysTechnicianCard', $source);
+        $this->assertStringContainsString('Ödeme müşteriden ustaya yapılacak.', $source);
+        $this->assertStringContainsString('Online ödeme linki bekliyor.', $source);
+        $this->assertStringContainsString('Müşteriye bildirilecek tutar', $source);
+        $this->assertStringContainsString('Şirket ödemesi', $source);
+        $this->assertStringContainsString('data-testid="bottom-payment-link-action"', $source);
+        $this->assertStringContainsString('onClick={handleBottomPaymentLinkAction}', $source);
+    }
+
+    public function test_payment_action_label_renders_bottom_bar_when_payment_management_is_relevant(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('shouldShowFooterPaymentLinkAction', $source);
+        $this->assertStringContainsString('data-testid="bottom-payment-link-action"', $source);
+        $this->assertStringContainsString("paidOnlinePaymentLink || pendingOnlinePaymentLink ? 'default' : 'outline'", $source);
+        $this->assertStringContainsString('Ödeme Düzenle', $source);
+        $this->assertStringContainsString('Ödeme Al', $source);
+        $this->assertStringContainsString('paymentActionRelevantByWorkflow', $source);
+        $this->assertStringContainsString('hasPaymentManagementContext', $source);
+        $this->assertStringNotContainsString('Ödeme alındı; bu fazda ödenmiş link düzenlenmez.', $source);
+    }
+
+    public function test_payment_link_payment_modal_bottom_action_opens_without_backend_create(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('const handleBottomPaymentLinkAction = () =>', $source);
+        $this->assertStringContainsString('openPaymentLinkModal()', $source);
+        $this->assertStringContainsString('onClick={handleBottomPaymentLinkAction}', $source);
+        $this->assertStringContainsString('paymentLinkEditorModal', $source);
+        $this->assertStringContainsString("routeFeeEditorOpen && routeFeeEditorMode === 'payment_link'", $source);
+        $this->assertStringContainsString("routeFeeEditorOpen && routeFeeEditorMode !== 'payment_link'", $source);
+        $bottomHandler = substr($source, strpos($source, 'const handleBottomPaymentLinkAction = () =>'), 260);
+        $this->assertStringNotContainsString('handleExtraPaymentCreate', $bottomHandler);
+    }
+
+    public function test_other_technicians_modal_keeps_first_four_visible(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('topTechnicianSuggestions = technicianSuggestions.slice(0, 4)', $source);
+        $this->assertStringContainsString('remainingTechnicianSuggestions = technicianSuggestions.slice(4)', $source);
+        $this->assertStringContainsString('otherTechniciansModalOpenByRequest', $source);
+        $this->assertStringContainsString('otherTechniciansModal', $source);
+        $this->assertStringContainsString('Diğer ustalar', $source);
+        $this->assertStringContainsString('İlk 4 öneri ekranda kalır; kalan ustaları buradan seçin.', $source);
+        $this->assertStringContainsString('topTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))', $source);
+        $this->assertStringContainsString('remainingTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))', $source);
+
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $this->assertIsString($pageSource);
+        $this->assertStringContainsString('return technicianAssignmentInsights', $pageSource);
+        $this->assertStringNotContainsString('const visible = technicianAssignmentInsights.slice(0, 4)', $pageSource);
+    }
+
+    public function test_payment_link_modal_can_open_without_selected_technician_for_manual_mount_payment(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString("routeFeeEditorMode === 'payment_link' || selectedTechnician", $source);
+        $this->assertStringContainsString("routeFeeEditorMode !== 'payment_link' && !selectedTechnician", $source);
+        $this->assertStringContainsString("reason: routeFeeEditorMode === 'payment_link' ? 'manual_extra' : 'route_fee'", $source);
+        $this->assertStringContainsString("purpose: routeFeeEditorMode === 'payment_link' ? 'manual_mount_payment' : 'route_fee'", $source);
     }
 
     public function test_service_part_payment_page_uses_tl_label_not_try(): void
@@ -4236,6 +4626,17 @@ class TechnicalServiceWorkflowTest extends TestCase
 
     public function test_assignment_is_blocked_until_payment_and_door_photo_controls_are_complete(): void
     {
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
+        );
+
         $user = $this->adminUser();
         $request = $this->technicalServiceRequest([
             'status' => 'Yeni',
@@ -4251,7 +4652,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonValidationErrors([
-                'operation_control.payment_checked',
+                'payment_decision',
                 'operation_control.door_photos_checked',
             ]);
 
@@ -4261,6 +4662,18 @@ class TechnicalServiceWorkflowTest extends TestCase
                 'door_photos_checked' => 'unreviewed',
             ])
             ->assertOk();
+
+        $session = $this->mountSessionForRequest($request);
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-pending-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1500,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/pending-control',
+        ]);
 
         $this->actingAs($user)
             ->postJson("/api/technical-service/requests/{$request->id}/assign", [
@@ -4314,17 +4727,106 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
 
         $notRequiredPayload = $service->serialize($notRequired->fresh(), true);
-        $requiredPayload = $service->serialize($required->fresh(), true);
+        $disabledSettingPayload = $service->serialize($required->fresh(), true);
 
         $this->assertFalse($notRequiredPayload['operation_control']['payment_required_for_assignment']);
         $this->assertFalse($notRequiredPayload['assignment_blockers']['payment_required_for_assignment']);
         $this->assertFalse($notRequiredPayload['assignment_blockers']['payment_check_required']);
         $this->assertSame([], $notRequiredPayload['assignment_blockers']['messages']);
 
+        $this->assertFalse($disabledSettingPayload['operation_control']['pre_form_payment_control_enabled']);
+        $this->assertFalse($disabledSettingPayload['operation_control']['show_payment_control']);
+        $this->assertFalse($disabledSettingPayload['operation_control']['payment_required_for_assignment']);
+        $this->assertFalse($disabledSettingPayload['assignment_blockers']['payment_required_for_assignment']);
+        $this->assertFalse($disabledSettingPayload['assignment_blockers']['payment_check_required']);
+        $this->assertSame('select_technician', $disabledSettingPayload['next_action_payload']['code']);
+        $this->assertSame([], $disabledSettingPayload['assignment_blockers']['messages']);
+
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
+        );
+
+        $requiredPayload = $service->serialize($required->fresh(), true);
+
+        $this->assertTrue($requiredPayload['operation_control']['pre_form_payment_control_enabled']);
+        $this->assertTrue($requiredPayload['operation_control']['show_payment_control']);
         $this->assertTrue($requiredPayload['operation_control']['payment_required_for_assignment']);
         $this->assertTrue($requiredPayload['assignment_blockers']['payment_required_for_assignment']);
         $this->assertTrue($requiredPayload['assignment_blockers']['payment_check_required']);
-        $this->assertSame(['Usta atanamaz. Önce ödeme kontrolünü tamamlayın.'], $requiredPayload['assignment_blockers']['messages']);
+        $this->assertSame('payment_required', $requiredPayload['next_action_payload']['code']);
+        $this->assertSame(
+            ['Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.'],
+            $requiredPayload['assignment_blockers']['messages'],
+        );
+    }
+
+    public function test_assignment_update_allowed_when_pending_payment_link_exists_with_pre_form_payment_enabled(): void
+    {
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
+        );
+
+        $user = $this->adminUser();
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'operation_control_payload' => [
+                'payment_checked' => 'unreviewed',
+                'door_photos_checked' => 'compatible',
+            ],
+        ]);
+        $session = $this->mountSessionForRequest($request);
+
+        TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'fake-pending-'.uniqid(),
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1500,
+            'currency' => 'TRY',
+            'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/pending-test',
+            'raw_payload' => [
+                'source' => 'operation_manual_amount',
+                'purpose' => 'manual_mount_payment',
+            ],
+        ]);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+
+        $this->assertTrue($payload['operation_control']['pre_form_payment_control_enabled']);
+        $this->assertSame('online_payment_pending_link', $payload['assignment_blockers']['payment_decision']);
+        $this->assertFalse($payload['assignment_blockers']['payment_required_for_assignment']);
+        $this->assertFalse($payload['assignment_blockers']['payment_check_required']);
+        $this->assertSame([], $payload['assignment_blockers']['messages']);
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technician_name' => 'Bekleyen Link Ustası',
+                'travel_round_trip_km' => 12,
+                'labor_earning_amount' => 1000,
+                'route_earning_amount' => 500,
+                'customer_direct_to_technician_amount' => 0,
+                'confirm_assignment' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
+            ->assertJsonPath('request.assignment_blockers.payment_decision', 'online_payment_pending_link')
+            ->assertJsonPath('request.assignment_blockers.payment_check_required', false);
     }
 
     public function test_contact_log_endpoint_advances_customer_contact_workflow(): void
@@ -5072,16 +5574,27 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringNotContainsString('Aramaya uygun seri bulunamadı.', $detailsSource);
     }
 
-    public function test_payment_amount_modal_requires_positive_amount_before_link_create(): void
+    public function test_payment_modal_payment_amount_requires_positive_amount_before_link_create(): void
     {
         $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($detailsSource);
-        $this->assertStringContainsString('Ödeme linki tutarı', $detailsSource);
+        $this->assertStringContainsString('Yeni ek ödeme linki tutarı', $detailsSource);
         $this->assertStringContainsString('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.', $detailsSource);
-        $this->assertStringContainsString('Ödeme linki için tutar zorunludur; 0 TL link oluşturulmaz.', $detailsSource);
-        $this->assertStringContainsString('Ödeme linki oluştur', $detailsSource);
-        $this->assertStringContainsString('Ödeme linki zaten var. Mevcut linki kullanın.', $detailsSource);
+        $this->assertStringContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $detailsSource);
+        $this->assertStringContainsString('Ödeme Al', $detailsSource);
+        $this->assertStringContainsString('Ödeme Düzenle', $detailsSource);
+        $this->assertStringContainsString('Ödenmiş kayıtlar salt okunur. Ek tahsilat gerekiyorsa yeni ödeme linki oluşturabilirsiniz.', $detailsSource);
+        $this->assertStringContainsString('Toplam alınan ödeme', $detailsSource);
+        $this->assertStringContainsString('Bekleyen ödeme linkleri', $detailsSource);
+        $this->assertStringContainsString('İptal edilen linkler', $detailsSource);
+        $this->assertStringContainsString('Ödenmiş tahsilatlar', $detailsSource);
+        $this->assertStringContainsString('Bekleyen linkler', $detailsSource);
+        $this->assertStringContainsString('İptal et', $detailsSource);
+        $this->assertStringNotContainsString('Ödeme alındı; bu link bu fazda düzenlenemez.', $detailsSource);
+        $this->assertStringNotContainsString('Ödeme alındı; bu fazda ödenmiş link düzenlenmez.', $detailsSource);
+        $this->assertStringContainsString('paymentLinkActionLabel', $detailsSource);
+        $this->assertStringContainsString('Tutar kaynağı: Manuel giriş gerekli', $detailsSource);
     }
 
     private function adminUser(): User

@@ -53,7 +53,9 @@ class TechnicalServiceNextActionService
             );
         }
 
-        if (! $isServiceVisit && ! (bool) $paymentStatus['is_paid'] && (bool) $paymentStatus['requires_payment']) {
+        $preFormPaymentControlEnabled = app(QrPublicFlowSettingsService::class)->preFormPaymentEnabled();
+
+        if (! $isServiceVisit && $preFormPaymentControlEnabled && ! (bool) $paymentStatus['is_paid'] && (bool) $paymentStatus['requires_payment']) {
             if (filled($paymentStatus['pending_payment_id'])) {
                 $amount = is_numeric($paymentStatus['amount'] ?? null)
                     ? number_format((float) $paymentStatus['amount'], 2, ',', '.').' TRY'
@@ -62,11 +64,11 @@ class TechnicalServiceNextActionService
                 return $this->payload(
                     'payment_pending',
                     'Ödeme linki gönderildi, ödeme bekleniyor',
-                    sprintf('%s ödeme linki gönderildi. Ödeme tamamlanınca servis atanabilir.', $amount),
+                    sprintf('%s ödeme linki bekliyor. Atama güncellenebilir; linki düzenleyebilir veya kopyalayabilirsiniz.', $amount),
                     'warning',
-                    'copy_payment_link',
-                    true,
-                    ['send_payment_whatsapp']
+                    'create_payment_link',
+                    false,
+                    ['copy_payment_link', 'send_payment_whatsapp']
                 );
             }
 

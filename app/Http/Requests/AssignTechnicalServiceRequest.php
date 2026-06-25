@@ -33,10 +33,12 @@ class AssignTechnicalServiceRequest extends FormRequest
             'assignment_offer.labor_amount' => ['nullable', 'numeric', 'min:0'],
             'assignment_offer.route_fee_amount' => ['nullable', 'numeric', 'min:0'],
             'assignment_offer.total_amount' => ['nullable', 'numeric', 'min:0'],
+            'assignment_offer.customer_direct_to_technician_amount' => ['nullable', 'numeric', 'min:0'],
             'assignment_offer.currency' => ['nullable', 'string', 'max:8'],
             'assignment_offer.note' => ['nullable', 'string', 'max:2000'],
             'labor_amount' => ['nullable', 'numeric', 'min:0'],
             'travel_amount' => ['nullable', 'numeric', 'min:0'],
+            'customer_direct_to_technician_amount' => ['nullable', 'numeric', 'min:0'],
             'earning_note' => ['nullable', 'string', 'max:2000'],
             'confirm_assignment' => ['nullable', 'boolean'],
         ];
@@ -45,23 +47,10 @@ class AssignTechnicalServiceRequest extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
-            if (! $this->boolean('mount_payment_missing')) {
-                return;
-            }
-
-            if (! $this->boolean('override_without_payment')) {
-                $validator->errors()->add('override_without_payment', 'Montaj Hariç işler için operasyon onayı zorunludur.');
-            }
-
-            if (mb_strlen(trim((string) $this->input('override_reason'))) < 5) {
-                $validator->errors()->add('override_reason', 'Atama nedeni en az 5 karakter olmalıdır.');
-            }
-        });
-
-        $validator->after(function (Validator $validator): void {
             $hasFinalEarningPayload = $this->hasAny([
                 'labor_amount',
                 'travel_amount',
+                'customer_direct_to_technician_amount',
                 'earning_note',
                 'confirm_assignment',
             ]);

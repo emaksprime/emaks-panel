@@ -192,6 +192,7 @@ type ApiTechnicalServiceRequest = {
   previous_field_completion_documents?: ServiceRequest['previousFieldCompletionDocuments']
   route_quote?: ServiceRequest['routeQuote']
   assignment_offer?: ServiceRequest['assignmentOffer']
+  settlement?: ServiceRequest['settlement']
   technician_revision_offer?: ServiceRequest['technicianRevisionOffer']
   earning_breakdown?: ServiceRequest['earningBreakdown']
   finance_summary?: ServiceRequest['financeSummary']
@@ -277,6 +278,18 @@ type SummaryResponse = {
 }
 
 type PlanSummaryFilter = 'week' | 'today' | 'overdue' | 'unscheduled' | 'closed'
+
+type OpsDetailVisibilitySettings = {
+  show_mount_excluded_approval_block: boolean
+  show_payment_mount_control_block: boolean
+  show_address_control_block: boolean
+}
+
+const DEFAULT_OPS_DETAIL_VISIBILITY: OpsDetailVisibilitySettings = {
+  show_mount_excluded_approval_block: false,
+  show_payment_mount_control_block: false,
+  show_address_control_block: false,
+}
 
 const initialFilters: FilterState = {
   search: '',
@@ -941,6 +954,7 @@ function mapApiRequest(request: ApiTechnicalServiceRequest): ServiceRequest {
     routeFeeConfig: request.route_fee_config ?? null,
     routeQuote: request.route_quote ?? null,
     assignmentOffer: request.assignment_offer ?? null,
+    settlement: request.settlement ?? null,
     technicianRevisionOffer: request.technician_revision_offer ?? null,
     earningBreakdown: request.earning_breakdown ?? null,
     financeSummary: request.finance_summary ?? null,
@@ -1074,6 +1088,7 @@ export function TechnicalServiceOperationCenter() {
   const [fieldDocumentReviewError, setFieldDocumentReviewError] = useState<string | null>(null)
   const [customerApprovalResendLoading, setCustomerApprovalResendLoading] = useState(false)
   const [customerApprovalResendError, setCustomerApprovalResendError] = useState<string | null>(null)
+  const [opsDetailVisibility, setOpsDetailVisibility] = useState<OpsDetailVisibilitySettings>(DEFAULT_OPS_DETAIL_VISIBILITY)
   const [showNearbyTechnicians, setShowNearbyTechnicians] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTimeSlot, setScheduleTimeSlot] = useState('')
@@ -1085,8 +1100,10 @@ export function TechnicalServiceOperationCenter() {
   const [assignOverrideReason, setAssignOverrideReason] = useState('')
   const [assignOfferLaborAmount, setAssignOfferLaborAmount] = useState('')
   const [assignOfferRouteFeeAmount, setAssignOfferRouteFeeAmount] = useState('')
+  const [assignCustomerDirectAmount, setAssignCustomerDirectAmount] = useState('')
   const [assignOfferNote, setAssignOfferNote] = useState('')
   const [assignmentConfirmDialogOpen, setAssignmentConfirmDialogOpen] = useState(false)
+  const assignmentDraftRequestId = useRef<string | null>(null)
   const [contactMethod, setContactMethod] = useState('telefon')
   const [contactNote, setContactNote] = useState('')
   const [contactPreferredDate, setContactPreferredDate] = useState('')
@@ -1105,6 +1122,7 @@ export function TechnicalServiceOperationCenter() {
     routeQuoteLastAutoKey.current = ''
     setAssignOfferLaborAmount('')
     setAssignOfferRouteFeeAmount('')
+    setAssignCustomerDirectAmount('')
     setAssignmentConfirmDialogOpen(false)
     setRouteQuoteError(null)
     setRouteQuoteManualSaveError(null)
@@ -1248,6 +1266,37 @@ export function TechnicalServiceOperationCenter() {
   useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
+
+  useEffect(() => {
+    let active = true
+
+    const loadOpsDetailVisibility = async () => {
+      try {
+        const response = await apiRequest('/api/technical-service/qr-flow-settings')
+        const visibility = response?.settings?.ops_detail_visibility
+
+        if (!active || !visibility || typeof visibility !== 'object') {
+          return
+        }
+
+        setOpsDetailVisibility({
+          show_mount_excluded_approval_block: Boolean(visibility.show_mount_excluded_approval_block),
+          show_payment_mount_control_block: Boolean(visibility.show_payment_mount_control_block),
+          show_address_control_block: Boolean(visibility.show_address_control_block),
+        })
+      } catch {
+        if (active) {
+          setOpsDetailVisibility(DEFAULT_OPS_DETAIL_VISIBILITY)
+        }
+      }
+    }
+
+    void loadOpsDetailVisibility()
+
+    return () => {
+      active = false
+    }
+  }, [])
 
   const preserveDetailScroll = useCallback((update: () => void) => {
     const scrollTop = detailScrollRef.current?.scrollTop ?? 0
@@ -2019,6 +2068,17 @@ export function TechnicalServiceOperationCenter() {
   const finalAssignmentLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
   const finalAssignmentRouteAmount = parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0
   const finalAssignmentTotalAmount = roundTwo(finalAssignmentLaborAmount + finalAssignmentRouteAmount)
+  const customerDirectPaymentDisabled = hasMountPaymentReceived(modalRequest)
+  const finalAssignmentCustomerDirectDefault = customerDirectPaymentDisabled ? 0 : finalAssignmentTotalAmount
+  const parsedAssignmentCustomerDirectAmount = parseNullableNumber(assignCustomerDirectAmount)
+  const finalAssignmentCustomerDirectAmount = customerDirectPaymentDisabled
+    ? 0
+    : roundTwo(parsedAssignmentCustomerDirectAmount ?? finalAssignmentCustomerDirectDefault)
+  const finalAssignmentCompanyPayableAmount = roundTwo(Math.max(finalAssignmentTotalAmount - finalAssignmentCustomerDirectAmount, 0))
+  const finalAssignmentOverpayAmount = roundTwo(Math.max(finalAssignmentCustomerDirectAmount - finalAssignmentTotalAmount, 0))
+  const finalAssignmentHasSmallDifference = finalAssignmentOverpayAmount === 0
+    && finalAssignmentCompanyPayableAmount > 0
+    && finalAssignmentCompanyPayableAmount <= 10
   const finalAssignmentNetDifference = modalCollectedPaymentAmount !== null
     ? roundTwo(modalCollectedPaymentAmount - finalAssignmentTotalAmount)
     : typeof modalFinanceNetMargin?.amount === 'number' && Number.isFinite(modalFinanceNetMargin.amount)
@@ -2099,6 +2159,25 @@ export function TechnicalServiceOperationCenter() {
 
     return assignmentRouteQuote.message ?? 'Yol hakedişi 0 TL.'
   })()
+  const assignmentDirectAmountError = (() => {
+    if (assignCustomerDirectAmount.trim() === '') {
+      return null
+    }
+
+    if (parsedAssignmentCustomerDirectAmount === null) {
+      return 'Müşteriye bildirilecek ustaya ödeme tutarı sayısal olmalıdır.'
+    }
+
+    if (parsedAssignmentCustomerDirectAmount < 0) {
+      return 'Müşteriye bildirilecek ustaya ödeme tutarı negatif olamaz.'
+    }
+
+    if (customerDirectPaymentDisabled && parsedAssignmentCustomerDirectAmount > 0) {
+      return 'Müşteriden montaj ödemesi alındığı için ustaya doğrudan ödeme tutarı 0 olmalıdır.'
+    }
+
+    return null
+  })()
   const assignmentFinalMessagePreview = [
     'EMAKS Prime Teknik Servis',
     '',
@@ -2129,15 +2208,38 @@ export function TechnicalServiceOperationCenter() {
   )
   const mountPaymentAccepted = modalRequest?.serviceType === 'Montaj' && isMountPaymentAccepted(mikroMountCheck)
   const mountExclusionAckRequired = requiresMountExclusionAcknowledgement(modalRequest)
-  const mountExclusionAckComplete = !mountExclusionAckRequired
+  const legacyMountExclusionAckTouched = assignOverrideWithoutPayment || assignOverrideReason.trim().length > 0
+  const mountExclusionAckComplete = !legacyMountExclusionAckTouched
     || (assignOverrideWithoutPayment && assignOverrideReason.trim().length >= 5)
-  const assignmentBlockerMessages = modalRequest?.assignmentBlockers?.messages ?? []
+  const assignmentPendingOnlinePaymentLink = Boolean(
+    modalRequest?.saleAndPayment?.extra_mount_payment?.status === 'pending'
+    && modalRequest.saleAndPayment.extra_mount_payment.payment_url,
+  )
+  const assignmentCustomerPaysTechnician = !customerDirectPaymentDisabled && finalAssignmentCustomerDirectAmount > 0
+  const preFormPaymentControlEnabledForModal = Boolean(modalRequest?.operationControl?.show_payment_control)
+  const paymentNeededNoDecision = Boolean(
+    preFormPaymentControlEnabledForModal
+    && modalRequest?.serviceType === 'Montaj'
+    && !hasMountPaymentReceived(modalRequest)
+    && (effectiveMountPaymentMissing || mountExclusionAckRequired)
+    && !assignmentPendingOnlinePaymentLink
+    && !assignmentCustomerPaysTechnician,
+  )
+  const paymentDecisionRequiredMessage = 'Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.'
+  const assignmentBlockerMessages = (modalRequest?.assignmentBlockers?.messages ?? []).filter((message) => {
+    if (message !== paymentDecisionRequiredMessage) {
+      return true
+    }
+
+    return !assignmentPendingOnlinePaymentLink && !assignmentCustomerPaysTechnician
+  })
   const hasAssignmentBlockers = assignmentBlockerMessages.length > 0
   const canSubmitAssign = Boolean(
     !assignLoading &&
     assignTechnicianOption &&
     (assignTechnicianOption !== 'other' || assignOtherTechnician.trim()) &&
     !hasAssignmentBlockers &&
+    !paymentNeededNoDecision &&
     mountExclusionAckComplete
   )
   const technicianMatches = technicians
@@ -2286,19 +2388,20 @@ export function TechnicalServiceOperationCenter() {
     }))
   })()
   const visibleTechnicianAssignmentInsights = (() => {
-    const visible = technicianAssignmentInsights.slice(0, 4)
-
     if (!assignTechnicianOption || assignTechnicianOption === 'other') {
-      return visible
+      return technicianAssignmentInsights
     }
 
     const selectedInsight = technicianAssignmentInsights.find((insight) => insight.id === assignTechnicianOption)
 
-    if (!selectedInsight || visible.some((insight) => insight.id === selectedInsight.id)) {
-      return visible
+    if (!selectedInsight) {
+      return technicianAssignmentInsights
     }
 
-    return [selectedInsight, ...visible]
+    return [
+      selectedInsight,
+      ...technicianAssignmentInsights.filter((insight) => insight.id !== selectedInsight.id),
+    ]
   })()
   const assignmentScheduleSupport = (() => {
     const currentSchedule = modalRequest?.scheduledDate
@@ -2558,6 +2661,7 @@ export function TechnicalServiceOperationCenter() {
     setAssignOverrideReason('')
     setAssignOfferLaborAmount('')
     setAssignOfferRouteFeeAmount('')
+    setAssignCustomerDirectAmount('')
     setAssignOfferNote('')
     setAssignmentConfirmDialogOpen(false)
     setShowNearbyTechnicians(false)
@@ -2566,6 +2670,40 @@ export function TechnicalServiceOperationCenter() {
     setExtraPaymentCreateError(null)
     setTechnicianEarningMessageError(null)
     setRouteQuoteLoading(false)
+  }
+
+  const openAssignmentDialog = () => {
+    const currentRequestId = modalRequest?.id ?? selectedId ?? null
+
+    if (assignmentDraftRequestId.current !== currentRequestId) {
+      handleAssignReset()
+      assignmentDraftRequestId.current = currentRequestId
+    }
+
+    setAssignError(null)
+    setAssignmentConfirmDialogOpen(false)
+    setAssignDialogOpen(true)
+  }
+
+  const closeAssignmentDialog = () => {
+    assignmentDraftRequestId.current = null
+    setAssignmentConfirmDialogOpen(false)
+    setAssignDialogOpen(false)
+    handleAssignReset()
+  }
+
+  const handleAssignDialogOpenChange = (open: boolean) => {
+    if (open) {
+      openAssignmentDialog()
+
+      return
+    }
+
+    if (assignLoading || assignmentConfirmDialogOpen) {
+      return
+    }
+
+    closeAssignmentDialog()
   }
 
   const handleScheduleReset = () => {
@@ -3282,6 +3420,45 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleMountPaymentCancel = async (paymentId: number | string, payload?: { reason?: string | null }) => {
+    if (!selectedId) {
+      return
+    }
+
+    setExtraPaymentCreateLoading(true)
+    setExtraPaymentCreateError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/${paymentId}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify(payload ?? {}),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (!updatedRequest) {
+        setExtraPaymentCreateError('Ödeme linki iptal edildi ancak talep detayı güncellenemedi.')
+
+        return
+      }
+
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+    } catch (caught) {
+      setExtraPaymentCreateError(caught instanceof Error ? caught.message : 'Ödeme linki iptal edilemedi.')
+
+      throw caught
+    } finally {
+      setExtraPaymentCreateLoading(false)
+    }
+  }
+
   const handleTechnicianEarningMessageCreate = async (payload: ServiceRequestTechnicianEarningMessagePayload) => {
     if (!selectedId) {
       return undefined
@@ -3730,16 +3907,14 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
-    const paymentOverrideRequired = !hasMountPaymentReceived(modalRequest) && (effectiveMountPaymentMissing || mountExclusionAckRequired)
-
-    if (paymentOverrideRequired && !assignOverrideWithoutPayment) {
-      setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
+    if (paymentNeededNoDecision) {
+      setAssignError('Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.')
 
       return
     }
 
-    if (paymentOverrideRequired && assignOverrideReason.trim().length < 5) {
-      setAssignError('Atama nedeni en az 5 karakter olmalıdır.')
+    if (assignmentDirectAmountError) {
+      setAssignError(assignmentDirectAmountError)
 
       return
     }
@@ -3781,16 +3956,14 @@ export function TechnicalServiceOperationCenter() {
       return
     }
 
-    const paymentOverrideRequired = !hasMountPaymentReceived(modalRequest) && (effectiveMountPaymentMissing || mountExclusionAckRequired)
-
-    if (paymentOverrideRequired && !assignOverrideWithoutPayment) {
-      setAssignError('Montaj ödemesi alınmadığı için doğrudan atama yapılamaz.')
+    if (paymentNeededNoDecision) {
+      setAssignError('Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.')
 
       return
     }
 
-    if (paymentOverrideRequired && assignOverrideReason.trim().length < 5) {
-      setAssignError('Atama nedeni en az 5 karakter olmalıdır.')
+    if (assignmentDirectAmountError) {
+      setAssignError(assignmentDirectAmountError)
 
       return
     }
@@ -3814,6 +3987,9 @@ export function TechnicalServiceOperationCenter() {
       const offerLaborAmount = parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0
       const offerRouteFeeAmount = parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0
       const offerTotalAmount = Math.round((offerLaborAmount + offerRouteFeeAmount) * 100) / 100
+      const customerDirectAmount = customerDirectPaymentDisabled
+        ? 0
+        : roundTwo(parseNullableNumber(assignCustomerDirectAmount) ?? offerTotalAmount)
       const response = await apiRequest(`/api/technical-service/requests/${selectedId}/assign`, {
         method: 'POST',
         body: JSON.stringify({
@@ -3822,19 +3998,21 @@ export function TechnicalServiceOperationCenter() {
             : { technical_service_technician_id: assignTechnicianOption }),
           route_quote_id: assignmentRouteQuote?.id ?? null,
           travel_round_trip_km: parsedTravelRoundTripKm,
-          mount_payment_missing: paymentOverrideRequired,
-          override_without_payment: paymentOverrideRequired ? assignOverrideWithoutPayment : false,
-          override_reason: paymentOverrideRequired ? assignOverrideReason.trim() || null : null,
-          mount_exclusion_acknowledged: mountExclusionAckRequired ? assignOverrideWithoutPayment : false,
-          mount_exclusion_note: mountExclusionAckRequired ? assignOverrideReason.trim() || null : null,
+          mount_payment_missing: paymentNeededNoDecision,
+          override_without_payment: false,
+          override_reason: null,
+          mount_exclusion_acknowledged: legacyMountExclusionAckTouched ? assignOverrideWithoutPayment : false,
+          mount_exclusion_note: legacyMountExclusionAckTouched ? assignOverrideReason.trim() || null : null,
           labor_amount: offerLaborAmount,
           travel_amount: offerRouteFeeAmount,
+          customer_direct_to_technician_amount: customerDirectAmount,
           earning_note: assignOfferNote.trim() || assignNote || null,
           confirm_assignment: true,
           assignment_offer: {
             labor_amount: offerLaborAmount,
             route_fee_amount: offerRouteFeeAmount,
             total_amount: offerTotalAmount,
+            customer_direct_to_technician_amount: customerDirectAmount,
             currency: 'TRY',
             note: assignOfferNote.trim() || assignNote || null,
           },
@@ -3843,12 +4021,14 @@ export function TechnicalServiceOperationCenter() {
       })
       const updatedRequest = response.request ? mapApiRequest(response.request) : null
 
+      assignmentDraftRequestId.current = null
       setAssignmentConfirmDialogOpen(false)
       setAssignDialogOpen(false)
       setAssignOtherTechnician('')
       setAssignNote('')
       setAssignOfferLaborAmount('')
       setAssignOfferRouteFeeAmount('')
+      setAssignCustomerDirectAmount('')
       setAssignOfferNote('')
       setAssignTechnicianOption(submittedTechnicianOption)
       setTravelRoundTripKm(submittedTravelRoundTripKm)
@@ -4369,13 +4549,7 @@ export function TechnicalServiceOperationCenter() {
         </div>
       </section>
 
-          <Dialog open={assignDialogOpen} onOpenChange={(open) => {
-            setAssignDialogOpen(open)
-
-            if (!open) {
-              handleAssignReset()
-            }
-          }}>
+          <Dialog open={assignDialogOpen} onOpenChange={handleAssignDialogOpenChange}>
             <DialogContent className="!w-[88vw] max-w-5xl max-h-[92vh] overflow-y-auto rounded-[28px]">
               <DialogClose asChild>
                 <button
@@ -4461,41 +4635,19 @@ export function TechnicalServiceOperationCenter() {
                       <p className="mt-1">{effectiveMountPaymentMissing ? 'Alınmadı' : mountPaymentAccepted ? 'Alındı / engel yok' : 'Kontrol edilemedi'}</p>
                     </div>
                   </div>
-                  {effectiveMountPaymentMissing ? (
-                    <p>Montaj ödemesi alınmamış görünüyor. Atama yapmak için operasyon onayı gerekir.</p>
+                  {paymentNeededNoDecision ? (
+                    <p>Ödeme yöntemi netleşmeden atama güncellenemez. Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.</p>
                   ) : null}
                   {mikroMountCheck?.montaj_ek_aciklama ? <p>{mikroMountCheck.montaj_ek_aciklama}</p> : null}
                   {mikroMountCheck?.farkli_cari_uyarisi ? <p>Sonradan montaj carisi, son geçerli satış carisinden farklı.</p> : null}
                 </div>
 
-                {effectiveMountPaymentMissing ? (
+                {paymentNeededNoDecision ? (
                   <div className="grid gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                     <div>
-                      <p className="font-semibold">Montaj ödemesi alınmamış görünüyor. Atama yapmak için operasyon onayı gerekir.</p>
-                      <p className="mt-1">Operasyon zorunlu durumda devam edecekse kontrollü override kullanın.</p>
+                      <p className="font-semibold">Ödeme yöntemi netleşmeden atama güncellenemez.</p>
+                      <p className="mt-1">Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin. Gizli montaj hariç onayı artık atama kapısı değildir.</p>
                     </div>
-
-                    <label className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-white px-4 py-3">
-                      <input
-                        type="checkbox"
-                        checked={assignOverrideWithoutPayment}
-                        onChange={(event) => setAssignOverrideWithoutPayment(event.target.checked)}
-                        className="mt-1 h-4 w-4 accent-primary"
-                      />
-                      <span className="font-medium text-slate-900">Montaj hariç işe atama yapılmasına onay veriyorum.</span>
-                    </label>
-
-                    {assignOverrideWithoutPayment ? (
-                      <label className="grid gap-2 text-sm font-medium text-slate-700">
-                        Atama nedeni
-                        <textarea
-                          value={assignOverrideReason}
-                          onChange={(event) => setAssignOverrideReason(event.target.value)}
-                          className="min-h-[96px] rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-ring focus:ring-ring/50 focus:ring-[3px]"
-                          placeholder="Örn. Müşteri montaj sonrası ödeme yapacak / elden ödeme alınacak / yönetici onayı var"
-                        />
-                      </label>
-                    ) : null}
                   </div>
                 ) : null}
 
@@ -4721,9 +4873,9 @@ export function TechnicalServiceOperationCenter() {
                         {modalPayoutStatusLabel}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-emerald-800">Bu tutar müşteri tahsilatı değildir; atama kaydıyla birlikte sisteme bildirim payload'ı düşer ve canlı WhatsApp/SMS gönderimi yapılmaz.</p>
+                    <p className="mt-1 text-xs text-emerald-800">Bu tutar müşteri tahsilatı değildir; hakediş ve müşteriye bildirilecek doğrudan usta ödemesi assignment kaydıyla settlement ledger'a yazılır. Bu fazda müşteri/WhatsApp mesajı gönderilmez.</p>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-4">
                     <label className="grid gap-1 text-xs font-semibold text-emerald-800">
                       İşçilik / montaj
                       <Input
@@ -4746,12 +4898,45 @@ export function TechnicalServiceOperationCenter() {
                         placeholder={assignmentRouteFeeAmount !== null ? String(assignmentRouteFeeAmount) : '0'}
                       />
                     </label>
+                    <label className="grid gap-1 text-xs font-semibold text-emerald-800">
+                      Müşteriye bildirilecek ustaya ödeme tutarı
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={assignCustomerDirectAmount}
+                        onChange={(event) => setAssignCustomerDirectAmount(event.target.value)}
+                        placeholder={String(finalAssignmentCustomerDirectDefault)}
+                        disabled={customerDirectPaymentDisabled}
+                      />
+                    </label>
                     <div className="rounded-xl bg-white/80 p-3">
                       <p className="text-xs font-semibold text-emerald-700">{assignmentPayoutSummaryLabel}</p>
                       <p className="mt-1 font-semibold text-slate-950">
-                        {formatMoneyLabel((parseNullableNumber(assignOfferLaborAmount) ?? assignmentTechnicianLaborAmount ?? 0) + (parseNullableNumber(assignOfferRouteFeeAmount) ?? assignmentRouteFeeAmount ?? 0))}
+                        {formatMoneyLabel(finalAssignmentTotalAmount)}
                       </p>
                     </div>
+                  </div>
+                  <div className="grid gap-2 rounded-xl border border-emerald-100 bg-white/80 p-3 text-xs text-emerald-900">
+                    <p className="font-semibold">
+                      {customerDirectPaymentDisabled
+                        ? 'Müşteriden montaj ödemesi alındığı için ustaya doğrudan ödeme bildirilmeyecek.'
+                        : 'Müşteriden montaj ödemesi alınmadıysa randevu mesajında bu tutar ustaya ödenecek olarak bildirilecek.'}
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <span>Kalan şirket ödemesi: <strong>{formatMoneyLabel(finalAssignmentCompanyPayableAmount)}</strong></span>
+                      <span>Müşteriye bildirilecek tutar: <strong>{formatMoneyLabel(finalAssignmentCustomerDirectAmount)}</strong></span>
+                      <span>Fark kaydı: <strong>{formatMoneyLabel(finalAssignmentOverpayAmount || finalAssignmentCompanyPayableAmount)}</strong></span>
+                    </div>
+                    {finalAssignmentOverpayAmount > 0 ? (
+                      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 font-semibold text-amber-900">
+                        Müşteriye bildirilen tutar usta hakedişinden yüksek. Admin incelemesi gerekecek.
+                      </p>
+                    ) : finalAssignmentHasSmallDifference ? (
+                      <p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-semibold text-blue-900">
+                        10 TL altı fark da aynen kaydedilir; otomatik yuvarlama yapılmaz.
+                      </p>
+                    ) : null}
                   </div>
                   <label className="grid gap-1 text-xs font-semibold text-emerald-800">
                     Hakediş notu
@@ -4761,11 +4946,9 @@ export function TechnicalServiceOperationCenter() {
               </div>
 
               <DialogFooter className="gap-2">
-                <DialogClose asChild>
-                  <Button variant="secondary" type="button" onClick={handleAssignReset}>
-                    İptal
-                  </Button>
-                </DialogClose>
+                <Button variant="secondary" type="button" onClick={closeAssignmentDialog} disabled={assignLoading}>
+                  İptal
+                </Button>
                 <Button
                   type="button"
                   onClick={handleAssignmentFinalConfirmOpen}
@@ -4829,6 +5012,23 @@ export function TechnicalServiceOperationCenter() {
                     />
                     <span className="text-xs font-medium text-slate-500">{assignmentRouteFeeReason}</span>
                   </label>
+                  <label className="grid gap-1 text-sm font-semibold text-slate-700 sm:col-span-2">
+                    Müşteriye bildirilecek ustaya ödeme tutarı
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={assignCustomerDirectAmount}
+                      onChange={(event) => setAssignCustomerDirectAmount(event.target.value)}
+                      placeholder={String(finalAssignmentCustomerDirectDefault)}
+                      disabled={customerDirectPaymentDisabled}
+                    />
+                    <span className="text-xs font-medium text-slate-500">
+                      {customerDirectPaymentDisabled
+                        ? 'Müşteriden montaj ödemesi alındığı için ustaya doğrudan ödeme bildirilmeyecek.'
+                        : 'Müşteriden montaj ödemesi alınmadıysa randevu mesajında bu tutar ustaya ödenecek olarak bildirilecek.'}
+                    </span>
+                  </label>
                 </div>
 
                 <div className="grid gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-950 sm:grid-cols-2">
@@ -4840,6 +5040,14 @@ export function TechnicalServiceOperationCenter() {
                     <p className="text-xs font-semibold text-emerald-700">Müşteri tahsilatı</p>
                     <p className="mt-1 text-lg font-semibold">{modalCollectedPaymentLabel}</p>
                   </div>
+                  <div>
+                    <p className="text-xs font-semibold text-emerald-700">Müşteriye bildirilecek usta ödemesi</p>
+                    <p className="mt-1 text-lg font-semibold">{formatMoneyLabel(finalAssignmentCustomerDirectAmount)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-emerald-700">Kalan şirket ödemesi</p>
+                    <p className="mt-1 text-lg font-semibold">{formatMoneyLabel(finalAssignmentCompanyPayableAmount)}</p>
+                  </div>
                   {modalCurrentFinance?.warranty_note ? (
                     <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-xs font-semibold text-amber-900 sm:col-span-2">
                       {modalCurrentFinance.warranty_note}
@@ -4850,6 +5058,15 @@ export function TechnicalServiceOperationCenter() {
                     <p className="text-xs font-semibold text-emerald-700">{modalNetDifferenceLabel}</p>
                     <p className="mt-1 text-lg font-semibold">{finalAssignmentNetDifference !== null ? formatMoneyLabel(finalAssignmentNetDifference) : '-'}</p>
                   </div>
+                  {finalAssignmentOverpayAmount > 0 ? (
+                    <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-xs font-semibold text-amber-900 sm:col-span-2">
+                      Müşteriye bildirilen tutar usta hakedişinden yüksek. Admin incelemesi gerekecek. Fazla bildirim: {formatMoneyLabel(finalAssignmentOverpayAmount)}
+                    </div>
+                  ) : finalAssignmentCompanyPayableAmount > 0 ? (
+                    <div className="rounded-xl border border-blue-200 bg-white/80 px-3 py-2 text-xs font-semibold text-blue-900 sm:col-span-2">
+                      Kalan şirket ödemesi: {formatMoneyLabel(finalAssignmentCompanyPayableAmount)}. Fark, 10 TL altında olsa bile aynen kaydedilir.
+                    </div>
+                  ) : null}
                 </div>
 
                 <label className="grid gap-1 text-sm font-semibold text-slate-700">
@@ -5527,6 +5744,7 @@ export function TechnicalServiceOperationCenter() {
                 ) : (selectedDetailRequest || modalRequest) ? (
                   <ServiceRequestDetails
                     request={selectedDetailRequest ?? modalRequest!}
+                    opsDetailVisibility={opsDetailVisibility}
                     displayMrn={modalDisplayMrn ?? undefined}
                     events={selectedEvents}
                     loading={detailLoading}
@@ -5537,7 +5755,7 @@ export function TechnicalServiceOperationCenter() {
                     warranty={warranty}
                     warrantyLoading={warrantyLoading}
                     warrantyError={warrantyError}
-                    onAssign={() => setAssignDialogOpen(true)}
+                    onAssign={openAssignmentDialog}
                     onSchedule={() => setScheduleDialogOpen(true)}
                     onComplete={openCompleteDialog}
                     onReopen={() => setReopenDialogOpen(true)}
@@ -5587,6 +5805,7 @@ export function TechnicalServiceOperationCenter() {
                     onRouteQuoteCalculate={handleRouteQuoteCalculate}
                     onRouteQuoteManualSave={handleRouteQuoteManualSave}
                     onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
+                    onMountPaymentCancel={handleMountPaymentCancel}
                     onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}

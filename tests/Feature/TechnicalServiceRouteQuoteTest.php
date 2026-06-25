@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
@@ -534,7 +535,15 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertSame($request->id, $payment->technical_service_request_id);
         $this->assertSame('operation_extra_mount_fee', $payment->raw_payload['source']);
         $this->assertSame($request->id, $payment->raw_payload['technical_service_request_id']);
+        $this->assertSame($request->mrn, $payment->raw_payload['request_code']);
+        $this->assertSame($request->root_mrn ?: $request->mrn, $payment->raw_payload['root_mrn']);
+        $this->assertSame($request->serial_number, $payment->raw_payload['serial_number']);
+        $this->assertSame($request->customer_name, $payment->raw_payload['customer_name']);
+        $this->assertSame($request->customer_phone, $payment->raw_payload['customer_phone']);
+        $this->assertSame('manual_ops_amount', $payment->raw_payload['amount_source']);
         $this->assertSame([$serial->id], $payment->raw_payload['selected_serial_ids']);
+        $this->assertSame($serial->serial_number, $payment->raw_payload['selected_serials'][0]['serial_number']);
+        $this->assertSame($serial->customer_phone, $payment->raw_payload['selected_serials'][0]['customer_phone']);
         $this->assertNotEmpty($payment->payment_url);
         $this->assertStringContainsString('/mount-payment/', $payment->payment_url);
         $this->assertStringNotContainsString('/mount-payment/fake/', $payment->payment_url);
@@ -545,6 +554,43 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'event_type' => 'mount_payment_link_created',
             'title' => 'Ödeme linki oluşturuldu',
         ]);
+    }
+
+    public function test_manual_mount_payment_link_binds_request_snapshot_without_technician(): void
+    {
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+
+        $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/extra-mount-fee", [
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 875,
+                'currency' => 'TRY',
+                'reason' => 'manual_extra',
+                'purpose' => 'manual_mount_payment',
+                'note' => 'Manuel montaj ödeme linki',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('payment.amount', 875)
+            ->assertJsonPath('payment.amount_source', 'manual_ops_amount')
+            ->assertJsonPath('request.id', $request->id);
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+
+        $this->assertSame($request->id, $payment->technical_service_request_id);
+        $this->assertNull($payment->raw_payload['technician_id']);
+        $this->assertSame($request->mrn, $payment->raw_payload['mrn']);
+        $this->assertSame($request->mrn, $payment->raw_payload['request_code']);
+        $this->assertSame($request->root_mrn ?: $request->mrn, $payment->raw_payload['root_mrn']);
+        $this->assertSame($request->serial_number, $payment->raw_payload['serial_number']);
+        $this->assertSame($request->customer_name, $payment->raw_payload['customer_name']);
+        $this->assertSame($request->customer_phone, $payment->raw_payload['customer_phone']);
+        $this->assertSame('manual_mount_payment', $payment->raw_payload['purpose']);
+        $this->assertSame('manual_extra', $payment->raw_payload['reason']);
+        $this->assertSame('manual_ops_amount', $payment->raw_payload['amount_source']);
+        $this->assertSame([$serial->id], $payment->raw_payload['selected_serial_ids']);
+        $this->assertSame($serial->serial_number, $payment->raw_payload['selected_serials'][0]['serial_number']);
     }
 
     public function test_payment_public_extra_mount_fee_payment_link_uses_public_payment_base_url(): void
@@ -610,6 +656,17 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
     public function test_payment_status_endpoint_returns_fresh_request_and_next_action(): void
     {
+        PageConfig::query()->updateOrCreate(
+            ['page_code' => 'technical_service_admin'],
+            ['layout_json' => [
+                'technical_service' => [
+                    'qr' => [
+                        'pre_form_payment_for_mount_excluded_enabled' => true,
+                    ],
+                ],
+            ]],
+        );
+
         $user = $this->adminUser();
         [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
         $request->forceFill([
@@ -637,7 +694,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PENDING)
             ->assertJsonPath('request.id', $request->id)
             ->assertJsonPath('request.next_action_payload.code', 'payment_pending')
-            ->assertJsonPath('request.next_action_payload.primary_action', 'copy_payment_link');
+            ->assertJsonPath('request.next_action_payload.primary_action', 'create_payment_link');
 
         $this->assertSame($response->json('payment.payment_url'), $payment->payment_url);
     }
