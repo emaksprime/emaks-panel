@@ -5533,6 +5533,7 @@ class TechnicalServiceWorkflowService
         $this->applyDerivedState($request, $payload);
         $this->storeCompletedEarningSnapshot($request);
         $request->save();
+        app(TechnicalServiceSettlementCompletionService::class)->apply($request->refresh(), $user);
 
         $this->writeAuditLog($request, 'field_completed', $old, $this->snapshot($request), $user, $payload['note'] ?? null);
         $this->writeEvent($request, 'field_completed', $current, $this->currentWorkflowStatus($request), $user, $payload, 'Saha işi tamamlandı');
