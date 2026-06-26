@@ -301,6 +301,9 @@ const actionCodeLabels: Record<string, string> = {
   second_visit_required: 'Tekrar randevu gerekli',
   technician_updated: 'Usta bilgisi güncellendi',
   technician_earning_message_sent: 'Hakediş bilgisi gönderildi',
+  settlement_review_approved: 'Hakediş mutabakatı onaylandı',
+  settlement_review_corrected: 'Hakediş mutabakatı düzeltildi',
+  settlement_review_excluded: 'Hakedişe dahil değil kararı',
   technician_revision_requested: 'Usta revize talep etti',
   field_override_requested: 'Düzeltme talebi oluşturuldu',
   field_override_applied: 'Düzeltme uygulandı',
@@ -1257,7 +1260,7 @@ const settlementStatusLabel = (status: string | null | undefined): string => {
     case 'calculated':
       return 'Hesaplandı'
     case 'admin_review':
-      return 'Admin inceleme'
+      return 'Admin incelemesi'
     case 'finalized':
       return 'Kesinleşti'
     case 'sent':
@@ -1753,6 +1756,9 @@ export function ServiceRequestDetails({
   const routeQuote = request.routeQuote ?? null
   const assignmentOffer = request.assignmentOffer ?? null
   const settlement = request.settlement ?? null
+  const settlementReviewDecision = settlement?.review_decision ?? null
+  const settlementNeedsAdminReview = Boolean(settlement && (settlement.status === 'admin_review' || settlement.overpay_requires_review))
+  const settlementReviewResolved = Boolean(settlementReviewDecision?.decision)
   const technicianRevisionOffer = request.technicianRevisionOffer?.exists ? request.technicianRevisionOffer : null
   const technicianRevisionOfferPending = technicianRevisionOffer?.status === 'pending'
   const selectedTechnician = technicianSuggestions.find((technician) => technician.id === selectedTechnicianId) ?? null
@@ -2129,15 +2135,74 @@ export function ServiceRequestDetails({
     || saleAndPayment?.mount_payment_status === 'skipped_multi_product'
     || saleAndPayment?.mount_payment_status === 'pending',
   )
-  const shouldShowCustomerPaysTechnicianCard = mountExcludedOrPaymentRequired && !mountPaymentReceived
+  const paymentOwnership = settlement?.payer_state_key ? settlement : saleAndPayment?.payment_ownership
+  const payerStateKey = paymentOwnership?.payer_state_key
+    ?? (mountPaymentReceived ? 'company_collected_online' : pendingOnlinePaymentLink ? 'pending_online_payment' : mountExcludedOrPaymentRequired ? 'payment_decision_missing' : 'no_payment_required')
+  const payerStateLabel = paymentOwnership?.payer_state_label
+    ?? (payerStateKey === 'company_collected_external'
+      ? 'Dış ödeme alındı.'
+      : payerStateKey === 'company_collected_online'
+        ? 'Ödeme şirket tarafından alındı.'
+        : payerStateKey === 'pending_online_payment'
+          ? 'Online ödeme linki bekliyor.'
+          : payerStateKey === 'customer_pays_technician'
+            ? 'Ödeme müşteriden ustaya yapılacak.'
+            : payerStateKey === 'no_payment_required'
+              ? 'Bu işte ek ödeme gerekmiyor.'
+              : 'Ödeme yöntemi netleşmedi.')
+  const payerStateDescription = paymentOwnership?.payer_state_description
+    ?? (payerStateKey === 'company_collected_external' || payerStateKey === 'company_collected_online'
+      ? 'Müşteri ustaya ödeme yapmayacak; şirket ödemesi hakediş mutabakatından takip edilir.'
+      : payerStateKey === 'pending_online_payment'
+        ? 'Ödeme alınmadan müşteri tahsilatı sayılmaz; bekleyen veya iptal edilen linkler tahsilata eklenmez.'
+        : payerStateKey === 'customer_pays_technician'
+          ? 'Müşteriye bildirilecek tutar ustaya ödenecek tutardır; şirketin kalan ödemesi hakediş mutabakatında takip edilir.'
+          : 'Ödeme linki oluşturun veya müşterinin ustaya ödeyeceği tutarı belirleyin.')
+  const payerCustomerInstruction = paymentOwnership?.payment_instruction_for_customer
+    ?? (payerStateKey === 'company_collected_external' || payerStateKey === 'company_collected_online'
+      ? 'Müşteri ustaya ödeme yapmayacak.'
+      : payerStateKey === 'customer_pays_technician'
+        ? 'Müşteri ustaya ödeme yapacak.'
+        : payerStateKey === 'pending_online_payment'
+          ? 'Online ödeme sonucu bekleniyor.'
+          : payerStateKey === 'no_payment_required'
+            ? 'Müşteriye ödeme talimatı yok.'
+            : 'Ödeme yöntemi netleşmeli.')
+  const customerShouldPayTechnician = Boolean(paymentOwnership?.customer_should_pay_technician)
+  const shouldShowCustomerPaysTechnicianCard = payerStateKey === 'customer_pays_technician' && customerShouldPayTechnician
+  const shouldShowPayerStateCard = Boolean(
+    mountPaymentReceived
+    || pendingOnlinePaymentLink
+    || mountExcludedOrPaymentRequired
+    || settlement
+    || paymentOwnership,
+  )
+  const payerStateTone = payerStateKey === 'company_collected_online' || payerStateKey === 'company_collected_external'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+    : payerStateKey === 'pending_online_payment' || payerStateKey === 'payment_decision_missing'
+      ? 'border-amber-200 bg-amber-50 text-amber-950'
+      : 'border-slate-200 bg-slate-50 text-slate-900'
   const customerDirectAmountLabel = typeof settlement?.customer_direct_to_technician_amount === 'number'
     && Number.isFinite(settlement.customer_direct_to_technician_amount)
     ? formatMoneyValue(settlement.customer_direct_to_technician_amount)
     : null
+  const activeCustomerDirectAmountLabel = typeof paymentOwnership?.active_customer_direct_to_technician_amount === 'number'
+    && Number.isFinite(paymentOwnership.active_customer_direct_to_technician_amount)
+    ? formatMoneyValue(paymentOwnership.active_customer_direct_to_technician_amount)
+    : customerDirectAmountLabel
   const companyPayableAmountLabel = typeof settlement?.company_payable_amount === 'number'
     && Number.isFinite(settlement.company_payable_amount)
     ? formatMoneyValue(settlement.company_payable_amount)
     : null
+  const companyCollectedAmountLabel = typeof paymentOwnership?.company_collected_amount === 'number'
+    && Number.isFinite(paymentOwnership.company_collected_amount)
+    ? formatMoneyValue(paymentOwnership.company_collected_amount)
+    : mountPaymentAmountLabel !== '-' ? mountPaymentAmountLabel : null
+  const pendingPaymentTotalLabel = typeof paymentOwnership?.pending_payment_total === 'number'
+    && Number.isFinite(paymentOwnership.pending_payment_total)
+    && paymentOwnership.pending_payment_total > 0
+    ? formatMoneyValue(paymentOwnership.pending_payment_total)
+    : pendingOnlinePaymentLink ? mountPaymentAmountLabel : null
   const assignmentBlockerMessages = request.assignmentBlockers?.messages ?? []
   const backendAssignmentBlockersAvailable = request.assignmentBlockers !== undefined && request.assignmentBlockers !== null
   const assignmentRequiresOperationControls = (request.assignmentBlockers?.applies_to_assignment ?? operationControl.applies_to_assignment ?? !isServiceVisitDetail) !== false
@@ -4878,30 +4943,23 @@ export function ServiceRequestDetails({
                 </div>
               </div>
             ) : null}
-            {!isCancelledOrReviewContext && mountPaymentReceived ? (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
-                <p className="font-semibold">Montaj ödemesi alındı. Servis ataması yapılabilir.</p>
-                <p className="mt-1">{mountPaymentStageLabel}{mountPaymentAmountLabel !== '-' ? ` · Alınan ödeme: ${mountPaymentAmountLabel}` : ''}</p>
-              </div>
-            ) : null}
-            {!isCancelledOrReviewContext && shouldShowCustomerPaysTechnicianCard ? (
-              <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+            {!isCancelledOrReviewContext && shouldShowPayerStateCard ? (
+              <div className={`grid gap-3 rounded-2xl border p-3 text-sm ${payerStateTone}`}>
                 <div>
                   <div>
-                    <p className="font-semibold">
-                      {pendingOnlinePaymentLink ? 'Online ödeme linki bekliyor.' : 'Ödeme müşteriden ustaya yapılacak.'}
-                    </p>
-                    <p className="mt-1 text-xs text-amber-900">
-                      {pendingOnlinePaymentLink
-                        ? 'Bekleyen link ödenirse ustaya doğrudan ödeme bildirimi uygulanmaz.'
-                        : 'Online ödeme alınmadığı için müşteriye bildirilecek tutar usta atama/hakediş bilgisinden takip edilir.'}
-                    </p>
+                    <p className="font-semibold">{payerStateLabel}</p>
+                    <p className="mt-1 text-xs opacity-80">{payerStateDescription}</p>
+                    {payerCustomerInstruction ? (
+                      <p className="mt-2 text-xs font-semibold opacity-90">{payerCustomerInstruction}</p>
+                    ) : null}
                   </div>
                 </div>
-                {customerDirectAmountLabel || companyPayableAmountLabel || extraMountPayment?.payment_url ? (
+                {activeCustomerDirectAmountLabel || companyPayableAmountLabel || companyCollectedAmountLabel || pendingPaymentTotalLabel || extraMountPayment?.payment_url ? (
                   <div className="grid gap-2 sm:grid-cols-3">
-                    {customerDirectAmountLabel ? <MiniMetric label="Müşteriye bildirilecek tutar" value={customerDirectAmountLabel} /> : null}
+                    {shouldShowCustomerPaysTechnicianCard && activeCustomerDirectAmountLabel ? <MiniMetric label="Müşteriye bildirilecek tutar" value={activeCustomerDirectAmountLabel} /> : null}
                     {companyPayableAmountLabel ? <MiniMetric label="Şirket ödemesi" value={companyPayableAmountLabel} /> : null}
+                    {companyCollectedAmountLabel && (payerStateKey === 'company_collected_online' || payerStateKey === 'company_collected_external') ? <MiniMetric label="Müşteri tahsilatı" value={companyCollectedAmountLabel} /> : null}
+                    {pendingPaymentTotalLabel && payerStateKey === 'pending_online_payment' ? <MiniMetric label="Bekleyen tahsilat" value={pendingPaymentTotalLabel} /> : null}
                     {extraMountPayment?.payment_url ? (
                       <MiniMetric
                         label="Bekleyen link"
@@ -5248,13 +5306,38 @@ export function ServiceRequestDetails({
                     {settlement ? (
                       <div className="grid gap-2 rounded-xl border border-white/70 bg-white/80 p-3 sm:grid-cols-4">
                         <MiniMetric label="Müşteriye bildirilecek ödeme" value={formatMoneyValue(settlement.customer_direct_to_technician_amount ?? null)} />
+                        <MiniMetric label="Usta hakedişi" value={formatMoneyValue(settlement.technician_earning_total ?? null)} />
+                        <MiniMetric label="Ustaya ödendi varsayılan" value={formatMoneyValue(settlement.customer_direct_assumed_paid_amount ?? null)} />
+                        <MiniMetric label="Müşteri online tahsilat" value={formatMoneyValue(settlement.customer_collection_amount ?? null)} />
                         <MiniMetric label="Şirket ödemesi" value={formatMoneyValue(settlement.company_payable_amount ?? null)} />
+                        <MiniMetric label="Şirket ödedi" value={formatMoneyValue(settlement.company_paid_amount ?? null)} />
+                        <MiniMetric label="Şirket kalan" value={formatMoneyValue(settlement.company_remaining_amount ?? null)} />
                         <MiniMetric label="Fazla bildirim" value={formatMoneyValue(settlement.overpay_warning_amount ?? null)} />
                         <MiniMetric label="Settlement" value={settlementStatusLabel(settlement.status)} />
-                        {settlement.overpay_requires_review ? (
-                          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 sm:col-span-4">
-                            {settlement.review_reason || 'Müşteriye bildirilen tutar usta hakedişinden yüksek. Admin incelemesi gerekecek.'}
-                          </p>
+                        {settlementNeedsAdminReview ? (
+                          <div className="grid gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 sm:col-span-4">
+                            <p className="font-semibold">Hakediş admin incelemesi gerekiyor</p>
+                            <p>{settlement.review_reason || 'Müşteriye bildirilen tutar usta hakedişinden yüksek.'}</p>
+                            <div className="grid gap-1 sm:grid-cols-4">
+                              <span>Usta hakedişi: <strong>{formatMoneyValue(settlement.technician_earning_total ?? null)}</strong></span>
+                              <span>Müşteriye bildirilen: <strong>{formatMoneyValue(settlement.customer_direct_to_technician_amount ?? null)}</strong></span>
+                              <span>Fazla bildirim: <strong>{formatMoneyValue(settlement.overpay_warning_amount ?? null)}</strong></span>
+                              <span>Şirket ödemesi: <strong>{formatMoneyValue(settlement.company_payable_amount ?? null)}</strong></span>
+                            </div>
+                          </div>
+                        ) : null}
+                        {settlementReviewResolved ? (
+                          <div className="grid gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950 sm:col-span-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="font-semibold">Hakediş inceleme kararı</p>
+                              <Badge variant="positive">{settlementReviewDecision?.decision_label ?? 'Karar verildi'}</Badge>
+                            </div>
+                            <p>{settlementReviewDecision?.reason || 'Admin incelemesi tamamlandı.'}</p>
+                            <p>
+                              {settlementReviewDecision?.reviewed_by_name ? `${settlementReviewDecision.reviewed_by_name} · ` : ''}
+                              {dateTimeOrEmpty(settlementReviewDecision?.reviewed_at, 'Tarih yok')}
+                            </p>
+                          </div>
                         ) : null}
                       </div>
                     ) : null}
@@ -5284,6 +5367,94 @@ export function ServiceRequestDetails({
                     </div>
                   </div>
                 ) : null}
+                {!assignmentOffer && settlement ? (
+                  <div className="grid gap-3 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-emerald-950">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-semibold">Hakediş mutabakatı</p>
+                      <Badge variant={settlementNeedsAdminReview ? 'warning' : 'positive'}>{settlementStatusLabel(settlement.status)}</Badge>
+                    </div>
+                    <div className="grid gap-2 rounded-xl border border-white/70 bg-white/80 p-3 sm:grid-cols-4">
+                      <MiniMetric label="Müşteriye bildirilecek ödeme" value={formatMoneyValue(settlement.customer_direct_to_technician_amount ?? null)} />
+                      <MiniMetric label="Usta hakedişi" value={formatMoneyValue(settlement.technician_earning_total ?? null)} />
+                      <MiniMetric label="Ustaya ödendi varsayılan" value={formatMoneyValue(settlement.customer_direct_assumed_paid_amount ?? null)} />
+                      <MiniMetric label="Müşteri online tahsilat" value={formatMoneyValue(settlement.customer_collection_amount ?? null)} />
+                      <MiniMetric label="Şirket ödemesi" value={formatMoneyValue(settlement.company_payable_amount ?? null)} />
+                      <MiniMetric label="Şirket ödedi" value={formatMoneyValue(settlement.company_paid_amount ?? null)} />
+                      <MiniMetric label="Şirket kalan" value={formatMoneyValue(settlement.company_remaining_amount ?? null)} />
+                      <MiniMetric label="Fazla bildirim" value={formatMoneyValue(settlement.overpay_warning_amount ?? null)} />
+                      <MiniMetric label="Settlement" value={settlementStatusLabel(settlement.status)} />
+                      {settlementNeedsAdminReview ? (
+                        <div className="grid gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 sm:col-span-4">
+                          <p className="font-semibold">Hakediş admin incelemesi gerekiyor</p>
+                          <p>{settlement.review_reason || 'Müşteriye bildirilen tutar usta hakedişinden yüksek.'}</p>
+                          <div className="grid gap-1 sm:grid-cols-4">
+                            <span>Usta hakedişi: <strong>{formatMoneyValue(settlement.technician_earning_total ?? null)}</strong></span>
+                            <span>Müşteriye bildirilen: <strong>{formatMoneyValue(settlement.customer_direct_to_technician_amount ?? null)}</strong></span>
+                            <span>Fazla bildirim: <strong>{formatMoneyValue(settlement.overpay_warning_amount ?? null)}</strong></span>
+                            <span>Şirket ödemesi: <strong>{formatMoneyValue(settlement.company_payable_amount ?? null)}</strong></span>
+                          </div>
+                        </div>
+                      ) : null}
+                      {settlementReviewResolved ? (
+                        <div className="grid gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950 sm:col-span-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="font-semibold">Hakediş inceleme kararı</p>
+                            <Badge variant="positive">{settlementReviewDecision?.decision_label ?? 'Karar verildi'}</Badge>
+                          </div>
+                          <p>{settlementReviewDecision?.reason || 'Admin incelemesi tamamlandı.'}</p>
+                          <p>
+                            {settlementReviewDecision?.reviewed_by_name ? `${settlementReviewDecision.reviewed_by_name} · ` : ''}
+                            {dateTimeOrEmpty(settlementReviewDecision?.reviewed_at, 'Tarih yok')}
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {!showAssignmentPortalActionBlock && !assignmentOffer && settlement ? (
+              <div className="grid gap-3 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-emerald-950">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold">Hakediş mutabakatı</p>
+                  <Badge variant={settlementNeedsAdminReview ? 'warning' : 'positive'}>{settlementStatusLabel(settlement.status)}</Badge>
+                </div>
+                <div className="grid gap-2 rounded-xl border border-white/70 bg-white/80 p-3 sm:grid-cols-4">
+                  <MiniMetric label="Müşteriye bildirilecek ödeme" value={formatMoneyValue(settlement.customer_direct_to_technician_amount ?? null)} />
+                  <MiniMetric label="Usta hakedişi" value={formatMoneyValue(settlement.technician_earning_total ?? null)} />
+                  <MiniMetric label="Ustaya ödendi varsayılan" value={formatMoneyValue(settlement.customer_direct_assumed_paid_amount ?? null)} />
+                  <MiniMetric label="Müşteri online tahsilat" value={formatMoneyValue(settlement.customer_collection_amount ?? null)} />
+                  <MiniMetric label="Şirket ödemesi" value={formatMoneyValue(settlement.company_payable_amount ?? null)} />
+                  <MiniMetric label="Şirket ödedi" value={formatMoneyValue(settlement.company_paid_amount ?? null)} />
+                  <MiniMetric label="Şirket kalan" value={formatMoneyValue(settlement.company_remaining_amount ?? null)} />
+                  <MiniMetric label="Fazla bildirim" value={formatMoneyValue(settlement.overpay_warning_amount ?? null)} />
+                  <MiniMetric label="Settlement" value={settlementStatusLabel(settlement.status)} />
+                  {settlementNeedsAdminReview ? (
+                    <div className="grid gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 sm:col-span-4">
+                      <p className="font-semibold">Hakediş admin incelemesi gerekiyor</p>
+                      <p>{settlement.review_reason || 'Müşteriye bildirilen tutar usta hakedişinden yüksek.'}</p>
+                      <div className="grid gap-1 sm:grid-cols-4">
+                        <span>Usta hakedişi: <strong>{formatMoneyValue(settlement.technician_earning_total ?? null)}</strong></span>
+                        <span>Müşteriye bildirilen: <strong>{formatMoneyValue(settlement.customer_direct_to_technician_amount ?? null)}</strong></span>
+                        <span>Fazla bildirim: <strong>{formatMoneyValue(settlement.overpay_warning_amount ?? null)}</strong></span>
+                        <span>Şirket ödemesi: <strong>{formatMoneyValue(settlement.company_payable_amount ?? null)}</strong></span>
+                      </div>
+                    </div>
+                  ) : null}
+                  {settlementReviewResolved ? (
+                    <div className="grid gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950 sm:col-span-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold">Hakediş inceleme kararı</p>
+                        <Badge variant="positive">{settlementReviewDecision?.decision_label ?? 'Karar verildi'}</Badge>
+                      </div>
+                      <p>{settlementReviewDecision?.reason || 'Admin incelemesi tamamlandı.'}</p>
+                      <p>
+                        {settlementReviewDecision?.reviewed_by_name ? `${settlementReviewDecision.reviewed_by_name} · ` : ''}
+                        {dateTimeOrEmpty(settlementReviewDecision?.reviewed_at, 'Tarih yok')}
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
             <details

@@ -2221,6 +2221,8 @@ class TechnicalServiceController extends Controller
             'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
+            'payment_message_trigger' => 'appointment_approval',
+            'payment_instruction_included' => false,
         ];
     }
 

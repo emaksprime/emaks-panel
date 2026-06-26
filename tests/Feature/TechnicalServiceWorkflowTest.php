@@ -2669,8 +2669,12 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertIsString($source);
         $this->assertStringContainsString('shouldShowCustomerPaysTechnicianCard', $source);
+        $this->assertStringContainsString('Ödeme şirket tarafından alındı.', $source);
+        $this->assertStringContainsString('Dış ödeme alındı.', $source);
         $this->assertStringContainsString('Ödeme müşteriden ustaya yapılacak.', $source);
         $this->assertStringContainsString('Online ödeme linki bekliyor.', $source);
+        $this->assertStringContainsString('Ödeme alınmadan müşteri tahsilatı sayılmaz', $source);
+        $this->assertStringContainsString('şirketin kalan ödemesi hakediş mutabakatında takip edilir', $source);
         $this->assertStringContainsString('Müşteriye bildirilecek tutar', $source);
         $this->assertStringContainsString('Şirket ödemesi', $source);
         $this->assertStringContainsString('data-testid="bottom-payment-link-action"', $source);
@@ -4809,7 +4813,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
 
         $this->assertTrue($payload['operation_control']['pre_form_payment_control_enabled']);
-        $this->assertSame('online_payment_pending_link', $payload['assignment_blockers']['payment_decision']);
+        $this->assertSame('pending_online_payment', $payload['assignment_blockers']['payment_decision']);
         $this->assertFalse($payload['assignment_blockers']['payment_required_for_assignment']);
         $this->assertFalse($payload['assignment_blockers']['payment_check_required']);
         $this->assertSame([], $payload['assignment_blockers']['messages']);
@@ -4825,7 +4829,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
-            ->assertJsonPath('request.assignment_blockers.payment_decision', 'online_payment_pending_link')
+            ->assertJsonPath('request.assignment_blockers.payment_decision', 'pending_online_payment')
             ->assertJsonPath('request.assignment_blockers.payment_check_required', false);
     }
 

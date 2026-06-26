@@ -1461,6 +1461,22 @@ class TechnicalServiceWorkflowService
     /**
      * @return array<string, mixed>
      */
+    private function paymentOwnershipForRequest(TechnicalServiceRequest $request, ?TechnicalServiceSettlement $settlement = null): array
+    {
+        $settlement ??= $request->relationLoaded('settlement')
+            ? $request->settlement
+            : $request->settlement()->first();
+
+        return app(TechnicalServicePaymentOwnershipService::class)->summary(
+            $request,
+            $settlement instanceof TechnicalServiceSettlement ? $settlement : null,
+            $this->cachedPaymentsForRequest($request),
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function serialize(TechnicalServiceRequest $request, bool $includeHistory = false): array
     {
         $this->applyDerivedState($request);
@@ -2131,6 +2147,7 @@ class TechnicalServiceWorkflowService
         $extraPayment = $this->latestExtraMountPaymentPayload($request);
         $customerCharges = $this->customerChargeSummaryPayload($request);
         $paymentStatus = $this->paymentStatusForRequest($request);
+        $paymentOwnership = $this->paymentOwnershipForRequest($request);
         $paidAmount = $this->primaryMountPaidAmount($request, $paymentStatus, $extraPayment, $mountPayments);
         $paymentSummary = $this->paymentSummaryPayload($request, $paymentStatus, $extraPayment, $customerCharges, $paidAmount, $mountPayments);
 
@@ -2150,6 +2167,7 @@ class TechnicalServiceWorkflowService
             'payment_paid_at' => $paymentStatus['paid_at'] ?? $this->dateTimeString($request->mount_payment_paid_at),
             'ops_payment_check_label' => $this->opsPaymentCheckLabel($request),
             'payment_status' => $paymentStatus,
+            'payment_ownership' => $paymentOwnership,
             'extra_mount_payment' => $extraPayment,
             'mount_payments' => $mountPayments,
             'customer_charges' => $customerCharges,
@@ -4056,7 +4074,10 @@ class TechnicalServiceWorkflowService
 
         $paymentStatus = $this->paymentStatusForRequest($request);
 
-        return $this->assignmentPaymentDecision($request, $paymentStatus) === 'payment_needed_no_decision';
+        return in_array($this->assignmentPaymentDecision($request, $paymentStatus), [
+            'payment_decision_missing',
+            'payment_needed_no_decision',
+        ], true);
     }
 
     private function preFormPaymentControlEnabled(): bool
@@ -4069,33 +4090,24 @@ class TechnicalServiceWorkflowService
      */
     private function assignmentPaymentDecision(TechnicalServiceRequest $request, array $paymentStatus): string
     {
-        if ((bool) ($paymentStatus['is_paid'] ?? false)) {
-            return 'online_payment_paid';
-        }
+        $ownership = $this->paymentOwnershipForRequest($request);
+        $state = (string) ($ownership['payer_state_key'] ?? '');
 
-        if (filled($paymentStatus['pending_payment_id'] ?? null)) {
-            return 'online_payment_pending_link';
-        }
-
-        if ($this->hasCustomerDirectTechnicianDecision($request)) {
-            return 'customer_pays_technician';
-        }
-
-        if ((bool) ($paymentStatus['requires_payment'] ?? false)) {
-            return 'payment_needed_no_decision';
-        }
-
-        return 'no_payment_required';
+        return match ($state) {
+            TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_ONLINE => 'company_collected_online',
+            TechnicalServicePaymentOwnershipService::STATE_COMPANY_COLLECTED_EXTERNAL => 'company_collected_external',
+            TechnicalServicePaymentOwnershipService::STATE_PENDING_ONLINE_PAYMENT => 'pending_online_payment',
+            TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN => 'customer_pays_technician',
+            TechnicalServicePaymentOwnershipService::STATE_NO_PAYMENT_REQUIRED => 'no_payment_required',
+            default => (bool) ($paymentStatus['requires_payment'] ?? false)
+                ? 'payment_decision_missing'
+                : 'no_payment_required',
+        };
     }
 
     private function hasCustomerDirectTechnicianDecision(TechnicalServiceRequest $request): bool
     {
-        $settlement = $request->relationLoaded('settlement')
-            ? $request->settlement
-            : $request->settlement()->first();
-
-        return $settlement instanceof TechnicalServiceSettlement
-            && (float) $settlement->customer_direct_to_technician_amount > 0;
+        return (bool) ($this->paymentOwnershipForRequest($request)['customer_should_pay_technician'] ?? false);
     }
 
     private function hasMultiProductMountRequest(TechnicalServiceRequest $request): bool
@@ -4171,6 +4183,11 @@ class TechnicalServiceWorkflowService
             return null;
         }
 
+        $settlement->loadMissing('request');
+        $paymentOwnership = $settlement->request instanceof TechnicalServiceRequest
+            ? $this->paymentOwnershipForRequest($settlement->request, $settlement)
+            : null;
+
         return [
             'id' => $settlement->id,
             'technical_service_request_id' => $settlement->technical_service_request_id,
@@ -4191,11 +4208,86 @@ class TechnicalServiceWorkflowService
             'overpay_requires_review' => (bool) $settlement->overpay_requires_review,
             'review_reason' => TechnicalServiceUiLabelService::cleanDisplayText($settlement->review_reason),
             'status' => $settlement->status,
+            'status_label' => $this->settlementStatusPayloadLabel($settlement->status),
+            'review_decision' => $this->settlementReviewDecisionPayload($settlement),
+            'payer_state_key' => $paymentOwnership['payer_state_key'] ?? null,
+            'payer_state_label' => $paymentOwnership['payer_state_label'] ?? null,
+            'payer_state_description' => $paymentOwnership['payer_state_description'] ?? null,
+            'payment_instruction_for_customer' => $paymentOwnership['payment_instruction_for_customer'] ?? null,
+            'customer_should_pay_technician' => $paymentOwnership['customer_should_pay_technician'] ?? false,
+            'company_collected_amount' => $paymentOwnership['company_collected_amount'] ?? (float) $settlement->customer_collection_amount,
+            'company_collected_source' => $paymentOwnership['company_collected_source'] ?? null,
+            'active_customer_direct_to_technician_amount' => $paymentOwnership['active_customer_direct_to_technician_amount'] ?? 0,
+            'pending_payment_total' => $paymentOwnership['pending_payment_total'] ?? 0,
+            'cancelled_payment_total' => $paymentOwnership['cancelled_payment_total'] ?? 0,
+            'wp_payment_message_trigger' => $paymentOwnership['wp_payment_message_trigger'] ?? 'appointment_approval',
+            'wp_payment_message_ready' => $paymentOwnership['wp_payment_message_ready'] ?? false,
             'settlement_source' => $settlement->settlement_source,
             'metadata' => is_array($settlement->metadata) ? $settlement->metadata : [],
             'created_at' => $this->dateTimeString($settlement->created_at),
             'updated_at' => $this->dateTimeString($settlement->updated_at),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function settlementReviewDecisionPayload(TechnicalServiceSettlement $settlement): ?array
+    {
+        $metadata = is_array($settlement->metadata) ? $settlement->metadata : [];
+        $decision = $metadata['admin_review'] ?? null;
+
+        if (! is_array($decision)) {
+            return null;
+        }
+
+        $decisionKey = (string) ($decision['decision'] ?? '');
+
+        return [
+            'decision' => $decisionKey,
+            'decision_label' => $this->settlementReviewDecisionLabel($decisionKey),
+            'reason' => TechnicalServiceUiLabelService::cleanDisplayText($decision['reason'] ?? null),
+            'reviewed_at' => $decision['reviewed_at'] ?? null,
+            'reviewed_by' => $decision['reviewed_by'] ?? null,
+            'reviewed_by_name' => TechnicalServiceUiLabelService::cleanDisplayText($decision['reviewed_by_name'] ?? null),
+            'customer_direct_to_technician_amount' => isset($decision['customer_direct_to_technician_amount'])
+                ? (float) $decision['customer_direct_to_technician_amount']
+                : null,
+            'company_payable_amount' => isset($decision['company_payable_amount'])
+                ? (float) $decision['company_payable_amount']
+                : null,
+            'overpay_warning_amount' => isset($decision['overpay_warning_amount'])
+                ? (float) $decision['overpay_warning_amount']
+                : null,
+            'requires_review_after_decision' => isset($decision['requires_review_after_decision'])
+                ? (bool) $decision['requires_review_after_decision']
+                : null,
+        ];
+    }
+
+    private function settlementReviewDecisionLabel(string $decision): string
+    {
+        return match ($decision) {
+            'approve_difference' => 'Farkı onayla',
+            'correct_direct_amount' => 'Tutarları düzelt',
+            'exclude' => 'Hakedişe dahil değil',
+            default => TechnicalServiceUiLabelService::cleanDisplayText($decision) ?: 'İnceleme kararı',
+        };
+    }
+
+    private function settlementStatusPayloadLabel(?string $status): string
+    {
+        return match ($status) {
+            TechnicalServiceSettlement::STATUS_CALCULATED => 'Hesaplandı',
+            TechnicalServiceSettlement::STATUS_ADMIN_REVIEW => 'Admin incelemesi',
+            TechnicalServiceSettlement::STATUS_FINALIZED => 'Kesinleşti',
+            TechnicalServiceSettlement::STATUS_SENT => 'Gönderildi',
+            TechnicalServiceSettlement::STATUS_PARTIAL_PAID => 'Kısmi ödendi',
+            TechnicalServiceSettlement::STATUS_PAID => 'Ödendi',
+            TechnicalServiceSettlement::STATUS_EXCLUDED => 'Hakedişe dahil değil',
+            TechnicalServiceSettlement::STATUS_DRAFT => 'Taslak',
+            default => TechnicalServiceUiLabelService::cleanDisplayText($status) ?: 'Settlement yok',
+        };
     }
 
     /**
@@ -4447,6 +4539,8 @@ class TechnicalServiceWorkflowService
             'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
+            'payment_message_trigger' => 'appointment_approval',
+            'payment_instruction_included' => false,
         ];
     }
 

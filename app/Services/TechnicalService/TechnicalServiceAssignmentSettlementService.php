@@ -4,7 +4,6 @@ namespace App\Services\TechnicalService;
 
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentOffer;
-use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceSettlement;
@@ -17,7 +16,7 @@ class TechnicalServiceAssignmentSettlementService
 {
     public function __construct(
         private readonly TechnicalServiceSettlementCalculator $calculator,
-        private readonly TechnicalServicePaymentStatusResolver $paymentStatusResolver,
+        private readonly TechnicalServicePaymentOwnershipService $paymentOwnership,
     ) {
     }
 
@@ -31,9 +30,9 @@ class TechnicalServiceAssignmentSettlementService
         ?float $customerDirectAmount,
         ?Authenticatable $user = null,
     ): TechnicalServiceSettlement {
-        $paymentStatus = $this->paymentStatusResolver->resolve($request);
-        $customerCollectionAmount = $this->paidCustomerCollectionAmount($request);
-        $mountPaymentCollected = $customerCollectionAmount > 0 || (bool) ($paymentStatus['is_paid'] ?? false);
+        $ownership = $this->paymentOwnership->summary($request);
+        $customerCollectionAmount = round((float) ($ownership['company_collected_amount'] ?? 0), 2);
+        $mountPaymentCollected = $customerCollectionAmount > 0;
         $technicianEarningTotal = round($laborAmount + $routeFeeAmount, 2);
         $directAmount = $customerDirectAmount;
 
@@ -99,8 +98,8 @@ class TechnicalServiceAssignmentSettlementService
             'metadata' => [
                 'source' => 'assignment_popup',
                 'mount_payment_collected' => $mountPaymentCollected,
-                'payment_status_source' => $paymentStatus['source'] ?? null,
-                'payment_status_label' => $paymentStatus['stage_label'] ?? null,
+                'payer_state_key' => $ownership['payer_state_key'] ?? null,
+                'company_collected_source' => $ownership['company_collected_source'] ?? null,
                 'route_quote_id' => $routeQuote?->id,
                 'assignment_offer_id' => $offer->id,
             ],
@@ -122,36 +121,4 @@ class TechnicalServiceAssignmentSettlementService
         return $partnerId !== null ? (int) $partnerId : null;
     }
 
-    private function paidCustomerCollectionAmount(TechnicalServiceRequest $request): float
-    {
-        $query = TechnicalServiceMountPayment::query()
-            ->where('status', TechnicalServiceMountPayment::STATUS_PAID)
-            ->where(function ($query) use ($request): void {
-                $query->where('technical_service_request_id', $request->id);
-
-                if ($request->mount_session_id !== null) {
-                    $query->orWhere('technical_service_mount_session_id', $request->mount_session_id);
-                }
-            });
-
-        return round((float) $query
-            ->get()
-            ->filter(function (TechnicalServiceMountPayment $payment) use ($request): bool {
-                $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-
-                if (($payload['source'] ?? null) === 'operation_customer_charge') {
-                    return false;
-                }
-
-                return (int) ($payment->technical_service_request_id ?? 0) === (int) $request->id
-                    || (int) ($payload['technical_service_request_id'] ?? 0) === (int) $request->id
-                    || (
-                        $request->mount_session_id !== null
-                        && (int) ($payment->technical_service_mount_session_id ?? 0) === (int) $request->mount_session_id
-                        && $payment->technical_service_request_id === null
-                        && in_array(($payload['source'] ?? null), ['public_mount_payment', 'public_form_payment'], true)
-                    );
-            })
-            ->sum(fn (TechnicalServiceMountPayment $payment): float => (float) $payment->amount), 2);
-    }
 }

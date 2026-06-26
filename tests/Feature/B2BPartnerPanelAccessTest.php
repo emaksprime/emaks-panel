@@ -32,6 +32,7 @@ use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
+use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
@@ -8525,7 +8526,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNotContains('Randevu önerildi', $job['badges']);
     }
 
-    public function test_locksmith_partner_can_propose_appointment_and_ops_can_approve_with_message_payload(): void
+    public function test_appointment_message_context_is_prepared_when_ops_approves_partner_proposal(): void
     {
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
@@ -8591,6 +8592,25 @@ class B2BPartnerPanelAccessTest extends TestCase
             'technical_service_request_id' => $job->id,
             'event_type' => 'partner_portal_appointment_proposed',
         ]);
+        TechnicalServiceSettlement::query()->create([
+            'technical_service_request_id' => $job->id,
+            'root_request_id' => $job->parent_request_id ?: $job->id,
+            'request_code' => $job->service_code,
+            'root_mrn' => $job->root_mrn ?: $job->mrn,
+            'technical_service_technician_id' => $technician->id,
+            'currency' => 'TRY',
+            'labor_earning_amount' => 600,
+            'route_earning_amount' => 0,
+            'technician_earning_total' => 600,
+            'customer_collection_amount' => 0,
+            'customer_direct_to_technician_amount' => 600,
+            'customer_direct_assumed_paid_amount' => 0,
+            'company_payable_amount' => 0,
+            'company_paid_amount' => 0,
+            'company_remaining_amount' => 0,
+            'status' => TechnicalServiceSettlement::STATUS_FINALIZED,
+            'settlement_source' => 'test',
+        ]);
 
         $this->actingAs($admin)
             ->postJson("/api/technical-service/requests/{$job->id}/partner-appointment-proposals/{$action->id}/approve", [
@@ -8601,6 +8621,9 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Planlı')
             ->assertJsonPath('request.technician_approval_status', 'onayladı')
             ->assertJsonPath('message_payloads.customer.slot_text', 'öğleden önce')
+            ->assertJsonPath('message_payloads.customer.payer_state_key', 'customer_pays_technician')
+            ->assertJsonPath('message_payloads.customer.customer_should_pay_technician', true)
+            ->assertJsonPath('message_payloads.customer.customer_direct_to_technician_amount', 600)
             ->assertJsonPath('message_payloads.technician.mrn', 'MRN-APPOINTMENT-PROPOSE');
 
         $portalJobResponse = $this->actingAs($portalUser)

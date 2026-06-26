@@ -67,6 +67,57 @@ class TechnicalServiceSettlementCompletionTest extends TestCase
             ->assertJsonPath('request.settlement.company_remaining_amount', 1500);
     }
 
+    public function test_payment_ownership_company_collected_payment_disables_customer_direct_instruction(): void
+    {
+        [$request, $technician, $offer] = $this->completionFixture();
+        $this->settlement($request, $technician, $offer, customerDirectAmount: 1000);
+        $this->mountPayment($request, TechnicalServiceMountPayment::STATUS_PAID, 1500);
+
+        $this->complete($request)
+            ->assertOk()
+            ->assertJsonPath('request.settlement.payer_state_key', 'company_collected_online')
+            ->assertJsonPath('request.settlement.customer_should_pay_technician', false)
+            ->assertJsonPath('request.settlement.customer_direct_to_technician_amount', 1000)
+            ->assertJsonPath('request.settlement.active_customer_direct_to_technician_amount', 0)
+            ->assertJsonPath('request.settlement.customer_direct_assumed_paid_amount', 0)
+            ->assertJsonPath('request.settlement.customer_collection_amount', 1500)
+            ->assertJsonPath('request.settlement.company_payable_amount', 1500)
+            ->assertJsonPath('request.settlement.company_remaining_amount', 1500);
+    }
+
+    public function test_payer_state_external_payment_uses_company_collected_external_state(): void
+    {
+        [$request, $technician, $offer] = $this->completionFixture();
+        $this->settlement($request, $technician, $offer, customerDirectAmount: 1000);
+        $this->mountPayment($request, TechnicalServiceMountPayment::STATUS_PAID, 1500, [
+            'provider' => 'manual',
+            'source' => 'external_payment',
+        ]);
+
+        $this->complete($request)
+            ->assertOk()
+            ->assertJsonPath('request.settlement.payer_state_key', 'company_collected_external')
+            ->assertJsonPath('request.settlement.customer_direct_assumed_paid_amount', 0)
+            ->assertJsonPath('request.settlement.company_payable_amount', 1500);
+    }
+
+    public function test_part_customer_charge_is_collection_context_not_technician_payout(): void
+    {
+        [$request, $technician, $offer] = $this->completionFixture();
+        $this->settlement($request, $technician, $offer, customerDirectAmount: 0);
+        $this->mountPayment($request, TechnicalServiceMountPayment::STATUS_PAID, 700, [
+            'source' => 'operation_customer_charge',
+            'purpose' => 'part_payment',
+            'part_amount' => 700,
+        ]);
+
+        $this->complete($request)
+            ->assertOk()
+            ->assertJsonPath('request.settlement.customer_collection_amount', 700)
+            ->assertJsonPath('request.settlement.company_payable_amount', 1500)
+            ->assertJsonPath('request.settlement.company_remaining_amount', 1500);
+    }
+
     public function test_completion_settlement_customer_collection_excludes_pending_and_cancelled_links(): void
     {
         [$request, $technician, $offer] = $this->completionFixture();
@@ -260,7 +311,10 @@ class TechnicalServiceSettlementCompletionTest extends TestCase
         ]);
     }
 
-    private function mountPayment(TechnicalServiceRequest $request, string $status, float $amount): TechnicalServiceMountPayment
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function mountPayment(TechnicalServiceRequest $request, string $status, float $amount, array $overrides = []): TechnicalServiceMountPayment
     {
         ['link' => $link] = TechnicalServiceQrLink::createPreSaleProductLink([
             'serial_number' => $request->serial_number,
@@ -282,7 +336,7 @@ class TechnicalServiceSettlementCompletionTest extends TestCase
             'qr_link_id' => $link->id,
             'mount_session_id' => $session->id,
             'mount_payment_status' => $status,
-            'mount_payment_provider' => 'fake',
+            'mount_payment_provider' => $overrides['provider'] ?? 'fake',
             'mount_payment_reference' => 'REL3B3-'.$status,
             'mount_payment_paid_at' => $status === TechnicalServiceMountPayment::STATUS_PAID ? now() : null,
         ])->save();
@@ -290,21 +344,21 @@ class TechnicalServiceSettlementCompletionTest extends TestCase
         return TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
             'technical_service_request_id' => $request->id,
-            'provider' => 'fake',
+            'provider' => $overrides['provider'] ?? 'fake',
             'provider_reference' => 'REL3B3-'.$status.'-'.uniqid(),
             'status' => $status,
             'amount' => $amount,
             'currency' => 'TRY',
             'payment_url' => 'https://dashboard.emaksprime.com.tr/mount-payment/rel3b3-'.$status,
             'paid_at' => $status === TechnicalServiceMountPayment::STATUS_PAID ? now() : null,
-            'raw_payload' => [
+            'raw_payload' => array_merge([
                 'source' => 'public_form_payment',
                 'technical_service_request_id' => $request->id,
                 'request_code' => $request->mrn,
                 'serial_number' => $request->serial_number,
                 'customer_name' => $request->customer_name,
                 'customer_phone' => $request->customer_phone,
-            ],
+            ], $overrides),
         ]);
     }
 

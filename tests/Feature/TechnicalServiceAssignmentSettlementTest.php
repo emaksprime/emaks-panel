@@ -156,7 +156,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
         $this->assertNotNull($settlement->technical_service_assignment_offer_id);
     }
 
-    public function test_assignment_save_does_not_create_earning_payment_row_or_real_message(): void
+    public function test_message_dispatch_assignment_save_does_not_create_earning_payment_row_or_payment_instruction(): void
     {
         Http::fake();
         [$request, $technician] = $this->assignmentFixture();
@@ -169,6 +169,11 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
 
         $this->assertDatabaseCount('technical_service_earning_payments', 0);
         $this->assertSame(1, TechnicalServiceMessageDispatch::query()->where('technical_service_request_id', $request->id)->count());
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->firstOrFail();
+        $this->assertSame('appointment_approval', $dispatch->request_payload['context']['payment_message_trigger'] ?? null);
+        $this->assertFalse((bool) ($dispatch->request_payload['context']['payment_instruction_included'] ?? true));
         Http::assertNothingSent();
     }
 

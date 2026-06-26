@@ -12,6 +12,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
+use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\WarrantyService;
@@ -986,6 +987,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         $assignmentOffer = $request->latestAssignmentOffer;
         $technician = $request->technicianRecord;
         $customerPrefix = $appointmentUpdated ? 'Randevunuz güncellenmiştir.' : "{$request->mrn} numaralı servisiniz";
+        $paymentContext = app(TechnicalServicePaymentOwnershipService::class)->summary($request, $request->settlement);
+        $customerPaymentLine = $this->appointmentCustomerPaymentLine($paymentContext);
 
         return [
             'customer' => [
@@ -996,7 +999,15 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'appointment_date' => $request->scheduled_date?->toDateString(),
                 'appointment_time_range' => $timeRange !== '-' ? $timeRange : null,
                 'slot_text' => $slotText,
-                'message_text' => trim("{$customerPrefix} {$request->scheduled_date?->format('d.m.Y')} tarihinde {$slotText} için planlandı. Emaks Prime operasyon ekibi."),
+                'payment_context' => $paymentContext,
+                'payer_state_key' => $paymentContext['payer_state_key'] ?? null,
+                'customer_should_pay_technician' => $paymentContext['customer_should_pay_technician'] ?? false,
+                'customer_direct_to_technician_amount' => $paymentContext['active_customer_direct_to_technician_amount'] ?? 0,
+                'message_text' => trim(implode(' ', array_filter([
+                    "{$customerPrefix} {$request->scheduled_date?->format('d.m.Y')} tarihinde {$slotText} için planlandı.",
+                    $customerPaymentLine,
+                    'Emaks Prime operasyon ekibi.',
+                ], fn (?string $line): bool => is_string($line) && trim($line) !== ''))),
             ],
             'technician' => [
                 'channel' => 'system_payload',
@@ -1015,8 +1026,29 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'labor_amount' => $assignmentOffer ? (float) $assignmentOffer->labor_amount : null,
                 'route_fee_amount' => $assignmentOffer ? (float) $assignmentOffer->route_fee_amount : null,
                 'total_amount' => $assignmentOffer ? (float) $assignmentOffer->total_amount : null,
+                'payment_context' => $paymentContext,
+                'payer_state_key' => $paymentContext['payer_state_key'] ?? null,
+                'customer_should_pay_technician' => $paymentContext['customer_should_pay_technician'] ?? false,
+                'customer_direct_to_technician_amount' => $paymentContext['active_customer_direct_to_technician_amount'] ?? 0,
             ],
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $paymentContext
+     */
+    private function appointmentCustomerPaymentLine(array $paymentContext): ?string
+    {
+        if (($paymentContext['payer_state_key'] ?? null) !== TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN) {
+            return null;
+        }
+
+        $amount = (float) ($paymentContext['active_customer_direct_to_technician_amount'] ?? 0);
+        if ($amount <= 0) {
+            return null;
+        }
+
+        return 'Ödeme tutarı ustaya ödenecek: '.number_format($amount, 0, ',', '.').' TL.';
     }
 
     private function slotTextFromRange(string $start, string $end): string
@@ -1073,6 +1105,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             'total_amount' => round((float) ($amounts['total_amount'] ?? 0), 2),
             'currency' => $amounts['currency'] ?? 'TRY',
             'note' => $amounts['note'] ?? null,
+            'payment_message_trigger' => 'appointment_approval',
+            'payment_instruction_included' => false,
         ];
     }
 

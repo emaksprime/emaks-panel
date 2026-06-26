@@ -189,6 +189,31 @@ export type ServiceRequestSettlement = {
   overpay_requires_review?: boolean
   review_reason?: string | null
   status?: string | null
+  status_label?: string | null
+  payer_state_key?: string | null
+  payer_state_label?: string | null
+  payer_state_description?: string | null
+  payment_instruction_for_customer?: string | null
+  customer_should_pay_technician?: boolean
+  company_collected_amount?: number | null
+  company_collected_source?: string | null
+  active_customer_direct_to_technician_amount?: number | null
+  pending_payment_total?: number | null
+  cancelled_payment_total?: number | null
+  wp_payment_message_trigger?: string | null
+  wp_payment_message_ready?: boolean
+  review_decision?: {
+    decision?: string | null
+    decision_label?: string | null
+    reason?: string | null
+    reviewed_at?: string | null
+    reviewed_by?: number | string | null
+    reviewed_by_name?: string | null
+    customer_direct_to_technician_amount?: number | null
+    company_payable_amount?: number | null
+    overpay_warning_amount?: number | null
+    requires_review_after_decision?: boolean | null
+  } | null
   settlement_source?: string | null
   metadata?: Record<string, unknown> | null
   created_at?: string | null
@@ -643,6 +668,7 @@ export type ServiceRequestSaleAndPayment = {
   payment_paid_at?: string | null
   ops_payment_check_label?: string | null
   payment_status?: ServiceRequestPaymentStatus | null
+  payment_ownership?: ServiceRequestPaymentOwnership | null
   extra_mount_payment?: ServiceRequestExtraMountPayment | null
   mount_payments?: ServiceRequestMountPaymentSummary | null
   customer_charges?: ServiceRequestCustomerChargeSummary | null
@@ -673,6 +699,28 @@ export type ServiceRequestPaymentSummary = {
   paid_customer_payment_total_label?: string | null
   pending_customer_payment_total?: number | null
   pending_customer_payment_total_label?: string | null
+}
+
+export type ServiceRequestPaymentOwnership = {
+  payer_state_key?: string | null
+  payer_state_label?: string | null
+  payer_state_description?: string | null
+  payment_instruction_for_customer?: string | null
+  customer_should_pay_technician?: boolean
+  company_collected_amount?: number | null
+  company_collected_source?: string | null
+  customer_direct_to_technician_amount?: number | null
+  active_customer_direct_to_technician_amount?: number | null
+  customer_direct_assumed_paid_amount?: number | null
+  company_payable_amount?: number | null
+  company_remaining_amount?: number | null
+  pending_payment_total?: number | null
+  cancelled_payment_total?: number | null
+  paid_payment_count?: number
+  pending_payment_count?: number
+  cancelled_payment_count?: number
+  wp_payment_message_trigger?: string | null
+  wp_payment_message_ready?: boolean
 }
 
 export type ServiceRequestPaymentStatus = {

@@ -4,7 +4,6 @@ namespace App\Services\TechnicalService;
 
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\TechnicalServiceAssignmentOffer;
-use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceSettlement;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -18,7 +17,7 @@ class TechnicalServiceSettlementCompletionService
 
     public function __construct(
         private readonly TechnicalServiceSettlementCalculator $calculator,
-        private readonly TechnicalServicePaymentStatusResolver $paymentStatusResolver,
+        private readonly TechnicalServicePaymentOwnershipService $paymentOwnership,
     ) {
     }
 
@@ -33,7 +32,8 @@ class TechnicalServiceSettlementCompletionService
             $settlement->created_by = $user?->getAuthIdentifier();
         }
 
-        $paidCustomerCollectionAmount = $this->paidCustomerCollectionAmount($request);
+        $paymentOwnership = $this->paymentOwnership->summary($request, $settlement->exists ? $settlement : null);
+        $paidCustomerCollectionAmount = round((float) ($paymentOwnership['company_collected_amount'] ?? 0), 2);
 
         if ($this->isExcludedRequest($request)) {
             return $this->applyExcludedSettlement($request, $settlement, $paidCustomerCollectionAmount, $user);
@@ -41,13 +41,13 @@ class TechnicalServiceSettlementCompletionService
 
         $offer = $request->latestAssignmentOffer;
         $earning = $this->earningAmounts($request, $settlement, $offer);
-        $paymentStatus = $this->paymentStatusResolver->resolve($request);
-        $companyCollectedPayment = $paidCustomerCollectionAmount > 0 || (bool) ($paymentStatus['is_paid'] ?? false);
-        $directAmount = $this->customerDirectAmount($settlement, $earning['technician_earning_total'], $companyCollectedPayment);
+        $companyCollectedPayment = $paidCustomerCollectionAmount > 0;
+        $storedDirectAmount = $this->customerDirectAmount($settlement, $earning['technician_earning_total'], $companyCollectedPayment);
+        $activeDirectAmount = $companyCollectedPayment ? 0.0 : $storedDirectAmount;
         $companyPaidAmount = round((float) ($settlement->exists ? $settlement->company_paid_amount : 0), 2);
         $calculation = $this->calculator->calculate(
             $earning['technician_earning_total'],
-            $directAmount,
+            $activeDirectAmount,
             $paidCustomerCollectionAmount,
         );
         $companyPayableAmount = round((float) $calculation['company_payable_amount'], 2);
@@ -65,8 +65,14 @@ class TechnicalServiceSettlementCompletionService
             'source' => 'completion_hook',
             'earning_source' => $earning['source'],
             'mount_payment_collected' => $companyCollectedPayment,
-            'payment_status_source' => $paymentStatus['source'] ?? null,
+            'payer_state_key' => $companyCollectedPayment
+                ? ($paymentOwnership['payer_state_key'] ?? null)
+                : ($activeDirectAmount > 0 ? TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN : ($paymentOwnership['payer_state_key'] ?? null)),
+            'company_collected_source' => $paymentOwnership['company_collected_source'] ?? null,
             'paid_customer_collection_amount' => $paidCustomerCollectionAmount,
+            'stored_customer_direct_to_technician_amount' => $storedDirectAmount,
+            'active_customer_direct_to_technician_amount' => $activeDirectAmount,
+            'direct_instruction_inactive' => $companyCollectedPayment && $storedDirectAmount > 0,
             'assignment_offer_id' => $offer?->id,
             'applied_at' => now()->toISOString(),
         ]);
@@ -83,7 +89,7 @@ class TechnicalServiceSettlementCompletionService
             'route_earning_amount' => $earning['route_earning_amount'],
             'technician_earning_total' => $earning['technician_earning_total'],
             'customer_collection_amount' => $paidCustomerCollectionAmount,
-            'customer_direct_to_technician_amount' => $calculation['customer_direct_to_technician_amount'],
+            'customer_direct_to_technician_amount' => $storedDirectAmount,
             'customer_direct_assumed_paid_amount' => $companyCollectedPayment ? 0 : $calculation['customer_direct_to_technician_amount'],
             'company_payable_amount' => $companyPayableAmount,
             'company_paid_amount' => $companyPaidAmount,
@@ -223,48 +229,6 @@ class TechnicalServiceSettlementCompletionService
         }
 
         return $companyCollectedPayment ? 0.0 : round($technicianEarningTotal, 2);
-    }
-
-    private function paidCustomerCollectionAmount(TechnicalServiceRequest $request): float
-    {
-        return round((float) TechnicalServiceMountPayment::query()
-            ->where('status', TechnicalServiceMountPayment::STATUS_PAID)
-            ->where(function ($query) use ($request): void {
-                $query->where('technical_service_request_id', $request->id);
-
-                if ($request->mount_session_id !== null) {
-                    $query->orWhere('technical_service_mount_session_id', $request->mount_session_id);
-                }
-            })
-            ->get()
-            ->filter(fn (TechnicalServiceMountPayment $payment): bool => $this->belongsToRequest($payment, $request))
-            ->reject(fn (TechnicalServiceMountPayment $payment): bool => $this->isCustomerChargePayment($payment))
-            ->sum(fn (TechnicalServiceMountPayment $payment): float => (float) $payment->amount), 2);
-    }
-
-    private function belongsToRequest(TechnicalServiceMountPayment $payment, TechnicalServiceRequest $request): bool
-    {
-        if ((int) ($payment->technical_service_request_id ?? 0) === (int) $request->id) {
-            return true;
-        }
-
-        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-        if ((int) ($payload['technical_service_request_id'] ?? 0) === (int) $request->id) {
-            return true;
-        }
-
-        return $request->source_channel === TechnicalServiceRequest::SOURCE_QR_MOUNT_FORM
-            && $request->mount_session_id !== null
-            && (int) ($payment->technical_service_mount_session_id ?? 0) === (int) $request->mount_session_id
-            && $payment->technical_service_request_id === null
-            && in_array(($payload['source'] ?? null), ['public_mount_payment', 'public_form_payment'], true);
-    }
-
-    private function isCustomerChargePayment(TechnicalServiceMountPayment $payment): bool
-    {
-        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
-
-        return ($payload['source'] ?? null) === 'operation_customer_charge';
     }
 
     private function isExcludedRequest(TechnicalServiceRequest $request): bool

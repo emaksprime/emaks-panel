@@ -376,6 +376,9 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             Route::post('earnings/{earning}/mark-paid', [TechnicalServiceEarningController::class, 'markPaid'])
                 ->middleware('panel.access:technical_service_earnings_pay')
                 ->name('api.technical-service.earnings.mark-paid');
+            Route::post('earnings/{earning}/review', [TechnicalServiceEarningController::class, 'review'])
+                ->middleware('panel.access:technical_service_earnings_pay')
+                ->name('api.technical-service.earnings.review');
             Route::get('earnings/{earning}/whatsapp-text', [TechnicalServiceEarningController::class, 'whatsappText'])
                 ->middleware('panel.access:technical_service_earnings')
                 ->name('api.technical-service.earnings.whatsapp-text');
