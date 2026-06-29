@@ -7,6 +7,8 @@ use InvalidArgumentException;
 
 class PaymentProviderManager
 {
+    public function __construct(private readonly TechnicalServicePaymentProviderModeResolver $modeResolver) {}
+
     public function createPayment(TechnicalServiceMountPayment $payment): array
     {
         return $this->provider()->createPayment($payment);
@@ -23,18 +25,16 @@ class PaymentProviderManager
 
     public function providerName(): string
     {
-        $provider = $this->configuredProviderName();
-
-        return str_starts_with($provider, 'iyzico') ? 'iyzico' : $provider;
+        return $this->modeResolver->activeProviderName();
     }
 
     public function environment(): string
     {
-        return strtolower((string) config('payments.environment', 'local'));
+        return $this->modeResolver->environment();
     }
 
     private function configuredProviderName(): string
     {
-        return strtolower((string) config('payments.provider', 'fake'));
+        return $this->modeResolver->activeProviderName();
     }
 }

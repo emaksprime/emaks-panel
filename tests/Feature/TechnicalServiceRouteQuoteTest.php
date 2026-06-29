@@ -703,8 +703,12 @@ class TechnicalServiceRouteQuoteTest extends TestCase
     {
         config([
             'payments.provider' => 'iyzico_sandbox',
-            'payments.iyzico.api_key' => null,
-            'payments.iyzico.secret_key' => null,
+            'payments.provider_name' => 'iyzico',
+            'payments.real_provider_enabled' => true,
+            'payments.gateway.url' => null,
+            'payments.gateway.token' => null,
+            'payments.gateway.health_verified' => false,
+            'payments.gateway.http_enabled' => false,
         ]);
 
         $user = $this->adminUser();
