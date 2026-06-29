@@ -48,6 +48,9 @@ final class PaymentProviderGatewayRequest
         private readonly ?string $callbackUrl = null,
         private readonly ?string $returnUrl = null,
         private readonly array $metadata = [],
+        private readonly bool $dryRun = false,
+        private readonly bool $noSend = false,
+        private readonly bool $allowProviderSend = false,
     ) {
         if (! in_array($operation, self::ALLOWED_OPERATIONS, true)) {
             throw new InvalidArgumentException('Desteklenmeyen ödeme sağlayıcısı operasyonu.');
@@ -77,6 +80,9 @@ final class PaymentProviderGatewayRequest
             'callback_url' => $this->callbackUrl,
             'return_url' => $this->returnUrl,
             'metadata' => $this->metadata,
+            'dry_run' => $this->dryRun,
+            'no_send' => $this->noSend,
+            'allow_provider_send' => $this->allowProviderSend,
         ];
     }
 

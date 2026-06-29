@@ -14,6 +14,21 @@ class PaymentProviderManager
         return $this->provider()->createPayment($payment);
     }
 
+    public function updatePayment(TechnicalServiceMountPayment $payment): array
+    {
+        return $this->providerForPayment($payment)->updatePayment($payment);
+    }
+
+    public function cancelPayment(TechnicalServiceMountPayment $payment): array
+    {
+        return $this->providerForPayment($payment)->cancelPayment($payment);
+    }
+
+    public function syncPayment(TechnicalServiceMountPayment $payment): array
+    {
+        return $this->providerForPayment($payment)->syncPayment($payment);
+    }
+
     public function provider(): PaymentProviderInterface
     {
         return match ($this->configuredProviderName()) {
@@ -36,5 +51,14 @@ class PaymentProviderManager
     private function configuredProviderName(): string
     {
         return $this->modeResolver->activeProviderName();
+    }
+
+    private function providerForPayment(TechnicalServiceMountPayment $payment): PaymentProviderInterface
+    {
+        return match (strtolower((string) ($payment->provider ?: $this->configuredProviderName()))) {
+            'fake' => app(FakePaymentProvider::class),
+            'iyzico', 'iyzico_sandbox', 'iyzico_live' => app(IyzicoPaymentProvider::class),
+            default => throw new InvalidArgumentException('Desteklenmeyen odeme saglayicisi.'),
+        };
     }
 }

@@ -50,6 +50,10 @@ final class PaymentProviderGatewayResponse
                 || str_contains($normalizedKey, 'api_key')
                 || str_contains($normalizedKey, 'apikey')
                 || str_contains($normalizedKey, 'authorization')
+                || str_contains($normalizedKey, 'password')
+                || str_contains($normalizedKey, 'credential')
+                || str_contains($normalizedKey, 'x-panel-token')
+                || str_contains($normalizedKey, 'iyzwsv2')
                 || str_contains($normalizedKey, 'panel_token')
                 || str_contains($normalizedKey, 'gateway_token')) {
                 $redacted[$key] = '[redacted]';
@@ -80,6 +84,21 @@ final class PaymentProviderGatewayResponse
         $value = $this->payload['payment_url'] ?? null;
 
         return is_scalar($value) && trim((string) $value) !== '' ? (string) $value : null;
+    }
+
+    public function dryRun(): bool
+    {
+        return (bool) ($this->payload['dry_run'] ?? false);
+    }
+
+    public function noSend(): bool
+    {
+        return (bool) ($this->payload['no_send'] ?? false);
+    }
+
+    public function wouldSend(): bool
+    {
+        return (bool) ($this->payload['would_send'] ?? false);
     }
 
     public function errorMessage(): string

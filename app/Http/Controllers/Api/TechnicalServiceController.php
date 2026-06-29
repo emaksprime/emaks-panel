@@ -912,10 +912,22 @@ class TechnicalServiceController extends Controller
     }
 
     public function mountPaymentStatus(
+        Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
-        TechnicalServiceMountPayment $payment
+        TechnicalServiceMountPayment $payment,
+        PaymentProviderManager $paymentProviderManager
     ): JsonResponse {
         abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        if ($request->boolean('sync_provider')) {
+            try {
+                $paymentProviderManager->syncPayment($payment);
+            } catch (Throwable $exception) {
+                throw ValidationException::withMessages([
+                    'payment' => $exception->getMessage(),
+                ]);
+            }
+        }
 
         return response()->json([
             'ok' => true,
@@ -934,7 +946,8 @@ class TechnicalServiceController extends Controller
     public function cancelMountPayment(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
-        TechnicalServiceMountPayment $payment
+        TechnicalServiceMountPayment $payment,
+        PaymentProviderManager $paymentProviderManager
     ): JsonResponse {
         abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
 
@@ -960,6 +973,14 @@ class TechnicalServiceController extends Controller
         if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
             throw ValidationException::withMessages([
                 'payment' => 'Yalnızca bekleyen ödeme linkleri iptal edilebilir.',
+            ]);
+        }
+
+        try {
+            $paymentProviderManager->cancelPayment($payment);
+        } catch (Throwable $exception) {
+            throw ValidationException::withMessages([
+                'payment' => $exception->getMessage(),
             ]);
         }
 

@@ -82,6 +82,11 @@ class TechnicalServicePaymentProviderGateway
         $customerEmail = $this->stringValue(Arr::get($payload, 'customer_email'))
             ?: $this->requestEmail($request);
 
+        $providerMetadata = array_merge($payload, $metadata);
+        if (isset($providerMetadata['source'])) {
+            $providerMetadata['payment_source'] = $providerMetadata['source'];
+        }
+
         return new PaymentProviderGatewayRequest(
             provider: 'iyzico',
             mode: $this->modeResolver->gatewayMode(),
@@ -103,7 +108,16 @@ class TechnicalServicePaymentProviderGateway
             idempotencyKey: $this->idempotencyKey($operation, $payment),
             callbackUrl: $this->stringValue(config('payments.iyzico.callback_url')),
             returnUrl: null,
-            metadata: $this->safeMetadata(array_merge($payload, $metadata)),
+            metadata: $this->safeMetadata(array_merge($providerMetadata, [
+                'source' => 'technical_service',
+                'environment' => $this->modeResolver->environment(),
+                'gateway_mode' => $this->modeResolver->gatewayMode(),
+                'payment_provider' => 'iyzico',
+                'payment_operation' => $operation,
+            ])),
+            dryRun: (bool) config('payments.gateway.dry_run', false),
+            noSend: (bool) config('payments.gateway.no_send', false),
+            allowProviderSend: (bool) config('payments.gateway.allow_provider_send', false),
         );
     }
 
@@ -117,12 +131,13 @@ class TechnicalServicePaymentProviderGateway
     private function description(?string $requestCode, ?string $serialNo, TechnicalServiceMountPayment $payment): string
     {
         $parts = array_filter([
-            $requestCode ? 'Talep: '.$requestCode : null,
-            $serialNo ? 'Seri: '.$serialNo : null,
-            'Ödeme: '.$payment->id,
+            'EMAKS Teknik Servis',
+            $requestCode ? 'MRN '.$requestCode : null,
+            $serialNo ? 'Seri '.$serialNo : null,
+            'Ödeme '.$payment->id,
         ]);
 
-        return implode(' / ', $parts);
+        return implode(' - ', $parts);
     }
 
     private function idempotencyKey(string $operation, TechnicalServiceMountPayment $payment): string

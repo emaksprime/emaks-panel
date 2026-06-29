@@ -28,4 +28,31 @@ class FakePaymentProvider implements PaymentProviderInterface
             'status' => $payment->status,
         ];
     }
+
+    public function updatePayment(TechnicalServiceMountPayment $payment): array
+    {
+        return $this->existingPaymentResponse($payment);
+    }
+
+    public function cancelPayment(TechnicalServiceMountPayment $payment): array
+    {
+        return $this->existingPaymentResponse($payment);
+    }
+
+    public function syncPayment(TechnicalServiceMountPayment $payment): array
+    {
+        return $this->existingPaymentResponse($payment);
+    }
+
+    /**
+     * @return array{provider_reference:string|null,payment_url:string|null,status:string}
+     */
+    private function existingPaymentResponse(TechnicalServiceMountPayment $payment): array
+    {
+        return [
+            'provider_reference' => $payment->provider_reference,
+            'payment_url' => $payment->payment_url,
+            'status' => (string) $payment->status,
+        ];
+    }
 }
