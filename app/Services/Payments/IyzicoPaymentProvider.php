@@ -6,7 +6,10 @@ use App\Models\TechnicalServiceMountPayment;
 
 class IyzicoPaymentProvider implements PaymentProviderInterface
 {
-    public function __construct(private readonly TechnicalServicePaymentProviderGateway $gateway) {}
+    public function __construct(
+        private readonly TechnicalServicePaymentProviderGateway $gateway,
+        private readonly TechnicalServicePaymentProviderReconciliationService $reconciliationService,
+    ) {}
 
     public function createPayment(TechnicalServiceMountPayment $payment): array
     {
@@ -80,6 +83,7 @@ class IyzicoPaymentProvider implements PaymentProviderInterface
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $payload['provider_gateway_sync'] = $response->toArray();
         $payment->forceFill(['raw_payload' => $payload])->save();
+        $payment = $this->reconciliationService->handleProviderStatusResponse($payment->fresh(), $response);
 
         return [
             'provider_reference' => $payment->provider_reference,

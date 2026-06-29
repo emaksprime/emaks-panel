@@ -36,6 +36,7 @@ type PaymentProviderSettings = {
     health_verified: boolean
     http_enabled: boolean
     provider_send_enabled: boolean
+    provider_send_ready: boolean
     ready: boolean
     mode: 'sandbox' | 'live' | string
     webhook_path: string
@@ -56,6 +57,39 @@ type PaymentProviderSettings = {
     last_verification_status: string | null
     last_verification_message: string | null
   }
+  credential_bridge: {
+    source: string
+    source_label: string
+    laravel_encrypted_credentials_saved: boolean
+    n8n_env_credentials_ready: boolean
+    credentials_ready_for_selected_source: boolean
+    safe_for_provider_send: boolean
+    status: string
+    message: string
+    normal_item_json_secret_allowed: boolean
+  }
+  readiness: {
+    effective_mode: string
+    selected_provider: string
+    selected_mode: 'sandbox' | 'live' | string
+    real_provider_enabled: boolean
+    credential_source: string
+    credentials_saved: boolean
+    credentials_ready_for_selected_source: boolean
+    gateway_url_configured: boolean
+    gateway_token_configured: boolean
+    gateway_ready: boolean
+    provider_send_enabled: boolean
+    provider_send_ready: boolean
+    can_enable_real_provider: boolean
+    disabled_reason: string | null
+    next_required_action: string
+  }
+  sandbox_activation_checklist: Array<{
+    key: string
+    label: string
+    ready: boolean
+  }>
   can_enable_real_provider: boolean
   disabled_reason: string | null
   health_status: {
@@ -406,14 +440,19 @@ export default function TechnicalServiceAdmin({
       ok: paymentSettings.credentials.ready,
     },
     {
+      label: 'Credential bridge',
+      value: paymentSettings.credential_bridge.credentials_ready_for_selected_source ? 'Hazır' : 'Bloklu',
+      ok: paymentSettings.credential_bridge.credentials_ready_for_selected_source,
+    },
+    {
       label: 'Son sağlık kontrolü',
       value: paymentSettings.health_status.label,
       ok: paymentSettings.health_status.status === 'ready',
     },
     {
       label: 'Gerçek gönderim',
-      value: paymentSettings.gateway.provider_send_enabled ? 'Aktif' : 'Kapalı',
-      ok: paymentSettings.gateway.provider_send_enabled,
+      value: paymentSettings.gateway.provider_send_ready ? 'Hazır' : (paymentSettings.gateway.provider_send_enabled ? 'İzin var, hazır değil' : 'Kapalı'),
+      ok: paymentSettings.gateway.provider_send_ready,
     },
   ]
   const providerModeDisabled = paymentSaving
@@ -574,9 +613,30 @@ export default function TechnicalServiceAdmin({
               {paymentSettings.disabled_reason ? (
                 <p className="mt-2 font-semibold text-rose-700">{paymentSettings.disabled_reason}</p>
               ) : null}
+              <p className="mt-3 font-semibold text-slate-950">Credential bridge</p>
+              <p className="mt-1 leading-6">{paymentSettings.credential_bridge.message}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">
+                Kaynak: {paymentSettings.credential_bridge.source_label}
+              </p>
+              <p className="mt-2 text-sm font-semibold text-amber-700">
+                Sonraki aksiyon: {paymentSettings.readiness.next_required_action}
+              </p>
               <p className="mt-2 text-xs font-semibold text-slate-500">
                 Webhook: {paymentSettings.gateway.webhook_path}
               </p>
+              <div className="mt-4 grid gap-2">
+                {paymentSettings.sandbox_activation_checklist.map((item) => (
+                  <div
+                    key={item.key}
+                    className={[
+                      'rounded-lg border px-3 py-2 text-xs font-semibold',
+                      item.ready ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+                    ].join(' ')}
+                  >
+                    {item.ready ? 'Hazır' : 'Bekliyor'} — {item.label}
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
               <p className="font-semibold text-slate-950">API bilgileri</p>

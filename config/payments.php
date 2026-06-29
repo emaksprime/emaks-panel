@@ -15,6 +15,8 @@ return [
         'health_verified' => env('PAYMENT_PROVIDER_GATEWAY_HEALTH_VERIFIED', false),
         'http_enabled' => env('PAYMENT_PROVIDER_GATEWAY_HTTP_ENABLED', false),
         'credentials_ready' => env('PAYMENT_PROVIDER_GATEWAY_CREDENTIALS_READY', false),
+        'credential_source' => env('PAYMENT_PROVIDER_CREDENTIAL_SOURCE', 'disabled'),
+        'n8n_env_credentials_ready' => env('PAYMENT_PROVIDER_N8N_ENV_CREDENTIALS_READY', false),
         'dry_run' => env('PAYMENT_PROVIDER_GATEWAY_DRY_RUN', false),
         'no_send' => env('PAYMENT_PROVIDER_GATEWAY_NO_SEND', false),
         'allow_provider_send' => env('PAYMENT_PROVIDER_GATEWAY_ALLOW_SEND', false),

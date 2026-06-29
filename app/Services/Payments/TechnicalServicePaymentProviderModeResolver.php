@@ -87,6 +87,14 @@ class TechnicalServicePaymentProviderModeResolver
      */
     public function status(): array
     {
+        $ready = $this->realProviderEnabled()
+            && $this->configuredRealProviderName() === 'iyzico'
+            && $this->gatewayConfigured()
+            && $this->gatewayHealthVerified()
+            && $this->gatewayHttpEnabled()
+            && $this->credentialsReady()
+            && $this->providerSendReady();
+
         return [
             'real_provider_enabled' => $this->realProviderEnabled(),
             'active_provider' => $this->activeProviderName(),
@@ -95,15 +103,12 @@ class TechnicalServicePaymentProviderModeResolver
             'gateway_configured' => $this->gatewayConfigured(),
             'gateway_health_verified' => $this->gatewayHealthVerified(),
             'gateway_http_enabled' => $this->gatewayHttpEnabled(),
+            'credential_source' => $this->settings->credentialSource(),
+            'laravel_encrypted_credentials_ready' => $this->settings->laravelEncryptedCredentialsReady(),
+            'n8n_env_credentials_ready' => $this->settings->n8nEnvCredentialsReady(),
             'credentials_ready' => $this->credentialsReady(),
             'provider_send_ready' => $this->providerSendReady(),
-            'ready' => $this->realProviderEnabled()
-                && $this->configuredRealProviderName() === 'iyzico'
-                && $this->gatewayConfigured()
-                && $this->gatewayHealthVerified()
-                && $this->gatewayHttpEnabled()
-                && $this->credentialsReady()
-                && $this->providerSendReady(),
+            'ready' => $ready,
         ];
     }
 }
