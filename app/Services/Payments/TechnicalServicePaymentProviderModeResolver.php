@@ -6,9 +6,11 @@ class TechnicalServicePaymentProviderModeResolver
 {
     public const NOT_READY_MESSAGE = 'Gerçek ödeme sağlayıcısı hazır değil. API bilgileri ve bağlantı doğrulaması tamamlanmalı.';
 
+    public function __construct(private readonly TechnicalServicePaymentProviderSettingsService $settings) {}
+
     public function realProviderEnabled(): bool
     {
-        return (bool) config('payments.real_provider_enabled', false);
+        return $this->settings->realProviderEnabled();
     }
 
     public function activeProviderName(): string
@@ -22,7 +24,7 @@ class TechnicalServicePaymentProviderModeResolver
 
     public function configuredRealProviderName(): string
     {
-        $provider = strtolower(trim((string) config('payments.provider_name', config('payments.provider', 'iyzico'))));
+        $provider = $this->settings->configuredProvider();
 
         return str_starts_with($provider, 'iyzico') ? 'iyzico' : $provider;
     }
@@ -34,24 +36,32 @@ class TechnicalServicePaymentProviderModeResolver
 
     public function gatewayMode(): string
     {
-        $mode = strtolower(trim((string) config('payments.gateway.mode', $this->environment())));
-
-        return $mode === 'live' ? 'live' : 'sandbox';
+        return $this->settings->providerMode();
     }
 
     public function gatewayConfigured(): bool
     {
-        return filled(config('payments.gateway.url')) && filled(config('payments.gateway.token'));
+        return $this->settings->gatewayConfigured();
     }
 
     public function gatewayHealthVerified(): bool
     {
-        return (bool) config('payments.gateway.health_verified', false);
+        return $this->settings->gatewayHealthVerified();
     }
 
     public function gatewayHttpEnabled(): bool
     {
-        return (bool) config('payments.gateway.http_enabled', false);
+        return $this->settings->gatewayHttpEnabled();
+    }
+
+    public function credentialsReady(): bool
+    {
+        return $this->settings->credentialsReady();
+    }
+
+    public function providerSendReady(): bool
+    {
+        return $this->settings->providerSendReady();
     }
 
     public function shouldUseFakeProvider(): bool
@@ -65,7 +75,9 @@ class TechnicalServicePaymentProviderModeResolver
             || $this->configuredRealProviderName() !== 'iyzico'
             || ! $this->gatewayConfigured()
             || ! $this->gatewayHealthVerified()
-            || ! $this->gatewayHttpEnabled()) {
+            || ! $this->gatewayHttpEnabled()
+            || ! $this->credentialsReady()
+            || ! $this->providerSendReady()) {
             throw new TechnicalServicePaymentProviderDisabledException(self::NOT_READY_MESSAGE);
         }
     }
@@ -83,11 +95,15 @@ class TechnicalServicePaymentProviderModeResolver
             'gateway_configured' => $this->gatewayConfigured(),
             'gateway_health_verified' => $this->gatewayHealthVerified(),
             'gateway_http_enabled' => $this->gatewayHttpEnabled(),
+            'credentials_ready' => $this->credentialsReady(),
+            'provider_send_ready' => $this->providerSendReady(),
             'ready' => $this->realProviderEnabled()
                 && $this->configuredRealProviderName() === 'iyzico'
                 && $this->gatewayConfigured()
                 && $this->gatewayHealthVerified()
-                && $this->gatewayHttpEnabled(),
+                && $this->gatewayHttpEnabled()
+                && $this->credentialsReady()
+                && $this->providerSendReady(),
         ];
     }
 }

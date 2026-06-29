@@ -19,7 +19,11 @@ class TechnicalServicePaymentProviderGateway
             return PaymentProviderGatewayResponse::disabled('Gerçek ödeme sağlayıcısı devre dışı.');
         }
 
-        if (! $this->modeResolver->gatewayConfigured() || ! $this->modeResolver->gatewayHealthVerified()) {
+        if (! $this->modeResolver->gatewayConfigured()
+            || ! $this->modeResolver->gatewayHealthVerified()
+            || ! $this->modeResolver->gatewayHttpEnabled()
+            || ! $this->modeResolver->credentialsReady()
+            || ! $this->modeResolver->providerSendReady()) {
             return PaymentProviderGatewayResponse::disabled(TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE);
         }
 

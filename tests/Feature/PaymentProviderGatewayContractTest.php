@@ -10,6 +10,7 @@ use App\Services\Payments\PaymentProviderGatewayClient;
 use App\Services\Payments\PaymentProviderGatewayRequest;
 use App\Services\Payments\PaymentProviderGatewayResponse;
 use App\Services\Payments\PaymentProviderManager;
+use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderClientException;
 use App\Services\Payments\TechnicalServicePaymentProviderDisabledException;
 use App\Services\Payments\TechnicalServicePaymentProviderGateway;
@@ -620,8 +621,11 @@ class PaymentProviderGatewayContractTest extends TestCase
             'payments.gateway.http_enabled' => true,
             'payments.gateway.dry_run' => false,
             'payments.gateway.no_send' => false,
-            'payments.gateway.allow_provider_send' => false,
+            'payments.gateway.allow_provider_send' => true,
         ], $overrides));
+
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY');
     }
 }
 

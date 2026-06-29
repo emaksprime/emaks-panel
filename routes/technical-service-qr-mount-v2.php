@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServicePaymentProviderSettingsController;
 use App\Http\Controllers\Api\TechnicalServiceQrFlowSettingsController;
 use App\Http\Controllers\Api\TechnicalServiceQrLinkController;
 use App\Http\Controllers\PublicMountPaymentController;
@@ -71,6 +72,21 @@ Route::middleware(['auth', 'panel.session'])
         Route::patch('qr-flow-settings', [TechnicalServiceQrFlowSettingsController::class, 'update'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.qr-flow-settings.update');
+        Route::get('payment-provider-settings', [TechnicalServicePaymentProviderSettingsController::class, 'show'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.payment-provider-settings.show');
+        Route::patch('payment-provider-settings', [TechnicalServicePaymentProviderSettingsController::class, 'update'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.payment-provider-settings.update');
+        Route::post('payment-provider-settings/credentials', [TechnicalServicePaymentProviderSettingsController::class, 'saveCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.payment-provider-settings.credentials.save');
+        Route::post('payment-provider-settings/credentials/clear', [TechnicalServicePaymentProviderSettingsController::class, 'clearCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.payment-provider-settings.credentials.clear');
+        Route::post('payment-provider-settings/health-check', [TechnicalServicePaymentProviderSettingsController::class, 'healthCheck'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.payment-provider-settings.health-check');
         Route::post('requests/{technicalServiceRequest}/technicians/{technician}/route-quote', [TechnicalServiceController::class, 'routeQuote'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.technicians.route-quote');
