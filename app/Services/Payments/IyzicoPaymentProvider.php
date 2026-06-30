@@ -66,6 +66,7 @@ class IyzicoPaymentProvider implements PaymentProviderInterface
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $payload['provider_gateway_cancel'] = $response->toArray();
         $payment->forceFill(['raw_payload' => $payload])->save();
+        $payment = $this->reconciliationService->handleProviderStatusResponse($payment->fresh(), $response);
 
         return [
             'provider_reference' => $payment->provider_reference,

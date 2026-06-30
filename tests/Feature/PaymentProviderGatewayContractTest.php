@@ -256,6 +256,51 @@ class PaymentProviderGatewayContractTest extends TestCase
         $this->assertSame(500.0, (float) $payment->amount);
     }
 
+    public function test_all_payment_link_create_paths_stamp_provider_decision_and_binding_metadata(): void
+    {
+        config([
+            'payments.provider' => 'iyzico',
+            'payments.provider_name' => 'iyzico',
+            'payments.real_provider_enabled' => false,
+        ]);
+
+        $fakePayment = $this->mountPayment();
+        app(PaymentProviderManager::class)->createPayment($fakePayment);
+        $fakePayment->refresh();
+
+        $this->assertSame('fake', $fakePayment->provider);
+        $this->assertSame('local', $fakePayment->raw_payload['provider_mode']);
+        $this->assertSame('fake_local', $fakePayment->raw_payload['provider_transport']);
+        $this->assertSame('fake', $fakePayment->raw_payload['provider_decision']['provider']);
+        $this->assertSame($fakePayment->technical_service_request_id, $fakePayment->raw_payload['technical_service_request_id']);
+        $this->assertNotEmpty($fakePayment->raw_payload['request_code']);
+        $this->assertNotEmpty($fakePayment->raw_payload['serial_number']);
+        $this->assertNotEmpty($fakePayment->raw_payload['customer_name']);
+
+        $client = new RecordingPaymentProviderGatewayClient(PaymentProviderGatewayResponse::fromArray([
+            'ok' => true,
+            'provider_token' => 'direct-bound-token',
+            'payment_url' => 'https://pay.example.test/direct-bound-token',
+            'provider_status' => 'ACTIVE',
+            'provider_response_redacted' => [],
+        ]));
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->configureReadyRealProvider();
+
+        $directPayment = $this->mountPayment(['provider' => 'iyzico']);
+        app(PaymentProviderManager::class)->createPayment($directPayment);
+        $directPayment->refresh();
+
+        $this->assertTrue($client->called);
+        $this->assertSame('iyzico', $directPayment->provider);
+        $this->assertSame('sandbox', $directPayment->raw_payload['provider_mode']);
+        $this->assertSame('direct_laravel', $directPayment->raw_payload['provider_transport']);
+        $this->assertSame('iyzico', $directPayment->raw_payload['provider_decision']['provider']);
+        $this->assertSame('direct-bound-token', $directPayment->provider_reference);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $directPayment->status);
+        $this->assertNull($directPayment->paid_at);
+    }
+
     public function test_payment_update_uses_fake_when_real_disabled(): void
     {
         config([

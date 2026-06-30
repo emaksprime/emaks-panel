@@ -10,6 +10,10 @@ use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\User;
 use App\Services\N8nPanelDataGateway;
+use App\Services\Payments\PaymentProviderGatewayClient;
+use App\Services\Payments\PaymentProviderGatewayRequest;
+use App\Services\Payments\PaymentProviderGatewayResponse;
+use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
 use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
@@ -1079,6 +1083,109 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertInertia(fn (Assert $page) => $page
                 ->where('viewState', 'form_ready')
                 ->where('statusLabel', 'Montaj ödemesi alındı'));
+    }
+
+    public function test_qr_payment_required_uses_unified_direct_provider_when_real_payment_enabled(): void
+    {
+        $this->enablePreFormPayment();
+        config([
+            'payments.real_provider_enabled' => true,
+            'payments.provider_name' => 'iyzico',
+            'payments.provider_transport' => 'direct_laravel',
+            'payments.gateway.mode' => 'sandbox',
+        ]);
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('sandbox', 'TEST_QR_SANDBOX_API_KEY', 'TEST_QR_SANDBOX_SECRET_KEY');
+
+        $client = new class implements PaymentProviderGatewayClient {
+            public bool $called = false;
+
+            public ?PaymentProviderGatewayRequest $lastRequest = null;
+
+            public function send(PaymentProviderGatewayRequest $request): PaymentProviderGatewayResponse
+            {
+                $this->called = true;
+                $this->lastRequest = $request;
+
+                return PaymentProviderGatewayResponse::fromArray([
+                    'ok' => true,
+                    'provider' => 'iyzico',
+                    'mode' => 'sandbox',
+                    'operation' => $request->operation(),
+                    'provider_token' => 'qr-direct-provider-token',
+                    'payment_url' => 'https://sandbox-payment.iyzipay.com/pay/qr-direct-provider-token',
+                    'provider_status' => 'ACTIVE',
+                    'provider_response_redacted' => ['status' => 'success'],
+                ]);
+            }
+        };
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_NOT_FOUND,
+            TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'unknown',
+        );
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('viewState', 'payment_required'));
+
+        $this->post('/mount-request/'.$token.'/payment')
+            ->assertRedirect('/mount-payment/qr-direct-provider-token');
+
+        $this->assertTrue($client->called);
+        $payload = $client->lastRequest?->toArray();
+        $this->assertSame('create_link', $payload['operation']);
+        $this->assertSame('sandbox', $payload['mode']);
+        $this->assertSame('technical_service', $payload['metadata']['source']);
+        $this->assertSame('QR-V2-PUBLIC-001', $payload['serial_no']);
+        $this->assertStringNotContainsString('TEST_QR_SANDBOX_SECRET_KEY', json_encode($payload, JSON_THROW_ON_ERROR));
+
+        $payment = TechnicalServiceMountPayment::query()->firstOrFail();
+        $this->assertSame('iyzico', $payment->provider);
+        $this->assertSame('qr-direct-provider-token', $payment->provider_reference);
+        $this->assertSame('https://sandbox-payment.iyzipay.com/pay/qr-direct-provider-token', $payment->payment_url);
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+        $this->assertSame('public_mount_payment', $payment->raw_payload['source']);
+        $this->assertSame('sandbox', $payment->raw_payload['provider_mode']);
+        $this->assertSame('direct_laravel', $payment->raw_payload['provider_transport']);
+        $this->assertSame('iyzico', $payment->raw_payload['provider_decision']['provider']);
+        $this->assertSame('QR-V2-PUBLIC-001', $payment->raw_payload['serial_number']);
+        $this->assertNull($payment->technical_service_request_id);
+
+        $this->get('/mount-payment/'.$payment->provider_reference)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-payment')
+                ->where('payment.payment_url', 'https://sandbox-payment.iyzipay.com/pay/qr-direct-provider-token'));
+    }
+
+    public function test_qr_payment_required_blocks_when_real_provider_readiness_is_missing(): void
+    {
+        $this->enablePreFormPayment();
+        config([
+            'payments.real_provider_enabled' => true,
+            'payments.provider_name' => 'iyzico',
+            'payments.provider_transport' => 'direct_laravel',
+            'payments.gateway.mode' => 'sandbox',
+        ]);
+        $this->fakeContext(
+            TechnicalServiceMountSession::SALE_NOT_FOUND,
+            TechnicalServiceQrLink::TYPE_PRE_SALE_PRODUCT,
+            'unknown',
+        );
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('viewState', 'payment_required'));
+
+        $this->post('/mount-request/'.$token.'/payment')
+            ->assertRedirect('/mount-request/'.$token.'/payment')
+            ->assertSessionHasErrors('payment');
+
+        $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
     }
 
     public function test_mrn_generator_uses_date_initials_and_daily_sequence(): void

@@ -19,22 +19,21 @@ class TechnicalServicePaymentProviderGateway
             return PaymentProviderGatewayResponse::disabled('Gerçek ödeme sağlayıcısı devre dışı.');
         }
 
-        if (! $this->modeResolver->gatewayConfigured()
-            || ! $this->modeResolver->gatewayHealthVerified()
-            || ! $this->modeResolver->gatewayHttpEnabled()
-            || ! $this->modeResolver->credentialsReady()
+        if (! $this->modeResolver->credentialsReady()
             || ! $this->modeResolver->providerSendReady()) {
             return PaymentProviderGatewayResponse::disabled(TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE);
         }
 
         return PaymentProviderGatewayResponse::fromArray([
-            'ok' => false,
+            'ok' => true,
             'provider' => 'iyzico',
             'mode' => $this->modeResolver->gatewayMode(),
             'operation' => PaymentProviderGatewayRequest::OPERATION_PROVIDER_HEALTH_CHECK,
-            'error_code' => 'http_disabled',
-            'error_message' => TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE,
+            'provider_status' => 'direct_laravel_ready',
             'provider_response_redacted' => [],
+            'meta' => [
+                'transport' => TechnicalServicePaymentProviderTransportResolver::TRANSPORT_DIRECT_LARAVEL,
+            ],
         ]);
     }
 
@@ -117,6 +116,9 @@ class TechnicalServicePaymentProviderGateway
                 'environment' => $this->modeResolver->environment(),
                 'gateway_mode' => $this->modeResolver->gatewayMode(),
                 'payment_provider' => 'iyzico',
+                'provider_reference' => $payment->provider_reference,
+                'payment_url' => $payment->payment_url,
+                'provider_transport' => TechnicalServicePaymentProviderTransportResolver::TRANSPORT_DIRECT_LARAVEL,
                 'payment_operation' => $operation,
             ])),
             dryRun: (bool) config('payments.gateway.dry_run', false),

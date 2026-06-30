@@ -2,7 +2,7 @@
 
 namespace App\Providers;
 
-use App\Services\Payments\N8nIyzicoPaymentProviderClient;
+use App\Services\Payments\DirectIyzicoLinkProviderClient;
 use App\Services\Payments\PaymentProviderGatewayClient;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
@@ -18,7 +18,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->bind(PaymentProviderGatewayClient::class, N8nIyzicoPaymentProviderClient::class);
+        $this->app->bind(PaymentProviderGatewayClient::class, DirectIyzicoLinkProviderClient::class);
     }
 
     /**

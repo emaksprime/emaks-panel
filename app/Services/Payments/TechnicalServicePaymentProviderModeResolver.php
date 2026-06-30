@@ -4,9 +4,12 @@ namespace App\Services\Payments;
 
 class TechnicalServicePaymentProviderModeResolver
 {
-    public const NOT_READY_MESSAGE = 'Gerçek ödeme sağlayıcısı hazır değil. API bilgileri ve bağlantı doğrulaması tamamlanmalı.';
+    public const NOT_READY_MESSAGE = 'Gerçek ödeme sağlayıcısı hazır değil. API bilgileri, mod ve canlı/sandbox hazırlığı tamamlanmalı.';
 
-    public function __construct(private readonly TechnicalServicePaymentProviderSettingsService $settings) {}
+    public function __construct(
+        private readonly TechnicalServicePaymentProviderSettingsService $settings,
+        private readonly TechnicalServicePaymentProviderTransportResolver $transportResolver,
+    ) {}
 
     public function realProviderEnabled(): bool
     {
@@ -71,11 +74,15 @@ class TechnicalServicePaymentProviderModeResolver
 
     public function assertReadyForRealProvider(): void
     {
+        if ($this->gatewayMode() === 'live' && ! $this->settings->liveSendApproved()) {
+            throw new TechnicalServicePaymentProviderDisabledException(
+                TechnicalServicePaymentProviderSettingsService::LIVE_SEND_APPROVAL_MESSAGE
+            );
+        }
+
         if (! $this->realProviderEnabled()
             || $this->configuredRealProviderName() !== 'iyzico'
-            || ! $this->gatewayConfigured()
-            || ! $this->gatewayHealthVerified()
-            || ! $this->gatewayHttpEnabled()
+            || ! $this->transportResolver->directLaravel()
             || ! $this->credentialsReady()
             || ! $this->providerSendReady()) {
             throw new TechnicalServicePaymentProviderDisabledException(self::NOT_READY_MESSAGE);
@@ -89,9 +96,7 @@ class TechnicalServicePaymentProviderModeResolver
     {
         $ready = $this->realProviderEnabled()
             && $this->configuredRealProviderName() === 'iyzico'
-            && $this->gatewayConfigured()
-            && $this->gatewayHealthVerified()
-            && $this->gatewayHttpEnabled()
+            && $this->transportResolver->directLaravel()
             && $this->credentialsReady()
             && $this->providerSendReady();
 
@@ -100,6 +105,7 @@ class TechnicalServicePaymentProviderModeResolver
             'active_provider' => $this->activeProviderName(),
             'configured_provider' => $this->configuredRealProviderName(),
             'mode' => $this->gatewayMode(),
+            'provider_transport' => $this->transportResolver->activeTransport(),
             'gateway_configured' => $this->gatewayConfigured(),
             'gateway_health_verified' => $this->gatewayHealthVerified(),
             'gateway_http_enabled' => $this->gatewayHttpEnabled(),

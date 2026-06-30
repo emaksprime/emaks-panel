@@ -227,25 +227,32 @@ class PublicMountRequestController extends Controller
 
     public function createFakePayment(Request $request, string $token, PaymentProviderManager $paymentProviderManager): RedirectResponse
     {
-        abort_unless($this->fakePaymentProviderEnabled(), 404);
+        abort_if(app()->environment('production') && ! config('payments.real_provider_enabled', false), 404);
 
         $link = $this->linkOrFail($token);
         $session = $this->sessionForLink($link);
         $payment = $this->latestPayment($session);
 
         if (! $payment instanceof TechnicalServiceMountPayment || $payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
-            $payment = TechnicalServiceMountPayment::query()->create([
-                'technical_service_mount_session_id' => $session->id,
-                'provider' => config('payments.provider', 'fake'),
-                'status' => TechnicalServiceMountPayment::STATUS_PENDING,
-                'amount' => 3500,
-                'currency' => 'TRY',
-                'raw_payload' => [
-                    'source' => 'public_mount_payment',
-                    'purpose' => 'service_payment',
-                ],
-            ]);
-            $paymentProviderManager->createPayment($payment);
+            $payment = null;
+
+            try {
+                $payment = TechnicalServiceMountPayment::query()->create([
+                    'technical_service_mount_session_id' => $session->id,
+                    'provider' => $paymentProviderManager->providerName(),
+                    'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+                    'amount' => 3500,
+                    'currency' => 'TRY',
+                    'raw_payload' => $this->publicMountPaymentPayload($link, $session, $paymentProviderManager),
+                ]);
+
+                $paymentProviderManager->createPayment($payment);
+            } catch (\Throwable $exception) {
+                $payment?->delete();
+
+                return redirect()->to(route('mount-request.payment.step', ['token' => $token], false))
+                    ->withErrors(['payment' => $exception->getMessage()]);
+            }
         }
 
         $session->forceFill([
@@ -255,6 +262,39 @@ class PublicMountRequestController extends Controller
         ])->save();
 
         return $this->redirectToCurrentHost($request, 'mount-payment.show', ['token' => $payment->provider_reference]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function publicMountPaymentPayload(
+        TechnicalServiceQrLink $link,
+        TechnicalServiceMountSession $session,
+        PaymentProviderManager $paymentProviderManager,
+    ): array {
+        $context = is_array($session->context_payload) ? $session->context_payload : [];
+
+        return [
+            'source' => 'public_mount_payment',
+            'provider_environment' => $paymentProviderManager->environment(),
+            'technical_service_request_id' => null,
+            'root_request_id' => null,
+            'request_code' => null,
+            'root_mrn' => null,
+            'qr_link_id' => $link->id,
+            'mount_session_id' => $session->id,
+            'serial_number' => $session->serial_number ?: $link->serial_number,
+            'customer_name' => null,
+            'customer_phone' => null,
+            'customer_email' => null,
+            'product_name' => $context['product_name'] ?? $link->product_name,
+            'product_model' => $context['product_model'] ?? $link->product_model,
+            'brand' => $context['brand'] ?? $link->brand,
+            'purpose' => 'service_payment',
+            'charge_type' => 'service_payment',
+            'amount_source' => 'public_mount_payment_fixed_fee',
+            'total_amount' => 3500.0,
+        ];
     }
 
     public function chooseMultiProduct(Request $request, string $token): RedirectResponse

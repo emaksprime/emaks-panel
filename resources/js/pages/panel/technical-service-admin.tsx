@@ -26,10 +26,41 @@ type PaymentProviderSettings = {
   provider: 'fake' | 'iyzico' | string
   configured_provider: string
   provider_mode: 'sandbox' | 'live'
+  provider_transport: string
+  provider_transport_label: string
+  live_send_approved: boolean
   selected_provider_mode_label: string
   effective_mode: string
   effective_mode_label: string
   fake_active: boolean
+  iyzico_urls: {
+    sandbox_base_url: string
+    live_base_url: string
+    authorization_scheme: string
+    endpoints: Record<string, string>
+  }
+  ip_whitelist: {
+    source: string
+    source_label: string
+    status: string
+    label: string
+    outbound_ip_value: string | null
+    ready: boolean
+    manual_check_command: string
+    message: string
+  }
+  back_url: {
+    status: string
+    label: string
+    public_base_url: string | null
+    public_https_ready: boolean
+    payment_return_route_exists: boolean
+    payment_return_url: string | null
+    callback_route_exists: boolean
+    callback_route_name: string | null
+    ready: boolean
+    message: string
+  }
   gateway: {
     url_configured: boolean
     token_configured: boolean
@@ -68,11 +99,17 @@ type PaymentProviderSettings = {
     message: string
     normal_item_json_secret_allowed: boolean
   }
+  legacy_n8n_adapter: {
+    active: boolean
+    status: string
+    message: string
+  }
   readiness: {
     effective_mode: string
     selected_provider: string
     selected_mode: 'sandbox' | 'live' | string
     real_provider_enabled: boolean
+    provider_transport: string
     credential_source: string
     credentials_saved: boolean
     credentials_ready_for_selected_source: boolean
@@ -81,6 +118,14 @@ type PaymentProviderSettings = {
     gateway_ready: boolean
     provider_send_enabled: boolean
     provider_send_ready: boolean
+    live_send_approved: boolean
+    sandbox_base_url: string
+    live_base_url: string
+    ip_whitelist_confirmed: boolean
+    ip_whitelist_source: string
+    back_url_ready: boolean
+    callback_route_ready: boolean
+    live_readiness_ready: boolean
     can_enable_real_provider: boolean
     disabled_reason: string | null
     next_required_action: string
@@ -425,14 +470,14 @@ export default function TechnicalServiceAdmin({
 
   const providerStatusCards = [
     {
-      label: 'Gateway URL',
-      value: paymentSettings.gateway.url_configured ? 'Hazır' : 'Eksik',
-      ok: paymentSettings.gateway.url_configured,
+      label: 'Adaptör',
+      value: paymentSettings.provider_transport_label,
+      ok: paymentSettings.provider_transport === 'direct_laravel',
     },
     {
-      label: 'Gateway token',
-      value: paymentSettings.gateway.token_configured ? 'Hazır' : 'Eksik',
-      ok: paymentSettings.gateway.token_configured,
+      label: 'Seçili mod',
+      value: paymentSettings.selected_provider_mode_label,
+      ok: paymentSettings.provider_mode === 'sandbox' || paymentSettings.live_send_approved,
     },
     {
       label: 'API bilgileri',
@@ -440,12 +485,12 @@ export default function TechnicalServiceAdmin({
       ok: paymentSettings.credentials.ready,
     },
     {
-      label: 'Credential bridge',
-      value: paymentSettings.credential_bridge.credentials_ready_for_selected_source ? 'Hazır' : 'Bloklu',
-      ok: paymentSettings.credential_bridge.credentials_ready_for_selected_source,
+      label: 'Fake ödeme',
+      value: paymentSettings.fake_active ? 'Aktif' : 'Kapalı',
+      ok: paymentSettings.fake_active,
     },
     {
-      label: 'Son sağlık kontrolü',
+      label: 'Hazırlık',
       value: paymentSettings.health_status.label,
       ok: paymentSettings.health_status.status === 'ready',
     },
@@ -453,6 +498,16 @@ export default function TechnicalServiceAdmin({
       label: 'Gerçek gönderim',
       value: paymentSettings.gateway.provider_send_ready ? 'Hazır' : (paymentSettings.gateway.provider_send_enabled ? 'İzin var, hazır değil' : 'Kapalı'),
       ok: paymentSettings.gateway.provider_send_ready,
+    },
+    {
+      label: 'IP whitelist',
+      value: paymentSettings.ip_whitelist.label,
+      ok: paymentSettings.provider_mode !== 'live' || paymentSettings.ip_whitelist.ready,
+    },
+    {
+      label: 'Back URL',
+      value: paymentSettings.back_url.label,
+      ok: paymentSettings.provider_mode !== 'live' || paymentSettings.back_url.ready,
     },
   ]
   const providerModeDisabled = paymentSaving
@@ -533,7 +588,10 @@ export default function TechnicalServiceAdmin({
               <p className="mt-2 text-sm leading-6 text-slate-600">
                 {paymentSettings.fake_active
                   ? 'Fake/local ödeme aktif. Iyzico devre dışı.'
-                  : 'Gerçek ödeme aktif. Fake ödeme kullanılmaz.'}
+                  : 'Iyzico Laravel Direct aktif. Fake ödeme kullanılmaz.'}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Ödeme adaptörü: <span className="font-semibold text-slate-900">{paymentSettings.provider_transport_label}</span>
               </p>
               <p className="mt-2 text-sm leading-6 text-slate-600">
                 Planlanan Iyzico modu: <span className="font-semibold text-slate-900">{paymentSettings.selected_provider_mode_label}</span>
@@ -613,7 +671,8 @@ export default function TechnicalServiceAdmin({
               {paymentSettings.disabled_reason ? (
                 <p className="mt-2 font-semibold text-rose-700">{paymentSettings.disabled_reason}</p>
               ) : null}
-              <p className="mt-3 font-semibold text-slate-950">Credential bridge</p>
+              <p className="mt-3 font-semibold text-slate-950">Credential kaynağı</p>
+              <p className="mt-1 leading-6">n8n ödeme adaptörü aktif ödeme yolundan çıkarıldı. Iyzico imzası ve HTTP çağrısı Laravel Direct içinde yapılır.</p>
               <p className="mt-1 leading-6">{paymentSettings.credential_bridge.message}</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">
                 Kaynak: {paymentSettings.credential_bridge.source_label}
@@ -621,8 +680,42 @@ export default function TechnicalServiceAdmin({
               <p className="mt-2 text-sm font-semibold text-amber-700">
                 Sonraki aksiyon: {paymentSettings.readiness.next_required_action}
               </p>
+              <div className="mt-4 grid gap-3 rounded-lg border border-slate-200 bg-white p-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Iyzico API URL</p>
+                  <p className="mt-1 break-all text-sm font-semibold text-slate-900">Sandbox: {paymentSettings.iyzico_urls.sandbox_base_url}</p>
+                  <p className="mt-1 break-all text-sm font-semibold text-slate-900">Live: {paymentSettings.iyzico_urls.live_base_url}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">Authorization: {paymentSettings.iyzico_urls.authorization_scheme}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">IP whitelist</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{paymentSettings.ip_whitelist.label}</p>
+                  <p className="mt-1 leading-6">{paymentSettings.ip_whitelist.message}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">Kaynak: {paymentSettings.ip_whitelist.source_label}</p>
+                  <p className="mt-1 break-all text-xs font-semibold text-slate-500">Manuel kontrol: {paymentSettings.ip_whitelist.manual_check_command}</p>
+                  {paymentSettings.ip_whitelist.outbound_ip_value ? (
+                    <p className="mt-1 text-sm font-semibold text-emerald-800">Public IP: {paymentSettings.ip_whitelist.outbound_ip_value}</p>
+                  ) : null}
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Back URL / callback</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{paymentSettings.back_url.label}</p>
+                  <p className="mt-1 leading-6">{paymentSettings.back_url.message}</p>
+                  {paymentSettings.back_url.payment_return_url ? (
+                    <p className="mt-1 break-all text-xs font-semibold text-slate-500">Return URL: {paymentSettings.back_url.payment_return_url}</p>
+                  ) : null}
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    Callback route: {paymentSettings.back_url.callback_route_exists ? paymentSettings.back_url.callback_route_name : 'Eksik'}
+                  </p>
+                </div>
+              </div>
               <p className="mt-2 text-xs font-semibold text-slate-500">
-                Webhook: {paymentSettings.gateway.webhook_path}
+                Eski n8n adaptörü: {paymentSettings.legacy_n8n_adapter.message}
+              </p>
+              <p className="mt-2 text-sm font-semibold text-rose-700">
+                {paymentSettings.provider_mode === 'live' && !paymentSettings.live_send_approved
+                  ? 'Canlı mod gerçek para hareketi oluşturur. Canlı onay gerektirir.'
+                  : 'Sandbox test ortamıdır; gerçek para hareketi oluşturmaz.'}
               </p>
               <div className="mt-4 grid gap-2">
                 {paymentSettings.sandbox_activation_checklist.map((item) => (

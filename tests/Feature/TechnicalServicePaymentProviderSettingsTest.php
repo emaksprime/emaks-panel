@@ -19,6 +19,7 @@ use App\Services\Payments\TechnicalServicePaymentProviderModeResolver;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -84,14 +85,10 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         $this->assertFalse(app(TechnicalServicePaymentProviderSettingsService::class)->realProviderEnabled());
     }
 
-    public function test_real_payment_toggle_can_enable_when_gateway_credentials_and_send_ready(): void
+    public function test_real_payment_toggle_can_enable_when_sandbox_credentials_are_saved(): void
     {
-        $this->configureGatewayReady([
-            'payments.gateway.allow_provider_send' => true,
-            'payments.gateway.credential_source' => 'n8n_env',
-            'payments.gateway.n8n_env_credentials_ready' => true,
-            'payments.gateway.credentials_ready' => true,
-        ]);
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY', $this->admin());
 
         $this->actingAs($this->admin())
             ->patchJson('/api/technical-service/payment-provider-settings', [
@@ -103,39 +100,34 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->assertJsonPath('settings.provider', 'iyzico')
             ->assertJsonPath('settings.effective_mode', 'iyzico_sandbox')
             ->assertJsonPath('settings.fake_active', false)
+            ->assertJsonPath('settings.provider_transport', 'direct_laravel')
             ->assertJsonPath('settings.can_enable_real_provider', true);
     }
 
-    public function test_real_toggle_on_blocked_when_provider_send_disabled_even_if_credentials_exist(): void
+    public function test_real_toggle_on_blocked_when_live_approval_missing_even_if_credentials_exist(): void
     {
-        $this->configureGatewayReady([
-            'payments.gateway.allow_provider_send' => false,
-            'payments.gateway.credential_source' => 'n8n_env',
-            'payments.gateway.n8n_env_credentials_ready' => true,
-            'payments.gateway.credentials_ready' => true,
-        ]);
         app(TechnicalServicePaymentProviderCredentialService::class)
-            ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY', $this->admin());
+            ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
 
         $this->actingAs($this->admin())
             ->patchJson('/api/technical-service/payment-provider-settings', [
                 'real_provider_enabled' => true,
-                'provider_mode' => 'sandbox',
+                'provider_mode' => 'live',
             ])
             ->assertStatus(422)
             ->assertJsonFragment([
-                'real_provider_enabled' => [TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE],
+                'real_provider_enabled' => [TechnicalServicePaymentProviderSettingsService::LIVE_SEND_APPROVAL_MESSAGE],
             ]);
 
         $payload = app(TechnicalServicePaymentProviderSettingsService::class)->payload();
+        $liveCredentialPayload = app(TechnicalServicePaymentProviderCredentialService::class)->credentialPayload('live');
 
         $this->assertFalse($payload['real_provider_enabled']);
-        $this->assertSame('API bilgileri tanımlı, gerçek ödeme gönderimi henüz aktif değil.', $payload['credentials']['entry_status']);
+        $this->assertTrue($liveCredentialPayload['ready']);
     }
 
-    public function test_credential_source_laravel_encrypted_credentials_not_bridge_ready(): void
+    public function test_credential_source_laravel_encrypted_credentials_are_direct_ready(): void
     {
-        $this->configureGatewayReady(['payments.gateway.allow_provider_send' => true]);
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_CREDENTIAL_ID', 'TEST_SANDBOX_PRIVATE_VALUE', $this->admin());
 
@@ -143,22 +135,21 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->getJson('/api/technical-service/payment-provider-settings')
             ->assertOk()
             ->assertJsonPath('settings.credentials.ready', true)
-            ->assertJsonPath('settings.credential_bridge.source', 'laravel_encrypted_pending_bridge')
-            ->assertJsonPath('settings.credential_bridge.credentials_ready_for_selected_source', false)
-            ->assertJsonPath('settings.credential_bridge.safe_for_provider_send', false)
-            ->assertJsonPath('settings.can_enable_real_provider', false)
+            ->assertJsonPath('settings.credential_bridge.source', 'laravel_encrypted')
+            ->assertJsonPath('settings.credential_bridge.credentials_ready_for_selected_source', true)
+            ->assertJsonPath('settings.credential_bridge.safe_for_provider_send', true)
+            ->assertJsonPath('settings.can_enable_real_provider', true)
             ->json();
 
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
 
-        $this->assertStringContainsString('n8n imza/çağrı köprüsü', $payload['settings']['credential_bridge']['message']);
+        $this->assertStringContainsString('Laravel Direct', $payload['settings']['credential_bridge']['message']);
         $this->assertStringNotContainsString('TEST_SANDBOX_CREDENTIAL_ID', $encoded);
         $this->assertStringNotContainsString('TEST_SANDBOX_PRIVATE_VALUE', $encoded);
     }
 
-    public function test_real_toggle_blocked_when_laravel_credentials_saved_but_bridge_missing(): void
+    public function test_real_toggle_uses_laravel_encrypted_credentials_without_n8n_bridge(): void
     {
-        $this->configureGatewayReady(['payments.gateway.allow_provider_send' => true]);
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_CREDENTIAL_ID', 'TEST_SANDBOX_PRIVATE_VALUE', $this->admin());
 
@@ -167,41 +158,39 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
                 'real_provider_enabled' => true,
                 'provider_mode' => 'sandbox',
             ])
-            ->assertStatus(422)
-            ->assertJsonFragment([
-                'real_provider_enabled' => [TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE],
-            ]);
+            ->assertOk()
+            ->assertJsonPath('settings.real_provider_enabled', true)
+            ->assertJsonPath('settings.credential_bridge.source', 'laravel_encrypted')
+            ->assertJsonPath('settings.provider_transport', 'direct_laravel');
 
         $payload = app(TechnicalServicePaymentProviderSettingsService::class)->payload();
 
-        $this->assertFalse($payload['real_provider_enabled']);
-        $this->assertSame('laravel_encrypted_pending_bridge', $payload['credential_bridge']['source']);
-        $this->assertSame('API bilgileri Laravel’de encrypted olarak kayıtlı; n8n imza köprüsü henüz aktif değil.', $payload['disabled_reason']);
+        $this->assertTrue($payload['real_provider_enabled']);
+        $this->assertSame('laravel_encrypted', $payload['credential_bridge']['source']);
+        $this->assertNull($payload['disabled_reason']);
     }
 
-    public function test_credential_source_n8n_env_when_configured_without_secret_value(): void
+    public function test_n8n_env_config_is_not_active_payment_credential_source(): void
     {
         config([
             'payments.gateway.credential_source' => 'n8n_env',
             'payments.gateway.n8n_env_credentials_ready' => true,
             'payments.gateway.credentials_ready' => true,
-            'payments.iyzico.api_key' => 'credential-id-should-not-return',
-            'payments.iyzico.secret_key' => 'credential-private-should-not-return',
         ]);
 
         $payload = $this->actingAs($this->admin())
             ->getJson('/api/technical-service/payment-provider-settings')
             ->assertOk()
-            ->assertJsonPath('settings.credential_bridge.source', 'n8n_env')
-            ->assertJsonPath('settings.credential_bridge.n8n_env_credentials_ready', true)
-            ->assertJsonPath('settings.credential_bridge.credentials_ready_for_selected_source', true)
-            ->assertJsonPath('settings.credential_bridge.source_label', 'n8n/Coolify Secrets')
+            ->assertJsonPath('settings.credential_bridge.source', 'disabled')
+            ->assertJsonPath('settings.credential_bridge.n8n_env_credentials_ready', false)
+            ->assertJsonPath('settings.credential_bridge.credentials_ready_for_selected_source', false)
+            ->assertJsonPath('settings.legacy_n8n_adapter.active', false)
             ->json();
 
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
 
-        $this->assertStringNotContainsString('credential-id-should-not-return', $encoded);
-        $this->assertStringNotContainsString('credential-private-should-not-return', $encoded);
+        $this->assertStringNotContainsString('IYZICO_API_KEY', $encoded);
+        $this->assertStringNotContainsString('IYZICO_SECRET_KEY', $encoded);
     }
 
     public function test_provider_mode_selector_saves_without_enabling_real_provider(): void
@@ -264,7 +253,13 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             'payments.gateway.credential_source' => 'n8n_env',
             'payments.gateway.n8n_env_credentials_ready' => true,
             'payments.gateway.credentials_ready' => true,
+            'payments.iyzico.live_send_approved' => true,
+            'payments.iyzico.ip_whitelist_confirmed' => true,
+            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
         ]);
+        Route::post('/test/iyzico-callback', fn () => response()->json(['ok' => true]))
+            ->name('mount-payment.callback');
+        Route::getRoutes()->refreshNameLookups();
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
         $this->actingAs($this->admin())
@@ -289,19 +284,123 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->assertJsonPath('settings.fake_active', true);
     }
 
+    public function test_admin_settings_show_iyzico_url_ip_and_back_url_readiness_contract(): void
+    {
+        config([
+            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
+        ]);
+
+        $payload = $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/payment-provider-settings')
+            ->assertOk()
+            ->assertJsonPath('settings.iyzico_urls.sandbox_base_url', 'https://sandbox-api.iyzipay.com')
+            ->assertJsonPath('settings.iyzico_urls.live_base_url', 'https://api.iyzipay.com')
+            ->assertJsonPath('settings.iyzico_urls.authorization_scheme', 'IYZWSv2')
+            ->assertJsonPath('settings.ip_whitelist.source', 'direct_laravel_app_server')
+            ->assertJsonPath('settings.ip_whitelist.status', 'manual_required')
+            ->assertJsonPath('settings.ip_whitelist.manual_check_command', 'curl -4s https://api.ipify.org')
+            ->assertJsonPath('settings.back_url.payment_return_route_exists', true)
+            ->assertJsonPath('settings.back_url.payment_return_url', 'https://dashboard.emaksprime.com.tr/mount-payment/{provider_reference}')
+            ->assertJsonPath('settings.back_url.callback_route_exists', false)
+            ->assertJsonPath('settings.back_url.ready', false)
+            ->json('settings');
+
+        $this->assertStringContainsString('REL-3C.8', $payload['back_url']['message']);
+    }
+
+    public function test_live_readiness_blocked_when_ip_whitelist_is_unconfirmed(): void
+    {
+        config([
+            'payments.iyzico.live_send_approved' => true,
+            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
+        ]);
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
+        Route::post('/test/iyzico-callback', fn () => response()->json(['ok' => true]))
+            ->name('mount-payment.callback');
+        Route::getRoutes()->refreshNameLookups();
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'real_provider_enabled' => true,
+                'provider_mode' => 'live',
+            ])
+            ->assertStatus(422)
+            ->assertJsonFragment([
+                'real_provider_enabled' => ['Canlı Iyzico için uygulama sunucusu public IP adresi Iyzico panelinde onaylanmalı.'],
+            ]);
+    }
+
+    public function test_live_readiness_blocked_when_back_url_callback_route_is_missing(): void
+    {
+        config([
+            'payments.iyzico.live_send_approved' => true,
+            'payments.iyzico.ip_whitelist_confirmed' => true,
+            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
+        ]);
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'real_provider_enabled' => true,
+                'provider_mode' => 'live',
+            ])
+            ->assertStatus(422)
+            ->assertJsonFragment([
+                'real_provider_enabled' => ['Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.'],
+            ]);
+    }
+
+    public function test_payment_back_url_rejects_localhost_for_live_readiness(): void
+    {
+        config([
+            'payments.iyzico.live_send_approved' => true,
+            'payments.iyzico.ip_whitelist_confirmed' => true,
+            'services.public_urls.payment_base_url' => 'http://127.0.0.1:8000',
+        ]);
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'provider_mode' => 'live',
+            ])
+            ->assertOk()
+            ->assertJsonPath('settings.back_url.public_https_ready', false)
+            ->assertJsonPath('settings.readiness.back_url_ready', false)
+            ->assertJsonPath('settings.readiness.live_readiness_ready', false)
+            ->assertJsonPath('settings.can_enable_real_provider', false);
+    }
+
+    public function test_sandbox_readiness_allows_create_without_claiming_back_url_ready(): void
+    {
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY', $this->admin());
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'real_provider_enabled' => true,
+                'provider_mode' => 'sandbox',
+            ])
+            ->assertOk()
+            ->assertJsonPath('settings.real_provider_enabled', true)
+            ->assertJsonPath('settings.readiness.provider_send_ready', true)
+            ->assertJsonPath('settings.back_url.ready', false)
+            ->assertJsonPath('settings.readiness.live_readiness_ready', false);
+    }
+
     public function test_settings_status_shows_gateway_and_credentials_missing_without_secrets(): void
     {
         config([
             'payments.gateway.token' => 'gateway-token-should-not-return',
-            'payments.iyzico.api_key' => 'api-key-should-not-return',
-            'payments.iyzico.secret_key' => 'iyzico-secret-should-not-return',
         ]);
 
         $payload = $this->actingAs($this->admin())
             ->getJson('/api/technical-service/payment-provider-settings')
             ->assertOk()
             ->assertJsonPath('settings.gateway.url_configured', false)
-            ->assertJsonPath('settings.gateway.token_configured', true)
+            ->assertJsonPath('settings.gateway.token_configured', false)
             ->assertJsonPath('settings.credentials.ready', false)
             ->assertJsonPath('settings.credentials.source_label', 'Encrypted admin storage')
             ->assertJsonPath('settings.credentials.api_key_status', 'API bilgileri tanımlı değil')
@@ -311,8 +410,8 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
 
         $this->assertStringNotContainsString('gateway-token-should-not-return', $encoded);
-        $this->assertStringNotContainsString('api-key-should-not-return', $encoded);
-        $this->assertStringNotContainsString('iyzico-secret-should-not-return', $encoded);
+        $this->assertStringNotContainsString('IYZICO_API_KEY', $encoded);
+        $this->assertStringNotContainsString('IYZICO_SECRET_KEY', $encoded);
     }
 
     public function test_credential_help_mentions_encrypted_storage_and_admin_input(): void
@@ -526,7 +625,7 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         $this->actingAs($this->admin())
             ->postJson('/api/technical-service/payment-provider-settings/health-check')
             ->assertOk()
-            ->assertJsonPath('health_check.status', 'missing_gateway_url');
+            ->assertJsonPath('health_check.status', 'missing_credentials');
     }
 
     public function test_provider_mode_resolver_reports_effective_fake_when_toggle_off(): void
@@ -642,8 +741,15 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         $this->assertStringContainsString('paymentSettings.credentials.entry_status', $source);
         $this->assertStringContainsString('paymentSettings.credentials.entry_message', $source);
         $this->assertStringContainsString('paymentSettings.credential_bridge.message', $source);
+        $this->assertStringContainsString('paymentSettings.provider_transport_label', $source);
+        $this->assertStringContainsString('paymentSettings.legacy_n8n_adapter.message', $source);
         $this->assertStringContainsString('paymentSettings.readiness.next_required_action', $source);
         $this->assertStringContainsString('paymentSettings.sandbox_activation_checklist', $source);
+        $this->assertStringContainsString('paymentSettings.iyzico_urls.sandbox_base_url', $source);
+        $this->assertStringContainsString('paymentSettings.iyzico_urls.live_base_url', $source);
+        $this->assertStringContainsString('IP whitelist', $source);
+        $this->assertStringContainsString('Back URL / callback', $source);
+        $this->assertStringContainsString('paymentSettings.back_url.callback_route_exists', $source);
         $this->assertStringContainsString('API bilgilerini kaydet', $source);
         $this->assertStringContainsString('API bilgilerini temizle', $source);
         $this->assertStringContainsString('Bağlantıyı doğrula', $source);

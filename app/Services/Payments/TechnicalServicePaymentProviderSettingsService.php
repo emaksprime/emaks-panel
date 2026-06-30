@@ -3,7 +3,9 @@
 namespace App\Services\Payments;
 
 use App\Models\PageConfig;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
 
 class TechnicalServicePaymentProviderSettingsService
@@ -13,10 +15,15 @@ class TechnicalServicePaymentProviderSettingsService
     public const PROVIDER_KEY = 'technical_service.payment.provider';
     public const PROVIDER_MODE_KEY = 'technical_service.payment.provider_mode';
     public const CREDENTIAL_SOURCE_DISABLED = 'disabled';
+    public const CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED = 'laravel_encrypted';
     public const CREDENTIAL_SOURCE_N8N_ENV = 'n8n_env';
     public const CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE = 'laravel_encrypted_pending_bridge';
+    public const LIVE_SEND_APPROVAL_MESSAGE = 'Canlı Iyzico gönderimi için canlı onayı gerekir.';
 
-    public function __construct(private readonly TechnicalServicePaymentProviderCredentialService $credentialService) {}
+    public function __construct(
+        private readonly TechnicalServicePaymentProviderCredentialService $credentialService,
+        private readonly TechnicalServicePaymentProviderTransportResolver $transportResolver,
+    ) {}
 
     public function realProviderEnabled(): bool
     {
@@ -53,6 +60,11 @@ class TechnicalServicePaymentProviderSettingsService
         return $mode === 'live' ? 'live' : 'sandbox';
     }
 
+    public function providerTransport(): string
+    {
+        return $this->transportResolver->activeTransport();
+    }
+
     public function gatewayUrlConfigured(): bool
     {
         return filled(config('payments.gateway.url'));
@@ -65,39 +77,37 @@ class TechnicalServicePaymentProviderSettingsService
 
     public function gatewayConfigured(): bool
     {
-        return $this->gatewayUrlConfigured() && $this->gatewayTokenConfigured();
+        return false;
     }
 
     public function gatewayHealthVerified(): bool
     {
-        return (bool) config('payments.gateway.health_verified', false);
+        return false;
     }
 
     public function gatewayHttpEnabled(): bool
     {
-        return (bool) config('payments.gateway.http_enabled', false);
+        return false;
     }
 
     public function gatewayReady(): bool
     {
-        return $this->gatewayConfigured()
-            && $this->gatewayHealthVerified()
-            && $this->gatewayHttpEnabled();
+        return false;
     }
 
     public function credentialsReady(): bool
     {
-        return $this->credentialsReadyForSelectedSource();
+        return $this->laravelEncryptedCredentialsReady($this->providerMode());
     }
 
     public function providerSendReady(?string $mode = null): bool
     {
         $mode = $mode !== null ? $this->normalizeMode($mode) : $this->providerMode();
 
-        return $this->providerSendEnabled()
-            && $this->gatewayReady()
-            && $this->credentialSource($mode) === self::CREDENTIAL_SOURCE_N8N_ENV
-            && $this->credentialsReadyForSelectedSource($mode);
+        return $this->transportResolver->directLaravel()
+            && $this->laravelEncryptedCredentialsReady($mode)
+            && $this->providerSendEnabled($mode)
+            && ($mode === 'sandbox' || $this->liveOperationalReadinessReady());
     }
 
     public function canEnableRealProvider(): bool
@@ -105,28 +115,23 @@ class TechnicalServicePaymentProviderSettingsService
         return $this->canEnableRealProviderForMode($this->providerMode());
     }
 
-    public function providerSendEnabled(): bool
+    public function providerSendEnabled(?string $mode = null): bool
     {
-        return (bool) config('payments.gateway.allow_provider_send', false);
+        $mode = $mode !== null ? $this->normalizeMode($mode) : $this->providerMode();
+
+        return $mode === 'sandbox' || $this->liveSendApproved();
+    }
+
+    public function liveSendApproved(): bool
+    {
+        return (bool) config('payments.iyzico.live_send_approved', false);
     }
 
     public function credentialSource(?string $mode = null): string
     {
-        $configured = strtolower(trim((string) config('payments.gateway.credential_source', self::CREDENTIAL_SOURCE_DISABLED)));
-
-        if ($configured === self::CREDENTIAL_SOURCE_N8N_ENV) {
-            return self::CREDENTIAL_SOURCE_N8N_ENV;
-        }
-
-        if ($configured === self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE) {
-            return self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE;
-        }
-
-        if ($this->laravelEncryptedCredentialsReady($mode ?? $this->providerMode())) {
-            return self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE;
-        }
-
-        return self::CREDENTIAL_SOURCE_DISABLED;
+        return $this->laravelEncryptedCredentialsReady($mode ?? $this->providerMode())
+            ? self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED
+            : self::CREDENTIAL_SOURCE_DISABLED;
     }
 
     public function laravelEncryptedCredentialsReady(?string $mode = null): bool
@@ -136,23 +141,19 @@ class TechnicalServicePaymentProviderSettingsService
 
     public function n8nEnvCredentialsReady(): bool
     {
-        return (bool) config('payments.gateway.n8n_env_credentials_ready', config('payments.gateway.credentials_ready', false));
+        return false;
     }
 
     public function credentialsReadyForSelectedSource(?string $mode = null): bool
     {
-        return match ($this->credentialSource($mode ?? $this->providerMode())) {
-            self::CREDENTIAL_SOURCE_N8N_ENV => $this->n8nEnvCredentialsReady(),
-            default => false,
-        };
+        return $this->laravelEncryptedCredentialsReady($mode ?? $this->providerMode());
     }
 
     public function canEnableRealProviderForMode(?string $mode = null): bool
     {
         $mode = $mode !== null ? $this->normalizeMode($mode) : $this->providerMode();
 
-        return $this->gatewayReady()
-            && $this->credentialSource($mode) === self::CREDENTIAL_SOURCE_N8N_ENV
+        return $this->transportResolver->directLaravel()
             && $this->credentialsReadyForSelectedSource($mode)
             && $this->providerSendReady($mode);
     }
@@ -165,17 +166,17 @@ class TechnicalServicePaymentProviderSettingsService
         $realEnabled = $this->realProviderEnabled();
         $providerMode = $this->providerMode();
         $canEnable = $this->canEnableRealProvider();
-        $disabledReason = $canEnable ? null : $this->disabledReason();
+        $disabledReason = $canEnable ? null : $this->disabledReasonForMode($providerMode);
         $credentialPayload = $this->credentialService->credentialPayload($providerMode);
         $credentialBridge = $this->credentialBridgePayload($providerMode);
         $readiness = $this->readinessPayload($providerMode, $canEnable, $disabledReason);
-        if (($credentialPayload['ready'] ?? false) === true
-            && $credentialBridge['source'] === self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE) {
-            $credentialPayload['entry_status'] = 'API bilgileri tanımlı; n8n imza köprüsü hazır değil.';
-            $credentialPayload['entry_message'] = 'API bilgileri Laravel’de encrypted saklanır; kayıttan sonra tam değer gösterilmez. n8n imza/çağrı köprüsü hazır olana kadar gerçek ödeme gönderimi kapalıdır.';
-        } elseif (($credentialPayload['ready'] ?? false) === true && ! $this->providerSendReady()) {
-            $credentialPayload['entry_status'] = 'API bilgileri tanımlı, gerçek ödeme gönderimi henüz aktif değil.';
-            $credentialPayload['entry_message'] = 'API bilgileri encrypted saklanır; kayıttan sonra tam değer gösterilmez. Gerçek ödeme gönderimi aktivasyon tamamlanana kadar kapalı.';
+
+        if (($credentialPayload['ready'] ?? false) === true && $providerMode === 'live' && ! $this->liveSendApproved()) {
+            $credentialPayload['entry_status'] = 'API bilgileri tanımlı; canlı gönderim onayı bekliyor.';
+            $credentialPayload['entry_message'] = 'API bilgileri encrypted saklanır; kayıttan sonra tam değer gösterilmez. Canlı Iyzico gönderimi ayrı onay olmadan açılmaz.';
+        } elseif (($credentialPayload['ready'] ?? false) === true) {
+            $credentialPayload['entry_status'] = 'API bilgileri tanımlı; Laravel Direct ile sandbox kullanıma hazır.';
+            $credentialPayload['entry_message'] = 'API bilgileri encrypted saklanır; kayıttan sonra tam değer gösterilmez. Iyzico imzası Laravel içinde oluşturulur.';
         }
 
         return [
@@ -188,20 +189,21 @@ class TechnicalServicePaymentProviderSettingsService
             'provider' => $realEnabled ? 'iyzico' : 'fake',
             'configured_provider' => $this->configuredProvider(),
             'provider_mode' => $providerMode,
+            'provider_transport' => $this->providerTransport(),
+            'provider_transport_label' => $this->transportResolver->activeTransportLabel(),
+            'live_send_approved' => $this->liveSendApproved(),
             'selected_provider_mode_label' => $this->selectedProviderModeLabel($providerMode),
             'effective_mode' => $this->effectiveModeKey($realEnabled, $providerMode),
             'effective_mode_label' => $this->effectiveModeLabel($realEnabled, $providerMode),
             'fake_active' => ! $realEnabled,
-            'gateway' => [
-                'url_configured' => $this->gatewayUrlConfigured(),
-                'token_configured' => $this->gatewayTokenConfigured(),
-                'health_verified' => $this->gatewayHealthVerified(),
-                'http_enabled' => $this->gatewayHttpEnabled(),
-                'provider_send_enabled' => $this->providerSendEnabled(),
-                'provider_send_ready' => $this->providerSendReady(),
-                'ready' => $this->gatewayReady(),
-                'mode' => $providerMode,
-                'webhook_path' => (string) config('payments.gateway.webhook_path', 'panel-payment-provider-iyzico-runner-v1'),
+            'iyzico_urls' => $this->iyzicoUrlsPayload(),
+            'ip_whitelist' => $this->ipWhitelistPayload(),
+            'back_url' => $this->backUrlPayload(),
+            'gateway' => $this->legacyGatewayPayload($providerMode),
+            'legacy_n8n_adapter' => [
+                'active' => false,
+                'status' => 'archived',
+                'message' => 'n8n ödeme adaptörü devre dışı; ödeme sağlayıcı artık Laravel Direct ile çalışır.',
             ],
             'credentials' => $credentialPayload,
             'credential_bridge' => $credentialBridge,
@@ -233,7 +235,7 @@ class TechnicalServicePaymentProviderSettingsService
 
         if ($nextRealProviderEnabled && ! $this->canEnableRealProviderForMode($nextMode)) {
             throw ValidationException::withMessages([
-                'real_provider_enabled' => TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE,
+                'real_provider_enabled' => $this->disabledReasonForMode($nextMode),
             ]);
         }
 
@@ -266,93 +268,59 @@ class TechnicalServicePaymentProviderSettingsService
      */
     private function healthStatus(): array
     {
-        if (! $this->gatewayUrlConfigured()) {
-            return [
-                'status' => 'missing_gateway_url',
-                'label' => 'Gateway URL eksik',
-                'message' => 'Ödeme sağlayıcı gateway URL ayarı tanımlı değil.',
-            ];
-        }
-
-        if (! $this->gatewayTokenConfigured()) {
-            return [
-                'status' => 'missing_gateway_token',
-                'label' => 'Gateway token eksik',
-                'message' => 'Ödeme sağlayıcı gateway token ayarı tanımlı değil.',
-            ];
-        }
-
         if (! $this->credentialsReady()) {
-            if ($this->credentialSource() === self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE) {
-                return [
-                    'status' => 'credential_bridge_missing',
-                    'label' => 'n8n imza köprüsü eksik',
-                    'message' => 'API bilgileri Laravel’de encrypted olarak kayıtlı; n8n imza köprüsü henüz aktif değil.',
-                ];
-            }
-
-            if ($this->credentialSource() === self::CREDENTIAL_SOURCE_N8N_ENV) {
-                return [
-                    'status' => 'n8n_env_credentials_unverified',
-                    'label' => 'n8n/Coolify Secrets doğrulanmalı',
-                    'message' => 'n8n/Coolify Secrets doğrulanmadan gerçek ödeme aktif edilemez.',
-                ];
-            }
-
             return [
                 'status' => 'missing_credentials',
                 'label' => 'API bilgileri tanımsız',
-                'message' => 'API bilgileri tanımlı olmadığı için gerçek ödeme aktif edilemez.',
+                'message' => 'Seçili Iyzico modu için API bilgileri tanımlı değil.',
             ];
         }
 
-        if (! $this->gatewayHealthVerified()) {
+        if ($this->providerMode() === 'live' && ! $this->liveSendApproved()) {
             return [
-                'status' => 'health_check_missing',
-                'label' => 'Bağlantı doğrulaması bekliyor',
-                'message' => 'Gateway bağlantısı henüz doğrulanmadı.',
+                'status' => 'live_send_approval_missing',
+                'label' => 'Canlı onay bekliyor',
+                'message' => self::LIVE_SEND_APPROVAL_MESSAGE,
             ];
         }
 
-        if (! $this->gatewayHttpEnabled()) {
+        if ($this->providerMode() === 'live' && ! $this->liveOperationalReadinessReady()) {
             return [
-                'status' => 'gateway_http_disabled',
-                'label' => 'Gateway HTTP kapalı',
-                'message' => 'Gateway HTTP çağrısı açık değil.',
-            ];
-        }
-
-        if (! $this->providerSendReady()) {
-            return [
-                'status' => 'provider_send_disabled',
-                'label' => 'Gerçek ödeme gönderimi kapalı',
-                'message' => 'Provider send readiness tamamlanmadan gerçek ödeme gönderimi açılmaz.',
+                'status' => 'live_readiness_missing',
+                'label' => 'Canlı hazırlık eksik',
+                'message' => $this->liveOperationalReadinessMessage(),
             ];
         }
 
         return [
             'status' => 'ready',
             'label' => 'Hazır',
-            'message' => 'Gateway ve API bilgileri hazır görünüyor.',
+            'message' => 'Laravel Direct ödeme adaptörü ve seçili mod API bilgileri hazır.',
         ];
     }
 
-    private function disabledReason(): string
+    private function disabledReasonForMode(string $mode): string
     {
-        if (! $this->gatewayReady()) {
+        $mode = $this->normalizeMode($mode);
+
+        if (! $this->transportResolver->directLaravel()) {
+            return 'Iyzico ödeme adaptörü Laravel Direct olarak yapılandırılmalı.';
+        }
+
+        if (! $this->laravelEncryptedCredentialsReady($mode)) {
             return TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE;
         }
 
-        if (! $this->credentialsReady()) {
-            return match ($this->credentialSource()) {
-                self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE => 'API bilgileri Laravel’de encrypted olarak kayıtlı; n8n imza köprüsü henüz aktif değil.',
-                self::CREDENTIAL_SOURCE_N8N_ENV => 'n8n/Coolify Secrets doğrulanmalı.',
-                default => 'API bilgileri tanımlı olmadığı için gerçek ödeme aktif edilemez.',
-            };
+        if ($mode === 'live' && ! $this->liveSendApproved()) {
+            return self::LIVE_SEND_APPROVAL_MESSAGE;
         }
 
-        if (! $this->providerSendReady()) {
-            return 'Gerçek ödeme gönderimi kapalı.';
+        if ($mode === 'live' && ! $this->ipWhitelistConfirmed()) {
+            return 'Canlı Iyzico için uygulama sunucusu public IP adresi Iyzico panelinde onaylanmalı.';
+        }
+
+        if ($mode === 'live' && ! $this->backUrlReadyForLive()) {
+            return 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.';
         }
 
         return TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE;
@@ -387,21 +355,20 @@ class TechnicalServicePaymentProviderSettingsService
      */
     private function credentialBridgePayload(string $providerMode): array
     {
-        $source = $this->credentialSource($providerMode);
         $laravelEncryptedReady = $this->laravelEncryptedCredentialsReady($providerMode);
-        $n8nEnvReady = $this->n8nEnvCredentialsReady();
-        $sourceReady = $this->credentialsReadyForSelectedSource($providerMode);
-        $safeForSend = $source === self::CREDENTIAL_SOURCE_N8N_ENV && $sourceReady;
+        $source = $this->credentialSource($providerMode);
 
         return [
             'source' => $source,
             'source_label' => $this->credentialSourceLabel($source),
             'laravel_encrypted_credentials_saved' => $laravelEncryptedReady,
-            'n8n_env_credentials_ready' => $n8nEnvReady,
-            'credentials_ready_for_selected_source' => $sourceReady,
-            'safe_for_provider_send' => $safeForSend,
-            'status' => $this->credentialBridgeStatus($source, $sourceReady, $laravelEncryptedReady, $n8nEnvReady),
-            'message' => $this->credentialBridgeMessage($source, $sourceReady, $laravelEncryptedReady, $n8nEnvReady),
+            'n8n_env_credentials_ready' => false,
+            'credentials_ready_for_selected_source' => $laravelEncryptedReady,
+            'safe_for_provider_send' => $laravelEncryptedReady && $this->providerSendReady($providerMode),
+            'status' => $laravelEncryptedReady ? 'ready' : 'missing',
+            'message' => $laravelEncryptedReady
+                ? 'API bilgileri Laravel’de encrypted olarak kayıtlı; imza ve Iyzico çağrısı Laravel Direct içinde yapılır.'
+                : 'Seçili Iyzico modu için encrypted API bilgisi tanımlanmalı.',
             'normal_item_json_secret_allowed' => false,
         ];
     }
@@ -416,17 +383,26 @@ class TechnicalServicePaymentProviderSettingsService
             'selected_provider' => $this->configuredProvider(),
             'selected_mode' => $providerMode,
             'real_provider_enabled' => $this->realProviderEnabled(),
+            'provider_transport' => $this->providerTransport(),
             'credential_source' => $this->credentialSource($providerMode),
             'credentials_saved' => $this->laravelEncryptedCredentialsReady($providerMode),
             'credentials_ready_for_selected_source' => $this->credentialsReadyForSelectedSource($providerMode),
-            'gateway_url_configured' => $this->gatewayUrlConfigured(),
-            'gateway_token_configured' => $this->gatewayTokenConfigured(),
-            'gateway_ready' => $this->gatewayReady(),
-            'provider_send_enabled' => $this->providerSendEnabled(),
-            'provider_send_ready' => $this->providerSendReady(),
+            'gateway_url_configured' => false,
+            'gateway_token_configured' => false,
+            'gateway_ready' => false,
+            'provider_send_enabled' => $this->providerSendEnabled($providerMode),
+            'provider_send_ready' => $this->providerSendReady($providerMode),
+            'live_send_approved' => $this->liveSendApproved(),
+            'sandbox_base_url' => DirectIyzicoLinkProviderClient::SANDBOX_BASE_URL,
+            'live_base_url' => DirectIyzicoLinkProviderClient::LIVE_BASE_URL,
+            'ip_whitelist_confirmed' => $this->ipWhitelistConfirmed(),
+            'ip_whitelist_source' => 'direct_laravel_app_server',
+            'back_url_ready' => $this->backUrlReadyForLive(),
+            'callback_route_ready' => $this->callbackRouteExists(),
+            'live_readiness_ready' => $this->liveOperationalReadinessReady(),
             'can_enable_real_provider' => $canEnable,
             'disabled_reason' => $disabledReason,
-            'next_required_action' => $canEnable ? 'Gerçek ödeme sandbox aktivasyonu için Burhan onayı ve kontrollü health check gerekir.' : $this->nextRequiredAction(),
+            'next_required_action' => $canEnable ? 'Sandbox gerçek ödeme sağlayıcısı yerel kontrollü test için hazır.' : $this->nextRequiredAction($providerMode),
         ];
     }
 
@@ -439,24 +415,34 @@ class TechnicalServicePaymentProviderSettingsService
     {
         return [
             [
+                'key' => 'transport',
+                'label' => 'Ödeme adaptörü Laravel Direct',
+                'ready' => $this->transportResolver->directLaravel(),
+            ],
+            [
                 'key' => 'credentials',
-                'label' => 'Credential source güvenli ve seçili mod için hazır',
+                'label' => 'Seçili mod API bilgileri encrypted olarak kayıtlı',
                 'ready' => (bool) ($credentialBridge['credentials_ready_for_selected_source'] ?? false),
             ],
             [
-                'key' => 'gateway',
-                'label' => 'Gateway URL/token/health/http readiness tamam',
-                'ready' => (bool) ($readiness['gateway_ready'] ?? false),
-            ],
-            [
                 'key' => 'provider_send',
-                'label' => 'Provider send açık ve güvenli credential source ile eşleşiyor',
+                'label' => 'Sandbox gönderimi seçili mod için uygun',
                 'ready' => (bool) ($readiness['provider_send_ready'] ?? false),
             ],
             [
-                'key' => 'no_real_call_this_phase',
-                'label' => 'REL-3C.5 boyunca gerçek/sandbox Iyzico çağrısı yapılmaz',
-                'ready' => true,
+                'key' => 'live_guard',
+                'label' => 'Canlı mod ayrı onay olmadan kapalı',
+                'ready' => $this->providerMode() !== 'live' || $this->liveSendApproved(),
+            ],
+            [
+                'key' => 'ip_whitelist',
+                'label' => 'Canlı için uygulama sunucusu public IP adresi Iyzico panelinde doğrulanmalı',
+                'ready' => $this->providerMode() !== 'live' || $this->ipWhitelistConfirmed(),
+            ],
+            [
+                'key' => 'back_url',
+                'label' => 'Canlı için public HTTPS Back URL / callback route hazır olmalı',
+                'ready' => $this->providerMode() !== 'live' || $this->backUrlReadyForLive(),
             ],
         ];
     }
@@ -464,83 +450,186 @@ class TechnicalServicePaymentProviderSettingsService
     private function credentialSourceLabel(string $source): string
     {
         return match ($source) {
+            self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED => 'Laravel encrypted credentials',
             self::CREDENTIAL_SOURCE_N8N_ENV => 'n8n/Coolify Secrets',
             self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE => 'Laravel encrypted credentials - bridge bekliyor',
             default => 'Not configured',
         };
     }
 
-    private function credentialBridgeStatus(
-        string $source,
-        bool $sourceReady,
-        bool $laravelEncryptedReady,
-        bool $n8nEnvReady,
-    ): string {
-        if ($source === self::CREDENTIAL_SOURCE_N8N_ENV) {
-            return $sourceReady ? 'ready' : 'n8n_env_unverified';
-        }
-
-        if ($source === self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE && $laravelEncryptedReady) {
-            return 'pending_bridge';
-        }
-
-        return $n8nEnvReady ? 'source_not_selected' : 'missing';
-    }
-
-    private function credentialBridgeMessage(
-        string $source,
-        bool $sourceReady,
-        bool $laravelEncryptedReady,
-        bool $n8nEnvReady,
-    ): string {
-        if ($source === self::CREDENTIAL_SOURCE_N8N_ENV) {
-            return $sourceReady
-                ? 'n8n/Coolify Secrets hazır işaretli; Laravel secret değerini response veya payload olarak göndermez.'
-                : 'n8n/Coolify Secrets doğrulanmalı.';
-        }
-
-        if ($source === self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE && $laravelEncryptedReady) {
-            return 'API bilgileri Laravel’de encrypted olarak kayıtlı; n8n imza/çağrı köprüsü henüz aktif değil.';
-        }
-
-        if ($n8nEnvReady) {
-            return 'n8n/Coolify Secrets hazır işaretli ancak credential source n8n_env seçili değil.';
-        }
-
-        return 'Credential source yapılandırılmadı.';
-    }
-
-    private function nextRequiredAction(): string
+    private function nextRequiredAction(string $mode): string
     {
-        if (! $this->gatewayUrlConfigured()) {
-            return 'Gateway URL tanımlanmalı.';
+        $mode = $this->normalizeMode($mode);
+
+        if (! $this->transportResolver->directLaravel()) {
+            return 'Provider transport Laravel Direct olmalı.';
         }
 
-        if (! $this->gatewayTokenConfigured()) {
-            return 'Gateway token tanımlanmalı.';
+        if (! $this->laravelEncryptedCredentialsReady($mode)) {
+            return 'Seçili Iyzico modu için API bilgileri admin panelinden encrypted olarak kaydedilmeli.';
         }
 
-        if ($this->credentialSource() === self::CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE) {
-            return 'Laravel encrypted credentials için güvenli n8n imza köprüsü tasarlanmalı veya n8n_env source doğrulanmalı.';
+        if ($mode === 'live' && ! $this->liveSendApproved()) {
+            return self::LIVE_SEND_APPROVAL_MESSAGE;
         }
 
-        if ($this->credentialSource() === self::CREDENTIAL_SOURCE_N8N_ENV && ! $this->n8nEnvCredentialsReady()) {
-            return 'n8n/Coolify Secrets doğrulanmalı.';
+        if ($mode === 'live' && ! $this->ipWhitelistConfirmed()) {
+            return 'Canlı Iyzico için uygulama sunucusu public IP adresi Iyzico panelinde onaylanmalı.';
         }
 
-        if (! $this->gatewayHealthVerified()) {
-            return 'Gateway readiness health doğrulaması yapılmalı.';
+        if ($mode === 'live' && ! $this->backUrlReadyForLive()) {
+            return 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.';
         }
 
-        if (! $this->gatewayHttpEnabled()) {
-            return 'Gateway HTTP çağrısı kontrollü şekilde açılmalı.';
+        return 'Sandbox gerçek gönderim testi için Burhan açık onayı gerekir.';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function iyzicoUrlsPayload(): array
+    {
+        return [
+            'sandbox_base_url' => DirectIyzicoLinkProviderClient::SANDBOX_BASE_URL,
+            'live_base_url' => DirectIyzicoLinkProviderClient::LIVE_BASE_URL,
+            'authorization_scheme' => 'IYZWSv2',
+            'endpoints' => [
+                'create_link' => 'POST /v2/iyzilink/products',
+                'update_link' => 'PUT /v2/iyzilink/products/{token}',
+                'get_link' => 'GET /v2/iyzilink/products/{token}',
+                'list_links' => 'GET /v2/iyzilink/products',
+                'cancel_link' => 'PATCH /v2/iyzilink/products/{token}/status/PASSIVE',
+                'delete_link' => 'DELETE /v2/iyzilink/products/{token}',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function ipWhitelistPayload(): array
+    {
+        $ip = trim((string) config('payments.iyzico.outbound_ip', ''));
+        $confirmed = $this->ipWhitelistConfirmed();
+
+        return [
+            'source' => 'direct_laravel_app_server',
+            'source_label' => 'Laravel uygulama sunucusu',
+            'status' => $confirmed ? 'confirmed' : ($ip !== '' ? 'detected_manual_confirmation_required' : 'manual_required'),
+            'label' => $confirmed ? 'Iyzico IP whitelist onaylı' : 'Manuel doğrulama gerekli',
+            'outbound_ip_value' => $ip !== '' ? $ip : null,
+            'ready' => $confirmed,
+            'manual_check_command' => 'curl -4s https://api.ipify.org',
+            'message' => 'Iyzico panelinde API çağrısını yapan Laravel uygulama sunucusunun public IP adresi tanımlı olmalı.',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function backUrlPayload(): array
+    {
+        $baseUrl = $this->paymentPublicBaseUrl();
+        $publicHttpsReady = $baseUrl !== null
+            && str_starts_with($baseUrl, 'https://')
+            && ! PartnerPortalPublicUrl::isLocalUrl($baseUrl);
+        $paymentReturnRouteExists = Route::has('mount-payment.show');
+        $callbackRouteExists = $this->callbackRouteExists();
+        $paymentReturnUrl = $baseUrl !== null && $paymentReturnRouteExists
+            ? rtrim($baseUrl, '/').'/mount-payment/{provider_reference}'
+            : null;
+
+        return [
+            'status' => $this->backUrlReadyForLive() ? 'ready' : 'missing_callback_route',
+            'label' => $this->backUrlReadyForLive() ? 'Back URL hazır' : 'Back URL / callback eksik',
+            'public_base_url' => $baseUrl,
+            'public_https_ready' => $publicHttpsReady,
+            'payment_return_route_exists' => $paymentReturnRouteExists,
+            'payment_return_url' => $paymentReturnUrl,
+            'callback_route_exists' => $callbackRouteExists,
+            'callback_route_name' => $callbackRouteExists ? $this->callbackRouteName() : null,
+            'ready' => $this->backUrlReadyForLive(),
+            'message' => $this->backUrlReadyForLive()
+                ? 'Public HTTPS Back URL ve callback route hazır.'
+                : 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.',
+        ];
+    }
+
+    private function ipWhitelistConfirmed(): bool
+    {
+        return (bool) config('payments.iyzico.ip_whitelist_confirmed', false);
+    }
+
+    private function paymentPublicBaseUrl(): ?string
+    {
+        return PartnerPortalPublicUrl::normalizeBaseUrl((string) (
+            config('services.public_urls.payment_base_url')
+            ?: config('services.public_urls.app_url')
+            ?: config('app.url')
+        ));
+    }
+
+    private function backUrlReadyForLive(): bool
+    {
+        $baseUrl = $this->paymentPublicBaseUrl();
+
+        return $baseUrl !== null
+            && str_starts_with($baseUrl, 'https://')
+            && ! PartnerPortalPublicUrl::isLocalUrl($baseUrl)
+            && $this->callbackRouteExists();
+    }
+
+    private function callbackRouteExists(): bool
+    {
+        return $this->callbackRouteName() !== null;
+    }
+
+    private function callbackRouteName(): ?string
+    {
+        foreach ([
+            'api.technical-service.payment-provider.callback',
+            'api.technical-service.payments.callback',
+            'mount-payment.provider.callback',
+            'mount-payment.callback',
+        ] as $routeName) {
+            if (Route::has($routeName)) {
+                return $routeName;
+            }
         }
 
-        if (! $this->providerSendEnabled()) {
-            return 'Provider send explicit olarak açılmalı.';
+        return null;
+    }
+
+    private function liveOperationalReadinessReady(): bool
+    {
+        return $this->ipWhitelistConfirmed() && $this->backUrlReadyForLive();
+    }
+
+    private function liveOperationalReadinessMessage(): string
+    {
+        if (! $this->ipWhitelistConfirmed()) {
+            return 'Canlı Iyzico için uygulama sunucusu public IP adresi Iyzico panelinde onaylanmalı.';
         }
 
-        return TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE;
+        return 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function legacyGatewayPayload(string $providerMode): array
+    {
+        return [
+            'url_configured' => false,
+            'token_configured' => false,
+            'health_verified' => false,
+            'http_enabled' => false,
+            'provider_send_enabled' => $this->providerSendEnabled($providerMode),
+            'provider_send_ready' => $this->providerSendReady($providerMode),
+            'ready' => false,
+            'mode' => $providerMode,
+            'webhook_path' => 'n8n-payment-adapter-disabled',
+        ];
     }
 
     /**
