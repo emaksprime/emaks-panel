@@ -33,6 +33,7 @@ use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
+use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
@@ -812,15 +813,10 @@ class TechnicalServiceController extends Controller
                 return response()->json([
                     'ok' => true,
                     'message' => 'Ödeme linki zaten var.',
-                    'payment' => [
-                        'id' => $existingPayment->id,
-                        'status' => $existingPayment->status,
-                        'amount' => (float) $existingPayment->amount,
-                        'currency' => $existingPayment->currency,
-                        'payment_url' => $existingPayment->payment_url,
-                        'amount_source' => $payload['amount_source'] ?? 'manual_ops_amount',
+                    'payment' => $this->mountPaymentResponse($existingPayment->refresh(), [
+                        'amount_source' => $paymentPayload['amount_source'],
                         'reused' => true,
-                    ],
+                    ]),
                     'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
                 ]);
             }
@@ -898,15 +894,10 @@ class TechnicalServiceController extends Controller
 
         return response()->json([
             'ok' => true,
-            'payment' => [
-                'id' => $payment->id,
-                'status' => $payment->status,
-                'amount' => (float) $payment->amount,
-                'currency' => $payment->currency,
-                'payment_url' => $payment->payment_url,
+            'payment' => $this->mountPaymentResponse($payment, [
                 'amount_source' => $paymentPayload['amount_source'],
                 'reused' => false,
-            ],
+            ]),
             'request' => $requestPayload,
         ], 201);
     }
@@ -927,18 +918,13 @@ class TechnicalServiceController extends Controller
                     'payment' => $exception->getMessage(),
                 ]);
             }
+
+            $payment = $payment->refresh();
         }
 
         return response()->json([
             'ok' => true,
-            'payment' => [
-                'id' => $payment->id,
-                'status' => $payment->status,
-                'amount' => (float) $payment->amount,
-                'currency' => $payment->currency,
-                'payment_url' => $payment->payment_url,
-                'paid_at' => $payment->paid_at?->toISOString(),
-            ],
+            'payment' => $this->mountPaymentResponse($payment->refresh()),
             'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
         ]);
     }
@@ -965,7 +951,7 @@ class TechnicalServiceController extends Controller
             return response()->json([
                 'ok' => true,
                 'message' => 'Ödeme linki zaten iptal edilmiş.',
-                'payment' => $this->cancelledMountPaymentResponse($payment->refresh()),
+                'payment' => $this->mountPaymentResponse($payment->refresh()),
                 'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
             ]);
         }
@@ -1043,7 +1029,7 @@ class TechnicalServiceController extends Controller
         return response()->json([
             'ok' => true,
             'message' => 'Bekleyen ödeme linki iptal edildi.',
-            'payment' => $this->cancelledMountPaymentResponse($payment->refresh()),
+            'payment' => $this->mountPaymentResponse($payment->refresh()),
             'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
         ]);
     }
@@ -1051,19 +1037,59 @@ class TechnicalServiceController extends Controller
     /**
      * @return array<string, mixed>
      */
-    private function cancelledMountPaymentResponse(TechnicalServiceMountPayment $payment): array
+    private function mountPaymentResponse(TechnicalServiceMountPayment $payment, array $overrides = []): array
     {
+        $payment->loadMissing('technicalServiceRequest');
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $providerDecision = is_array($payload['provider_decision'] ?? null) ? $payload['provider_decision'] : [];
+        $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
+        $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
+        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
+        $providerMode = $payload['provider_mode']
+            ?? $providerDecision['provider_mode']
+            ?? ($payment->provider === 'fake' ? 'local' : ($payload['provider_environment'] ?? null));
+        $providerTransport = $payload['provider_transport']
+            ?? $providerDecision['provider_transport']
+            ?? ($payment->provider === 'fake' ? 'fake_local' : null);
+        $providerStatus = $providerGatewaySync['provider_status']
+            ?? $providerGateway['provider_status']
+            ?? $providerGatewaySync['raw_status']
+            ?? $providerGateway['raw_status']
+            ?? $payment->status;
 
-        return [
+        return array_merge([
             'id' => $payment->id,
+            'request_id' => $payment->technical_service_request_id,
+            'request_code' => $payload['request_code'] ?? $payload['mrn'] ?? $payment->technicalServiceRequest?->mrn,
+            'root_mrn' => $payload['root_mrn'] ?? $payment->technicalServiceRequest?->root_mrn,
+            'serial_no' => $payload['serial_number'] ?? $payment->technicalServiceRequest?->serial_number,
+            'serial_number' => $payload['serial_number'] ?? $payment->technicalServiceRequest?->serial_number,
+            'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['customer_name'] ?? $payment->technicalServiceRequest?->customer_name),
+            'customer_phone' => $payload['customer_phone'] ?? $payment->technicalServiceRequest?->customer_phone,
+            'customer_email' => $payload['customer_email'] ?? null,
             'status' => $payment->status,
             'amount' => (float) $payment->amount,
             'currency' => $payment->currency,
-            'payment_url' => $payment->payment_url,
+            'payment_url' => $paymentUrl !== '' ? $paymentUrl : null,
+            'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
+            'provider' => $payment->provider,
+            'provider_mode' => $providerMode,
+            'provider_transport' => $providerTransport,
+            'provider_token' => $payment->provider_reference,
+            'provider_reference' => $payment->provider_reference,
+            'provider_status' => $providerStatus,
+            'amount_source' => $payload['amount_source'] ?? null,
+            'source' => $payload['source'] ?? null,
+            'purpose' => $payload['purpose'] ?? null,
+            'reason' => $payload['reason'] ?? null,
+            'note' => TechnicalServiceUiLabelService::cleanDisplayText($payload['note'] ?? null),
+            'paid_at' => $payment->paid_at?->toISOString(),
             'cancelled_at' => $payload['cancelled_at'] ?? null,
+            'cancelled_by_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancelled_by_name'] ?? null),
             'cancellation_reason' => $payload['cancellation_reason'] ?? null,
-        ];
+            'created_at' => $payment->created_at?->toISOString(),
+            'updated_at' => $payment->updated_at?->toISOString(),
+        ], TechnicalServicePaymentActionPresenter::forPayment($payment), $overrides);
     }
 
     public function recheckInvoiceSerials(

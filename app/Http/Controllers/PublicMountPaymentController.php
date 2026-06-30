@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
+use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -20,8 +21,12 @@ class PublicMountPaymentController extends Controller
         $mountFormUrl = $this->mountFormUrl($request, $payment);
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
 
+        $fakeApproveUrl = $this->canShowFakeApprove($payment)
+            ? route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference], false)
+            : null;
+
         return Inertia::render('public/mount-payment', [
-            'payment' => [
+            'payment' => array_merge([
                 'id' => $payment->id,
                 'status' => $payment->status,
                 'amount' => (float) $payment->amount,
@@ -36,10 +41,7 @@ class PublicMountPaymentController extends Controller
                 'message_template' => $payload['message_template'] ?? null,
                 'payment_url' => $payment->payment_url,
                 'mount_form_url' => $mountFormUrl,
-                'fake_approve_url' => $this->canShowFakeApprove($payment)
-                    ? route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference], false)
-                    : null,
-            ],
+            ], TechnicalServicePaymentActionPresenter::forPayment($payment, $fakeApproveUrl)),
             'requestSummary' => [
                 'mrn' => $serviceRequest?->mrn,
                 'service_code' => $serviceRequest?->service_code,

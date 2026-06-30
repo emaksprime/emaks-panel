@@ -16,8 +16,24 @@ type MountPaymentPageProps = {
     note?: string | null
     message_template?: string | null
     payment_url?: string | null
+    copy_url?: string | null
     mount_form_url?: string | null
     fake_approve_url?: string | null
+    provider?: string | null
+    provider_mode?: string | null
+    provider_transport?: string | null
+    provider_status?: string | null
+    provider_label?: string | null
+    provider_display_label?: string | null
+    is_fake_provider?: boolean
+    is_external_provider?: boolean
+    can_open_payment_url?: boolean
+    can_copy_payment_url?: boolean
+    can_fake_complete_payment?: boolean
+    payment_action_kind?: 'fake_complete' | 'open_provider_url' | 'none' | string | null
+    payment_action_label?: string | null
+    payment_action_disabled_reason?: string | null
+    copy_disabled_reason?: string | null
   }
   requestSummary?: {
     mrn?: string | null
@@ -51,6 +67,10 @@ export default function MountPayment({ payment, requestSummary }: MountPaymentPa
   const serviceAmount = Number(payment.service_amount ?? 0)
   const partAmount = Number(payment.part_amount ?? 0)
   const totalAmount = Number(payment.total_amount ?? payment.amount)
+  const copyUrl = (payment.copy_url ?? payment.payment_url ?? '').trim()
+  const actionKind = payment.payment_action_kind ?? (payment.fake_approve_url ? 'fake_complete' : copyUrl ? 'open_provider_url' : 'none')
+  const providerLabel = payment.provider_display_label ?? payment.provider_label ?? (payment.is_fake_provider ? 'Fake/Yerel ödeme simülasyonu' : 'Ödeme sağlayıcısı')
+  const disabledReason = payment.payment_action_disabled_reason ?? 'Ödeme linki henüz hazır değil.'
 
   return (
     <>
@@ -79,6 +99,7 @@ export default function MountPayment({ payment, requestSummary }: MountPaymentPa
               </>
             ) : null}
             <InfoRow label={isCustomerCharge ? 'Toplam' : 'Tutar'} value={<span className="text-lg font-bold">{formatMoney(totalAmount, payment.currency)}</span>} strong={false} />
+            <InfoRow label="Ödeme sağlayıcı" value={providerLabel} />
             <InfoRow
               label="Durum"
               value={(
@@ -98,7 +119,11 @@ export default function MountPayment({ payment, requestSummary }: MountPaymentPa
             <p className="min-w-0 whitespace-pre-wrap break-words rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">{payment.message_template}</p>
           ) : null}
 
-          {!paid && payment.fake_approve_url ? (
+          {!paid && actionKind === 'fake_complete' && payment.fake_approve_url ? (
+            <div className="grid gap-2">
+              <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">
+                Fake/Yerel ödeme simülasyonu. Bu buton gerçek Iyzico tahsilatı yapmaz.
+              </p>
             <Link
               href={payment.fake_approve_url}
               method="post"
@@ -106,8 +131,29 @@ export default function MountPayment({ payment, requestSummary }: MountPaymentPa
               type="button"
               className="inline-flex min-h-11 w-full min-w-0 items-center justify-center rounded-xl bg-slate-950 px-4 py-3 text-center text-sm font-semibold text-white transition hover:bg-slate-800 sm:w-auto"
             >
-              Ödeme yap
+                {payment.payment_action_label ?? 'Fake ödeme tamamla'}
             </Link>
+            </div>
+          ) : null}
+
+          {!paid && actionKind === 'open_provider_url' && copyUrl ? (
+            <div className="grid gap-2">
+              <p className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-sm font-semibold text-blue-950">
+                Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.
+              </p>
+              <a
+                href={copyUrl}
+                className="inline-flex min-h-11 w-full min-w-0 items-center justify-center rounded-xl bg-blue-700 px-4 py-3 text-center text-sm font-semibold text-white transition hover:bg-blue-800 sm:w-auto"
+              >
+                {payment.payment_action_label ?? 'Ödeme ekranını aç'}
+              </a>
+            </div>
+          ) : null}
+
+          {!paid && actionKind === 'none' ? (
+            <p className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm font-semibold text-slate-700">
+              {disabledReason}
+            </p>
           ) : null}
 
           {paid && payment.mount_form_url ? (

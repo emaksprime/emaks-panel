@@ -12,6 +12,7 @@ use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\MountSessionEnrichmentService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\SerialProductContextResolver;
+use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use App\Services\Payments\PaymentProviderManager;
 use Illuminate\Http\RedirectResponse;
@@ -839,6 +840,17 @@ class PublicMountRequestController extends Controller
         string $decision,
     ) {
         $payment = $this->latestPayment($session);
+        $paymentPayload = null;
+        if ($payment instanceof TechnicalServiceMountPayment) {
+            $fakeApproveUrl = $this->fakePaymentEnabled()
+                ? route('mount-payment.fake.approve', ['payment' => $payment, 'token' => $token], false)
+                : null;
+            $paymentPayload = array_merge([
+                'amount' => number_format((float) $payment->amount, 2, '.', ''),
+                'currency' => $payment->currency,
+                'payment_url' => $payment->payment_url,
+            ], TechnicalServicePaymentActionPresenter::forPayment($payment, $fakeApproveUrl));
+        }
 
         return Inertia::render('public/mount-request-v2', [
             'viewState' => $this->viewState($decision),
@@ -859,14 +871,7 @@ class PublicMountRequestController extends Controller
                 'multi_product_lookup_url' => route('mount-request.invoice-serials.check', ['token' => $token], false),
                 'submit_url' => route('mount-request.submit', ['token' => $token], false),
             ],
-            'payment' => $payment instanceof TechnicalServiceMountPayment ? [
-                'amount' => number_format((float) $payment->amount, 2, '.', ''),
-                'currency' => $payment->currency,
-                'payment_url' => $payment->payment_url,
-                'fake_approve_url' => $this->fakePaymentEnabled()
-                    ? route('mount-payment.fake.approve', ['payment' => $payment, 'token' => $token], false)
-                    : null,
-            ] : null,
+            'payment' => $paymentPayload,
             'allowMultiProductRequest' => $this->allowMultiProductRequest($session),
             'csrfToken' => csrf_token(),
         ]);

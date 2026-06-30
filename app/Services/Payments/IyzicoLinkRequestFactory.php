@@ -22,6 +22,8 @@ class IyzicoLinkRequestFactory
             'price' => number_format((float) ($payload['amount'] ?? 0), 2, '.', ''),
             'currencyCode' => strtoupper((string) ($payload['currency'] ?? 'TRY')),
             'encodedImageFile' => $this->encodedImageFile(),
+            // Iyzico Link checkout should not ask the buyer for address in this flow.
+            // Any fallback provider address would be request-compatibility data only, not CRM truth.
             'addressIgnorable' => true,
             'installmentRequested' => false,
             'stockEnabled' => false,

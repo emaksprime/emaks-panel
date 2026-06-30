@@ -1158,7 +1158,82 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('public/mount-payment')
-                ->where('payment.payment_url', 'https://sandbox-payment.iyzipay.com/pay/qr-direct-provider-token'));
+                ->where('payment.payment_url', 'https://sandbox-payment.iyzipay.com/pay/qr-direct-provider-token')
+                ->where('payment.copy_url', 'https://sandbox-payment.iyzipay.com/pay/qr-direct-provider-token')
+                ->where('payment.provider_label', 'Iyzico Sandbox')
+                ->where('payment.payment_action_kind', 'open_provider_url')
+                ->where('payment.payment_action_label', 'Iyzico ödeme ekranını aç')
+                ->where('payment.can_open_payment_url', true)
+                ->where('payment.can_fake_complete_payment', false)
+                ->where('payment.fake_approve_url', null));
+
+        $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
+            ->assertNotFound();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->refresh()->status);
+    }
+
+    public function test_public_iyzico_payment_action_opens_provider_url_and_never_marks_paid_locally(): void
+    {
+        config([
+            'payments.provider' => 'fake',
+            'payments.enable_fake_approve' => true,
+        ]);
+        $this->fakeContext(TechnicalServiceMountSession::SALE_MONTAJ_HARIC);
+        [, $token] = $this->qrLink();
+
+        $this->get('/mount-request/'.$token.'/form')->assertOk();
+        $session = TechnicalServiceMountSession::query()->firstOrFail();
+        $session->forceFill([
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+        ])->save();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-public-action-token',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 3500,
+            'currency' => 'TRY',
+            'payment_url' => 'https://sandbox-payment.iyzipay.com/pay/iyzico-public-action-token',
+            'raw_payload' => [
+                'source' => 'public_mount_payment',
+                'provider_mode' => 'sandbox',
+                'provider_transport' => 'direct_laravel',
+                'provider_decision' => [
+                    'provider' => 'iyzico',
+                    'provider_mode' => 'sandbox',
+                    'provider_transport' => 'direct_laravel',
+                ],
+                'provider_gateway' => [
+                    'provider_status' => 'ACTIVE',
+                ],
+            ],
+        ]);
+
+        $this->get('/mount-request/'.$token.'/form')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('payment.payment_action_kind', 'open_provider_url')
+                ->where('payment.fake_approve_url', null));
+
+        $this->get('/mount-payment/'.$payment->provider_reference)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('public/mount-payment')
+                ->where('payment.provider_label', 'Iyzico Sandbox')
+                ->where('payment.payment_action_kind', 'open_provider_url')
+                ->where('payment.payment_action_label', 'Iyzico ödeme ekranını aç')
+                ->where('payment.payment_url', 'https://sandbox-payment.iyzipay.com/pay/iyzico-public-action-token')
+                ->where('payment.fake_approve_url', null));
+
+        $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')
+            ->assertNotFound();
+        $this->get("/mount-payment/fake/{$payment->id}/approve?token={$token}")
+            ->assertNotFound();
+
+        $payment->refresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+        $this->assertNull($payment->paid_at);
+        $this->assertSame(TechnicalServiceMountSession::PAYMENT_PENDING, $payment->session->refresh()->mount_payment_status);
     }
 
     public function test_qr_payment_required_blocks_when_real_provider_readiness_is_missing(): void
@@ -1579,6 +1654,9 @@ class TechnicalServiceQrMountPublicFlowV2Test extends TestCase
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('public/mount-payment')
+                ->where('payment.provider_label', 'Fake/Yerel ödeme simülasyonu')
+                ->where('payment.payment_action_kind', 'fake_complete')
+                ->where('payment.payment_action_label', 'Fake ödeme tamamla')
                 ->where('payment.fake_approve_url', route('mount-payment.fake-token.approve', ['token' => $payment->provider_reference], false)));
 
         $this->post('/mount-payment/'.$payment->provider_reference.'/fake-approve')

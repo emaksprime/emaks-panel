@@ -14,6 +14,10 @@ use App\Models\User;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
+use App\Services\Payments\PaymentProviderGatewayClient;
+use App\Services\Payments\PaymentProviderGatewayRequest;
+use App\Services\Payments\PaymentProviderGatewayResponse;
+use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -620,6 +624,126 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertStringStartsWith('https://payments.example.test/mount-payment/', $payment->payment_url);
     }
 
+    public function test_payment_create_returns_payment_url_and_copy_url_contract(): void
+    {
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 150,
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('payment.status', TechnicalServiceMountPayment::STATUS_PENDING)
+            ->assertJsonPath('payment.provider', 'fake')
+            ->assertJsonPath('payment.provider_mode', 'local')
+            ->assertJsonPath('payment.provider_transport', 'fake_local')
+            ->assertJsonPath('payment.provider_label', 'Fake/Yerel ödeme simülasyonu')
+            ->assertJsonPath('payment.provider_display_label', 'Fake/Yerel ödeme simülasyonu')
+            ->assertJsonPath('payment.is_fake_provider', true)
+            ->assertJsonPath('payment.payment_action_kind', 'none')
+            ->assertJsonPath('payment.copy_disabled_reason', null)
+            ->assertJsonPath('payment.request_id', $request->id)
+            ->assertJsonPath('payment.request_code', $request->mrn)
+            ->assertJsonPath('payment.root_mrn', $request->root_mrn ?: $request->mrn)
+            ->assertJsonPath('payment.serial_no', $request->serial_number)
+            ->assertJsonPath('payment.customer_name', $request->customer_name)
+            ->assertJsonPath('payment.customer_phone', $request->customer_phone);
+
+        $paymentUrl = $response->json('payment.payment_url');
+
+        $this->assertNotEmpty($paymentUrl);
+        $this->assertSame($paymentUrl, $response->json('payment.copy_url'));
+        $this->assertSame($response->json('payment.provider_reference'), $response->json('payment.provider_token'));
+        $this->assertSame($paymentUrl, $response->json('request.sale_and_payment.mount_payments.pending_rows.0.copy_url'));
+        $this->assertSame($paymentUrl, $response->json('request.sale_and_payment.extra_mount_payment.copy_url'));
+    }
+
+    public function test_direct_iyzico_http_fake_create_returns_copyable_url(): void
+    {
+        config([
+            'payments.provider' => 'iyzico',
+            'payments.provider_name' => 'iyzico',
+            'payments.provider_transport' => 'direct_laravel',
+            'payments.real_provider_enabled' => true,
+            'payments.gateway.mode' => 'sandbox',
+            'payments.gateway.health_verified' => true,
+            'payments.gateway.http_enabled' => true,
+            'payments.gateway.credential_source' => 'laravel_encrypted_pending_bridge',
+            'payments.gateway.credentials_ready' => true,
+            'payments.gateway.dry_run' => false,
+            'payments.gateway.no_send' => false,
+            'payments.gateway.allow_provider_send' => true,
+        ]);
+
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY');
+
+        $client = new class implements PaymentProviderGatewayClient {
+            public bool $called = false;
+
+            public ?PaymentProviderGatewayRequest $lastRequest = null;
+
+            public function send(PaymentProviderGatewayRequest $request): PaymentProviderGatewayResponse
+            {
+                $this->called = true;
+                $this->lastRequest = $request;
+
+                return PaymentProviderGatewayResponse::fromArray([
+                    'ok' => true,
+                    'provider' => 'iyzico',
+                    'mode' => 'sandbox',
+                    'operation' => $request->operation(),
+                    'provider_token' => 'direct-copy-token',
+                    'payment_url' => 'https://sandbox-payment.example.test/direct-copy-token',
+                    'provider_status' => 'ACTIVE',
+                    'provider_response_redacted' => ['status' => 'success'],
+                ]);
+            }
+        };
+        $this->app->instance(PaymentProviderGatewayClient::class, $client);
+
+        $user = $this->adminUser();
+        [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
+        $technician = $this->technicianWithLocation();
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'technician_id' => $technician->id,
+                'selected_serial_ids' => [$serial->id],
+                'amount' => 150,
+                'currency' => 'TRY',
+                'purpose' => 'mount_extra',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('payment.provider', 'iyzico')
+            ->assertJsonPath('payment.provider_mode', 'sandbox')
+            ->assertJsonPath('payment.provider_transport', 'direct_laravel')
+            ->assertJsonPath('payment.provider_label', 'Iyzico Sandbox')
+            ->assertJsonPath('payment.provider_display_label', 'Iyzico Sandbox')
+            ->assertJsonPath('payment.is_external_provider', true)
+            ->assertJsonPath('payment.payment_action_kind', 'open_provider_url')
+            ->assertJsonPath('payment.payment_action_label', 'Iyzico ödeme ekranını aç')
+            ->assertJsonPath('payment.can_open_payment_url', true)
+            ->assertJsonPath('payment.can_fake_complete_payment', false)
+            ->assertJsonPath('payment.copy_disabled_reason', null)
+            ->assertJsonPath('payment.provider_token', 'direct-copy-token')
+            ->assertJsonPath('payment.provider_status', 'ACTIVE')
+            ->assertJsonPath('payment.payment_url', 'https://sandbox-payment.example.test/direct-copy-token')
+            ->assertJsonPath('payment.copy_url', 'https://sandbox-payment.example.test/direct-copy-token')
+            ->assertJsonPath('request.sale_and_payment.mount_payments.pending_rows.0.copy_url', 'https://sandbox-payment.example.test/direct-copy-token');
+
+        $this->assertTrue($client->called);
+        $this->assertSame('create_link', $client->lastRequest?->operation());
+        $this->assertSame($response->json('payment.payment_url'), TechnicalServiceMountPayment::query()->firstOrFail()->payment_url);
+    }
+
     public function test_extra_mount_fee_payment_link_reuses_existing_pending_session(): void
     {
         $user = $this->adminUser();
@@ -648,6 +772,9 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             ->assertJsonPath('message', 'Ödeme linki zaten var.')
             ->assertJsonPath('payment.id', $firstPaymentId)
             ->assertJsonPath('payment.payment_url', $firstPaymentUrl)
+            ->assertJsonPath('payment.copy_url', $firstPaymentUrl)
+            ->assertJsonPath('payment.provider_mode', 'local')
+            ->assertJsonPath('payment.provider_transport', 'fake_local')
             ->assertJsonPath('payment.reused', true);
 
         $this->assertSame(1, TechnicalServiceMountPayment::query()->count());

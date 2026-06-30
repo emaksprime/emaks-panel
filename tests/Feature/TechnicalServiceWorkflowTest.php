@@ -2711,6 +2711,71 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringNotContainsString('handleExtraPaymentCreate', $bottomHandler);
     }
 
+    public function test_payment_link_copy_button_uses_copy_url_and_clipboard_fallback(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('function paymentLinkCopyUrl(payment: ServiceRequestExtraMountPayment | null | undefined): string', $source);
+        $this->assertStringContainsString('payment?.copy_url ?? payment?.payment_url', $source);
+        $this->assertStringContainsString("document.execCommand('copy')", $source);
+        $this->assertStringContainsString("setPaymentLinkCopyMessage('Kopyalanacak link yok.')", $source);
+        $this->assertStringContainsString("Link kopyalanamadı. Bağlantıyı aşağıdaki alandan manuel kopyalayın.", $source);
+        $this->assertStringContainsString('paymentLinkManualCopyValue', $source);
+        $this->assertStringContainsString('Manuel kopyalama', $source);
+        $this->assertStringContainsString('function paymentProviderLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string', $source);
+        $this->assertStringContainsString("extraMountPayment.payment_action_kind === 'open_provider_url'", $source);
+        $this->assertStringContainsString('paymentActionLabel(extraMountPayment)', $source);
+        $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}', $source);
+        $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}', $source);
+        $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(payment.payment_url ?? '')}", $source);
+        $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}", $source);
+    }
+
+    public function test_payment_link_modal_uses_top_layer_portal_and_iyzico_open_copy_wording(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString("import { createPortal } from 'react-dom'", $source);
+        $this->assertStringContainsString('const paymentLinkEditorPortal = typeof document', $source);
+        $this->assertStringContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
+        $this->assertStringContainsString('pointer-events-auto fixed inset-0 z-[110]', $source);
+        $this->assertStringContainsString('z-[110]', $source);
+        $this->assertStringContainsString('Iyzico Sandbox ödeme ekranı açılacak.', $source);
+        $this->assertStringContainsString('Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.', $source);
+        $this->assertStringContainsString('{paymentLinkEditorPortal}', $source);
+        $this->assertStringNotContainsString('{paymentLinkEditorModal}', $source);
+    }
+
+    public function test_pointer_events_restored_for_payment_modal_action_buttons(): void
+    {
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('pointer-events-auto fixed inset-0 z-[110]', $source);
+        $this->assertStringContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
+        $this->assertStringContainsString("payment.payment_action_kind === 'open_provider_url'", $source);
+        $this->assertStringContainsString('paymentActionLabel(payment)', $source);
+        $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}', $source);
+        $this->assertStringContainsString('onClick={() => void handlePendingPaymentCancel(payment)}', $source);
+    }
+
+    public function test_action_buttons_use_can_open_payment_url_can_copy_payment_url_can_cancel_payment_flags(): void
+    {
+        $presenter = file_get_contents(app_path('Services/TechnicalService/TechnicalServicePaymentActionPresenter.php'));
+        $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+
+        $this->assertIsString($presenter);
+        $this->assertIsString($source);
+        $this->assertStringContainsString("'can_open_payment_url' => \$canOpenProviderUrl", $presenter);
+        $this->assertStringContainsString("'can_copy_payment_url' => \$canCopy", $presenter);
+        $this->assertStringContainsString("'can_cancel_payment' => \$isPending", $presenter);
+        $this->assertStringContainsString("'payment_action_kind' => \$actionKind", $presenter);
+        $this->assertStringContainsString("payment.payment_action_kind === 'open_provider_url'", $source);
+        $this->assertStringContainsString('paymentActionLabel(payment)', $source);
+    }
+
     public function test_other_technicians_modal_keeps_first_four_visible(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
@@ -2750,7 +2815,25 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString("currency === 'TRY' ? 'TL' : currency", $source);
         $this->assertStringContainsString('Servis ücreti', $source);
         $this->assertStringContainsString('Parça ücreti', $source);
+        $this->assertStringContainsString("actionKind === 'open_provider_url'", $source);
+        $this->assertStringContainsString("actionKind === 'fake_complete'", $source);
+        $this->assertStringContainsString('Fake/Yerel ödeme simülasyonu. Bu buton gerçek Iyzico tahsilatı yapmaz.', $source);
+        $this->assertStringContainsString('Iyzico Sandbox ödeme ekranı açılacak.', $source);
+        $this->assertStringContainsString('Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.', $source);
+        $this->assertStringContainsString("href={copyUrl}", $source);
         $this->assertStringNotContainsString('} ${currency}`', $source);
+    }
+
+    public function test_open_provider_url_and_fake_complete_actions_are_separated_on_public_payment_page(): void
+    {
+        $source = file_get_contents(resource_path('js/pages/public/mount-payment.tsx'));
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString("actionKind === 'open_provider_url'", $source);
+        $this->assertStringContainsString("actionKind === 'fake_complete'", $source);
+        $this->assertStringContainsString('href={copyUrl}', $source);
+        $this->assertStringContainsString('Fake/Yerel ödeme simülasyonu. Bu buton gerçek Iyzico tahsilatı yapmaz.', $source);
+        $this->assertStringContainsString('Iyzico Sandbox ödeme ekranı açılacak.', $source);
     }
 
     public function test_ops_payload_groups_parent_and_srv_earning_breakdown(): void

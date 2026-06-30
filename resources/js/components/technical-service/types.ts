@@ -592,6 +592,7 @@ export type ServiceRequestPartRequest = {
   can_create_service_visit?: boolean
   payment_id?: number | string | null
   payment_url?: string | null
+  copy_url?: string | null
   payment_reference?: string | null
   provider_reference?: string | null
   payment_provider?: string | null
@@ -742,16 +743,36 @@ export type ServiceRequestExtraMountPayment = {
   request_code?: string | null
   root_mrn?: string | null
   serial_number?: string | null
+  serial_no?: string | null
   customer_name?: string | null
   customer_phone?: string | null
+  customer_email?: string | null
   status?: string | null
   status_label?: string | null
   amount?: number | null
   amount_label?: string | null
   currency?: string | null
   payment_url?: string | null
+  copy_url?: string | null
   provider?: string | null
+  provider_mode?: string | null
+  provider_transport?: string | null
+  provider_token?: string | null
   provider_reference?: string | null
+  provider_status?: string | null
+  provider_label?: string | null
+  provider_display_label?: string | null
+  is_fake_provider?: boolean
+  is_external_provider?: boolean
+  can_open_payment_url?: boolean
+  can_copy_payment_url?: boolean
+  can_fake_complete_payment?: boolean
+  can_cancel_payment?: boolean
+  payment_action_kind?: 'fake_complete' | 'open_provider_url' | 'none' | string | null
+  payment_action_label?: string | null
+  payment_action_disabled_reason?: string | null
+  copy_disabled_reason?: string | null
+  fake_approve_url?: string | null
   paid_at?: string | null
   cancelled_at?: string | null
   cancelled_by_name?: string | null

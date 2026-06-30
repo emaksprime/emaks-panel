@@ -69,8 +69,27 @@ class DirectIyzicoPaymentProviderTest extends TestCase
         $this->assertSame('123.40', $body['price']);
         $this->assertSame('TRY', $body['currencyCode']);
         $this->assertNotEmpty($body['encodedImageFile']);
+        $this->assertTrue($body['addressIgnorable']);
+        $this->assertFalse($body['installmentRequested']);
+        $this->assertFalse($body['stockEnabled']);
+        $this->assertSame('UNKNOWN', $body['categoryType']);
         $this->assertStringNotContainsString('api-key-should-not-appear', $encoded);
         $this->assertStringNotContainsString('secret-should-not-appear', $encoded);
+    }
+
+    public function test_iyzico_create_request_does_not_require_buyer_address_when_address_ignorable(): void
+    {
+        $body = app(IyzicoLinkRequestFactory::class)->linkBody([
+            'payment_id' => 'PAYMENT-ADDRESS-IGNORABLE',
+            'amount' => '1.00',
+            'currency' => 'TRY',
+        ]);
+
+        $this->assertTrue($body['addressIgnorable']);
+        $this->assertArrayNotHasKey('buyer', $body);
+        $this->assertArrayNotHasKey('address', $body);
+        $this->assertArrayNotHasKey('shippingAddress', $body);
+        $this->assertArrayNotHasKey('billingAddress', $body);
     }
 
     public function test_direct_iyzico_create_link_calls_sandbox_base_and_does_not_mark_paid(): void
@@ -113,6 +132,8 @@ class DirectIyzicoPaymentProviderTest extends TestCase
                 && str_starts_with((string) $request->header('Authorization')[0], 'IYZWSv2 ')
                 && $body['currencyCode'] === 'TRY'
                 && $body['price'] === '1234.50'
+                && $body['addressIgnorable'] === true
+                && $body['stockEnabled'] === false
                 && str_contains((string) $body['description'], 'MRN');
         });
     }

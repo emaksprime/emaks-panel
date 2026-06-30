@@ -2392,15 +2392,31 @@ class TechnicalServiceWorkflowService
         }
 
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $providerDecision = is_array($payload['provider_decision'] ?? null) ? $payload['provider_decision'] : [];
+        $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
+        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
 
-        return $this->extraMountPaymentCache[$requestId] = [
+        return $this->extraMountPaymentCache[$requestId] = array_merge([
             'id' => $payment->id,
+            'request_id' => $payment->technical_service_request_id,
+            'request_code' => $payload['request_code'] ?? $payload['mrn'] ?? $request->mrn,
+            'root_mrn' => $payload['root_mrn'] ?? $request->root_mrn,
+            'serial_no' => $payload['serial_number'] ?? $request->serial_number,
+            'serial_number' => $payload['serial_number'] ?? $request->serial_number,
+            'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['customer_name'] ?? $request->customer_name),
+            'customer_phone' => $payload['customer_phone'] ?? $request->customer_phone,
+            'customer_email' => $payload['customer_email'] ?? null,
             'status' => $payment->status,
             'amount' => (float) $payment->amount,
             'currency' => $payment->currency,
-            'payment_url' => $payment->payment_url,
+            'payment_url' => $paymentUrl !== '' ? $paymentUrl : null,
+            'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
             'provider' => $payment->provider,
+            'provider_mode' => $payload['provider_mode'] ?? $providerDecision['provider_mode'] ?? ($payment->provider === 'fake' ? 'local' : ($payload['provider_environment'] ?? null)),
+            'provider_transport' => $payload['provider_transport'] ?? $providerDecision['provider_transport'] ?? ($payment->provider === 'fake' ? 'fake_local' : null),
+            'provider_token' => $payment->provider_reference,
             'provider_reference' => $payment->provider_reference,
+            'provider_status' => $providerGateway['provider_status'] ?? $providerGateway['raw_status'] ?? $payment->status,
             'paid_at' => $this->dateTimeString($payment->paid_at),
             'reason' => $payload['reason'] ?? null,
             'purpose' => $payload['purpose'] ?? $payload['reason'] ?? null,
@@ -2408,7 +2424,7 @@ class TechnicalServiceWorkflowService
             'selected_serial_ids' => is_array($payload['selected_serial_ids'] ?? null)
                 ? array_values($payload['selected_serial_ids'])
                 : [],
-        ];
+        ], TechnicalServicePaymentActionPresenter::forPayment($payment));
     }
 
     /**
@@ -2523,26 +2539,41 @@ class TechnicalServiceWorkflowService
         $amount = round((float) $payment->amount, 2);
         $source = (string) ($payload['source'] ?? '');
         $purpose = (string) ($payload['purpose'] ?? $payload['reason'] ?? '');
+        $providerDecision = is_array($payload['provider_decision'] ?? null) ? $payload['provider_decision'] : [];
+        $providerGateway = is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [];
+        $providerGatewaySync = is_array($payload['provider_gateway_sync'] ?? null) ? $payload['provider_gateway_sync'] : [];
+        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
         $isExtraPayment = $source === 'operation_extra_mount_fee'
             || in_array($purpose, ['mount_extra', 'manual_mount_payment', 'multi_product_mount', 'route_fee', 'montage_difference', 'multi_product', 'manual_extra'], true);
 
-        return [
+        return array_merge([
             'id' => $payment->id,
             'request_id' => $payment->technical_service_request_id,
             'mrn' => $payload['mrn'] ?? $payload['request_code'] ?? $payment->technicalServiceRequest?->mrn,
             'request_code' => $payload['request_code'] ?? $payload['mrn'] ?? $payment->technicalServiceRequest?->mrn,
             'root_mrn' => $payload['root_mrn'] ?? $payment->technicalServiceRequest?->root_mrn,
+            'serial_no' => $payload['serial_number'] ?? $payment->technicalServiceRequest?->serial_number,
             'serial_number' => $payload['serial_number'] ?? $payment->technicalServiceRequest?->serial_number,
             'customer_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['customer_name'] ?? $payment->technicalServiceRequest?->customer_name),
             'customer_phone' => $payload['customer_phone'] ?? $payment->technicalServiceRequest?->customer_phone,
+            'customer_email' => $payload['customer_email'] ?? null,
             'status' => $payment->status,
             'status_label' => $this->customerChargeStatusLabel($payment->status),
             'amount' => $amount,
             'amount_label' => $this->moneyLabel($amount),
             'currency' => $payment->currency,
-            'payment_url' => $payment->payment_url,
+            'payment_url' => $paymentUrl !== '' ? $paymentUrl : null,
+            'copy_url' => $paymentUrl !== '' ? $paymentUrl : null,
             'provider' => $payment->provider,
+            'provider_mode' => $payload['provider_mode'] ?? $providerDecision['provider_mode'] ?? ($payment->provider === 'fake' ? 'local' : ($payload['provider_environment'] ?? null)),
+            'provider_transport' => $payload['provider_transport'] ?? $providerDecision['provider_transport'] ?? ($payment->provider === 'fake' ? 'fake_local' : null),
+            'provider_token' => $payment->provider_reference,
             'provider_reference' => $payment->provider_reference,
+            'provider_status' => $providerGatewaySync['provider_status']
+                ?? $providerGateway['provider_status']
+                ?? $providerGatewaySync['raw_status']
+                ?? $providerGateway['raw_status']
+                ?? $payment->status,
             'paid_at' => $this->dateTimeString($payment->paid_at),
             'cancelled_at' => $payload['cancelled_at'] ?? null,
             'cancelled_by_name' => TechnicalServiceUiLabelService::cleanDisplayText($payload['cancelled_by_name'] ?? null),
@@ -2558,7 +2589,9 @@ class TechnicalServiceWorkflowService
                 TechnicalServiceMountPayment::STATUS_CANCELLED,
             ], true),
             'can_cancel' => $payment->status === TechnicalServiceMountPayment::STATUS_PENDING,
-        ];
+            'created_at' => $this->dateTimeString($payment->created_at),
+            'updated_at' => $this->dateTimeString($payment->updated_at),
+        ], TechnicalServicePaymentActionPresenter::forPayment($payment));
     }
 
     /**

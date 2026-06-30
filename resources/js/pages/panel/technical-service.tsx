@@ -2213,7 +2213,7 @@ export function TechnicalServiceOperationCenter() {
     || (assignOverrideWithoutPayment && assignOverrideReason.trim().length >= 5)
   const assignmentPendingOnlinePaymentLink = Boolean(
     modalRequest?.saleAndPayment?.extra_mount_payment?.status === 'pending'
-    && modalRequest.saleAndPayment.extra_mount_payment.payment_url,
+    && (modalRequest.saleAndPayment.extra_mount_payment.copy_url || modalRequest.saleAndPayment.extra_mount_payment.payment_url),
   )
   const assignmentCustomerPaysTechnician = !customerDirectPaymentDisabled && finalAssignmentCustomerDirectAmount > 0
   const preFormPaymentControlEnabledForModal = Boolean(modalRequest?.operationControl?.show_payment_control)

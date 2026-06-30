@@ -64,7 +64,14 @@ type Payment = {
     amount: string;
     currency: string;
     payment_url?: string | null;
+    copy_url?: string | null;
     fake_approve_url?: string | null;
+    provider_label?: string | null;
+    provider_display_label?: string | null;
+    payment_action_kind?: 'fake_complete' | 'open_provider_url' | 'none' | string | null;
+    payment_action_label?: string | null;
+    payment_action_disabled_reason?: string | null;
+    copy_disabled_reason?: string | null;
 };
 
 type Submitted = {
@@ -1334,18 +1341,20 @@ export default function MountRequestV2({
                                         )}
                                         {payment?.payment_url && (
                                             <a
-                                                href={payment.payment_url}
+                                                href={payment.copy_url ?? payment.payment_url}
                                                 className="rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-semibold text-blue-900 shadow-sm hover:bg-blue-50"
                                             >
-                                                Ödeme sayfasını aç
+                                                {payment.payment_action_kind === 'open_provider_url'
+                                                    ? (payment.payment_action_label ?? 'Ödeme ekranını aç')
+                                                    : 'Ödeme sayfasını aç'}
                                             </a>
                                         )}
-                                        {payment?.fake_approve_url && (
+                                        {payment?.payment_action_kind === 'fake_complete' && payment.fake_approve_url && (
                                             <a
                                                 href={payment.fake_approve_url}
                                                 className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800"
                                             >
-                                                Fake ödeme onayla
+                                                {payment.payment_action_label ?? 'Fake ödeme onayla'}
                                             </a>
                                         )}
                                     </div>

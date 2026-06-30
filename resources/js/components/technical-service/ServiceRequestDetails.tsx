@@ -1,11 +1,12 @@
 import { CheckCircle2, ChevronDown, Pencil, XCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 import type { ReactNode, Ref } from 'react'
+import { createPortal } from 'react-dom'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
+import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
 type OpsDoorPhotoType = 'ops_door_front_photo' | 'ops_door_side_photo' | 'ops_door_back_photo' | 'ops_door_photo'
@@ -1692,6 +1693,8 @@ export function ServiceRequestDetails({
   const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
   const [paymentCancelInFlight, setPaymentCancelInFlight] = useState<number | string | null>(null)
   const [paymentCancelError, setPaymentCancelError] = useState<string | null>(null)
+  const [paymentLinkCopyMessage, setPaymentLinkCopyMessage] = useState<string | null>(null)
+  const [paymentLinkManualCopyValue, setPaymentLinkManualCopyValue] = useState<string | null>(null)
   const [customerServiceChargeInput, setCustomerServiceChargeInput] = useState('')
   const [customerPartChargeInput, setCustomerPartChargeInput] = useState('')
   const [customerChargeNoteInput, setCustomerChargeNoteInput] = useState('')
@@ -2595,6 +2598,7 @@ export function ServiceRequestDetails({
     setRouteFeeEditorInitialSnapshot(routeFeeEditorSnapshot(oneWay, roundTrip, threshold, feePerKm, billable, amount, paymentAmount, manualTouched, note))
     setRouteFeeEditorMessage(paymentAmount === '' ? 'Ödeme tutarı net değil. Link oluşturmak için tutar girin.' : null)
     setPaymentCancelError(null)
+    setPaymentLinkCopyMessage(null)
     setRouteFeeEditorOpen(true)
   }
   const handleRouteFeeOneWayChange = (value: string) => {
@@ -2696,9 +2700,15 @@ export function ServiceRequestDetails({
       note: routeFeeNote.trim() || null,
     }
 
-    await onExtraMountPaymentCreate(payload)
-    setPaymentCancelError(null)
-    setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
+    try {
+      await onExtraMountPaymentCreate(payload)
+      setPaymentCancelError(null)
+      setPaymentLinkCopyMessage(null)
+      setPaymentLinkManualCopyValue(null)
+      setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
+    } catch (caught) {
+      setRouteFeeEditorMessage(caught instanceof Error ? caught.message : 'Ödeme linki oluşturulamadı.')
+    }
   }
   const handlePendingPaymentCancel = async (payment: NonNullable<typeof pendingMountPaymentRecords[number]>) => {
     if (!payment.id) {
@@ -3126,7 +3136,7 @@ export function ServiceRequestDetails({
     </div>
   ) : null
   const paymentLinkEditorModal = routeFeeEditorOpen && routeFeeEditorMode === 'payment_link' ? (
-    <div className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label={paymentLinkModalTitle}>
+    <div className="pointer-events-auto fixed inset-0 z-[110] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label={paymentLinkModalTitle}>
       <div className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-blue-100 bg-white p-4 shadow-2xl">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -3143,10 +3153,37 @@ export function ServiceRequestDetails({
               {paymentLinkAmountWarning}
             </div>
           ) : null}
+          {routeFeeEditorMessage ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+              {routeFeeEditorMessage}
+            </div>
+          ) : null}
+          {extraPaymentCreateError ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-900">
+              {extraPaymentCreateError}
+            </div>
+          ) : null}
           {paymentCancelError ? (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-900">
               {paymentCancelError}
             </div>
+          ) : null}
+          {paymentLinkCopyMessage ? (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900">
+              {paymentLinkCopyMessage}
+            </div>
+          ) : null}
+          {paymentLinkManualCopyValue ? (
+            <label className="grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+              Manuel kopyalama
+              <input
+                readOnly
+                value={paymentLinkManualCopyValue}
+                onClick={(event) => event.currentTarget.select()}
+                onFocus={(event) => event.currentTarget.select()}
+                className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
+              />
+            </label>
           ) : null}
           {paidOnlinePaymentLink ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
@@ -3177,7 +3214,14 @@ export function ServiceRequestDetails({
                     <Badge variant="secondary">Ödendi</Badge>
                   </div>
                   <p>{payment.paid_at ? `Ödeme zamanı: ${dateTimeOrEmpty(payment.paid_at, '-')}` : 'Ödeme zamanı kaydı yok'}</p>
-                  {payment.payment_url ? <p className="break-all text-emerald-800">{payment.payment_url}</p> : null}
+                  {paymentLinkCopyUrl(payment) ? (
+                    <>
+                      <p className="break-all text-emerald-800">{paymentLinkCopyUrl(payment)}</p>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}>
+                        Linki kopyala
+                      </Button>
+                    </>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -3191,11 +3235,21 @@ export function ServiceRequestDetails({
                     <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
                     <Badge variant="outline">Bekliyor</Badge>
                   </div>
-                  {payment.payment_url ? (
+                  {paymentLinkCopyUrl(payment) ? (
                     <>
-                      <p className="break-all text-amber-900">{payment.payment_url}</p>
+                      <p className="break-all text-amber-900">{paymentLinkCopyUrl(payment)}</p>
+                      {payment.payment_action_kind === 'open_provider_url' ? (
+                        <p className="text-amber-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
+                      ) : null}
                       <div className="flex flex-wrap gap-2">
-                        <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(payment.payment_url ?? '')}>
+                        {payment.payment_action_kind === 'open_provider_url' ? (
+                          <Button asChild type="button" size="sm" variant="outline">
+                            <a href={paymentLinkCopyUrl(payment)} target="_blank" rel="noreferrer">
+                              {paymentActionLabel(payment)}
+                            </a>
+                          </Button>
+                        ) : null}
+                        <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}>
                           Linki kopyala
                         </Button>
                         <Button
@@ -3237,7 +3291,8 @@ export function ServiceRequestDetails({
                       <span className="font-semibold">{payment.amount_label ?? formatMoneyValue(payment.amount ?? 0)}</span>
                       <Badge variant="secondary">İptal edildi</Badge>
                     </div>
-                    {payment.payment_url ? <p className="break-all text-slate-600">{payment.payment_url}</p> : null}
+                    {paymentLinkCopyUrl(payment) ? <p className="break-all text-slate-600">{paymentLinkCopyUrl(payment)}</p> : null}
+                    {paymentLinkCopyUrl(payment) ? <p className="text-slate-500">İptal edilmiş link geçmiş kaydıdır; yeniden tahsilat için yeni link oluşturun.</p> : null}
                     <p>İptal zamanı: {dateTimeOrEmpty(payment.cancelled_at, '-')}</p>
                     {payment.cancellation_reason ? <p>Neden: {payment.cancellation_reason}</p> : null}
                     {payment.cancelled_by_name ? <p>İptal eden: {payment.cancelled_by_name}</p> : null}
@@ -3278,6 +3333,9 @@ export function ServiceRequestDetails({
       </div>
     </div>
   ) : null
+  const paymentLinkEditorPortal = typeof document === 'undefined' || paymentLinkEditorModal === null
+    ? paymentLinkEditorModal
+    : createPortal(paymentLinkEditorModal, document.body)
   const partCreateModal = partCreateModalOpen ? (
     <div className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Parça talebi oluştur">
       <div className="grid max-h-[92vh] w-full max-w-2xl gap-4 overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
@@ -3927,6 +3985,65 @@ export function ServiceRequestDetails({
     }, 80)
   }
 
+  async function writeTextToClipboard(text: string): Promise<boolean> {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+
+        return true
+      }
+    } catch {
+      // Fall back below for HTTP/local origins or denied clipboard permissions.
+    }
+
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.left = '-9999px'
+      textarea.style.top = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+
+      return copied
+    } catch {
+      return false
+    }
+  }
+
+  async function copyPaymentLinkValue(value: string | null | undefined, successMessage = 'Link kopyalandı.') {
+    const text = String(value ?? '').trim()
+
+    if (text === '') {
+      setPaymentLinkCopyMessage('Kopyalanacak link yok.')
+      setPaymentLinkManualCopyValue(null)
+
+      return false
+    }
+
+    const copied = await writeTextToClipboard(text)
+    setPaymentLinkCopyMessage(copied ? successMessage : 'Link kopyalanamadı. Bağlantıyı aşağıdaki alandan manuel kopyalayın.')
+    setPaymentLinkManualCopyValue(copied ? null : text)
+
+    return copied
+  }
+
+  function paymentLinkCopyUrl(payment: ServiceRequestExtraMountPayment | null | undefined): string {
+    return String(payment?.copy_url ?? payment?.payment_url ?? '').trim()
+  }
+
+  function paymentProviderLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string {
+    return String(payment?.provider_display_label ?? payment?.provider_label ?? (payment?.is_fake_provider ? 'Fake/Yerel ödeme simülasyonu' : 'Ödeme sağlayıcısı')).trim()
+  }
+
+  function paymentActionLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string {
+    return String(payment?.payment_action_label ?? (payment?.payment_action_kind === 'open_provider_url' ? 'Ödeme ekranını aç' : 'Ödeme linkini aç')).trim()
+  }
+
   const copyCustomerApprovalValue = async (value: string | null | undefined, successMessage: string) => {
     const text = String(value ?? '').trim()
 
@@ -3936,12 +4053,8 @@ export function ServiceRequestDetails({
       return
     }
 
-    try {
-      await navigator.clipboard.writeText(text)
-      setCustomerApprovalCopyMessage(successMessage)
-    } catch {
-      setCustomerApprovalCopyMessage('Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
-    }
+    const copied = await writeTextToClipboard(text)
+    setCustomerApprovalCopyMessage(copied ? successMessage : 'Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
   }
 
   async function copyCustomerChargeValue(value: string | null | undefined, successMessage: string) {
@@ -3953,12 +4066,8 @@ export function ServiceRequestDetails({
       return
     }
 
-    try {
-      await navigator.clipboard.writeText(text)
-      setCustomerChargeCopyMessage(successMessage)
-    } catch {
-      setCustomerChargeCopyMessage('Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
-    }
+    const copied = await writeTextToClipboard(text)
+    setCustomerChargeCopyMessage(copied ? successMessage : 'Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
   }
 
   const handleNextActionClick = () => {
@@ -3978,17 +4087,20 @@ export function ServiceRequestDetails({
     }
 
     if (action === 'copy_payment_link') {
-      const paymentUrl = extraMountPayment?.payment_url ?? ''
-
-      if (paymentUrl && navigator.clipboard) {
-        void navigator.clipboard.writeText(paymentUrl)
-      }
+      const paymentUrl = extraMountPayment?.copy_url ?? extraMountPayment?.payment_url ?? ''
 
       scrollToNextActionSection('operation')
 
-      if (!paymentUrl || !navigator.clipboard) {
-        setNextActionNavigationMessage('Kopyalanacak ödeme linki bulunamadı.')
-      }
+      void (async () => {
+        if (!paymentUrl) {
+          setNextActionNavigationMessage('Kopyalanacak ödeme linki bulunamadı.')
+
+          return
+        }
+
+        const copied = await writeTextToClipboard(paymentUrl)
+        setNextActionNavigationMessage(copied ? 'Link kopyalandı.' : 'Link kopyalanamadı, bağlantıyı manuel kopyalayın.')
+      })()
 
       return
     }
@@ -4468,7 +4580,7 @@ export function ServiceRequestDetails({
         ) : null}
         {customerChargeModal}
         {otherTechniciansModal}
-        {paymentLinkEditorModal}
+        {paymentLinkEditorPortal}
         {partCreateModal}
         {partDecisionModal}
         {historyRecordModal}
@@ -4954,17 +5066,17 @@ export function ServiceRequestDetails({
                     ) : null}
                   </div>
                 </div>
-                {activeCustomerDirectAmountLabel || companyPayableAmountLabel || companyCollectedAmountLabel || pendingPaymentTotalLabel || extraMountPayment?.payment_url ? (
+                {activeCustomerDirectAmountLabel || companyPayableAmountLabel || companyCollectedAmountLabel || pendingPaymentTotalLabel || paymentLinkCopyUrl(extraMountPayment) ? (
                   <div className="grid gap-2 sm:grid-cols-3">
                     {shouldShowCustomerPaysTechnicianCard && activeCustomerDirectAmountLabel ? <MiniMetric label="Müşteriye bildirilecek tutar" value={activeCustomerDirectAmountLabel} /> : null}
                     {companyPayableAmountLabel ? <MiniMetric label="Şirket ödemesi" value={companyPayableAmountLabel} /> : null}
                     {companyCollectedAmountLabel && (payerStateKey === 'company_collected_online' || payerStateKey === 'company_collected_external') ? <MiniMetric label="Müşteri tahsilatı" value={companyCollectedAmountLabel} /> : null}
                     {pendingPaymentTotalLabel && payerStateKey === 'pending_online_payment' ? <MiniMetric label="Bekleyen tahsilat" value={pendingPaymentTotalLabel} /> : null}
-                    {extraMountPayment?.payment_url ? (
+                    {paymentLinkCopyUrl(extraMountPayment) ? (
                       <MiniMetric
                         label="Bekleyen link"
-                        value={<span className="break-all">{extraMountPayment.payment_url}</span>}
-                        hint={<button type="button" className="font-semibold text-amber-900 underline-offset-4 hover:underline" onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}>Linki kopyala</button>}
+                        value={<span className="break-all">{paymentLinkCopyUrl(extraMountPayment)}</span>}
+                        hint={<button type="button" className="font-semibold text-amber-900 underline-offset-4 hover:underline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>Linki kopyala</button>}
                       />
                     ) : null}
                   </div>
@@ -5101,7 +5213,7 @@ export function ServiceRequestDetails({
                               {partRequest.payment_url ? (
                                 <div className="flex flex-wrap items-center gap-2">
                                   <a href={partRequest.payment_url} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
-                                  <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(partRequest.payment_url ?? '')}>Linki kopyala</Button>
+                                  <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(partRequest.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
                                 </div>
                               ) : null}
                             </div>
@@ -5686,18 +5798,28 @@ export function ServiceRequestDetails({
                         placeholder="Usta yol hakedişi veya müşteri onayı için operasyon notu"
                       />
                     </label>
-                    {extraMountPayment?.payment_url ? (
+                    {paymentLinkCopyUrl(extraMountPayment) ? (
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
                         <p className="font-semibold">
-                          {extraMountPayment.status === 'paid' ? 'Ödeme onaylandı' : 'Mevcut bekleyen ödeme linki var'}
+                          {extraMountPayment.status === 'paid' ? 'Ödeme onaylandı' : `${paymentProviderLabel(extraMountPayment)} ödeme linki`}
                         </p>
-                        <p className="mt-1 break-all">{extraMountPayment.payment_url}</p>
+                        <p className="mt-1 break-all">{paymentLinkCopyUrl(extraMountPayment)}</p>
+                        {extraMountPayment.payment_action_kind === 'open_provider_url' ? (
+                          <p className="mt-1 text-emerald-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
+                        ) : null}
                         <div className="mt-2 flex flex-wrap gap-2">
-                          <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}>
+                          {extraMountPayment.payment_action_kind === 'open_provider_url' ? (
+                            <Button asChild type="button" size="sm" variant="outline">
+                              <a href={paymentLinkCopyUrl(extraMountPayment)} target="_blank" rel="noreferrer">
+                                {paymentActionLabel(extraMountPayment)}
+                              </a>
+                            </Button>
+                          ) : null}
+                          <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>
                             Linki kopyala
                           </Button>
                           <Button asChild type="button" size="sm" variant="outline">
-                            <a href={`${whatsappHref || '#'}${whatsappHref ? `?text=${encodeURIComponent(`Ek montaj ödemeniz için link: ${extraMountPayment.payment_url}`)}` : ''}`} target="_blank" rel="noreferrer">
+                            <a href={`${whatsappHref || '#'}${whatsappHref ? `?text=${encodeURIComponent(`Ek montaj ödemeniz için link: ${paymentLinkCopyUrl(extraMountPayment)}`)}` : ''}`} target="_blank" rel="noreferrer">
                               WhatsApp ile gönder
                             </a>
                           </Button>
