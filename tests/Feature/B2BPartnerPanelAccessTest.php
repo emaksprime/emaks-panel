@@ -6035,6 +6035,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(TechnicalServiceRequestUpload::CATEGORY_OPS_EXTRA_DOCUMENT, $doorPhotos->first()['category'] ?? null);
         $this->assertSame('OPS Kapı Ön Yüzü', $doorPhotos->first()['label'] ?? null);
         $this->assertNotEmpty($doorPhotos->first()['preview_url'] ?? null);
+        $this->assertStringStartsWith('/api/technical-service/requests/', (string) ($doorPhotos->first()['preview_url'] ?? ''));
 
         $fieldDocuments = collect($response->json('request.field_completion_documents'));
         $this->assertFalse($fieldDocuments->contains(fn (array $document): bool => ($document['field_code'] ?? null) === 'ops_door_front_photo'));

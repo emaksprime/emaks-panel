@@ -6,6 +6,7 @@ use App\Models\Button;
 use App\Models\Page;
 use App\Models\Role;
 use App\Models\User;
+use App\Support\PartnerPortalPublicUrl;
 use Illuminate\Support\Collection;
 
 class PanelNavigationService
@@ -267,10 +268,10 @@ class PanelNavigationService
         return [
             'brand' => config('panel.brand'),
             'environment' => app()->environment(),
-            'host' => parse_url((string) config('app.url'), PHP_URL_HOST),
-            'publicUrl' => config('panel.public_url'),
-            'apiBaseUrl' => config('panel.api_base_url'),
-            'webhookBaseUrl' => config('panel.webhook_base_url'),
+            'host' => PartnerPortalPublicUrl::panelHost(),
+            'publicUrl' => PartnerPortalPublicUrl::panelBaseUrl(),
+            'apiBaseUrl' => PartnerPortalPublicUrl::panelApiBaseUrl(),
+            'webhookBaseUrl' => PartnerPortalPublicUrl::panelWebhookBaseUrl(),
             'workflowUrls' => config('panel.workflow_urls'),
             'generatedAt' => now()->toIso8601String(),
         ];

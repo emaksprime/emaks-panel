@@ -2493,7 +2493,7 @@ class B2BPartnerPortalDataService
             'preview_url' => route('api.technical-service.requests.uploads.show', [
                 'technicalServiceRequest' => $request->id,
                 'upload' => $upload->id,
-            ]),
+            ], false),
             'review_status' => $upload->review_status,
             'review_note' => $upload->review_note,
             'created_at' => $upload->created_at?->toIso8601String(),

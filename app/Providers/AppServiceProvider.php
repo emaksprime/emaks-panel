@@ -57,17 +57,18 @@ class AppServiceProvider extends ServiceProvider
 
     /**
      * Coolify/Traefik terminates TLS before the Laravel container.
-     * Generate every asset, redirect, and route URL from the public HTTPS URL.
+     * Force a public root only where the runtime is expected to have one.
      */
     protected function configurePublicUrls(): void
     {
         $publicUrl = rtrim((string) config('app.url'), '/');
+        $forceRootUrl = filter_var(env('APP_FORCE_ROOT_URL', app()->isProduction()), FILTER_VALIDATE_BOOL);
 
-        if ($publicUrl !== '') {
+        if ($forceRootUrl && $publicUrl !== '') {
             URL::forceRootUrl($publicUrl);
         }
 
-        if ((bool) env('APP_FORCE_HTTPS', app()->isProduction()) || str_starts_with($publicUrl, 'https://')) {
+        if ((bool) env('APP_FORCE_HTTPS', app()->isProduction()) || ($forceRootUrl && str_starts_with($publicUrl, 'https://'))) {
             URL::forceScheme('https');
         }
     }

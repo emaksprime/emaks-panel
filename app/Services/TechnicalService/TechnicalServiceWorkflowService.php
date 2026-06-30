@@ -3857,7 +3857,7 @@ class TechnicalServiceWorkflowService
                 $authenticatedUrl = route('api.technical-service.requests.uploads.show', [
                     'technicalServiceRequest' => $request->id,
                     'upload' => $upload->id,
-                ]);
+                ], false);
 
                 $fieldCode = (string) $upload->field_code;
 
@@ -3914,7 +3914,7 @@ class TechnicalServiceWorkflowService
                 $authenticatedUrl = route('api.technical-service.requests.uploads.show', [
                     'technicalServiceRequest' => $request->id,
                     'upload' => $upload->id,
-                ]);
+                ], false);
 
                 $fieldCode = (string) $upload->field_code;
 

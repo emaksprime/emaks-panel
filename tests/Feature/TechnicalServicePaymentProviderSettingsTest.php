@@ -308,6 +308,21 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         $this->assertStringContainsString('REL-3C.8', $payload['back_url']['message']);
     }
 
+    public function test_local_payment_back_url_uses_current_request_origin_instead_of_stale_app_url(): void
+    {
+        config([
+            'app.url' => 'http://10.0.28.64:8000',
+            'services.public_urls.app_url' => null,
+            'services.public_urls.payment_base_url' => null,
+        ]);
+
+        $this->actingAs($this->admin())
+            ->getJson('http://127.0.0.1:8000/api/technical-service/payment-provider-settings')
+            ->assertOk()
+            ->assertJsonPath('settings.back_url.public_base_url', 'http://127.0.0.1:8000')
+            ->assertJsonPath('settings.back_url.payment_return_url', 'http://127.0.0.1:8000/mount-payment/{provider_reference}');
+    }
+
     public function test_live_readiness_blocked_when_ip_whitelist_is_unconfirmed(): void
     {
         config([

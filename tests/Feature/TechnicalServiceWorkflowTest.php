@@ -5021,7 +5021,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.door_photos.0.preview_url', route('api.technical-service.requests.uploads.show', [
                 'technicalServiceRequest' => $request->id,
                 'upload' => $request->uploads()->firstOrFail()->id,
-            ]))
+            ], false))
             ->assertJsonPath('request.invoice_serials.selected_serials.0.serial_number', 'SN-SELECTED')
             ->assertJsonPath('request.invoice_serials.selected_serials.0.color_status', 'green')
             ->assertJsonPath('request.invoice_serials.hidden_serials.0.serial_number', 'SN-HIDDEN')

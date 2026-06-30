@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use Illuminate\Http\Request;
 use InvalidArgumentException;
 
 class PartnerPortalPublicUrl
@@ -20,6 +21,50 @@ class PartnerPortalPublicUrl
             'services.public_urls.app_url',
             'app.url',
         ]);
+    }
+
+    public static function panelBaseUrl(?Request $request = null): string
+    {
+        $requestBaseUrl = self::localRequestBaseUrl($request);
+
+        if ($requestBaseUrl !== null) {
+            return $requestBaseUrl;
+        }
+
+        return self::normalizeBaseUrl((string) config('panel.public_url'))
+            ?? self::normalizeBaseUrl((string) config('app.url'))
+            ?? '';
+    }
+
+    public static function panelApiBaseUrl(?Request $request = null): string
+    {
+        $requestBaseUrl = self::localRequestBaseUrl($request);
+
+        if ($requestBaseUrl !== null) {
+            return self::join($requestBaseUrl, '/api');
+        }
+
+        return self::normalizeBaseUrl((string) config('panel.api_base_url'))
+            ?? self::join(self::panelBaseUrl($request), '/api');
+    }
+
+    public static function panelWebhookBaseUrl(?Request $request = null): string
+    {
+        $requestBaseUrl = self::localRequestBaseUrl($request);
+
+        if ($requestBaseUrl !== null) {
+            return self::join($requestBaseUrl, '/api/workflows');
+        }
+
+        return self::normalizeBaseUrl((string) config('panel.webhook_base_url'))
+            ?? self::join(self::panelBaseUrl($request), '/api/workflows');
+    }
+
+    public static function panelHost(?Request $request = null): ?string
+    {
+        $host = parse_url(self::panelBaseUrl($request), PHP_URL_HOST);
+
+        return is_string($host) && $host !== '' ? $host : null;
     }
 
     public static function qrBaseUrl(?string $overrideBaseUrl = null): string
@@ -64,6 +109,17 @@ class PartnerPortalPublicUrl
     public static function paymentUrl(string $path): string
     {
         return self::join(self::paymentBaseUrl(), $path);
+    }
+
+    public static function localRequestBaseUrl(?Request $request = null): ?string
+    {
+        if (! app()->environment('local', 'testing')) {
+            return null;
+        }
+
+        $request ??= request();
+
+        return self::normalizeBaseUrl($request->getSchemeAndHttpHost());
     }
 
     public static function normalizeBaseUrl(?string $url): ?string

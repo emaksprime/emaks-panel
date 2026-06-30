@@ -562,11 +562,22 @@ class TechnicalServicePaymentProviderSettingsService
 
     private function paymentPublicBaseUrl(): ?string
     {
-        return PartnerPortalPublicUrl::normalizeBaseUrl((string) (
+        $configuredBaseUrl = PartnerPortalPublicUrl::normalizeBaseUrl((string) (
             config('services.public_urls.payment_base_url')
             ?: config('services.public_urls.app_url')
-            ?: config('app.url')
         ));
+
+        if ($configuredBaseUrl !== null) {
+            return $configuredBaseUrl;
+        }
+
+        $requestBaseUrl = PartnerPortalPublicUrl::localRequestBaseUrl();
+
+        if ($requestBaseUrl !== null) {
+            return $requestBaseUrl;
+        }
+
+        return PartnerPortalPublicUrl::normalizeBaseUrl((string) config('app.url'));
     }
 
     private function backUrlReadyForLive(): bool
