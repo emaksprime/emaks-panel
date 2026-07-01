@@ -41,6 +41,50 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->assertJsonPath('settings.credentials.entry_supported', true);
     }
 
+    public function test_payment_notification_email_disabled_by_default(): void
+    {
+        $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/payment-provider-settings')
+            ->assertOk()
+            ->assertJsonPath('settings.payment_notification.enabled', false)
+            ->assertJsonPath('settings.payment_notification.recipients', [])
+            ->assertJsonPath('settings.payment_notification.ready', false)
+            ->assertJsonPath('settings.payment_notification.status_label', 'Kapalı');
+    }
+
+    public function test_valid_payment_notification_recipient_can_be_saved(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'payment_notification_enabled' => true,
+                'payment_notification_recipients' => 'payment-audit@example.test, OPS@example.test',
+            ])
+            ->assertOk()
+            ->assertJsonPath('settings.payment_notification.enabled', true)
+            ->assertJsonPath('settings.payment_notification.ready', false)
+            ->assertJsonPath('settings.payment_notification.smtp_ready', false)
+            ->assertJsonPath('settings.payment_notification.status_label', 'SMTP eksik')
+            ->assertJsonPath('settings.payment_notification.recipients.0', 'payment-audit@example.test')
+            ->assertJsonPath('settings.payment_notification.recipients.1', 'ops@example.test');
+
+        $layout = PageConfig::query()
+            ->where('page_code', TechnicalServicePaymentProviderSettingsService::PAGE_CODE)
+            ->value('layout_json');
+
+        $this->assertSame('payment-audit@example.test,ops@example.test', data_get($layout, TechnicalServicePaymentProviderSettingsService::PAYMENT_NOTIFICATION_RECIPIENTS_KEY));
+    }
+
+    public function test_invalid_payment_notification_recipient_is_rejected(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'payment_notification_enabled' => true,
+                'payment_notification_recipients' => 'not-an-email',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['payment_notification_recipients']);
+    }
+
     public function test_readiness_defaults_to_fake_disabled(): void
     {
         $payload = $this->actingAs($this->admin())
@@ -301,11 +345,15 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->assertJsonPath('settings.ip_whitelist.manual_check_command', 'curl -4s https://api.ipify.org')
             ->assertJsonPath('settings.back_url.payment_return_route_exists', true)
             ->assertJsonPath('settings.back_url.payment_return_url', 'https://dashboard.emaksprime.com.tr/mount-payment/{provider_reference}')
-            ->assertJsonPath('settings.back_url.callback_route_exists', false)
-            ->assertJsonPath('settings.back_url.ready', false)
+            ->assertJsonPath('settings.back_url.callback_url', 'https://dashboard.emaksprime.com.tr/mount-payment/iyzico/callback')
+            ->assertJsonPath('settings.back_url.global_back_url', 'https://dashboard.emaksprime.com.tr/mount-payment/iyzico/callback')
+            ->assertJsonPath('settings.back_url.callback_route_exists', true)
+            ->assertJsonPath('settings.back_url.callback_route_name', 'mount-payment.callback')
+            ->assertJsonPath('settings.back_url.ready', true)
             ->json('settings');
 
-        $this->assertStringContainsString('REL-3C.8', $payload['back_url']['message']);
+        $this->assertStringContainsString('Public HTTPS global Back URL', $payload['back_url']['message']);
+        $this->assertStringContainsString('conversationId=payment:{id}', $payload['back_url']['identification_rule']);
     }
 
     public function test_local_payment_back_url_uses_current_request_origin_instead_of_stale_app_url(): void
@@ -320,7 +368,8 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->getJson('http://127.0.0.1:8000/api/technical-service/payment-provider-settings')
             ->assertOk()
             ->assertJsonPath('settings.back_url.public_base_url', 'http://127.0.0.1:8000')
-            ->assertJsonPath('settings.back_url.payment_return_url', 'http://127.0.0.1:8000/mount-payment/{provider_reference}');
+            ->assertJsonPath('settings.back_url.payment_return_url', 'http://127.0.0.1:8000/mount-payment/{provider_reference}')
+            ->assertJsonPath('settings.back_url.global_back_url', 'http://127.0.0.1:8000/mount-payment/iyzico/callback');
     }
 
     public function test_live_readiness_blocked_when_ip_whitelist_is_unconfirmed(): void
@@ -346,12 +395,12 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ]);
     }
 
-    public function test_live_readiness_blocked_when_back_url_callback_route_is_missing(): void
+    public function test_live_readiness_blocked_when_back_url_is_not_public_https_even_with_callback_route(): void
     {
         config([
             'payments.iyzico.live_send_approved' => true,
             'payments.iyzico.ip_whitelist_confirmed' => true,
-            'services.public_urls.payment_base_url' => 'https://dashboard.emaksprime.com.tr',
+            'services.public_urls.payment_base_url' => 'http://127.0.0.1:8000',
         ]);
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('live', 'TEST_LIVE_API_KEY', 'TEST_LIVE_SECRET_KEY', $this->admin());
@@ -363,7 +412,7 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonFragment([
-                'real_provider_enabled' => ['Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.'],
+                'real_provider_enabled' => ['Canlı Back URL / callback doğrulanmadı; canlı açılıştan önce live reconcile readiness doğrulanmalı.'],
             ]);
     }
 
@@ -765,6 +814,8 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
         $this->assertStringContainsString('IP whitelist', $source);
         $this->assertStringContainsString('Back URL / callback', $source);
         $this->assertStringContainsString('paymentSettings.back_url.callback_route_exists', $source);
+        $this->assertStringContainsString('paymentSettings.payment_notification.helper_text', $source);
+        $this->assertStringContainsString('Mail ayarını kaydet', $source);
         $this->assertStringContainsString('API bilgilerini kaydet', $source);
         $this->assertStringContainsString('API bilgilerini temizle', $source);
         $this->assertStringContainsString('Bağlantıyı doğrula', $source);
@@ -777,7 +828,7 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function configureGatewayReady(array $overrides = []): void
     {
@@ -791,7 +842,7 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function mountPayment(array $overrides = []): TechnicalServiceMountPayment
     {

@@ -11,17 +11,29 @@ use App\Models\TechnicalServiceRequestSerial;
 class TechnicalServicePaymentSettlementService
 {
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     public function markPaid(TechnicalServiceMountPayment $payment, array $payload = []): TechnicalServiceMountPayment
     {
         $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $rawPayload['callback_payload'] = $payload;
         $providerReference = $this->paymentReferenceFromPayload($payload) ?: $payment->provider_reference;
+        $providerPaymentReference = $this->paymentReferenceFromPayload([
+            'provider_reference' => $payload['provider_payment_reference'] ?? null,
+        ]) ?: $payment->provider_payment_reference;
+        $providerTransactionReference = $this->paymentReferenceFromPayload([
+            'provider_reference' => $payload['provider_transaction_reference'] ?? null,
+        ]) ?: $payment->provider_transaction_reference;
+        $providerReceiptReference = $this->paymentReferenceFromPayload([
+            'provider_reference' => $payload['provider_receipt_reference'] ?? null,
+        ]) ?: $payment->provider_receipt_reference;
 
         $payment->forceFill([
             'status' => TechnicalServiceMountPayment::STATUS_PAID,
             'provider_reference' => $providerReference,
+            'provider_payment_reference' => $providerPaymentReference,
+            'provider_transaction_reference' => $providerTransactionReference,
+            'provider_receipt_reference' => $providerReceiptReference,
             'paid_at' => $payment->paid_at ?? now(),
             'raw_payload' => $rawPayload,
         ])->save();
@@ -74,10 +86,14 @@ class TechnicalServicePaymentSettlementService
 
         $this->markSerialsPaid($request, $payment, $payload);
 
+        $providerReconciliation = ($payload['source'] ?? null) === 'provider_reconciliation';
+
         $request->events()->create([
             'event_type' => 'mount_payment_paid',
-            'title' => 'Montaj ödemesi alındı',
-            'note' => 'Ödeme sağlayıcısı üzerinden montaj ödemesi onaylandı.',
+            'title' => $providerReconciliation ? 'Ödeme sağlayıcıdan ödeme doğrulandı' : 'Montaj ödemesi alındı',
+            'note' => $providerReconciliation
+                ? 'Ödeme provider reconciliation sonucu doğrulandı.'
+                : 'Ödeme sağlayıcısı üzerinden montaj ödemesi onaylandı.',
             'from_status' => $request->workflow_status,
             'to_status' => $request->workflow_status,
             'author_user_id' => null,
@@ -86,13 +102,18 @@ class TechnicalServicePaymentSettlementService
                 'provider' => $payment->provider,
                 'amount' => (float) $payment->amount,
                 'currency' => $payment->currency,
+                'provider_reference' => $payment->provider_reference,
+                'provider_payment_reference' => $payment->provider_payment_reference,
+                'provider_transaction_reference' => $payment->provider_transaction_reference,
+                'provider_receipt_reference' => $payment->provider_receipt_reference,
+                'paid_at' => ($payment->paid_at ?? now())->toIso8601String(),
                 'selected_serial_ids' => $payload['selected_serial_ids'] ?? [],
             ],
         ]);
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function applyCustomerChargeApproval(TechnicalServiceMountPayment $payment, array $payload): void
     {
@@ -127,6 +148,9 @@ class TechnicalServicePaymentSettlementService
             $metadata['paid_at'] = $paidAt->toISOString();
             $metadata['payment_reference'] = $payment->provider_reference;
             $metadata['provider_reference'] = $payment->provider_reference;
+            $metadata['provider_payment_reference'] = $payment->provider_payment_reference;
+            $metadata['provider_transaction_reference'] = $payment->provider_transaction_reference;
+            $metadata['provider_receipt_reference'] = $payment->provider_receipt_reference;
             $metadata['payment_provider'] = $payment->provider;
             $metadata['customer_charge'] = [
                 ...$customerCharge,
@@ -138,6 +162,9 @@ class TechnicalServicePaymentSettlementService
                 'provider' => $payment->provider,
                 'provider_reference' => $payment->provider_reference,
                 'payment_reference' => $payment->provider_reference,
+                'provider_payment_reference' => $payment->provider_payment_reference,
+                'provider_transaction_reference' => $payment->provider_transaction_reference,
+                'provider_receipt_reference' => $payment->provider_receipt_reference,
                 'paid_at' => $paidAt->toIso8601String(),
             ];
             $partRequest->forceFill(['metadata' => $metadata])->save();
@@ -160,6 +187,9 @@ class TechnicalServicePaymentSettlementService
                 'currency' => $payment->currency,
                 'part_request_id' => $partRequest?->id,
                 'provider_reference' => $payment->provider_reference,
+                'provider_payment_reference' => $payment->provider_payment_reference,
+                'provider_transaction_reference' => $payment->provider_transaction_reference,
+                'provider_receipt_reference' => $payment->provider_receipt_reference,
             ],
         ]);
 
@@ -178,6 +208,9 @@ class TechnicalServicePaymentSettlementService
                     'payment_id' => $payment->id,
                     'provider' => $payment->provider,
                     'provider_reference' => $payment->provider_reference,
+                    'provider_payment_reference' => $payment->provider_payment_reference,
+                    'provider_transaction_reference' => $payment->provider_transaction_reference,
+                    'provider_receipt_reference' => $payment->provider_receipt_reference,
                     'amount' => (float) $payment->amount,
                     'currency' => $payment->currency,
                     'paid_at' => ($payment->paid_at ?? now())->toIso8601String(),
@@ -187,7 +220,7 @@ class TechnicalServicePaymentSettlementService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function paymentReferenceFromPayload(array $payload): ?string
     {
@@ -202,7 +235,7 @@ class TechnicalServicePaymentSettlementService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function markSerialsPaid(TechnicalServiceRequest $request, TechnicalServiceMountPayment $payment, array $payload): void
     {

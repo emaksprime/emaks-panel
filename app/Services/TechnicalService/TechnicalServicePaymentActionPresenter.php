@@ -37,6 +37,7 @@ class TechnicalServicePaymentActionPresenter
         $isPending = $payment->status === TechnicalServiceMountPayment::STATUS_PENDING;
         $isPaid = $payment->status === TechnicalServiceMountPayment::STATUS_PAID;
         $isCancelled = $payment->status === TechnicalServiceMountPayment::STATUS_CANCELLED;
+        $syncWaiting = $isIyzicoProvider && $isPending && $payment->provider_reference !== null;
         $canCopy = $paymentUrl !== '';
         $canFakeComplete = $isFakeProvider && $isPending && $fakeApproveUrl !== null;
         $canOpenProviderUrl = ! $isFakeProvider && $isPending && $paymentUrl !== '';
@@ -69,7 +70,19 @@ class TechnicalServicePaymentActionPresenter
             'provider_transport' => $providerTransport !== '' ? $providerTransport : null,
             'provider_token' => $payment->provider_reference,
             'provider_reference' => $payment->provider_reference,
+            'provider_payment_reference' => $payment->provider_payment_reference,
+            'provider_transaction_reference' => $payment->provider_transaction_reference,
+            'provider_receipt_reference' => $payment->provider_receipt_reference,
             'provider_status' => $providerStatus,
+            'provider_last_synced_at' => $payment->provider_last_synced_at?->toISOString(),
+            'provider_sync_attempts' => (int) ($payment->provider_sync_attempts ?? 0),
+            'provider_last_sync_status' => $payment->provider_last_sync_status,
+            'provider_last_sync_error' => $payment->provider_last_sync_error,
+            'provider_paid_confirmed_at' => $payment->provider_paid_confirmed_at?->toISOString(),
+            'provider_sync_waiting' => $syncWaiting,
+            'provider_sync_message' => $syncWaiting
+                ? 'Otomatik kontrol bekliyor. Iyzico Back URL onayı bekleniyor; ödeme durumu otomatik/manuel sağlayıcı senkronizasyonuyla doğrulanır.'
+                : null,
             'provider_label' => $providerLabel,
             'provider_display_label' => $providerLabel,
             'is_fake_provider' => $isFakeProvider,

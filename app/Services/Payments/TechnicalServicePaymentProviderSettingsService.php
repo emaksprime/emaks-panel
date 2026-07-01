@@ -11,18 +11,31 @@ use Illuminate\Validation\ValidationException;
 class TechnicalServicePaymentProviderSettingsService
 {
     public const PAGE_CODE = 'technical_service_admin';
+
     public const REAL_PROVIDER_ENABLED_KEY = 'technical_service.payment.real_provider_enabled';
+
     public const PROVIDER_KEY = 'technical_service.payment.provider';
+
     public const PROVIDER_MODE_KEY = 'technical_service.payment.provider_mode';
+
+    public const PAYMENT_NOTIFICATION_ENABLED_KEY = 'technical_service.payment.notification.enabled';
+
+    public const PAYMENT_NOTIFICATION_RECIPIENTS_KEY = 'technical_service.payment.notification.recipients';
+
     public const CREDENTIAL_SOURCE_DISABLED = 'disabled';
+
     public const CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED = 'laravel_encrypted';
+
     public const CREDENTIAL_SOURCE_N8N_ENV = 'n8n_env';
+
     public const CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED_PENDING_BRIDGE = 'laravel_encrypted_pending_bridge';
+
     public const LIVE_SEND_APPROVAL_MESSAGE = 'Canlı Iyzico gönderimi için canlı onayı gerekir.';
 
     public function __construct(
         private readonly TechnicalServicePaymentProviderCredentialService $credentialService,
         private readonly TechnicalServicePaymentProviderTransportResolver $transportResolver,
+        private readonly TechnicalServiceMailTransportSettingsService $mailTransportSettings,
     ) {}
 
     public function realProviderEnabled(): bool
@@ -122,9 +135,75 @@ class TechnicalServicePaymentProviderSettingsService
         return $mode === 'sandbox' || $this->liveSendApproved();
     }
 
+    public function providerReconcileReady(?string $mode = null): bool
+    {
+        $mode = $mode !== null ? $this->normalizeMode($mode) : $this->providerMode();
+
+        return $this->realProviderEnabled()
+            && $this->configuredProvider() === 'iyzico'
+            && $this->providerMode() === $mode
+            && $this->transportResolver->directLaravel()
+            && $this->laravelEncryptedCredentialsReady($mode)
+            && $this->providerSendEnabled($mode)
+            && ($mode === 'sandbox' || $this->liveOperationalReadinessReady());
+    }
+
+    public function providerReconcileDisabledReason(?string $mode = null): string
+    {
+        $mode = $mode !== null ? $this->normalizeMode($mode) : $this->providerMode();
+
+        if (! $this->realProviderEnabled() || $this->configuredProvider() !== 'iyzico') {
+            return $mode === 'live'
+                ? 'Live otomatik kontrol kapalı; canlı ödeme aktif edilince açılacak.'
+                : 'Sandbox otomatik kontrol için Iyzico gerçek sağlayıcı aktif olmalı.';
+        }
+
+        if ($this->providerMode() !== $mode) {
+            return $mode === 'live'
+                ? 'Live otomatik kontrol kapalı; canlı ödeme modu seçilip onaylanınca açılacak.'
+                : 'Sandbox otomatik kontrol yalnızca seçili mod sandbox iken çalışır.';
+        }
+
+        if (! $this->transportResolver->directLaravel()) {
+            return 'Otomatik kontrol için Iyzico Laravel Direct adaptörü aktif olmalı.';
+        }
+
+        if (! $this->laravelEncryptedCredentialsReady($mode)) {
+            return $mode === 'live'
+                ? 'Live otomatik kontrol için live API bilgileri encrypted olarak kaydedilmeli.'
+                : 'Sandbox otomatik kontrol için sandbox API bilgileri encrypted olarak kaydedilmeli.';
+        }
+
+        if ($mode === 'live' && ! $this->liveSendApproved()) {
+            return 'Live otomatik kontrol kapalı; canlı ödeme onayı verilmeden live API çağrısı yapılmaz.';
+        }
+
+        if ($mode === 'live' && ! $this->liveOperationalReadinessReady()) {
+            return 'Live otomatik kontrol kapalı; public IP whitelist ve public HTTPS Back URL doğrulanmalı.';
+        }
+
+        return 'Otomatik kontrol hazır.';
+    }
+
     public function liveSendApproved(): bool
     {
         return (bool) config('payments.iyzico.live_send_approved', false);
+    }
+
+    public function paymentNotificationEnabled(): bool
+    {
+        return filter_var(
+            Arr::get($this->layout(), self::PAYMENT_NOTIFICATION_ENABLED_KEY, false),
+            FILTER_VALIDATE_BOOLEAN,
+        );
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function paymentNotificationRecipients(): array
+    {
+        return $this->parseRecipients(Arr::get($this->layout(), self::PAYMENT_NOTIFICATION_RECIPIENTS_KEY, ''));
     }
 
     public function credentialSource(?string $mode = null): string
@@ -208,17 +287,19 @@ class TechnicalServicePaymentProviderSettingsService
             'credentials' => $credentialPayload,
             'credential_bridge' => $credentialBridge,
             'readiness' => $readiness,
+            'automatic_reconcile' => $this->automaticReconcilePayload(),
             'sandbox_activation_checklist' => $this->sandboxActivationChecklist($credentialBridge, $readiness),
             'can_enable_real_provider' => $canEnable,
             'disabled_reason' => $disabledReason,
             'health_status' => $this->healthStatus(),
+            'payment_notification' => $this->paymentNotificationPayload(),
             'secret_source' => $credentialBridge['source'],
             'warning' => 'Gerçek ödeme aktifken fake ödeme kullanılmaz.',
         ];
     }
 
     /**
-     * @param array<string, mixed> $values
+     * @param  array<string, mixed>  $values
      * @return array<string, mixed>
      */
     public function update(array $values): array
@@ -232,6 +313,9 @@ class TechnicalServicePaymentProviderSettingsService
         $nextMode = array_key_exists('provider_mode', $values)
             ? $this->normalizeMode($values['provider_mode'])
             : $this->providerMode();
+        $notificationRecipients = array_key_exists('payment_notification_recipients', $values)
+            ? $this->parseRecipients($values['payment_notification_recipients'])
+            : $this->paymentNotificationRecipients();
 
         if ($nextRealProviderEnabled && ! $this->canEnableRealProviderForMode($nextMode)) {
             throw ValidationException::withMessages([
@@ -242,6 +326,14 @@ class TechnicalServicePaymentProviderSettingsService
         Arr::set($layout, self::REAL_PROVIDER_ENABLED_KEY, $nextRealProviderEnabled);
         Arr::set($layout, self::PROVIDER_KEY, $nextProvider);
         Arr::set($layout, self::PROVIDER_MODE_KEY, $nextMode);
+
+        if (array_key_exists('payment_notification_enabled', $values)) {
+            Arr::set($layout, self::PAYMENT_NOTIFICATION_ENABLED_KEY, (bool) $values['payment_notification_enabled']);
+        }
+
+        if (array_key_exists('payment_notification_recipients', $values)) {
+            Arr::set($layout, self::PAYMENT_NOTIFICATION_RECIPIENTS_KEY, implode(',', $notificationRecipients));
+        }
 
         $config = PageConfig::query()->firstOrCreate(
             ['page_code' => self::PAGE_CODE],
@@ -299,6 +391,30 @@ class TechnicalServicePaymentProviderSettingsService
         ];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function paymentNotificationPayload(): array
+    {
+        $recipients = $this->paymentNotificationRecipients();
+        $mailSettings = $this->mailTransportSettings->payload();
+        $smtpReady = (bool) ($mailSettings['payment_notification_ready'] ?? false);
+        $enabled = $this->paymentNotificationEnabled();
+        $recipientsReady = $recipients !== [];
+
+        return [
+            'enabled' => $enabled,
+            'recipients' => $recipients,
+            'recipients_text' => implode(',', $recipients),
+            'smtp_ready' => $smtpReady,
+            'ready' => $enabled && $recipientsReady && $smtpReady,
+            'status_label' => $enabled
+                ? (! $smtpReady ? 'SMTP eksik' : ($recipientsReady ? 'Aktif' : 'Alıcı bekliyor'))
+                : 'Kapalı',
+            'helper_text' => 'Dekont numarası sağlayıcı tarafından dönmüyorsa provider ödeme referansı gönderilir.',
+        ];
+    }
+
     private function disabledReasonForMode(string $mode): string
     {
         $mode = $this->normalizeMode($mode);
@@ -320,7 +436,7 @@ class TechnicalServicePaymentProviderSettingsService
         }
 
         if ($mode === 'live' && ! $this->backUrlReadyForLive()) {
-            return 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.';
+            return 'Canlı Back URL / callback doğrulanmadı; canlı açılıştan önce live reconcile readiness doğrulanmalı.';
         }
 
         return TechnicalServicePaymentProviderModeResolver::NOT_READY_MESSAGE;
@@ -407,8 +523,38 @@ class TechnicalServicePaymentProviderSettingsService
     }
 
     /**
-     * @param array<string, mixed> $credentialBridge
-     * @param array<string, mixed> $readiness
+     * @return array<string, mixed>
+     */
+    private function automaticReconcilePayload(): array
+    {
+        $sandboxReady = $this->providerReconcileReady('sandbox');
+        $liveReady = $this->providerReconcileReady('live');
+
+        return [
+            'sandbox' => [
+                'ready' => $sandboxReady,
+                'label' => $sandboxReady ? 'Aktif / hazır' : 'Kapalı / eksik',
+                'message' => $sandboxReady
+                    ? 'Sandbox bekleyen Iyzico ödemeleri otomatik veya manuel sağlayıcı senkronizasyonuyla kontrol edilir.'
+                    : $this->providerReconcileDisabledReason('sandbox'),
+            ],
+            'live' => [
+                'ready' => $liveReady,
+                'label' => $liveReady ? 'Aktif / hazır' : 'Kapalı / canlı ödeme aktif edilince açılacak',
+                'message' => $liveReady
+                    ? 'Live bekleyen Iyzico ödemeleri row mode ve readiness doğrulamasıyla kontrol edilir.'
+                    : $this->providerReconcileDisabledReason('live'),
+            ],
+            'back_url_status' => $this->backUrlReadyForLive() ? 'ready' : 'pending_or_unverified',
+            'callback_verified' => false,
+            'accepted_fallback' => 'Callback doğrulanmadı; güvenli yol admin/manual sync + scheduled reconcile.',
+            'live_release_requirement' => 'Canlı ödeme açılmadan önce live reconcile readiness, live credentials, live approval, IP whitelist ve public HTTPS Back URL doğrulanmalı.',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $credentialBridge
+     * @param  array<string, mixed>  $readiness
      * @return array<int, array{key:string,label:string,ready:bool}>
      */
     private function sandboxActivationChecklist(array $credentialBridge, array $readiness): array
@@ -478,7 +624,7 @@ class TechnicalServicePaymentProviderSettingsService
         }
 
         if ($mode === 'live' && ! $this->backUrlReadyForLive()) {
-            return 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.';
+            return 'Canlı Back URL / callback doğrulanmadı; canlı açılıştan önce live reconcile readiness doğrulanmalı.';
         }
 
         return 'Sandbox gerçek gönderim testi için Burhan açık onayı gerekir.';
@@ -538,6 +684,9 @@ class TechnicalServicePaymentProviderSettingsService
         $paymentReturnUrl = $baseUrl !== null && $paymentReturnRouteExists
             ? rtrim($baseUrl, '/').'/mount-payment/{provider_reference}'
             : null;
+        $callbackUrl = $baseUrl !== null && $callbackRouteExists
+            ? rtrim($baseUrl, '/').'/mount-payment/iyzico/callback'
+            : null;
 
         return [
             'status' => $this->backUrlReadyForLive() ? 'ready' : 'missing_callback_route',
@@ -546,12 +695,15 @@ class TechnicalServicePaymentProviderSettingsService
             'public_https_ready' => $publicHttpsReady,
             'payment_return_route_exists' => $paymentReturnRouteExists,
             'payment_return_url' => $paymentReturnUrl,
+            'callback_url' => $callbackUrl,
+            'global_back_url' => $callbackUrl,
             'callback_route_exists' => $callbackRouteExists,
             'callback_route_name' => $callbackRouteExists ? $this->callbackRouteName() : null,
+            'identification_rule' => 'Global Back URL ödeme kaydını sadece provider token, provider_reference veya conversationId=payment:{id} dönerse eşleştirir.',
             'ready' => $this->backUrlReadyForLive(),
             'message' => $this->backUrlReadyForLive()
-                ? 'Public HTTPS Back URL ve callback route hazır.'
-                : 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.',
+                ? 'Public HTTPS global Back URL ve callback route hazır. Ödeme paid sayılması yine provider sync ile doğrulanır.'
+                : 'Back URL / callback doğrulanmadı; ödeme durumu admin/manual sync ve scheduled reconcile ile doğrulanır.',
         ];
     }
 
@@ -622,7 +774,7 @@ class TechnicalServicePaymentProviderSettingsService
             return 'Canlı Iyzico için uygulama sunucusu public IP adresi Iyzico panelinde onaylanmalı.';
         }
 
-        return 'Back URL / callback route henüz tamamlanmadı; REL-3C.8 reconciliation aşamasında tamamlanacak.';
+        return 'Canlı Back URL / callback doğrulanmadı; canlı açılıştan önce live reconcile readiness doğrulanmalı.';
     }
 
     /**
@@ -653,5 +805,33 @@ class TechnicalServicePaymentProviderSettingsService
             ->value('layout_json');
 
         return is_array($layout) ? $layout : [];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function parseRecipients(mixed $value): array
+    {
+        $items = is_array($value)
+            ? $value
+            : preg_split('/[\s,;]+/', (string) $value, -1, PREG_SPLIT_NO_EMPTY);
+
+        $recipients = collect($items ?: [])
+            ->map(fn (mixed $item): string => strtolower(trim((string) $item)))
+            ->filter()
+            ->unique()
+            ->values();
+
+        $invalid = $recipients
+            ->reject(fn (string $email): bool => filter_var($email, FILTER_VALIDATE_EMAIL) !== false)
+            ->values();
+
+        if ($invalid->isNotEmpty()) {
+            throw ValidationException::withMessages([
+                'payment_notification_recipients' => 'Geçerli ödeme bildirimi e-posta adresi girilmeli.',
+            ]);
+        }
+
+        return $recipients->all();
     }
 }

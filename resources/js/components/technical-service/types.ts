@@ -759,7 +759,18 @@ export type ServiceRequestExtraMountPayment = {
   provider_transport?: string | null
   provider_token?: string | null
   provider_reference?: string | null
+  provider_payment_reference?: string | null
+  provider_transaction_reference?: string | null
+  provider_receipt_reference?: string | null
   provider_status?: string | null
+  provider_last_synced_at?: string | null
+  provider_sync_attempts?: number | null
+  provider_last_sync_status?: string | null
+  provider_last_sync_error?: string | null
+  provider_sync_locked_at?: string | null
+  provider_paid_confirmed_at?: string | null
+  provider_sync_waiting?: boolean
+  provider_sync_message?: string | null
   provider_label?: string | null
   provider_display_label?: string | null
   is_fake_provider?: boolean

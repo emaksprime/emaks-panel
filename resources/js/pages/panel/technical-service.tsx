@@ -3459,6 +3459,39 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleMountPaymentSync = async (paymentId: number | string) => {
+    if (!selectedId) {
+      return
+    }
+
+    setExtraPaymentCreateError(null)
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/${paymentId}/status?sync_provider=1`)
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (!updatedRequest) {
+        setExtraPaymentCreateError('Ödeme durumu kontrol edildi ancak talep detayı güncellenemedi.')
+
+        return
+      }
+
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+    } catch (caught) {
+      setExtraPaymentCreateError(caught instanceof Error ? caught.message : 'Ödeme durumu kontrol edilemedi.')
+
+      throw caught
+    }
+  }
+
   const handleTechnicianEarningMessageCreate = async (payload: ServiceRequestTechnicianEarningMessagePayload) => {
     if (!selectedId) {
       return undefined
@@ -5806,6 +5839,7 @@ export function TechnicalServiceOperationCenter() {
                     onRouteQuoteManualSave={handleRouteQuoteManualSave}
                     onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
                     onMountPaymentCancel={handleMountPaymentCancel}
+                    onMountPaymentSync={handleMountPaymentSync}
                     onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}

@@ -115,6 +115,8 @@ class DirectIyzicoPaymentProviderTest extends TestCase
         $payment->refresh();
         $this->assertSame('iyzico', $payment->provider);
         $this->assertSame('sandbox-token-123', $payment->provider_reference);
+        $this->assertNull($payment->provider_payment_reference);
+        $this->assertNull($payment->provider_receipt_reference);
         $this->assertSame('https://sandbox-payment.iyzipay.com/pay/sandbox-token-123', $payment->payment_url);
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
         $this->assertNull($payment->paid_at);
@@ -241,6 +243,126 @@ class DirectIyzicoPaymentProviderTest extends TestCase
             && $request->url() === 'https://sandbox-api.iyzipay.com/v2/iyzilink/products/sandbox-token-123/status/PASSIVE');
     }
 
+    public function test_public_iyzico_callback_without_reference_does_not_mark_paid(): void
+    {
+        $payment = $this->mountPayment([
+            'provider' => 'iyzico',
+            'provider_reference' => 'callback-token-missing',
+            'payment_url' => 'https://sandbox.iyzi.link/callback-token-missing',
+        ]);
+
+        $this->get('/mount-payment/iyzico/callback')
+            ->assertStatus(422)
+            ->assertSee('Ödeme sağlayıcı dönüş bilgisi ödeme kaydıyla eşleştirilemedi')
+            ->assertSee('Bu sayfa ziyareti ödeme kaydını paid yapmaz');
+
+        $payment->refresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+        $this->assertNull($payment->paid_at);
+    }
+
+    public function test_public_iyzico_callback_missing_identifier_does_not_echo_query_or_mark_paid(): void
+    {
+        $payment = $this->mountPayment([
+            'provider' => 'iyzico',
+            'provider_reference' => 'callback-token-redacted',
+            'payment_url' => 'https://sandbox.iyzi.link/callback-token-redacted',
+        ]);
+
+        $this->get('/mount-payment/iyzico/callback?Authorization=secret-value&token=unknown-token')
+            ->assertStatus(422)
+            ->assertSee('Ödeme sağlayıcı dönüş bilgisi ödeme kaydıyla eşleştirilemedi')
+            ->assertDontSee('secret-value')
+            ->assertDontSee('unknown-token');
+
+        $payment->refresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $payment->status);
+        $this->assertNull($payment->paid_at);
+    }
+
+    public function test_public_iyzico_callback_syncs_status_without_csrf_or_fake_paid(): void
+    {
+        $this->configureDirectSandbox();
+        $payment = $this->mountPayment([
+            'provider' => 'iyzico',
+            'provider_reference' => 'callback-token-paid',
+            'payment_url' => 'https://sandbox.iyzi.link/callback-token-paid',
+        ]);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['provider_gateway'] = array_merge(
+            is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [],
+            ['conversation_id' => 'payment:'.$payment->id],
+        );
+        $payment->forceFill(['raw_payload' => $payload])->save();
+
+        Http::fake([
+            'https://sandbox-api.iyzipay.com/v2/iyzilink/products/callback-token-paid' => Http::response([
+                'status' => 'success',
+                'conversationId' => 'payment:'.$payment->id,
+                'data' => [
+                    'token' => 'callback-token-paid',
+                    'url' => 'https://sandbox.iyzi.link/callback-token-paid',
+                    'productStatus' => 'ACTIVE',
+                    'soldCount' => 1,
+                    'price' => '1234.50',
+                    'currencyCode' => 'TRY',
+                ],
+            ], 200),
+        ]);
+
+        $this->post('/mount-payment/iyzico/callback', [
+            'token' => 'callback-token-paid',
+        ])->assertRedirect('/mount-payment/callback-token-paid');
+
+        $payment->refresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->status);
+        $this->assertNotNull($payment->paid_at);
+
+        Http::assertSent(fn ($request): bool => $request->method() === 'GET'
+            && $request->url() === 'https://sandbox-api.iyzipay.com/v2/iyzilink/products/callback-token-paid');
+    }
+
+    public function test_public_iyzico_callback_syncs_status_from_conversation_query_without_page_visit_paid(): void
+    {
+        $this->configureDirectSandbox();
+        $payment = $this->mountPayment([
+            'provider' => 'iyzico',
+            'provider_reference' => 'callback-token-conversation',
+            'payment_url' => 'https://sandbox.iyzi.link/callback-token-conversation',
+        ]);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['provider_gateway'] = array_merge(
+            is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [],
+            ['conversation_id' => 'payment:'.$payment->id],
+        );
+        $payment->forceFill(['raw_payload' => $payload])->save();
+
+        Http::fake([
+            'https://sandbox-api.iyzipay.com/v2/iyzilink/products/callback-token-conversation' => Http::response([
+                'status' => 'success',
+                'conversationId' => 'payment:'.$payment->id,
+                'data' => [
+                    'token' => 'callback-token-conversation',
+                    'url' => 'https://sandbox.iyzi.link/callback-token-conversation',
+                    'productStatus' => 'ACTIVE',
+                    'soldCount' => 1,
+                    'price' => '1234.50',
+                    'currencyCode' => 'TRY',
+                ],
+            ], 200),
+        ]);
+
+        $this->get('/mount-payment/iyzico/callback?conversationId=payment:'.$payment->id)
+            ->assertRedirect('/mount-payment/callback-token-conversation');
+
+        $payment->refresh();
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $payment->status);
+        $this->assertNotNull($payment->paid_at);
+
+        Http::assertSent(fn ($request): bool => $request->method() === 'GET'
+            && $request->url() === 'https://sandbox-api.iyzipay.com/v2/iyzilink/products/callback-token-conversation');
+    }
+
     public function test_direct_provider_failure_surfaces_turkish_error_without_fake_fallback(): void
     {
         $this->configureDirectSandbox();
@@ -267,7 +389,7 @@ class DirectIyzicoPaymentProviderTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function configureDirectSandbox(array $overrides = [], string $credentialMode = 'sandbox'): void
     {
@@ -288,7 +410,7 @@ class DirectIyzicoPaymentProviderTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function mountPayment(array $overrides = []): TechnicalServiceMountPayment
     {

@@ -3,10 +3,14 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Payments\TechnicalServiceMailTransportNotReadyException;
+use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+use Throwable;
 
 class TechnicalServicePaymentProviderSettingsController extends Controller
 {
@@ -22,6 +26,8 @@ class TechnicalServicePaymentProviderSettingsController extends Controller
         $data = $request->validate([
             'real_provider_enabled' => ['sometimes', 'required', 'boolean'],
             'provider_mode' => ['sometimes', 'required', 'string', 'in:sandbox,live'],
+            'payment_notification_enabled' => ['sometimes', 'required', 'boolean'],
+            'payment_notification_recipients' => ['sometimes', 'nullable', 'string', 'max:2000'],
         ]);
 
         return response()->json([
@@ -74,5 +80,101 @@ class TechnicalServicePaymentProviderSettingsController extends Controller
             'credentials' => $credentialPayload,
             'settings' => $settings->payload(),
         ]);
+    }
+
+    public function mailSettings(TechnicalServiceMailTransportSettingsService $mailSettings): JsonResponse
+    {
+        return response()->json([
+            'mail_transport_settings' => $mailSettings->payload(),
+        ]);
+    }
+
+    public function saveOutgoingMailSettings(Request $request, TechnicalServiceMailTransportSettingsService $mailSettings): JsonResponse
+    {
+        $data = $request->validate([
+            'enabled' => ['required', 'boolean'],
+            'host' => ['nullable', 'required_if:enabled,true', 'string', 'max:255'],
+            'port' => ['nullable', 'required_if:enabled,true', 'integer', 'between:1,65535'],
+            'encryption' => ['required', 'string', Rule::in(['tls', 'ssl', 'none'])],
+            'username' => ['nullable', 'string', 'max:255'],
+            'password' => ['nullable', 'string', 'max:2000'],
+            'from_address' => ['nullable', 'required_if:enabled,true', 'email', 'max:255'],
+            'from_name' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        return response()->json([
+            'mail_transport_settings' => $mailSettings->saveOutgoing($data, $request->user(), $request),
+        ]);
+    }
+
+    public function clearOutgoingMailSettings(Request $request, TechnicalServiceMailTransportSettingsService $mailSettings): JsonResponse
+    {
+        return response()->json([
+            'mail_transport_settings' => $mailSettings->clearOutgoing($request->user(), $request),
+        ]);
+    }
+
+    public function sendOutgoingTestMail(Request $request, TechnicalServiceMailTransportSettingsService $mailSettings): JsonResponse
+    {
+        $data = $request->validate([
+            'recipient' => ['required', 'email', 'max:255'],
+        ]);
+
+        try {
+            return response()->json([
+                'mail_transport_settings' => $mailSettings->sendTestMail((string) $data['recipient']),
+                'message' => 'Test mail gönderildi.',
+            ]);
+        } catch (TechnicalServiceMailTransportNotReadyException $exception) {
+            return response()->json([
+                'mail_transport_settings' => $mailSettings->payload(),
+                'message' => $exception->getMessage(),
+            ], 422);
+        } catch (Throwable $exception) {
+            return response()->json([
+                'mail_transport_settings' => $mailSettings->payload(),
+                'message' => 'Test mail gönderilemedi.',
+            ], 422);
+        }
+    }
+
+    public function saveIncomingMailSettings(Request $request, TechnicalServiceMailTransportSettingsService $mailSettings): JsonResponse
+    {
+        $data = $request->validate([
+            'enabled' => ['required', 'boolean'],
+            'protocol' => ['required', 'string', Rule::in(['imap', 'pop3'])],
+            'host' => ['nullable', 'required_if:enabled,true', 'string', 'max:255'],
+            'port' => ['nullable', 'required_if:enabled,true', 'integer', 'between:1,65535'],
+            'encryption' => ['required', 'string', Rule::in(['tls', 'ssl', 'none'])],
+            'username' => ['nullable', 'string', 'max:255'],
+            'password' => ['nullable', 'string', 'max:2000'],
+            'mailbox' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        return response()->json([
+            'mail_transport_settings' => $mailSettings->saveIncoming($data, $request->user(), $request),
+        ]);
+    }
+
+    public function clearIncomingMailSettings(Request $request, TechnicalServiceMailTransportSettingsService $mailSettings): JsonResponse
+    {
+        return response()->json([
+            'mail_transport_settings' => $mailSettings->clearIncoming($request->user(), $request),
+        ]);
+    }
+
+    public function testIncomingMailSettings(TechnicalServiceMailTransportSettingsService $mailSettings): JsonResponse
+    {
+        try {
+            return response()->json([
+                'mail_transport_settings' => $mailSettings->testIncomingConnection(),
+                'message' => 'Gelen kutu bağlantı testi tamamlandı.',
+            ]);
+        } catch (Throwable) {
+            return response()->json([
+                'mail_transport_settings' => $mailSettings->payload(),
+                'message' => 'Gelen kutu bağlantı testi başarısız.',
+            ], 422);
+        }
     }
 }

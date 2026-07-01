@@ -5,13 +5,17 @@ namespace App\Services\Payments;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
+use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
+use Throwable;
 
 class TechnicalServicePaymentProviderReconciliationService
 {
     public function __construct(
         private readonly TechnicalServicePaymentProviderGateway $gateway,
         private readonly TechnicalServicePaymentSettlementService $settlementService,
+        private readonly TechnicalServicePaymentReceiptNotificationService $receiptNotificationService,
     ) {}
 
     /**
@@ -25,7 +29,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param PaymentProviderGatewayResponse|array<string, mixed> $response
+     * @param  PaymentProviderGatewayResponse|array<string, mixed>  $response
      */
     public function handleProviderStatusResponse(
         TechnicalServiceMountPayment $payment,
@@ -50,7 +54,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
      */
     public function markPaidFromTrustedProvider(
         TechnicalServiceMountPayment $payment,
@@ -69,28 +73,46 @@ class TechnicalServicePaymentProviderReconciliationService
         }
 
         $reference = $this->providerReference($providerResponse) ?: $payment->provider_reference;
+        $paymentReference = $this->providerPaymentReference($providerResponse);
+        $transactionReference = $this->providerTransactionReference($providerResponse);
+        $receiptReference = $this->providerReceiptReference($providerResponse);
+        $providerPaidAt = $this->providerPaidAt($providerResponse);
         $payload = $this->reconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_PAID);
         if ($reference !== null) {
             $payload['provider_reference'] = $reference;
         }
+        $payload['provider_payment_reference'] = $paymentReference;
+        $payload['provider_transaction_reference'] = $transactionReference;
+        $payload['provider_receipt_reference'] = $receiptReference;
+        $payload['provider_paid_at'] = $providerPaidAt?->toIso8601String();
 
         $payment->forceFill([
             'provider' => $this->provider($providerResponse, $payment),
             'provider_reference' => $reference,
+            'provider_payment_reference' => $paymentReference,
+            'provider_transaction_reference' => $transactionReference,
+            'provider_receipt_reference' => $receiptReference,
+            'provider_paid_at' => $providerPaidAt,
             'raw_payload' => $payload,
-        ])->save();
+        ] + $this->syncAuditAttributes($payment, TechnicalServiceMountPayment::STATUS_PAID))->save();
 
-        return $this->settlementService->markPaid($payment->fresh(), [
+        $paidPayment = $this->settlementService->markPaid($payment->fresh(), [
             'source' => 'provider_reconciliation',
             'provider' => $payment->provider,
             'provider_reference' => $reference,
+            'provider_payment_reference' => $paymentReference,
+            'provider_transaction_reference' => $transactionReference,
+            'provider_receipt_reference' => $receiptReference,
+            'provider_paid_at' => $providerPaidAt?->toIso8601String(),
             'provider_status' => $this->rawProviderStatus($providerResponse),
             'provider_response_redacted' => $providerResponse['provider_response_redacted'] ?? [],
         ]);
+
+        return $this->receiptNotificationService->notifyTrustedPaid($paidPayment, $providerResponse);
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
      */
     private function markCancelledFromTrustedProvider(
         TechnicalServiceMountPayment $payment,
@@ -103,7 +125,7 @@ class TechnicalServicePaymentProviderReconciliationService
         $payment->forceFill([
             'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
             'raw_payload' => $this->reconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_CANCELLED),
-        ])->save();
+        ] + $this->syncAuditAttributes($payment, TechnicalServiceMountPayment::STATUS_CANCELLED))->save();
 
         $session = $payment->session;
         if ($session instanceof TechnicalServiceMountSession
@@ -115,7 +137,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
      */
     private function markFailedFromTrustedProvider(
         TechnicalServiceMountPayment $payment,
@@ -131,13 +153,17 @@ class TechnicalServicePaymentProviderReconciliationService
         $payment->forceFill([
             'status' => TechnicalServiceMountPayment::STATUS_FAILED,
             'raw_payload' => $this->reconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_FAILED),
-        ])->save();
+        ] + $this->syncAuditAttributes(
+            $payment,
+            TechnicalServiceMountPayment::STATUS_FAILED,
+            $this->syncErrorFromProvider($providerResponse, TechnicalServiceMountPayment::STATUS_FAILED),
+        ))->save();
 
         return $payment->fresh();
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
      */
     private function markPendingFromTrustedProvider(
         TechnicalServiceMountPayment $payment,
@@ -150,13 +176,39 @@ class TechnicalServicePaymentProviderReconciliationService
         $payment->forceFill([
             'status' => TechnicalServiceMountPayment::STATUS_PENDING,
             'raw_payload' => $this->reconciliationPayload($payment, $providerResponse, TechnicalServiceMountPayment::STATUS_PENDING),
-        ])->save();
+        ] + $this->syncAuditAttributes($payment, TechnicalServiceMountPayment::STATUS_PENDING))->save();
+
+        return $payment->fresh();
+    }
+
+    public function recordSyncFailure(
+        TechnicalServiceMountPayment $payment,
+        Throwable|string $error,
+        string $source = 'scheduled_reconcile',
+    ): TechnicalServiceMountPayment {
+        $message = $this->redactedError($error);
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['provider_reconciliation'] = array_merge(
+            is_array($payload['provider_reconciliation'] ?? null) ? $payload['provider_reconciliation'] : [],
+            [
+                'status' => 'provider_error',
+                'provider_status' => 'provider_error',
+                'provider_response_redacted' => [],
+                'reconciled_at' => now()->toIso8601String(),
+                'source' => $source,
+                'error_message' => $message,
+            ],
+        );
+
+        $payment->forceFill([
+            'raw_payload' => $payload,
+        ] + $this->syncAuditAttributes($payment, 'provider_error', $message))->save();
 
         return $payment->fresh();
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function localStatusFromProvider(array $payload, TechnicalServiceMountPayment $payment): string
     {
@@ -180,7 +232,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function localStatusFromIyzicoLink(array $payload, TechnicalServiceMountPayment $payment): string
     {
@@ -208,7 +260,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
      * @return array<string, mixed>
      */
     private function reconciliationPayload(
@@ -221,6 +273,10 @@ class TechnicalServicePaymentProviderReconciliationService
         $payload['provider_reconciliation'] = array_merge([
             'status' => $localStatus,
             'provider_status' => $this->rawProviderStatus($providerResponse),
+            'provider_payment_reference' => $this->providerPaymentReference($providerResponse),
+            'provider_transaction_reference' => $this->providerTransactionReference($providerResponse),
+            'provider_receipt_reference' => $this->providerReceiptReference($providerResponse),
+            'provider_paid_at' => $this->providerPaidAt($providerResponse)?->toIso8601String(),
             'provider_response_redacted' => $providerResponse['provider_response_redacted'] ?? [],
             'reconciled_at' => now()->toIso8601String(),
         ], $extra);
@@ -229,7 +285,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
      */
     private function storeReconciliationPayload(
         TechnicalServiceMountPayment $payment,
@@ -237,15 +293,81 @@ class TechnicalServicePaymentProviderReconciliationService
         string $localStatus,
         array $extra = [],
     ): TechnicalServiceMountPayment {
+        $syncStatus = is_scalar($extra['blocked_reason'] ?? null)
+            ? (string) $extra['blocked_reason']
+            : $localStatus;
+
         $payment->forceFill([
             'raw_payload' => $this->reconciliationPayload($payment, $providerResponse, $localStatus, $extra),
-        ])->save();
+        ] + $this->syncAuditAttributes(
+            $payment,
+            $syncStatus,
+            $this->syncErrorFromProvider($providerResponse, $syncStatus, $extra),
+        ))->save();
 
         return $payment->fresh();
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @return array<string, mixed>
+     */
+    private function syncAuditAttributes(
+        TechnicalServiceMountPayment $payment,
+        string $status,
+        ?string $error = null,
+    ): array {
+        $attributes = [
+            'provider_last_synced_at' => now(),
+            'provider_sync_attempts' => max(0, (int) ($payment->provider_sync_attempts ?? 0)) + 1,
+            'provider_last_sync_status' => $status,
+            'provider_last_sync_error' => $error,
+        ];
+
+        if ($status === TechnicalServiceMountPayment::STATUS_PAID) {
+            $attributes['provider_paid_confirmed_at'] = $payment->provider_paid_confirmed_at ?: now();
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
+     * @param  array<string, mixed>  $extra
+     */
+    private function syncErrorFromProvider(array $providerResponse, string $status, array $extra = []): ?string
+    {
+        if (is_scalar($extra['blocked_reason'] ?? null) && trim((string) $extra['blocked_reason']) !== '') {
+            return $this->redactedError((string) $extra['blocked_reason']);
+        }
+
+        if (! in_array($status, [TechnicalServiceMountPayment::STATUS_FAILED, 'provider_error'], true)) {
+            return null;
+        }
+
+        $message = $providerResponse['error_message']
+            ?? $providerResponse['message']
+            ?? Arr::get($providerResponse, 'provider_response_redacted.errorMessage')
+            ?? Arr::get($providerResponse, 'provider_response_redacted.error_message')
+            ?? null;
+
+        return $this->redactedError(is_scalar($message) ? (string) $message : 'provider_error');
+    }
+
+    private function redactedError(Throwable|string $error): string
+    {
+        $message = $error instanceof Throwable ? $error->getMessage() : $error;
+        $message = trim($message) !== '' ? $message : 'provider_error';
+        $patterns = [
+            '/IYZWSv2\s+[A-Za-z0-9+\/=._:-]+/i',
+            '/(Authorization|api[_-]?key|secret[_-]?key|password|smtp[_-]?password)\s*[:=]\s*[^,\s]+/i',
+            '/(secret|password|credential|token)[A-Za-z0-9+\/=._:-]{8,}/i',
+        ];
+
+        return mb_substr(preg_replace($patterns, '$1 [redacted]', $message) ?? '[redacted]', 0, 500);
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
      */
     private function providerReference(array $providerResponse): ?string
     {
@@ -275,7 +397,100 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
+     */
+    private function providerPaymentReference(array $providerResponse): ?string
+    {
+        foreach ([
+            'provider_payment_reference',
+            'payment_reference',
+            'paymentId',
+            'provider_response_redacted.paymentId',
+            'provider_response_redacted.payment_id',
+            'provider_response_redacted.data.paymentId',
+            'provider_response_redacted.data.payment_id',
+            'provider_response_redacted.payments.0.paymentId',
+            'provider_response_redacted.payments.0.payment_id',
+        ] as $key) {
+            $value = str_contains($key, '.') ? Arr::get($providerResponse, $key) : ($providerResponse[$key] ?? null);
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
+     */
+    private function providerTransactionReference(array $providerResponse): ?string
+    {
+        foreach ([
+            'provider_transaction_reference',
+            'payment_transaction_id',
+            'paymentTransactionId',
+            'transaction_id',
+            'provider_response_redacted.paymentTransactionId',
+            'provider_response_redacted.payment_transaction_id',
+            'provider_response_redacted.data.paymentTransactionId',
+            'provider_response_redacted.data.payment_transaction_id',
+            'provider_response_redacted.itemTransactions.0.paymentTransactionId',
+            'provider_response_redacted.data.itemTransactions.0.paymentTransactionId',
+            'provider_response_redacted.payments.0.itemTransactions.0.paymentTransactionId',
+            'provider_response_redacted.hostReference',
+            'provider_response_redacted.data.hostReference',
+            'provider_response_redacted.payments.0.hostReference',
+        ] as $key) {
+            $value = str_contains($key, '.') ? Arr::get($providerResponse, $key) : ($providerResponse[$key] ?? null);
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Iyzico Link API does not document a receipt/dekont number in link detail/list responses.
+     *
+     * @param  array<string, mixed>  $providerResponse
+     */
+    private function providerReceiptReference(array $providerResponse): ?string
+    {
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
+     */
+    private function providerPaidAt(array $providerResponse): ?CarbonInterface
+    {
+        foreach ([
+            'provider_paid_at',
+            'paid_at',
+            'paidAt',
+            'provider_response_redacted.createdDate',
+            'provider_response_redacted.data.createdDate',
+            'provider_response_redacted.payments.0.createdDate',
+        ] as $key) {
+            $value = str_contains($key, '.') ? Arr::get($providerResponse, $key) : ($providerResponse[$key] ?? null);
+            if (! is_scalar($value) || trim((string) $value) === '') {
+                continue;
+            }
+
+            try {
+                return CarbonImmutable::parse((string) $value);
+            } catch (Throwable) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
      */
     private function rawProviderStatus(array $providerResponse): ?string
     {
@@ -290,7 +505,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $providerResponse
+     * @param  array<string, mixed>  $providerResponse
      */
     private function provider(array $providerResponse, TechnicalServiceMountPayment $payment): string
     {
@@ -300,7 +515,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function isIyzicoProvider(array $payload, TechnicalServiceMountPayment $payment): bool
     {
@@ -308,7 +523,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function hasTrustedIyzicoLinkSoldSignal(array $payload, TechnicalServiceMountPayment $payment): bool
     {
@@ -334,7 +549,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>|null
      */
     private function matchingIyzicoLinkPayload(array $payload, TechnicalServiceMountPayment $payment): ?array
@@ -366,8 +581,8 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $candidate
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $payload
      */
     private function tokenMatches(array $candidate, array $payload, TechnicalServiceMountPayment $payment): bool
     {
@@ -385,7 +600,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function conversationMatches(array $payload, TechnicalServiceMountPayment $payment): bool
     {
@@ -403,7 +618,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $linkPayload
+     * @param  array<string, mixed>  $linkPayload
      */
     private function amountMatches(array $linkPayload, TechnicalServiceMountPayment $payment): bool
     {
@@ -416,7 +631,7 @@ class TechnicalServicePaymentProviderReconciliationService
     }
 
     /**
-     * @param array<string, mixed> $linkPayload
+     * @param  array<string, mixed>  $linkPayload
      */
     private function currencyMatches(array $linkPayload, TechnicalServiceMountPayment $payment): bool
     {

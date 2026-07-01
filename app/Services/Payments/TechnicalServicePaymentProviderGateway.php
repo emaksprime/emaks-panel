@@ -68,6 +68,7 @@ class TechnicalServicePaymentProviderGateway
     public function buildRequest(string $operation, TechnicalServiceMountPayment $payment, array $metadata = []): PaymentProviderGatewayRequest
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $mode = $this->paymentMode($payment);
         $request = $payment->technicalServiceRequest;
         $requestId = $payment->technical_service_request_id ?: Arr::get($payload, 'technical_service_request_id');
         $requestCode = $this->stringValue(Arr::get($payload, 'request_code'))
@@ -92,7 +93,7 @@ class TechnicalServicePaymentProviderGateway
 
         return new PaymentProviderGatewayRequest(
             provider: 'iyzico',
-            mode: $this->modeResolver->gatewayMode(),
+            mode: $mode,
             operation: $operation,
             paymentId: (string) $payment->id,
             requestId: $requestId !== null ? (string) $requestId : null,
@@ -114,7 +115,7 @@ class TechnicalServicePaymentProviderGateway
             metadata: $this->safeMetadata(array_merge($providerMetadata, [
                 'source' => 'technical_service',
                 'environment' => $this->modeResolver->environment(),
-                'gateway_mode' => $this->modeResolver->gatewayMode(),
+                'gateway_mode' => $mode,
                 'payment_provider' => 'iyzico',
                 'provider_reference' => $payment->provider_reference,
                 'payment_url' => $payment->payment_url,
@@ -129,9 +130,20 @@ class TechnicalServicePaymentProviderGateway
 
     private function send(PaymentProviderGatewayRequest $request): PaymentProviderGatewayResponse
     {
-        $this->modeResolver->assertReadyForRealProvider();
+        $this->modeResolver->assertReadyForRealProvider($request->mode());
 
         return $this->client->send($request);
+    }
+
+    private function paymentMode(TechnicalServiceMountPayment $payment): string
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $mode = Arr::get($payload, 'provider_mode')
+            ?? Arr::get($payload, 'provider_decision.provider_mode')
+            ?? Arr::get($payload, 'provider_gateway.mode')
+            ?? $this->modeResolver->gatewayMode();
+
+        return strtolower((string) $mode) === 'live' ? 'live' : 'sandbox';
     }
 
     private function description(?string $requestCode, ?string $serialNo, TechnicalServiceMountPayment $payment): string

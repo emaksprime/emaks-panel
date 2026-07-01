@@ -28,6 +28,7 @@ use App\Http\Controllers\PanelPageController;
 use App\Http\Controllers\PartnerPortalController;
 use App\Http\Controllers\ServiceJobConfirmationController;
 use App\Http\Controllers\SupportController;
+use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Services\TechnicalService\QrPublicFlowSettingsService;
 use Illuminate\Support\Facades\Route;
@@ -553,6 +554,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::get('technical-service/admin', fn (
         QrPublicFlowSettingsService $settings,
         TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
+        TechnicalServiceMailTransportSettingsService $mailTransportSettings,
     ) => Inertia::render('panel/technical-service-admin', [
         'page' => [
             'title' => 'Teknik Servis Admin',
@@ -565,6 +567,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         ],
         'qrPublicFlowSettings' => $settings->payload(),
         'paymentProviderSettings' => $paymentProviderSettings->payload(),
+        'mailTransportSettings' => $mailTransportSettings->payload(),
     ]))->middleware('panel.access:technical_service_admin')->name('technical-service.admin');
 
     Route::get('{panelPath}', PanelPageController::class)

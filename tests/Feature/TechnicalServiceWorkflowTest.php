@@ -5,8 +5,6 @@ namespace Tests\Feature;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerTechnician;
 use App\Models\PageConfig;
-use App\Models\TechnicalServiceRequest;
-use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceEarning;
@@ -14,23 +12,25 @@ use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartnerJobAction;
 use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceQrLink;
+use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
-use App\Models\TechnicalServiceMountSession;
 use App\Models\User;
+use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MountRequestSubmitService;
-use App\Services\B2B\B2BPartnerPortalDataService;
-use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
-use App\Services\TechnicalService\TechnicalServiceUiLabelService;
+use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
+use App\Services\TechnicalService\TechnicalServicePaymentStatusResolver;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -2084,7 +2084,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ],
         ]);
 
-        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)->markPaid($payment);
+        app(TechnicalServicePaymentSettlementService::class)->markPaid($payment);
 
         $request->refresh();
         $session->refresh();
@@ -2148,7 +2148,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ],
         ]);
 
-        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)->markPaid($customerCharge);
+        app(TechnicalServicePaymentSettlementService::class)->markPaid($customerCharge);
 
         $resolved = app(TechnicalServicePaymentStatusResolver::class)->resolve($request->fresh());
         $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
@@ -2181,11 +2181,14 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
         $session = $this->mountSessionForRequest($request);
 
-        TechnicalServiceMountPayment::query()->create([
+        $paidMainPayment = TechnicalServiceMountPayment::query()->create([
             'technical_service_mount_session_id' => $session->id,
             'technical_service_request_id' => $request->id,
             'provider' => 'fake',
             'provider_reference' => 'fake-paid-mount-'.uniqid(),
+            'provider_payment_reference' => 'provider-paid-1000',
+            'provider_transaction_reference' => 'transaction-paid-1000',
+            'provider_receipt_reference' => null,
             'status' => TechnicalServiceMountPayment::STATUS_PAID,
             'amount' => 1000,
             'currency' => 'TRY',
@@ -2254,6 +2257,13 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(1000.0, (float) $payload['finance_summary']['current_visit']['customer_collection']['mount_amount']);
         $this->assertSame(500.0, (float) $payload['finance_summary']['current_visit']['customer_collection']['extra_amount']);
         $this->assertSame(1500.0, (float) $payload['total_customer_collected']);
+
+        $paidMainRow = collect($payload['sale_and_payment']['mount_payments']['paid_rows'])
+            ->firstWhere('id', $paidMainPayment->id);
+
+        $this->assertSame('provider-paid-1000', $paidMainRow['provider_payment_reference'] ?? null);
+        $this->assertSame('transaction-paid-1000', $paidMainRow['provider_transaction_reference'] ?? null);
+        $this->assertNull($paidMainRow['provider_receipt_reference'] ?? null);
     }
 
     public function test_payment_cancel_marks_pending_link_cancelled_and_excludes_it_from_pending_and_paid_totals(): void
@@ -2586,7 +2596,7 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertSame(
             'Partner portal tamamlama gönderimi operasyon tarafından onaylandı.',
-            \App\Services\TechnicalService\TechnicalServiceUiLabelService::cleanDisplayText($legacy)
+            TechnicalServiceUiLabelService::cleanDisplayText($legacy)
         );
     }
 
@@ -2638,8 +2648,8 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertIsString($source);
         $this->assertStringContainsString('const existingPendingPaymentAmount = typeof latestPendingMountPayment?.amount', $source);
-        $this->assertStringContainsString("const extraPayment = existingPendingPaymentAmountInput", $source);
-        $this->assertStringContainsString("const paymentAmount = existingPendingPaymentAmountInput", $source);
+        $this->assertStringContainsString('const extraPayment = existingPendingPaymentAmountInput', $source);
+        $this->assertStringContainsString('const paymentAmount = existingPendingPaymentAmountInput', $source);
         $this->assertStringContainsString('Tutar kaynağı: Manuel giriş gerekli', $source);
         $this->assertStringContainsString('Tutar kaynağı: Mevcut ödeme kaydı', $source);
         $this->assertStringContainsString('Tutar kaynağı: Operasyon manuel girişi', $source);
@@ -2718,12 +2728,22 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertIsString($source);
         $this->assertStringContainsString('function paymentLinkCopyUrl(payment: ServiceRequestExtraMountPayment | null | undefined): string', $source);
         $this->assertStringContainsString('payment?.copy_url ?? payment?.payment_url', $source);
+        $this->assertStringContainsString('function copyTextWithTextarea(text: string): boolean', $source);
+        $this->assertStringContainsString('async function clipboardMatchesText(text: string): Promise<boolean | null>', $source);
+        $this->assertStringContainsString('async function verifiedCopyResult(copied: boolean, text: string): Promise<boolean>', $source);
+        $this->assertStringContainsString("window.location.protocol !== 'https:'", $source);
         $this->assertStringContainsString("document.execCommand('copy')", $source);
+        $this->assertStringContainsString('textarea.setSelectionRange(0, textarea.value.length)', $source);
         $this->assertStringContainsString("setPaymentLinkCopyMessage('Kopyalanacak link yok.')", $source);
-        $this->assertStringContainsString("Link kopyalanamadı. Bağlantıyı aşağıdaki alandan manuel kopyalayın.", $source);
+        $this->assertStringContainsString('Link kopyalanamadı. Bağlantıyı aşağıdaki alandan manuel kopyalayın.', $source);
         $this->assertStringContainsString('paymentLinkManualCopyValue', $source);
         $this->assertStringContainsString('Manuel kopyalama', $source);
         $this->assertStringContainsString('function paymentProviderLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string', $source);
+        $this->assertStringContainsString('function paymentProviderReferenceRows(payment: ServiceRequestExtraMountPayment | null | undefined)', $source);
+        $this->assertStringContainsString('Provider ödeme referansı', $source);
+        $this->assertStringContainsString('Provider işlem referansı', $source);
+        $this->assertStringContainsString('Dekont referansı', $source);
+        $this->assertStringContainsString('Sağlayıcı tarafından dönmedi', $source);
         $this->assertStringContainsString("extraMountPayment.payment_action_kind === 'open_provider_url'", $source);
         $this->assertStringContainsString('paymentActionLabel(extraMountPayment)', $source);
         $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}', $source);
@@ -2744,6 +2764,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('z-[110]', $source);
         $this->assertStringContainsString('Iyzico Sandbox ödeme ekranı açılacak.', $source);
         $this->assertStringContainsString('Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.', $source);
+        $this->assertStringContainsString('{renderPaymentProviderReferences(payment)}', $source);
         $this->assertStringContainsString('{paymentLinkEditorPortal}', $source);
         $this->assertStringNotContainsString('{paymentLinkEditorModal}', $source);
     }
@@ -2772,8 +2793,22 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString("'can_copy_payment_url' => \$canCopy", $presenter);
         $this->assertStringContainsString("'can_cancel_payment' => \$isPending", $presenter);
         $this->assertStringContainsString("'payment_action_kind' => \$actionKind", $presenter);
+        $this->assertStringContainsString("'provider_payment_reference' => \$payment->provider_payment_reference", $presenter);
+        $this->assertStringContainsString("'provider_transaction_reference' => \$payment->provider_transaction_reference", $presenter);
+        $this->assertStringContainsString("'provider_receipt_reference' => \$payment->provider_receipt_reference", $presenter);
+        $this->assertStringContainsString("'provider_last_synced_at' => \$payment->provider_last_synced_at?->toISOString()", $presenter);
+        $this->assertStringContainsString("'provider_sync_attempts' => (int) (\$payment->provider_sync_attempts ?? 0)", $presenter);
+        $this->assertStringContainsString("'provider_sync_message' => \$syncWaiting", $presenter);
         $this->assertStringContainsString("payment.payment_action_kind === 'open_provider_url'", $source);
         $this->assertStringContainsString('paymentActionLabel(payment)', $source);
+        $this->assertStringContainsString('payment?.provider_sync_message', $source);
+        $this->assertStringContainsString('handlePendingPaymentSync(payment)', $source);
+        $this->assertStringContainsString('Durumu Kontrol Et', $source);
+
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
+        $this->assertIsString($pageSource);
+        $this->assertStringContainsString('handleMountPaymentSync', $pageSource);
+        $this->assertStringContainsString('sync_provider=1', $pageSource);
     }
 
     public function test_other_technicians_modal_keeps_first_four_visible(): void
@@ -2820,7 +2855,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('Fake/Yerel ödeme simülasyonu. Bu buton gerçek Iyzico tahsilatı yapmaz.', $source);
         $this->assertStringContainsString('Iyzico Sandbox ödeme ekranı açılacak.', $source);
         $this->assertStringContainsString('Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.', $source);
-        $this->assertStringContainsString("href={copyUrl}", $source);
+        $this->assertStringContainsString('href={copyUrl}', $source);
         $this->assertStringNotContainsString('} ${currency}`', $source);
     }
 
@@ -3509,7 +3544,7 @@ class TechnicalServiceWorkflowTest extends TestCase
     {
         $dirty = 'M??teri Planl? Tamamland? iÅŸ FotoÄŸraf Ã‡ilingir';
 
-        $clean = \App\Services\TechnicalService\TechnicalServiceUiLabelService::cleanDisplayText($dirty);
+        $clean = TechnicalServiceUiLabelService::cleanDisplayText($dirty);
 
         $this->assertSame('Müşteri Planlı Tamamlandı iş Fotoğraf Çilingir', $clean);
         foreach (['M??teri', 'Planl?', 'Tamamland?', 'iÅŸ', 'FotoÄŸ', 'Ã‡'] as $brokenToken) {
@@ -3719,9 +3754,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertIsString($portalSource);
         $this->assertIsString($detailSource);
 
-        $this->assertStringContainsString("'activation_code' => ".'$'."request->activation_code", $workflowSource);
+        $this->assertStringContainsString("'activation_code' => ".'$'.'request->activation_code', $workflowSource);
         $this->assertStringContainsString('private function serviceJobSerialContext', $partnerSource);
-        $this->assertStringContainsString("'activation_code' => ".'$'."this->firstFilled(".'$'."request->activation_code", $partnerSource);
+        $this->assertStringContainsString("'activation_code' => ".'$'.'this->firstFilled('.'$'.'request->activation_code', $partnerSource);
         $this->assertStringContainsString('const serviceJobSerialLabel = (job: ServiceJob): string =>', $portalSource);
         $this->assertStringContainsString('Aktivasyon / seri', $portalSource);
         $this->assertStringContainsString('Aktivasyon Kodu', $detailSource);
@@ -5161,7 +5196,8 @@ class TechnicalServiceWorkflowTest extends TestCase
         ]);
         $this->app->instance(
             MikroInvoiceSerialsService::class,
-            new class extends MikroInvoiceSerialsService {
+            new class extends MikroInvoiceSerialsService
+            {
                 public function forSerial(string $serialNo): array
                 {
                     $rows = $this->normalizeRows([
@@ -5690,8 +5726,8 @@ class TechnicalServiceWorkflowTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
-     * @param array<string, mixed> $timestamps
+     * @param  array<string, mixed>  $overrides
+     * @param  array<string, mixed>  $timestamps
      */
     private function technicalServiceRequest(array $overrides = [], array $timestamps = []): TechnicalServiceRequest
     {
@@ -5723,7 +5759,7 @@ class TechnicalServiceWorkflowTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $attributes
+     * @param  array<string, mixed>  $attributes
      */
     private function partnerJobAction(TechnicalServiceRequest $request, array $attributes): TechnicalServicePartnerJobAction
     {

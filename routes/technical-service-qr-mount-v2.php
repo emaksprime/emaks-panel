@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\TechnicalServiceQrFlowSettingsController;
 use App\Http\Controllers\Api\TechnicalServiceQrLinkController;
 use App\Http\Controllers\PublicMountPaymentController;
 use App\Http\Controllers\PublicMountRequestController;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -38,6 +39,9 @@ Route::post('mount-request/{token}/submit', [PublicMountRequestController::class
     ->name('mount-request.submit');
 Route::get('mount-payment/fake/{payment}/approve', [PublicMountRequestController::class, 'approveFakePayment'])
     ->name('mount-payment.fake.approve');
+Route::match(['GET', 'POST'], 'mount-payment/iyzico/callback', [PublicMountPaymentController::class, 'providerCallback'])
+    ->withoutMiddleware([VerifyCsrfToken::class])
+    ->name('mount-payment.callback');
 Route::get('mount-payment/{token}', [PublicMountPaymentController::class, 'show'])
     ->where('token', '[^/]+')
     ->name('mount-payment.show');
@@ -87,6 +91,27 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('payment-provider-settings/health-check', [TechnicalServicePaymentProviderSettingsController::class, 'healthCheck'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.payment-provider-settings.health-check');
+        Route::get('mail-transport-settings', [TechnicalServicePaymentProviderSettingsController::class, 'mailSettings'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.mail-transport-settings.show');
+        Route::post('mail-transport-settings/outgoing', [TechnicalServicePaymentProviderSettingsController::class, 'saveOutgoingMailSettings'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.mail-transport-settings.outgoing.save');
+        Route::post('mail-transport-settings/outgoing/clear', [TechnicalServicePaymentProviderSettingsController::class, 'clearOutgoingMailSettings'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.mail-transport-settings.outgoing.clear');
+        Route::post('mail-transport-settings/outgoing/test', [TechnicalServicePaymentProviderSettingsController::class, 'sendOutgoingTestMail'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.mail-transport-settings.outgoing.test');
+        Route::post('mail-transport-settings/incoming', [TechnicalServicePaymentProviderSettingsController::class, 'saveIncomingMailSettings'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.mail-transport-settings.incoming.save');
+        Route::post('mail-transport-settings/incoming/clear', [TechnicalServicePaymentProviderSettingsController::class, 'clearIncomingMailSettings'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.mail-transport-settings.incoming.clear');
+        Route::post('mail-transport-settings/incoming/test', [TechnicalServicePaymentProviderSettingsController::class, 'testIncomingMailSettings'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.mail-transport-settings.incoming.test');
         Route::post('requests/{technicalServiceRequest}/technicians/{technician}/route-quote', [TechnicalServiceController::class, 'routeQuote'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.technicians.route-quote');

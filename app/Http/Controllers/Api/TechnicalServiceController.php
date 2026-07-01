@@ -6,38 +6,40 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\AssignTechnicalServiceRequest;
 use App\Http\Requests\StoreTechnicalServiceContactLogRequest;
 use App\Http\Requests\StoreTechnicalServiceRequest;
-use App\Http\Requests\UpdateTechnicalServiceRequest;
 use App\Http\Requests\UpdateTechnicalServiceFieldActionRequest;
+use App\Http\Requests\UpdateTechnicalServiceRequest;
 use App\Http\Requests\UpdateTechnicalServiceRequestStatus;
 use App\Http\Requests\UpdateTechnicalServiceScheduleRequest;
 use App\Http\Requests\UpdateTechnicalServiceTechnicianWorkflowRequest;
 use App\Http\Requests\UpdateTechnicalServiceWorkflowRequest;
 use App\Models\B2B\B2BPartnerTechnician;
-use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceAssignmentArchive;
+use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
-use App\Models\TechnicalServicePartnerJobAction;
-use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
+use App\Services\Messaging\EvolutionWhatsAppMessageService;
+use App\Services\Payments\PaymentProviderManager;
+use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\MountRequestSubmitService;
-use App\Services\Messaging\EvolutionWhatsAppMessageService;
-use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
-use App\Services\TechnicalService\TechnicalServiceCancelContextService;
 use App\Services\TechnicalService\TechnicalServiceAssignmentSettlementService;
+use App\Services\TechnicalService\TechnicalServiceCancelContextService;
+use App\Services\TechnicalService\TechnicalServiceCodeGenerator;
+use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
+use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServiceRouteCostService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
-use App\Services\TechnicalService\TechnicalServicePaymentActionPresenter;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
-use App\Services\Payments\PaymentProviderManager;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -57,8 +59,7 @@ class TechnicalServiceController extends Controller
         private readonly TechnicalServiceCodeGenerator $codeGenerator,
         private readonly TechnicalServiceServiceVisitService $serviceVisitService,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlementService,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -685,8 +686,7 @@ class TechnicalServiceController extends Controller
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
         PaymentProviderManager $paymentProviderManager
-    ): JsonResponse
-    {
+    ): JsonResponse {
         $validated = $request->validate([
             'route_quote_id' => ['nullable', 'integer', 'exists:technical_service_route_quotes,id'],
             'technician_id' => ['nullable', 'integer', 'exists:technical_service_technicians,id'],
@@ -906,7 +906,8 @@ class TechnicalServiceController extends Controller
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
         TechnicalServiceMountPayment $payment,
-        PaymentProviderManager $paymentProviderManager
+        PaymentProviderManager $paymentProviderManager,
+        TechnicalServicePaymentProviderReconciliationService $reconciliationService
     ): JsonResponse {
         abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
 
@@ -914,6 +915,8 @@ class TechnicalServiceController extends Controller
             try {
                 $paymentProviderManager->syncPayment($payment);
             } catch (Throwable $exception) {
+                $reconciliationService->recordSyncFailure($payment->refresh(), $exception, 'admin_sync');
+
                 throw ValidationException::withMessages([
                     'payment' => $exception->getMessage(),
                 ]);
@@ -1078,6 +1081,12 @@ class TechnicalServiceController extends Controller
             'provider_token' => $payment->provider_reference,
             'provider_reference' => $payment->provider_reference,
             'provider_status' => $providerStatus,
+            'provider_last_synced_at' => $payment->provider_last_synced_at?->toISOString(),
+            'provider_sync_attempts' => (int) ($payment->provider_sync_attempts ?? 0),
+            'provider_last_sync_status' => $payment->provider_last_sync_status,
+            'provider_last_sync_error' => $payment->provider_last_sync_error,
+            'provider_sync_locked_at' => $payment->provider_sync_locked_at?->toISOString(),
+            'provider_paid_confirmed_at' => $payment->provider_paid_confirmed_at?->toISOString(),
             'amount_source' => $payload['amount_source'] ?? null,
             'source' => $payload['source'] ?? null,
             'purpose' => $payload['purpose'] ?? null,
@@ -1831,7 +1840,7 @@ class TechnicalServiceController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $filters
+     * @param  array<string, mixed>  $filters
      */
     private function operationsDashboardQuery(array $filters)
     {
@@ -1863,7 +1872,7 @@ class TechnicalServiceController extends Controller
     {
         $displayCity = TechnicalServiceUiLabelService::cityLabel($request->customer_city);
         $displayDistrict = TechnicalServiceUiLabelService::districtLabel($request->customer_district, $displayCity);
-        $operationalState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($request);
+        $operationalState = app(TechnicalServiceOperationalStatePresenter::class)->present($request);
         $cancelContext = app(TechnicalServiceCancelContextService::class)->present($request, $operationalState);
 
         return [
@@ -2147,7 +2156,7 @@ class TechnicalServiceController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function resolveReviewReassignmentState(
         TechnicalServiceRequest $request,
@@ -2391,7 +2400,7 @@ class TechnicalServiceController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function validateInstallationAfterLatestSale(TechnicalServiceRequest $request, array $payload): void
     {

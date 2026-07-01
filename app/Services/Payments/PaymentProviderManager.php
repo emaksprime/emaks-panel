@@ -3,6 +3,7 @@
 namespace App\Services\Payments;
 
 use App\Models\TechnicalServiceMountPayment;
+use Illuminate\Support\Arr;
 use InvalidArgumentException;
 
 class PaymentProviderManager
@@ -21,21 +22,21 @@ class PaymentProviderManager
 
     public function updatePayment(TechnicalServiceMountPayment $payment): array
     {
-        $this->stampProviderDecision($payment, $this->providerNameForPayment($payment));
+        $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
 
         return $this->providerForPayment($payment->refresh())->updatePayment($payment->refresh());
     }
 
     public function cancelPayment(TechnicalServiceMountPayment $payment): array
     {
-        $this->stampProviderDecision($payment, $this->providerNameForPayment($payment));
+        $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
 
         return $this->providerForPayment($payment->refresh())->cancelPayment($payment->refresh());
     }
 
     public function syncPayment(TechnicalServiceMountPayment $payment): array
     {
-        $this->stampProviderDecision($payment, $this->providerNameForPayment($payment));
+        $this->stampProviderDecision($payment, $this->providerNameForPayment($payment), $this->paymentModeForExistingPayment($payment));
 
         return $this->providerForPayment($payment->refresh())->syncPayment($payment->refresh());
     }
@@ -78,17 +79,20 @@ class PaymentProviderManager
         };
     }
 
-    private function stampProviderDecision(TechnicalServiceMountPayment $payment, string $provider): void
+    private function stampProviderDecision(TechnicalServiceMountPayment $payment, string $provider, ?string $providerMode = null): void
     {
         $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
         $provider = str_starts_with($provider, 'iyzico') ? 'iyzico' : $provider;
         $transport = $provider === 'fake'
             ? 'fake_local'
             : $this->transportResolver->activeTransport();
+        $providerMode = $provider === 'fake'
+            ? 'local'
+            : ($providerMode ?? $this->modeResolver->gatewayMode());
 
         $payload['provider_decision'] = [
             'provider' => $provider,
-            'provider_mode' => $provider === 'fake' ? 'local' : $this->modeResolver->gatewayMode(),
+            'provider_mode' => $providerMode,
             'provider_transport' => $transport,
             'environment' => $this->environment(),
             'real_provider_enabled' => $this->modeResolver->realProviderEnabled(),
@@ -102,5 +106,20 @@ class PaymentProviderManager
             'provider' => $provider,
             'raw_payload' => $payload,
         ])->save();
+    }
+
+    private function paymentModeForExistingPayment(TechnicalServiceMountPayment $payment): ?string
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $mode = Arr::get($payload, 'provider_mode')
+            ?? Arr::get($payload, 'provider_decision.provider_mode')
+            ?? Arr::get($payload, 'provider_gateway.mode')
+            ?? Arr::get($payload, 'provider_gateway.provider_mode');
+
+        if ($mode === null || $mode === '') {
+            return null;
+        }
+
+        return strtolower((string) $mode) === 'live' ? 'live' : 'sandbox';
     }
 }

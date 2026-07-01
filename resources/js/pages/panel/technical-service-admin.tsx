@@ -56,8 +56,11 @@ type PaymentProviderSettings = {
     public_https_ready: boolean
     payment_return_route_exists: boolean
     payment_return_url: string | null
+    callback_url: string | null
+    global_back_url: string | null
     callback_route_exists: boolean
     callback_route_name: string | null
+    identification_rule: string
     ready: boolean
     message: string
   }
@@ -130,6 +133,22 @@ type PaymentProviderSettings = {
     disabled_reason: string | null
     next_required_action: string
   }
+  automatic_reconcile: {
+    sandbox: {
+      ready: boolean
+      label: string
+      message: string
+    }
+    live: {
+      ready: boolean
+      label: string
+      message: string
+    }
+    back_url_status: string
+    callback_verified: boolean
+    accepted_fallback: string
+    live_release_requirement: string
+  }
   sandbox_activation_checklist: Array<{
     key: string
     label: string
@@ -142,8 +161,59 @@ type PaymentProviderSettings = {
     label: string
     message: string
   }
+  payment_notification: {
+    enabled: boolean
+    recipients: string[]
+    recipients_text: string
+    smtp_ready: boolean
+    ready: boolean
+    status_label: string
+    helper_text: string
+  }
   secret_source: string
   warning: string
+}
+
+type MailTransportSettings = {
+  outgoing: {
+    enabled: boolean
+    mailer: string
+    host: string | null
+    port: number | null
+    encryption: 'tls' | 'ssl' | 'none'
+    username_mask: string | null
+    password_mask: string | null
+    from_address: string | null
+    from_name: string | null
+    ready: boolean
+    status_label: string
+    readiness_message: string
+    last_tested_at: string | null
+    last_test_status: string | null
+    last_test_message: string | null
+  }
+  incoming: {
+    enabled: boolean
+    protocol: 'imap' | 'pop3'
+    host: string | null
+    port: number | null
+    encryption: 'tls' | 'ssl' | 'none'
+    username_mask: string | null
+    password_mask: string | null
+    mailbox: string | null
+    ready: boolean
+    status_label: string
+    readiness_message: string
+    last_tested_at: string | null
+    last_test_status: string | null
+    last_test_message: string | null
+  }
+  payment_notification_ready: boolean
+  helper_texts: {
+    outgoing: string
+    incoming: string
+    secrets: string
+  }
 }
 
 function csrfToken(): string {
@@ -170,14 +240,17 @@ async function errorMessageFromResponse(response: Response, fallback: string): P
 export default function TechnicalServiceAdmin({
   qrPublicFlowSettings,
   paymentProviderSettings,
+  mailTransportSettings,
 }: {
   qrPublicFlowSettings: QrPublicFlowSettings
   paymentProviderSettings: PaymentProviderSettings
+  mailTransportSettings: MailTransportSettings
 }) {
   const [preFormPaymentEnabled, setPreFormPaymentEnabled] = useState(
     qrPublicFlowSettings.pre_form_payment_for_mount_excluded_enabled,
   )
   const [paymentSettings, setPaymentSettings] = useState(paymentProviderSettings)
+  const [mailSettings, setMailSettings] = useState(mailTransportSettings)
   const [opsDetailVisibility, setOpsDetailVisibility] = useState({
     show_mount_excluded_approval_block: Boolean(qrPublicFlowSettings.ops_detail_visibility?.show_mount_excluded_approval_block),
     show_payment_mount_control_block: Boolean(qrPublicFlowSettings.ops_detail_visibility?.show_payment_mount_control_block),
@@ -187,9 +260,37 @@ export default function TechnicalServiceAdmin({
   const [paymentSaving, setPaymentSaving] = useState(false)
   const [credentialSaving, setCredentialSaving] = useState(false)
   const [healthChecking, setHealthChecking] = useState(false)
+  const [mailSaving, setMailSaving] = useState(false)
+  const [mailTesting, setMailTesting] = useState(false)
   const [message, setMessage] = useState('')
   const [paymentMessage, setPaymentMessage] = useState('')
+  const [mailMessage, setMailMessage] = useState('')
   const [credentialInputs, setCredentialInputs] = useState({ api_key: '', secret_key: '' })
+  const [notificationInputs, setNotificationInputs] = useState({
+    enabled: paymentProviderSettings.payment_notification.enabled,
+    recipients: paymentProviderSettings.payment_notification.recipients_text ?? '',
+  })
+  const [outgoingMailInputs, setOutgoingMailInputs] = useState({
+    enabled: mailTransportSettings.outgoing.enabled,
+    host: mailTransportSettings.outgoing.host ?? '',
+    port: mailTransportSettings.outgoing.port ? String(mailTransportSettings.outgoing.port) : '',
+    encryption: mailTransportSettings.outgoing.encryption,
+    username: '',
+    password: '',
+    from_address: mailTransportSettings.outgoing.from_address ?? '',
+    from_name: mailTransportSettings.outgoing.from_name ?? '',
+    test_recipient: '',
+  })
+  const [incomingMailInputs, setIncomingMailInputs] = useState({
+    enabled: mailTransportSettings.incoming.enabled,
+    protocol: mailTransportSettings.incoming.protocol,
+    host: mailTransportSettings.incoming.host ?? '',
+    port: mailTransportSettings.incoming.port ? String(mailTransportSettings.incoming.port) : '',
+    encryption: mailTransportSettings.incoming.encryption,
+    username: '',
+    password: '',
+    mailbox: mailTransportSettings.incoming.mailbox ?? 'INBOX',
+  })
 
   const updateSettings = async (payload: {
     pre_form_payment_for_mount_excluded_enabled?: boolean
@@ -237,6 +338,8 @@ export default function TechnicalServiceAdmin({
     payload: {
       real_provider_enabled?: boolean
       provider_mode?: 'sandbox' | 'live'
+      payment_notification_enabled?: boolean
+      payment_notification_recipients?: string
     },
     rollback: () => void,
     successMessage: string,
@@ -425,6 +528,194 @@ export default function TechnicalServiceAdmin({
       setPaymentMessage('Bağlantı durumu okunamadı.')
     } finally {
       setHealthChecking(false)
+    }
+  }
+
+  const savePaymentNotificationSettings = async () => {
+    const previous = paymentSettings
+
+    await updatePaymentSettings(
+      {
+        payment_notification_enabled: notificationInputs.enabled,
+        payment_notification_recipients: notificationInputs.recipients,
+      },
+      () => setPaymentSettings(previous),
+      'Ödeme bildirimi mail ayarı kaydedildi.',
+    )
+  }
+
+  const applyMailResponse = (payload: unknown) => {
+    const nextSettings = (payload as { mail_transport_settings?: MailTransportSettings }).mail_transport_settings
+
+    if (!nextSettings) {
+      return
+    }
+
+    setMailSettings(nextSettings)
+    setPaymentSettings((current) => ({
+      ...current,
+      payment_notification: {
+        ...current.payment_notification,
+        smtp_ready: nextSettings.payment_notification_ready,
+        ready: current.payment_notification.enabled
+          && current.payment_notification.recipients.length > 0
+          && nextSettings.payment_notification_ready,
+        status_label: !current.payment_notification.enabled
+          ? 'Kapalı'
+          : (!nextSettings.payment_notification_ready
+              ? 'SMTP eksik'
+              : (current.payment_notification.recipients.length > 0 ? 'Aktif' : 'Alıcı bekliyor')),
+      },
+    }))
+    setOutgoingMailInputs((current) => ({
+      ...current,
+      enabled: nextSettings.outgoing.enabled,
+      host: nextSettings.outgoing.host ?? '',
+      port: nextSettings.outgoing.port ? String(nextSettings.outgoing.port) : '',
+      encryption: nextSettings.outgoing.encryption,
+      username: '',
+      password: '',
+      from_address: nextSettings.outgoing.from_address ?? '',
+      from_name: nextSettings.outgoing.from_name ?? '',
+    }))
+    setIncomingMailInputs((current) => ({
+      ...current,
+      enabled: nextSettings.incoming.enabled,
+      protocol: nextSettings.incoming.protocol,
+      host: nextSettings.incoming.host ?? '',
+      port: nextSettings.incoming.port ? String(nextSettings.incoming.port) : '',
+      encryption: nextSettings.incoming.encryption,
+      username: '',
+      password: '',
+      mailbox: nextSettings.incoming.mailbox ?? 'INBOX',
+    }))
+  }
+
+  const postMailSettings = async (path: string, payload: Record<string, unknown>, successMessage: string) => {
+    setMailSaving(true)
+    setMailMessage('')
+
+    try {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      })
+
+      if (!response.ok) {
+        setMailMessage(await errorMessageFromResponse(response, 'Mail ayarı kaydedilemedi.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      applyMailResponse(responsePayload)
+      setMailMessage(successMessage)
+    } catch {
+      setMailMessage('Mail ayarı kaydedilemedi. Bağlantı durumunu kontrol edin.')
+    } finally {
+      setMailSaving(false)
+    }
+  }
+
+  const saveOutgoingMailSettings = async () => postMailSettings('/api/technical-service/mail-transport-settings/outgoing', {
+    enabled: outgoingMailInputs.enabled,
+    host: outgoingMailInputs.host,
+    port: outgoingMailInputs.port,
+    encryption: outgoingMailInputs.encryption,
+    username: outgoingMailInputs.username,
+    password: outgoingMailInputs.password,
+    from_address: outgoingMailInputs.from_address,
+    from_name: outgoingMailInputs.from_name,
+  }, 'SMTP ayarları encrypted olarak kaydedildi. Tam şifre tekrar gösterilmez.')
+
+  const clearOutgoingMailSettings = async () => {
+    if (typeof window !== 'undefined' && !window.confirm('SMTP ayarları temizlensin mi?')) {
+      return
+    }
+
+    await postMailSettings('/api/technical-service/mail-transport-settings/outgoing/clear', {}, 'SMTP ayarları temizlendi.')
+  }
+
+  const sendOutgoingTestMail = async () => {
+    setMailTesting(true)
+    setMailMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/mail-transport-settings/outgoing/test', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ recipient: outgoingMailInputs.test_recipient }),
+      })
+      const responsePayload = await response.json().catch(() => ({}))
+
+      applyMailResponse(responsePayload)
+
+      if (!response.ok) {
+        setMailMessage(String(responsePayload.message || 'Test mail gönderilemedi.'))
+
+        return
+      }
+
+      setMailMessage(responsePayload.message ?? 'Test mail gönderildi.')
+    } catch {
+      setMailMessage('Test mail gönderilemedi. Bağlantı durumunu kontrol edin.')
+    } finally {
+      setMailTesting(false)
+    }
+  }
+
+  const saveIncomingMailSettings = async () => postMailSettings('/api/technical-service/mail-transport-settings/incoming', {
+    enabled: incomingMailInputs.enabled,
+    protocol: incomingMailInputs.protocol,
+    host: incomingMailInputs.host,
+    port: incomingMailInputs.port,
+    encryption: incomingMailInputs.encryption,
+    username: incomingMailInputs.username,
+    password: incomingMailInputs.password,
+    mailbox: incomingMailInputs.mailbox,
+  }, 'IMAP/POP3 ayarları encrypted olarak kaydedildi. Tam şifre tekrar gösterilmez.')
+
+  const clearIncomingMailSettings = async () => {
+    if (typeof window !== 'undefined' && !window.confirm('IMAP/POP3 ayarları temizlensin mi?')) {
+      return
+    }
+
+    await postMailSettings('/api/technical-service/mail-transport-settings/incoming/clear', {}, 'IMAP/POP3 ayarları temizlendi.')
+  }
+
+  const testIncomingMailSettings = async () => {
+    setMailTesting(true)
+    setMailMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/mail-transport-settings/incoming/test', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+      })
+      const responsePayload = await response.json().catch(() => ({}))
+
+      applyMailResponse(responsePayload)
+      setMailMessage(responsePayload.message ?? (response.ok ? 'Gelen kutu bağlantı testi tamamlandı.' : 'Gelen kutu bağlantı testi başarısız.'))
+    } catch {
+      setMailMessage('Gelen kutu bağlantı testi başarısız.')
+    } finally {
+      setMailTesting(false)
     }
   }
 
@@ -701,12 +992,32 @@ export default function TechnicalServiceAdmin({
                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Back URL / callback</p>
                   <p className="mt-1 text-sm font-semibold text-slate-900">{paymentSettings.back_url.label}</p>
                   <p className="mt-1 leading-6">{paymentSettings.back_url.message}</p>
-                  {paymentSettings.back_url.payment_return_url ? (
-                    <p className="mt-1 break-all text-xs font-semibold text-slate-500">Return URL: {paymentSettings.back_url.payment_return_url}</p>
+                  {paymentSettings.back_url.global_back_url ? (
+                    <p className="mt-1 break-all text-xs font-semibold text-slate-500">Iyzico Back URL: {paymentSettings.back_url.global_back_url}</p>
                   ) : null}
+                  {paymentSettings.back_url.payment_return_url ? (
+                    <p className="mt-1 break-all text-xs font-semibold text-slate-500">Müşteri ödeme URL şablonu: {paymentSettings.back_url.payment_return_url}</p>
+                  ) : null}
+                  <p className="mt-1 text-xs font-semibold text-slate-500">{paymentSettings.back_url.identification_rule}</p>
                   <p className="mt-1 text-xs font-semibold text-slate-500">
                     Callback route: {paymentSettings.back_url.callback_route_exists ? paymentSettings.back_url.callback_route_name : 'Eksik'}
                   </p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Otomatik ödeme kontrolü</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    Sandbox otomatik kontrol: {paymentSettings.automatic_reconcile.sandbox.label}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">{paymentSettings.automatic_reconcile.sandbox.message}</p>
+                  <p className="mt-2 text-sm font-semibold text-slate-900">
+                    Live otomatik kontrol: {paymentSettings.automatic_reconcile.live.label}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">{paymentSettings.automatic_reconcile.live.message}</p>
+                  <p className="mt-2 text-xs font-semibold text-slate-500">
+                    Callback verified: {paymentSettings.automatic_reconcile.callback_verified ? 'Evet' : 'Hayır'}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">{paymentSettings.automatic_reconcile.accepted_fallback}</p>
+                  <p className="mt-1 text-xs font-semibold text-amber-700">{paymentSettings.automatic_reconcile.live_release_requirement}</p>
                 </div>
               </div>
               <p className="mt-2 text-xs font-semibold text-slate-500">
@@ -804,7 +1115,371 @@ export default function TechnicalServiceAdmin({
               >
                 {healthChecking ? 'Kontrol ediliyor' : 'Bağlantıyı doğrula'}
               </button>
+              <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Ödeme bildirimi maili</p>
+                <label className="mt-3 flex items-center gap-3 text-sm font-semibold text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={notificationInputs.enabled}
+                    onChange={(event) => setNotificationInputs({ ...notificationInputs, enabled: event.target.checked })}
+                    className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                  />
+                  Ödeme bildirimi maili gönderilsin
+                </label>
+                <label className="mt-3 grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Alıcı e-posta adresleri</span>
+                  <input
+                    type="text"
+                    value={notificationInputs.recipients}
+                    onChange={(event) => setNotificationInputs({ ...notificationInputs, recipients: event.target.value })}
+                    placeholder="payment-audit@example.com"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <p className="mt-2 text-xs leading-5 text-slate-600">{paymentSettings.payment_notification.helper_text}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">Durum: {paymentSettings.payment_notification.status_label}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  SMTP: {paymentSettings.payment_notification.smtp_ready ? 'Hazır' : 'Eksik'}
+                </p>
+                <button
+                  type="button"
+                  disabled={paymentSaving}
+                  onClick={() => {
+                    void savePaymentNotificationSettings()
+                  }}
+                  className="mt-3 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Mail ayarını kaydet
+                </button>
+              </div>
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                Mail ayarları
+              </p>
+              <h2 className="mt-2 text-lg font-bold text-slate-950">
+                SMTP gönderim, IMAP/POP3 gelen kutu bağlantı ayarları
+              </h2>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+                {mailSettings.helper_texts.outgoing} {mailSettings.helper_texts.incoming} {mailSettings.helper_texts.secrets}
+              </p>
+              {mailMessage ? (
+                <p className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800">
+                  {mailMessage}
+                </p>
+              ) : null}
+            </div>
+            <div className={[
+              'rounded-xl border px-4 py-3 text-sm font-semibold',
+              mailSettings.payment_notification_ready ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+            ].join(' ')}
+            >
+              Ödeme maili: {mailSettings.payment_notification_ready ? 'SMTP hazır' : 'SMTP eksik'}
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-2">
+            <article className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-slate-950">Giden Mail / SMTP</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">SMTP ödeme bildirimi ve test maili göndermek için kullanılır.</p>
+                </div>
+                <span className={[
+                  'rounded-lg border px-3 py-2 text-xs font-bold',
+                  mailSettings.outgoing.ready ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+                ].join(' ')}
+                >
+                  {mailSettings.outgoing.status_label}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 md:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={outgoingMailInputs.enabled}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, enabled: event.target.checked })}
+                    className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                  />
+                  SMTP gönderimi aktif
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>SMTP host</span>
+                  <input
+                    type="text"
+                    value={outgoingMailInputs.host}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, host: event.target.value })}
+                    placeholder="smtp.example.com"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Port</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={outgoingMailInputs.port}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, port: event.target.value })}
+                    placeholder="587"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Şifreleme</span>
+                  <select
+                    value={outgoingMailInputs.encryption}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, encryption: event.target.value as 'tls' | 'ssl' | 'none' })}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="tls">TLS</option>
+                    <option value="ssl">SSL</option>
+                    <option value="none">None</option>
+                  </select>
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>From adresi</span>
+                  <input
+                    type="email"
+                    value={outgoingMailInputs.from_address}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, from_address: event.target.value })}
+                    placeholder="no-reply@example.com"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Kullanıcı adı</span>
+                  <input
+                    type="text"
+                    value={outgoingMailInputs.username}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, username: event.target.value })}
+                    placeholder={mailSettings.outgoing.username_mask ?? 'Değiştirmek için girin'}
+                    autoComplete="off"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Şifre / token</span>
+                  <input
+                    type="password"
+                    value={outgoingMailInputs.password}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, password: event.target.value })}
+                    placeholder={mailSettings.outgoing.password_mask ?? 'Değiştirmek için girin'}
+                    autoComplete="new-password"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>From adı</span>
+                  <input
+                    type="text"
+                    value={outgoingMailInputs.from_name}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, from_name: event.target.value })}
+                    placeholder="EMAKS Teknik Servis"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Test alıcısı</span>
+                  <input
+                    type="email"
+                    value={outgoingMailInputs.test_recipient}
+                    onChange={(event) => setOutgoingMailInputs({ ...outgoingMailInputs, test_recipient: event.target.value })}
+                    placeholder="payment-audit@example.com"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={mailSaving}
+                  onClick={() => {
+                    void saveOutgoingMailSettings()
+                  }}
+                  className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {mailSaving ? 'Kaydediliyor' : 'SMTP ayarlarını kaydet'}
+                </button>
+                <button
+                  type="button"
+                  disabled={mailTesting || !outgoingMailInputs.test_recipient.trim()}
+                  onClick={() => {
+                    void sendOutgoingTestMail()
+                  }}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {mailTesting ? 'Test ediliyor' : 'Test mail gönder'}
+                </button>
+                <button
+                  type="button"
+                  disabled={mailSaving}
+                  onClick={() => {
+                    void clearOutgoingMailSettings()
+                  }}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  SMTP bilgilerini temizle
+                </button>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-slate-600">{mailSettings.outgoing.readiness_message}</p>
+              {mailSettings.outgoing.last_test_status ? (
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  Son test: {mailSettings.outgoing.last_test_status} — {mailSettings.outgoing.last_test_message}
+                </p>
+              ) : null}
+            </article>
+
+            <article className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-slate-950">Gelen Mail / IMAP-POP3</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">Bu ayarlar sadece gelen kutu bağlantı testi içindir; ödeme bildirimi SMTP ile gönderilir.</p>
+                </div>
+                <span className={[
+                  'rounded-lg border px-3 py-2 text-xs font-bold',
+                  mailSettings.incoming.ready ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+                ].join(' ')}
+                >
+                  {mailSettings.incoming.status_label}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 md:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={incomingMailInputs.enabled}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, enabled: event.target.checked })}
+                    className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                  />
+                  Gelen kutu bağlantısı aktif
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Protokol</span>
+                  <select
+                    value={incomingMailInputs.protocol}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, protocol: event.target.value as 'imap' | 'pop3' })}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="imap">IMAP</option>
+                    <option value="pop3">POP3</option>
+                  </select>
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Host</span>
+                  <input
+                    type="text"
+                    value={incomingMailInputs.host}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, host: event.target.value })}
+                    placeholder={incomingMailInputs.protocol === 'imap' ? 'imap.example.com' : 'pop3.example.com'}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Port</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={incomingMailInputs.port}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, port: event.target.value })}
+                    placeholder={incomingMailInputs.protocol === 'imap' ? '993' : '995'}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Şifreleme</span>
+                  <select
+                    value={incomingMailInputs.encryption}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, encryption: event.target.value as 'tls' | 'ssl' | 'none' })}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="tls">TLS</option>
+                    <option value="ssl">SSL</option>
+                    <option value="none">None</option>
+                  </select>
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Kullanıcı adı</span>
+                  <input
+                    type="text"
+                    value={incomingMailInputs.username}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, username: event.target.value })}
+                    placeholder={mailSettings.incoming.username_mask ?? 'Değiştirmek için girin'}
+                    autoComplete="off"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>Şifre / token</span>
+                  <input
+                    type="password"
+                    value={incomingMailInputs.password}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, password: event.target.value })}
+                    placeholder={mailSettings.incoming.password_mask ?? 'Değiştirmek için girin'}
+                    autoComplete="new-password"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 md:col-span-2">
+                  <span>Mailbox / klasör</span>
+                  <input
+                    type="text"
+                    value={incomingMailInputs.mailbox}
+                    onChange={(event) => setIncomingMailInputs({ ...incomingMailInputs, mailbox: event.target.value })}
+                    placeholder="INBOX"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={mailSaving}
+                  onClick={() => {
+                    void saveIncomingMailSettings()
+                  }}
+                  className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {mailSaving ? 'Kaydediliyor' : 'IMAP/POP3 ayarlarını kaydet'}
+                </button>
+                <button
+                  type="button"
+                  disabled={mailTesting}
+                  onClick={() => {
+                    void testIncomingMailSettings()
+                  }}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {mailTesting ? 'Test ediliyor' : 'Bağlantıyı test et'}
+                </button>
+                <button
+                  type="button"
+                  disabled={mailSaving}
+                  onClick={() => {
+                    void clearIncomingMailSettings()
+                  }}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Gelen mail bilgilerini temizle
+                </button>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-slate-600">{mailSettings.incoming.readiness_message}</p>
+              {mailSettings.incoming.last_test_status ? (
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  Son test: {mailSettings.incoming.last_test_status} — {mailSettings.incoming.last_test_message}
+                </p>
+              ) : null}
+            </article>
           </div>
         </section>
 

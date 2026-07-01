@@ -7,8 +7,8 @@ use Illuminate\Support\Arr;
 class IyzicoLinkResponseNormalizer
 {
     /**
-     * @param array<string, mixed> $requestPayload
-     * @param array<string, mixed> $providerPayload
+     * @param  array<string, mixed>  $requestPayload
+     * @param  array<string, mixed>  $providerPayload
      */
     public function normalize(
         array $requestPayload,
@@ -35,6 +35,9 @@ class IyzicoLinkResponseNormalizer
             'currency' => (string) ($requestPayload['currency'] ?? 'TRY'),
             'conversation_id' => (string) ($providerPayload['conversationId'] ?? $requestPayload['conversation_id'] ?? ''),
             'provider_token' => $this->providerToken($providerPayload, $requestPayload),
+            'provider_payment_reference' => $this->providerPaymentReference($providerPayload, $requestPayload),
+            'provider_transaction_reference' => $this->providerTransactionReference($providerPayload),
+            'provider_receipt_reference' => null,
             'payment_url' => $this->paymentUrl($providerPayload),
             'provider_status' => $ok ? $this->providerStatus($providerPayload, $operation) : 'provider_error',
             'raw_status' => $this->rawStatus($providerPayload),
@@ -56,7 +59,7 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $requestPayload
+     * @param  array<string, mixed>  $requestPayload
      */
     public function noSend(array $requestPayload, string $operation): PaymentProviderGatewayResponse
     {
@@ -83,8 +86,8 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
-     * @param array<string, mixed> $requestPayload
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $requestPayload
      */
     private function providerToken(array $payload, array $requestPayload): ?string
     {
@@ -98,7 +101,7 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function paymentUrl(array $payload): ?string
     {
@@ -108,7 +111,56 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $requestPayload
+     */
+    private function providerPaymentReference(array $payload, array $requestPayload): ?string
+    {
+        foreach ([
+            'paymentId',
+            'payment_id',
+            'data.paymentId',
+            'data.payment_id',
+            'payments.0.paymentId',
+            'payments.0.payment_id',
+        ] as $key) {
+            $value = str_contains($key, '.') ? Arr::get($payload, $key) : ($payload[$key] ?? null);
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function providerTransactionReference(array $payload): ?string
+    {
+        foreach ([
+            'paymentTransactionId',
+            'payment_transaction_id',
+            'data.paymentTransactionId',
+            'data.payment_transaction_id',
+            'itemTransactions.0.paymentTransactionId',
+            'data.itemTransactions.0.paymentTransactionId',
+            'payments.0.itemTransactions.0.paymentTransactionId',
+            'hostReference',
+            'data.hostReference',
+            'payments.0.hostReference',
+        ] as $key) {
+            $value = str_contains($key, '.') ? Arr::get($payload, $key) : ($payload[$key] ?? null);
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
      */
     private function providerStatus(array $payload, string $operation): string
     {
@@ -138,7 +190,7 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function rawStatus(array $payload): ?string
     {
@@ -148,7 +200,7 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function productStatus(array $payload): ?string
     {
@@ -161,7 +213,7 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function soldCount(array $payload): ?int
     {
@@ -171,7 +223,7 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function errorCode(array $payload, int $statusCode): string
     {
@@ -183,7 +235,7 @@ class IyzicoLinkResponseNormalizer
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function errorMessage(array $payload): string
     {

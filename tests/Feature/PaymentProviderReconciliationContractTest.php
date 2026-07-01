@@ -2,14 +2,20 @@
 
 namespace Tests\Feature;
 
+use App\Mail\TechnicalServicePaymentAuditMail;
+use App\Models\MailTransportProfile;
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 class PaymentProviderReconciliationContractTest extends TestCase
@@ -132,6 +138,301 @@ class PaymentProviderReconciliationContractTest extends TestCase
 
         $summary = app(TechnicalServicePaymentOwnershipService::class)->summary($request->fresh());
         $this->assertSame(1234.5, $summary['company_collected_amount']);
+    }
+
+    public function test_iyzico_paid_response_extracts_provider_reference_without_fake_receipt_dekont(): void
+    {
+        $payment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'iyzico-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'paymentId' => '25236546',
+                    'hostReference' => 'HOST-REF-8842',
+                    'receiptNo' => 'NOT-A-LINK-DEKONT',
+                    'data' => [
+                        'token' => 'iyzico-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 1,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                    'itemTransactions' => [
+                        ['paymentTransactionId' => '27225634'],
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertSame('25236546', $result->provider_payment_reference);
+        $this->assertSame('27225634', $result->provider_transaction_reference);
+        $this->assertNull($result->provider_receipt_reference);
+        $this->assertSame('25236546', $result->raw_payload['provider_reconciliation']['provider_payment_reference'] ?? null);
+        $this->assertSame('27225634', $result->raw_payload['provider_reconciliation']['provider_transaction_reference'] ?? null);
+        $this->assertNull($result->raw_payload['provider_reconciliation']['provider_receipt_reference'] ?? null);
+    }
+
+    public function test_iyzico_link_paid_response_does_not_use_local_payment_id_as_provider_reference(): void
+    {
+        $payment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'payment_id' => (string) $payment->id,
+                'provider_token' => 'iyzico-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'data' => [
+                        'token' => 'iyzico-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 1,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertNull($result->provider_payment_reference);
+        $this->assertNull($result->provider_transaction_reference);
+        $this->assertNull($result->provider_receipt_reference);
+        $this->assertNull($result->raw_payload['provider_reconciliation']['provider_payment_reference'] ?? null);
+        $this->assertSame('iyzico-token', $result->provider_reference);
+    }
+
+    public function test_paid_reconcile_sends_notification_when_enabled_and_duplicate_sync_does_not_resend(): void
+    {
+        Mail::fake();
+        $this->enablePaymentNotification('payment-audit@example.test');
+        $this->configureReadySmtpProfile();
+
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'PR88-REL3C9-MRN',
+            'serial_number' => 'PR88-REL3C9-SERIAL',
+            'customer_name' => 'PR88 REL3C9 Müşteri',
+            'customer_phone' => '5550000001',
+        ]);
+        $payment = $this->mountPaymentForRequest($request, [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+        $service = app(TechnicalServicePaymentProviderReconciliationService::class);
+
+        $providerResponse = [
+            'ok' => true,
+            'provider' => 'iyzico',
+            'operation' => 'sync_status',
+            'provider_token' => 'iyzico-token',
+            'provider_status' => 'sold',
+            'conversation_id' => 'payment:'.$payment->id,
+            'provider_response_redacted' => [
+                'status' => 'success',
+                'conversationId' => 'payment:'.$payment->id,
+                'paymentId' => '25236546',
+                'hostReference' => 'HOST-REF-8842',
+                'api_key' => '[redacted]',
+                'data' => [
+                    'token' => 'iyzico-token',
+                    'productStatus' => 'ACTIVE',
+                    'soldCount' => 1,
+                    'price' => '1234.50',
+                    'currencyCode' => 'TRY',
+                ],
+                'itemTransactions' => [
+                    ['paymentTransactionId' => '27225634'],
+                ],
+            ],
+        ];
+
+        $firstResult = $service->handleProviderStatusResponse($payment, $providerResponse);
+        $secondResult = $service->handleProviderStatusResponse($firstResult->fresh(), $providerResponse);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $secondResult->status);
+        $this->assertSame('sent', $secondResult->receipt_notification_status);
+        $this->assertSame('payment-audit@example.test', $secondResult->receipt_notification_to);
+        $this->assertNotNull($secondResult->receipt_notification_sent_at);
+
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, 1);
+        Mail::assertSent(TechnicalServicePaymentAuditMail::class, function (TechnicalServicePaymentAuditMail $mail): bool {
+            $rendered = $mail->render();
+
+            return $mail->hasTo('payment-audit@example.test')
+                && str_contains($rendered, 'PR88-REL3C9-MRN')
+                && str_contains($rendered, 'PR88-REL3C9-SERIAL')
+                && str_contains($rendered, 'PR88 REL3C9 Müşteri')
+                && str_contains($rendered, '1.234,50 TRY')
+                && str_contains($rendered, '25236546')
+                && str_contains($rendered, '27225634')
+                && str_contains($rendered, 'Sağlayıcı tarafından dönmedi')
+                && ! str_contains($rendered, 'TEST_SANDBOX_SECRET_KEY')
+                && ! str_contains($rendered, 'api-key-should-not-leak');
+        });
+
+        $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_sent')->count());
+        $this->assertSame(1, $request->events()->where('event_type', 'mount_payment_paid')->count());
+    }
+
+    public function test_pending_and_cancelled_sync_do_not_send_payment_notification(): void
+    {
+        Mail::fake();
+        $this->enablePaymentNotification('payment-audit@example.test');
+        $service = app(TechnicalServicePaymentProviderReconciliationService::class);
+
+        $pendingPayment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-pending-token',
+        ]);
+        $this->storeGatewayConversation($pendingPayment);
+        $service->handleProviderStatusResponse($pendingPayment, [
+            'ok' => true,
+            'provider' => 'iyzico',
+            'operation' => 'sync_status',
+            'provider_token' => 'iyzico-pending-token',
+            'provider_status' => 'active',
+            'conversation_id' => 'payment:'.$pendingPayment->id,
+            'provider_response_redacted' => [
+                'status' => 'success',
+                'conversationId' => 'payment:'.$pendingPayment->id,
+                'data' => [
+                    'token' => 'iyzico-pending-token',
+                    'productStatus' => 'ACTIVE',
+                    'soldCount' => 0,
+                    'price' => '1234.50',
+                    'currencyCode' => 'TRY',
+                ],
+            ],
+        ]);
+
+        $cancelledPayment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-cancelled-token',
+        ]);
+        $service->handleProviderStatusResponse($cancelledPayment, [
+            'ok' => true,
+            'provider' => 'iyzico',
+            'operation' => 'sync_status',
+            'provider_token' => 'iyzico-cancelled-token',
+            'provider_status' => 'passive',
+            'provider_response_redacted' => ['status' => 'passive'],
+        ]);
+
+        Mail::assertNothingSent();
+        $this->assertNull($pendingPayment->fresh()->receipt_notification_status);
+        $this->assertNull($cancelledPayment->fresh()->receipt_notification_status);
+    }
+
+    public function test_payment_notification_blocks_when_smtp_profile_is_missing(): void
+    {
+        Mail::fake();
+        $this->enablePaymentNotification('payment-audit@example.test');
+
+        $request = $this->technicalServiceRequest();
+        $payment = $this->mountPaymentForRequest($request, [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'iyzico-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'paymentId' => '25236546',
+                    'data' => [
+                        'token' => 'iyzico-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 1,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertSame('mailer_not_configured', $result->receipt_notification_status);
+        $this->assertStringContainsString('SMTP ayarları tamamlanmalı', (string) $result->receipt_notification_error);
+        $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_blocked')->count());
+        Mail::assertNothingSent();
+    }
+
+    public function test_mail_failure_does_not_unpay_payment_and_redacts_error(): void
+    {
+        $this->enablePaymentNotification('payment-audit@example.test');
+        $this->configureReadySmtpProfile();
+        $this->app->instance(TechnicalServiceMailTransportSettingsService::class, new class extends TechnicalServiceMailTransportSettingsService
+        {
+            public function __construct() {}
+
+            public function sendPaymentAuditMail(array $recipients, TechnicalServicePaymentAuditMail $mail): void
+            {
+                throw new \RuntimeException('SMTP failed password=super-secret gateway_token=abc123');
+            }
+        });
+
+        $request = $this->technicalServiceRequest();
+        $payment = $this->mountPaymentForRequest($request, [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'iyzico-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'paymentId' => '25236546',
+                    'data' => [
+                        'token' => 'iyzico-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 1,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $result->status);
+        $this->assertSame('failed', $result->receipt_notification_status);
+        $this->assertStringNotContainsString('super-secret', (string) $result->receipt_notification_error);
+        $this->assertStringNotContainsString('abc123', (string) $result->receipt_notification_error);
+        $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_failed')->count());
     }
 
     public function test_iyzico_api_success_without_link_sold_count_does_not_mark_paid(): void
@@ -313,7 +614,7 @@ class PaymentProviderReconciliationContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technicalServiceRequest(array $overrides = []): TechnicalServiceRequest
     {
@@ -336,7 +637,7 @@ class PaymentProviderReconciliationContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function mountPaymentForRequest(TechnicalServiceRequest $request, array $overrides = []): TechnicalServiceMountPayment
     {
@@ -384,5 +685,42 @@ class PaymentProviderReconciliationContractTest extends TestCase
         );
 
         $payment->forceFill(['raw_payload' => $payload])->save();
+    }
+
+    private function enablePaymentNotification(string $recipients): void
+    {
+        PageConfig::query()->create([
+            'page_code' => TechnicalServicePaymentProviderSettingsService::PAGE_CODE,
+            'layout_json' => [
+                'technical_service' => [
+                    'payment' => [
+                        'notification' => [
+                            'enabled' => true,
+                            'recipients' => $recipients,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    private function configureReadySmtpProfile(): void
+    {
+        MailTransportProfile::query()->create([
+            'scope' => MailTransportProfile::SCOPE_TECHNICAL_SERVICE,
+            'profile_key' => MailTransportProfile::PROFILE_DEFAULT,
+            'display_name' => 'Test SMTP',
+            'outgoing_enabled' => true,
+            'outgoing_mailer' => MailTransportProfile::MAILER_SMTP,
+            'smtp_host' => 'smtp.example.test',
+            'smtp_port' => 587,
+            'smtp_encryption' => 'tls',
+            'smtp_username_encrypted' => 'payment-audit@example.test',
+            'smtp_password_encrypted' => 'PR88_MAIL_PASS_TEST_ONLY',
+            'smtp_username_mask' => 'pay****it@example.test',
+            'smtp_password_mask' => '************',
+            'from_address' => 'no-reply@example.test',
+            'from_name' => 'EMAKS Test',
+        ]);
     }
 }

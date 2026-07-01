@@ -90,4 +90,9 @@ final class PaymentProviderGatewayRequest
     {
         return $this->operation;
     }
+
+    public function mode(): string
+    {
+        return $this->mode;
+    }
 }

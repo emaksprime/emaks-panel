@@ -57,14 +57,16 @@ class TechnicalServicePaymentProviderModeResolver
         return $this->settings->gatewayHttpEnabled();
     }
 
-    public function credentialsReady(): bool
+    public function credentialsReady(?string $mode = null): bool
     {
-        return $this->settings->credentialsReady();
+        return $mode === null
+            ? $this->settings->credentialsReady()
+            : $this->settings->laravelEncryptedCredentialsReady($mode);
     }
 
-    public function providerSendReady(): bool
+    public function providerSendReady(?string $mode = null): bool
     {
-        return $this->settings->providerSendReady();
+        return $this->settings->providerSendReady($mode);
     }
 
     public function shouldUseFakeProvider(): bool
@@ -72,9 +74,11 @@ class TechnicalServicePaymentProviderModeResolver
         return ! $this->realProviderEnabled();
     }
 
-    public function assertReadyForRealProvider(): void
+    public function assertReadyForRealProvider(?string $mode = null): void
     {
-        if ($this->gatewayMode() === 'live' && ! $this->settings->liveSendApproved()) {
+        $mode = $this->normalizeMode($mode ?? $this->gatewayMode());
+
+        if ($mode === 'live' && ! $this->settings->liveSendApproved()) {
             throw new TechnicalServicePaymentProviderDisabledException(
                 TechnicalServicePaymentProviderSettingsService::LIVE_SEND_APPROVAL_MESSAGE
             );
@@ -83,8 +87,8 @@ class TechnicalServicePaymentProviderModeResolver
         if (! $this->realProviderEnabled()
             || $this->configuredRealProviderName() !== 'iyzico'
             || ! $this->transportResolver->directLaravel()
-            || ! $this->credentialsReady()
-            || ! $this->providerSendReady()) {
+            || ! $this->credentialsReady($mode)
+            || ! $this->providerSendReady($mode)) {
             throw new TechnicalServicePaymentProviderDisabledException(self::NOT_READY_MESSAGE);
         }
     }
@@ -116,5 +120,10 @@ class TechnicalServicePaymentProviderModeResolver
             'provider_send_ready' => $this->providerSendReady(),
             'ready' => $ready,
         ];
+    }
+
+    private function normalizeMode(string $mode): string
+    {
+        return strtolower(trim($mode)) === 'live' ? 'live' : 'sandbox';
     }
 }
