@@ -49,6 +49,8 @@ class IyzicoLinkResponseNormalizer
             'status_code' => $statusCode,
             'meta' => [
                 'transport' => TechnicalServicePaymentProviderTransportResolver::TRANSPORT_DIRECT_LARAVEL,
+                'iyzico_link_product_status' => $this->productStatus($providerPayload),
+                'iyzico_link_sold_count' => $this->soldCount($providerPayload),
             ],
         ]);
     }
@@ -110,7 +112,17 @@ class IyzicoLinkResponseNormalizer
      */
     private function providerStatus(array $payload, string $operation): string
     {
-        $status = strtolower((string) (Arr::get($payload, 'data.status') ?? $payload['provider_status'] ?? ''));
+        $soldCount = $this->soldCount($payload);
+        if ($soldCount !== null && $soldCount > 0) {
+            return 'sold';
+        }
+
+        $status = strtolower((string) (
+            $this->productStatus($payload)
+            ?? Arr::get($payload, 'data.status')
+            ?? $payload['provider_status']
+            ?? ''
+        ));
 
         if ($status !== '') {
             return $status;
@@ -130,9 +142,32 @@ class IyzicoLinkResponseNormalizer
      */
     private function rawStatus(array $payload): ?string
     {
-        $value = Arr::get($payload, 'data.status') ?? $payload['status'] ?? null;
+        $value = $this->productStatus($payload) ?? Arr::get($payload, 'data.status') ?? $payload['status'] ?? null;
 
         return is_scalar($value) && trim((string) $value) !== '' ? trim((string) $value) : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function productStatus(array $payload): ?string
+    {
+        $value = Arr::get($payload, 'data.productStatus')
+            ?? Arr::get($payload, 'data.status')
+            ?? Arr::get($payload, 'productStatus')
+            ?? null;
+
+        return is_scalar($value) && trim((string) $value) !== '' ? trim((string) $value) : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function soldCount(array $payload): ?int
+    {
+        $value = Arr::get($payload, 'data.soldCount') ?? Arr::get($payload, 'soldCount') ?? null;
+
+        return is_numeric($value) ? (int) $value : null;
     }
 
     /**

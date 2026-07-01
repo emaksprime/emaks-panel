@@ -74,7 +74,7 @@ class PaymentProviderReconciliationContractTest extends TestCase
         $this->assertSame('no_send', $result->raw_payload['provider_reconciliation']['status'] ?? null);
     }
 
-    public function test_provider_status_paid_response_marks_paid_once_and_updates_customer_collection(): void
+    public function test_iyzico_link_sold_count_response_marks_paid_once_and_updates_customer_collection(): void
     {
         $request = $this->technicalServiceRequest([
             'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
@@ -84,6 +84,7 @@ class PaymentProviderReconciliationContractTest extends TestCase
             'provider' => 'iyzico',
             'provider_reference' => 'iyzico-token',
         ]);
+        $this->storeGatewayConversation($payment);
         $service = app(TechnicalServicePaymentProviderReconciliationService::class);
 
         $service->handleProviderStatusResponse($payment, [
@@ -91,16 +92,38 @@ class PaymentProviderReconciliationContractTest extends TestCase
             'provider' => 'iyzico',
             'operation' => 'sync_status',
             'provider_token' => 'iyzico-token',
-            'provider_status' => 'paid',
-            'provider_response_redacted' => ['status' => 'paid'],
+            'provider_status' => 'sold',
+            'conversation_id' => 'payment:'.$payment->id,
+            'provider_response_redacted' => [
+                'status' => 'success',
+                'conversationId' => 'payment:'.$payment->id,
+                'data' => [
+                    'token' => 'iyzico-token',
+                    'productStatus' => 'ACTIVE',
+                    'soldCount' => 1,
+                    'price' => '1234.50',
+                    'currencyCode' => 'TRY',
+                ],
+            ],
         ]);
         $secondResult = $service->handleProviderStatusResponse($payment->fresh(), [
             'ok' => true,
             'provider' => 'iyzico',
             'operation' => 'sync_status',
             'provider_token' => 'iyzico-token',
-            'provider_status' => 'paid',
-            'provider_response_redacted' => ['status' => 'paid'],
+            'provider_status' => 'sold',
+            'conversation_id' => 'payment:'.$payment->id,
+            'provider_response_redacted' => [
+                'status' => 'success',
+                'conversationId' => 'payment:'.$payment->id,
+                'data' => [
+                    'token' => 'iyzico-token',
+                    'productStatus' => 'ACTIVE',
+                    'soldCount' => 1,
+                    'price' => '1234.50',
+                    'currencyCode' => 'TRY',
+                ],
+            ],
         ]);
 
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $secondResult->status);
@@ -109,6 +132,146 @@ class PaymentProviderReconciliationContractTest extends TestCase
 
         $summary = app(TechnicalServicePaymentOwnershipService::class)->summary($request->fresh());
         $this->assertSame(1234.5, $summary['company_collected_amount']);
+    }
+
+    public function test_iyzico_api_success_without_link_sold_count_does_not_mark_paid(): void
+    {
+        $request = $this->technicalServiceRequest();
+        $payment = $this->mountPaymentForRequest($request, [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'iyzico-token',
+                'provider_status' => 'success',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'data' => [
+                        'token' => 'iyzico-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 0,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $result->status);
+        $this->assertNull($result->paid_at);
+
+        $payload = app(TechnicalServiceWorkflowService::class)->serialize($request->fresh(), true);
+        $this->assertNull($payload['sale_and_payment']['payment_summary']['total_customer_collection']);
+    }
+
+    public function test_iyzico_link_sold_count_with_wrong_token_does_not_mark_paid(): void
+    {
+        $payment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'other-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'data' => [
+                        'token' => 'other-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 1,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $result->status);
+        $this->assertNull($result->paid_at);
+    }
+
+    public function test_iyzico_link_sold_count_with_wrong_amount_does_not_mark_paid(): void
+    {
+        $payment = $this->mountPaymentForRequest($this->technicalServiceRequest(), [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'iyzico-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'data' => [
+                        'token' => 'iyzico-token',
+                        'productStatus' => 'ACTIVE',
+                        'soldCount' => 1,
+                        'price' => '1.00',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_PENDING, $result->status);
+        $this->assertNull($result->paid_at);
+    }
+
+    public function test_iyzico_paid_after_cancel_is_blocked_for_admin_review(): void
+    {
+        $request = $this->technicalServiceRequest();
+        $payment = $this->mountPaymentForRequest($request, [
+            'provider' => 'iyzico',
+            'provider_reference' => 'iyzico-token',
+            'status' => TechnicalServiceMountPayment::STATUS_CANCELLED,
+        ]);
+        $this->storeGatewayConversation($payment);
+
+        $result = app(TechnicalServicePaymentProviderReconciliationService::class)
+            ->handleProviderStatusResponse($payment, [
+                'ok' => true,
+                'provider' => 'iyzico',
+                'operation' => 'sync_status',
+                'provider_token' => 'iyzico-token',
+                'provider_status' => 'sold',
+                'conversation_id' => 'payment:'.$payment->id,
+                'provider_response_redacted' => [
+                    'status' => 'success',
+                    'conversationId' => 'payment:'.$payment->id,
+                    'data' => [
+                        'token' => 'iyzico-token',
+                        'productStatus' => 'PASSIVE',
+                        'soldCount' => 1,
+                        'price' => '1234.50',
+                        'currencyCode' => 'TRY',
+                    ],
+                ],
+            ]);
+
+        $this->assertSame(TechnicalServiceMountPayment::STATUS_CANCELLED, $result->status);
+        $this->assertNull($result->paid_at);
+        $this->assertSame('paid_after_cancel_requires_admin_review', $result->raw_payload['provider_reconciliation']['blocked_reason'] ?? null);
+        $this->assertSame(0, $request->events()->where('event_type', 'mount_payment_paid')->count());
     }
 
     public function test_provider_status_pending_response_keeps_pending_and_not_collected(): void
@@ -210,5 +373,16 @@ class PaymentProviderReconciliationContractTest extends TestCase
                 'customer_phone' => $request->customer_phone,
             ],
         ], $overrides));
+    }
+
+    private function storeGatewayConversation(TechnicalServiceMountPayment $payment): void
+    {
+        $payload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $payload['provider_gateway'] = array_merge(
+            is_array($payload['provider_gateway'] ?? null) ? $payload['provider_gateway'] : [],
+            ['conversation_id' => 'payment:'.$payment->id],
+        );
+
+        $payment->forceFill(['raw_payload' => $payload])->save();
     }
 }
