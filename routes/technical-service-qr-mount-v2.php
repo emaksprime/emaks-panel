@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceMessageTemplateController;
 use App\Http\Controllers\Api\TechnicalServiceMessagingSettingsController;
 use App\Http\Controllers\Api\TechnicalServicePaymentProviderSettingsController;
 use App\Http\Controllers\Api\TechnicalServiceQrFlowSettingsController;
@@ -95,12 +96,33 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('messaging-settings/nac-sms/credentials/clear', [TechnicalServiceMessagingSettingsController::class, 'clearNacSmsCredentials'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.nac-sms.credentials.clear');
+        Route::post('messaging-settings/nac-sms/test-send', [TechnicalServiceMessagingSettingsController::class, 'testNacSms'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.nac-sms.test-send');
         Route::post('messaging-settings/mikro-api/credentials', [TechnicalServiceMessagingSettingsController::class, 'saveMikroApiCredentials'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.mikro-api.credentials.save');
         Route::post('messaging-settings/mikro-api/credentials/clear', [TechnicalServiceMessagingSettingsController::class, 'clearMikroApiCredentials'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.mikro-api.credentials.clear');
+        Route::get('message-templates', [TechnicalServiceMessageTemplateController::class, 'index'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-templates.index');
+        Route::get('message-templates/variables', [TechnicalServiceMessageTemplateController::class, 'variables'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-templates.variables');
+        Route::post('message-templates/preview', [TechnicalServiceMessageTemplateController::class, 'preview'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-templates.preview');
+        Route::post('message-templates', [TechnicalServiceMessageTemplateController::class, 'store'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-templates.store');
+        Route::post('message-templates/restore-default', [TechnicalServiceMessageTemplateController::class, 'restoreDefault'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-templates.restore-default');
+        Route::post('message-templates/test-send', [TechnicalServiceMessageTemplateController::class, 'testSend'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-templates.test-send');
         Route::get('payment-provider-settings', [TechnicalServicePaymentProviderSettingsController::class, 'show'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.payment-provider-settings.show');

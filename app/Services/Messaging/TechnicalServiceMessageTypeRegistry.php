@@ -1,0 +1,470 @@
+<?php
+
+namespace App\Services\Messaging;
+
+use App\Models\TechnicalServiceMessageTemplate;
+
+class TechnicalServiceMessageTypeRegistry
+{
+    public const CHANNELS = [
+        TechnicalServiceMessageTemplate::CHANNEL_WHATSAPP => 'WhatsApp',
+        TechnicalServiceMessageTemplate::CHANNEL_SMS => 'SMS',
+        TechnicalServiceMessageTemplate::CHANNEL_VOICE_SCRIPT => 'Voice Script',
+    ];
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    public function definitions(): array
+    {
+        $definitions = [];
+
+        foreach (TechnicalServiceMessagingSettingsService::MESSAGE_TYPES as $key => $definition) {
+            $definitions[$key] = [
+                'key' => $key,
+                ...$definition,
+                'allowed_channels' => $this->allowedChannels($key),
+                'required_variables' => $this->requiredVariables($key),
+                'optional_variables' => $this->optionalVariables($key),
+                'payer_state_requirements' => $this->payerStateRequirements($key),
+            ];
+        }
+
+        return $definitions;
+    }
+
+    public function knownMessageType(string $messageType): bool
+    {
+        return array_key_exists($messageType, TechnicalServiceMessagingSettingsService::MESSAGE_TYPES);
+    }
+
+    public function knownChannel(string $channel): bool
+    {
+        return array_key_exists($channel, self::CHANNELS);
+    }
+
+    public function knownProvider(?string $providerKey): bool
+    {
+        return $providerKey === null || array_key_exists($providerKey, TechnicalServiceMessagingSettingsService::PROVIDERS);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function allowedChannels(string $messageType): array
+    {
+        if (str_contains($messageType, 'ops')) {
+            return [TechnicalServiceMessageTemplate::CHANNEL_WHATSAPP, TechnicalServiceMessageTemplate::CHANNEL_SMS];
+        }
+
+        return [
+            TechnicalServiceMessageTemplate::CHANNEL_WHATSAPP,
+            TechnicalServiceMessageTemplate::CHANNEL_SMS,
+            TechnicalServiceMessageTemplate::CHANNEL_VOICE_SCRIPT,
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function requiredVariables(string $messageType): array
+    {
+        return match ($messageType) {
+            'appointment_approved_customer',
+            'appointment_updated_customer' => [
+                'customer_name',
+                $messageType === 'appointment_updated_customer'
+                    ? 'customer_update_action_phrase'
+                    : 'customer_appointment_action_phrase',
+                'appointment_date_formatted',
+                'appointment_customer_window',
+            ],
+            'appointment_approved_technician',
+            'appointment_updated_technician' => [
+                'mrn',
+                'customer_name',
+                'customer_phone',
+                'address',
+                'appointment_date_formatted',
+                'appointment_exact_time_range',
+                'technician_job_card_url',
+            ],
+            'customer_approval_request' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'confirmation_link',
+            ],
+            'payment_link_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'payment_link',
+                'payment_amount_formatted',
+            ],
+            'customer_pays_technician_notice' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'customer_payment_amount_formatted',
+            ],
+            'assignment_offer_technician' => [
+                'mrn',
+                'customer_name',
+                'customer_phone',
+                'address',
+                'technician_job_card_url',
+            ],
+            'earnings_message_technician' => [
+                'mrn',
+                'technician_job_card_url',
+                'labor_amount_formatted',
+                'route_fee_formatted',
+                'technician_earning_total_formatted',
+            ],
+            'completion_submitted_ops' => [
+                'internal_job_reference',
+                'technician_name',
+                'completed_at_formatted',
+            ],
+            'support_request_ops' => [
+                'internal_job_reference',
+                'actor_name',
+                'support_subject',
+                'support_note',
+                'created_at_formatted',
+            ],
+            'job_rejected_ops' => [
+                'internal_job_reference',
+                'technician_name',
+                'technician_phone',
+                'rejection_reason',
+                'rejected_at_formatted',
+            ],
+            'price_revision_requested_ops' => [
+                'internal_job_reference',
+                'actor_name',
+                'old_amount_formatted',
+                'requested_amount_formatted',
+                'revision_reason',
+            ],
+            'future_survey_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'survey_link',
+            ],
+            default => [],
+        };
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function optionalVariables(string $messageType): array
+    {
+        $common = [
+            'request_code',
+            'mrn',
+            'srv',
+            'serial_no',
+            'product_name',
+            'brand',
+            'model',
+            'city',
+            'district',
+            'company_name',
+        ];
+
+        return array_values(array_unique([
+            ...$common,
+            ...match ($messageType) {
+                'appointment_approved_customer',
+                'appointment_updated_customer' => [
+                    'appointment_slot_label',
+                    'appointment_time_range',
+                    'customer_job_type_label',
+                    'customer_reference_code',
+                    'customer_reference_phrase',
+                    'customer_appointment_action_phrase',
+                    'customer_update_action_phrase',
+                    'technician_name',
+                    'technician_phone',
+                    'address',
+                    'customer_payment_amount_formatted',
+                    'sms_payment_line',
+                    'payment_instruction_block',
+                    'payment_link',
+                    'customer_visible_note',
+                    'customer_visible_note_block',
+                    'customer_visible_note_line',
+                ],
+                'appointment_approved_technician',
+                'appointment_updated_technician',
+                'assignment_offer_technician' => [
+                    'technician_phone',
+                    'maps_url',
+                    'maps_url_line',
+                    'technician_visible_note',
+                    'technician_visible_note_line',
+                    'customer_payment_amount_formatted',
+                    'appointment_slot_label',
+                    'appointment_time_range',
+                    'appointment_exact_time_range',
+                    'appointment_window_for_technician',
+                    'appointment_assignment_timing_text',
+                    'technician_earning_summary_text',
+                    'technician_earning_summary_block',
+                    'labor_amount_formatted',
+                    'route_fee_formatted',
+                    'technician_earning_total_formatted',
+                    'srv_line',
+                    'technician_visible_note_block',
+                ],
+                'customer_approval_request' => [
+                    'technician_name',
+                    'confirmation_link',
+                    'confirmation_link_sms',
+                    'customer_reference_phrase',
+                ],
+                'payment_link_customer' => [
+                    'payment_link',
+                    'payment_link_sms',
+                    'payment_amount_formatted',
+                    'customer_reference_phrase',
+                    'customer_reference_code',
+                    'customer_job_type_label',
+                    'provider_name',
+                ],
+                'customer_pays_technician_notice' => [
+                    'technician_name',
+                    'technician_phone',
+                    'customer_payment_amount',
+                    'customer_reference_phrase',
+                ],
+                'completion_submitted_ops',
+                'support_request_ops',
+                'job_rejected_ops',
+                'price_revision_requested_ops' => [
+                    'internal_job_reference',
+                    'actor_name',
+                    'support_subject',
+                    'support_note',
+                    'created_at_formatted',
+                    'rejection_reason',
+                    'rejected_at_formatted',
+                    'old_amount_formatted',
+                    'requested_amount_formatted',
+                    'revision_reason',
+                    'completed_at_formatted',
+                    'next_action_text',
+                ],
+                default => [],
+            },
+        ]));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function payerStateRequirements(string $messageType): array
+    {
+        return match ($messageType) {
+            'payment_link_customer' => [
+                'requires_payment_link' => true,
+                'block_if_company_collected' => true,
+            ],
+            'customer_pays_technician_notice' => [
+                'requires_customer_pays_technician' => true,
+                'requires_amount' => true,
+            ],
+            'appointment_approved_customer',
+            'appointment_updated_customer' => [
+                'guard_company_collected_pay_technician_text' => true,
+                'amount_required_when_customer_pays_technician' => true,
+                'requires_appointment_window' => true,
+            ],
+            'appointment_approved_technician',
+            'appointment_updated_technician',
+            'assignment_offer_technician' => [
+                'requires_job_card_url' => true,
+                'requires_exact_appointment_time' => $messageType !== 'assignment_offer_technician',
+            ],
+            default => [],
+        };
+    }
+
+    public function defaultTemplateKey(string $messageType, string $channel): string
+    {
+        return "{$messageType}.{$channel}.default";
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function defaultTemplate(string $messageType, string $channel, ?string $providerKey = null): array
+    {
+        $definition = $this->definitions()[$messageType] ?? null;
+        $requiredVariables = $this->requiredVariables($messageType);
+        $optionalVariables = $this->optionalVariables($messageType);
+
+        if ($channel === TechnicalServiceMessageTemplate::CHANNEL_SMS) {
+            $requiredVariables = $this->smsRequiredVariables($messageType, $requiredVariables);
+            $optionalVariables = array_values(array_unique([
+                ...$optionalVariables,
+                ...$this->smsOptionalVariables(),
+            ]));
+        }
+
+        return [
+            'template_key' => $this->defaultTemplateKey($messageType, $channel),
+            'message_type' => $messageType,
+            'channel' => $channel,
+            'provider_key' => $providerKey,
+            'title' => $this->defaultTitle($messageType, $channel, $definition['label'] ?? $messageType),
+            'body' => $this->defaultBody($messageType, $channel),
+            'active' => true,
+            'locale' => 'tr',
+            'version' => 1,
+            'required_variables' => $requiredVariables,
+            'optional_variables' => $optionalVariables,
+            'validation_rules' => $this->payerStateRequirements($messageType),
+            'metadata' => [
+                'source' => 'code_default',
+                'send_enabled' => false,
+            ],
+        ];
+    }
+
+    private function defaultBody(string $messageType, string $channel): string
+    {
+        if ($channel === TechnicalServiceMessageTemplate::CHANNEL_VOICE_SCRIPT) {
+            return match ($messageType) {
+                'appointment_approved_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_appointment_action_phrase} Randevunuz {appointment_date_formatted} tarihinde {appointment_customer_window}. {payment_instruction_text} Bu sadece sesli arama script önizlemesidir.',
+                'appointment_updated_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_update_action_phrase} Yeni randevunuz {appointment_date_formatted} tarihinde {appointment_customer_window}. Bu sadece sesli arama script önizlemesidir.',
+                'appointment_approved_technician' => 'Merhaba {technician_name}. Yeni iş kartı hazır. İş {internal_job_reference}. Müşteri {customer_name}. Randevu {appointment_date_formatted} {appointment_exact_time_range}. İş kartı bağlantısı {technician_job_card_url}. Bu sadece sesli arama script önizlemesidir.',
+                'appointment_updated_technician' => 'Merhaba {technician_name}. İş kartı randevusu güncellendi. İş {internal_job_reference}. Müşteri {customer_name}. Yeni randevu {appointment_date_formatted} {appointment_exact_time_range}. İş kartı bağlantısı {technician_job_card_url}. Bu sadece sesli arama script önizlemesidir.',
+                'customer_approval_request' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır. Onay bağlantısı mesaj olarak paylaşılır. Bu sadece sesli arama script önizlemesidir.',
+                'payment_link_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için ödeme bağlantısı mesaj olarak paylaşılır. Tutar {payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
+                'customer_pays_technician_notice' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar {customer_payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
+                'future_survey_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz sonrası memnuniyet anketi bağlantısı paylaşılır. Bu sadece gelecek Voibot script önizlemesidir.',
+                default => 'Merhaba. EMAKS Prime Teknik Servis operasyon bilgilendirme script önizlemesi. İş referansı {internal_job_reference}. Gerçek Voibot çağrısı yapılmaz.',
+            };
+        }
+
+        return match ($messageType) {
+            'appointment_approved_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_appointment_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}\n{sms_payment_line}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_appointment_action_phrase}\n\nRandevu Bilgileri\nTarih: {appointment_date_formatted}\nSaat Aralığı: {appointment_customer_window}\n\n{payment_instruction_block}\n\nRandevu aralığında adreste olunmasını rica ederiz.\n{customer_visible_note_block}",
+            'appointment_approved_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\nYeni iş kartı.\nMRN: {mrn}\nMüşteri: {customer_name}\nTel: {customer_phone}\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nİş Kartı: {technician_job_card_short_url}"
+                : "EMAKS Prime Teknik Servis\n\nYeni iş kartı hazır.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_date_formatted} {appointment_exact_time_range}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_earning_summary_block}\n{technician_visible_note_block}",
+            'appointment_updated_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_update_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_update_action_phrase}\n\nYeni Randevu Bilgileri\nTarih: {appointment_date_formatted}\nSaat Aralığı: {appointment_customer_window}\n\nRandevu aralığında adreste olunmasını rica ederiz.\n{customer_visible_note_block}",
+            'appointment_updated_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\nİş kartı güncellendi.\nMRN: {mrn}\nMüşteri: {customer_name}\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nİş Kartı: {technician_job_card_short_url}"
+                : "EMAKS Prime Teknik Servis\n\nServis randevusu güncellendi.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_date_formatted} {appointment_exact_time_range}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_visible_note_block}",
+            'customer_approval_request' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} işleminizi onaylamak için:\n{confirmation_link_sms}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır.\n\nİşlemi kontrol edip onaylamak için:\n{confirmation_link}",
+            'payment_link_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} için ödeme bağlantınız:\n{payment_link_sms}\nTutar: {payment_amount_formatted}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için ödeme bağlantınız aşağıdadır.\n\nTutar: {payment_amount_formatted}\nÖdeme Bağlantısı:\n{payment_link}",
+            'customer_pays_technician_notice' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase}\nUstaya ödenecek tutar: {customer_payment_amount_formatted}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar:\n\n{customer_payment_amount_formatted}\n\nRandevu aralığında adreste olunmasını rica ederiz.",
+            'assignment_offer_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\nYeni iş ataması.\nMRN: {mrn}\nMüşteri: {customer_name}\nTel: {customer_phone}\nBölge: {sms_short_address}\nİş Kartı: {technician_job_card_short_url}"
+                : "EMAKS Prime Teknik Servis\n\nYeni iş ataması.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_assignment_timing_text}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_earning_summary_block}",
+            'earnings_message_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\nHakediş güncellendi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nİş Kartı: {technician_job_card_short_url}"
+                : "EMAKS Prime Teknik Servis\n\nHakediş bilgisi güncellendi.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}",
+            'completion_submitted_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nUsta işi tamamladı.\nİş: {internal_job_reference}\nUsta: {technician_name}\nTarih: {completed_at_formatted}"
+                : "EMAKS Prime Teknik Servis\n\nUsta işi tamamladığını bildirdi.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nTamamlama Tarihi: {completed_at_formatted}\nSonraki Aksiyon: OPS son kontrol / müşteri onayı",
+            'support_request_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nDestek talebi.\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nKonu: {support_subject}"
+                : "EMAKS Prime Teknik Servis\n\nDestek talebi oluştu.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nKonu: {support_subject}\nAçıklama: {support_note}\nTarih: {created_at_formatted}",
+            'job_rejected_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nUsta işi reddetti.\nİş: {internal_job_reference}\nUsta: {technician_name}\nNeden: {rejection_reason}\nTarih: {rejected_at_formatted}\nAksiyon: Yeniden atama."
+                : "EMAKS Prime Teknik Servis\n\nUsta işi reddetti.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nTelefon: {technician_phone}\nReddetme Nedeni: {rejection_reason}\nReddetme Tarihi: {rejected_at_formatted}\n\nSonraki Aksiyon:\nYeniden atama yapılmalı.",
+            'price_revision_requested_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nFiyat revizyonu.\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nYeni: {requested_amount_formatted}"
+                : "EMAKS Prime Teknik Servis\n\nFiyat revizyonu istendi.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nÖnceki Tutar: {old_amount_formatted}\nYeni Talep: {requested_amount_formatted}\nAçıklama: {revision_reason}",
+            'future_survey_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} işleminiz için memnuniyet anketi:\n{survey_link}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için memnuniyet anketi bağlantısı aşağıdadır.\n\n{survey_link}",
+            default => 'Teknik servis bilgilendirme: {request_code}.',
+        };
+    }
+
+    private function defaultTitle(string $messageType, string $channel, string $fallback): string
+    {
+        $channelLabel = self::CHANNELS[$channel] ?? $channel;
+
+        return match ($messageType) {
+            'appointment_approved_customer' => "Müşteri randevu onayı - {$channelLabel}",
+            'appointment_updated_customer' => "Müşteri randevu güncelleme - {$channelLabel}",
+            'appointment_approved_technician' => "Usta randevu bildirimi - {$channelLabel}",
+            'appointment_updated_technician' => "Usta randevu güncelleme - {$channelLabel}",
+            'assignment_offer_technician' => "Usta iş ataması - {$channelLabel}",
+            'earnings_message_technician' => "Usta hakediş bilgilendirme - {$channelLabel}",
+            default => "{$fallback} - {$channelLabel}",
+        };
+    }
+
+    /**
+     * @param  array<int, string>  $requiredVariables
+     * @return array<int, string>
+     */
+    private function smsRequiredVariables(string $messageType, array $requiredVariables): array
+    {
+        return match ($messageType) {
+            'appointment_approved_technician',
+            'appointment_updated_technician' => [
+                'mrn',
+                'customer_name',
+                'customer_phone',
+                'appointment_date_formatted',
+                'appointment_exact_time_range',
+                'technician_job_card_short_url',
+            ],
+            'assignment_offer_technician' => [
+                'mrn',
+                'customer_name',
+                'customer_phone',
+                'sms_short_address',
+                'technician_job_card_short_url',
+            ],
+            'payment_link_customer' => [
+                'customer_reference_phrase',
+                'payment_link_sms',
+                'payment_amount_formatted',
+            ],
+            'customer_approval_request' => [
+                'customer_reference_phrase',
+                'confirmation_link_sms',
+            ],
+            'earnings_message_technician' => [
+                'mrn',
+                'technician_earning_total_formatted',
+                'technician_job_card_short_url',
+            ],
+            default => $requiredVariables,
+        };
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function smsOptionalVariables(): array
+    {
+        return [
+            'payment_link_sms',
+            'confirmation_link_sms',
+            'technician_job_card_short_url',
+            'sms_payment_line',
+            'sms_short_address',
+            'sms_title',
+            'sms_custom_id',
+            'payment_amount_formatted',
+        ];
+    }
+}

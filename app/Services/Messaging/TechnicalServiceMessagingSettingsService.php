@@ -181,6 +181,12 @@ class TechnicalServiceMessagingSettingsService
         'disabled',
     ];
 
+    public const CHANNEL_MODES = [
+        'disabled',
+        'test',
+        'live',
+    ];
+
     public const MESSAGE_TYPES = [
         'appointment_approved_customer' => [
             'label' => 'Müşteri randevu onayı',
@@ -320,6 +326,10 @@ class TechnicalServiceMessagingSettingsService
                 'secrets' => 'Evo, NAC, Voibot, Mikro veya n8n token/API key bu ekranda düz metin saklanmaz ve gösterilmez.',
                 'queue' => 'Queue sender REL-4D’de bağlanana kadar gerçek gönderim yolu hazır sayılmaz.',
                 'test_phone' => 'Test modu açıkken müşteri/usta yerine ortak test telefonuna yönlenir.',
+                'active_provider' => 'Öncelikli sağlayıcı manuel test/readiness için varsayılan bakılan sağlayıcıdır.',
+                'default_provider' => 'Varsayılan test sağlayıcısı otomasyon değil, güvenli preview/test tercihidir.',
+                'fallback_provider' => 'Hata durumunda yedek sağlayıcı REL-4D router kuyruğunda kullanılacak; bu fazda otomatik fallback gönderimi yoktur.',
+                'channel_policy' => 'Kanal politikası WhatsApp/SMS seçimini tanımlar; birlikte gönderim ve fallback REL-4D kuyruk/idempotency olmadan canlıya bağlanmaz.',
             ],
         ];
     }
@@ -591,6 +601,9 @@ class TechnicalServiceMessagingSettingsService
             $defaults['nac_sms'],
             is_array($settings['nac_sms'] ?? null) ? $settings['nac_sms'] : [],
         );
+        if ((int) $settings['nac_sms']['validity'] < 60) {
+            $settings['nac_sms']['validity'] = 60;
+        }
         $settings['mikro_api'] = $this->mergeMikroApiSettings(
             $defaults['mikro_api'],
             is_array($settings['mikro_api'] ?? null) ? $settings['mikro_api'] : [],
@@ -626,17 +639,20 @@ class TechnicalServiceMessagingSettingsService
             'message_types' => $this->defaultMessageTypeSettings(),
             'nac_sms' => [
                 'enabled' => false,
-                'scheme' => 'https',
+                'profile' => 'legacy_working_http_9587',
+                'scheme' => 'http',
                 'host' => 'smslogin.nac.com.tr',
-                'port' => 9588,
+                'port' => 9587,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
                 'sender' => null,
-                'title' => null,
+                'title' => 'EMAKS TEST',
                 'gateway_uuid' => null,
                 'encoding' => 0,
                 'commercial' => false,
                 'skip_ahs_query' => false,
                 'recipient_type' => 0,
-                'validity' => 6,
+                'validity' => 60,
                 'report_push_url' => null,
                 'use_shared_test_phone' => true,
                 'test_phone' => null,
@@ -700,12 +716,19 @@ class TechnicalServiceMessagingSettingsService
                 'enabled' => false,
                 'real_send_allowed' => false,
                 'test_send_allowed' => true,
+                'channel_policy' => 'whatsapp_only',
+                'whatsapp_mode' => 'test',
+                'sms_mode' => 'disabled',
+                'whatsapp_provider' => 'evo_whatsapp',
+                'sms_provider' => 'nac_sms',
                 'template_key' => null,
                 'notes' => null,
             ];
 
             if (($definition['future'] ?? false) === true) {
                 $defaults[$key]['test_send_allowed'] = false;
+                $defaults[$key]['channel_policy'] = 'disabled';
+                $defaults[$key]['whatsapp_mode'] = 'disabled';
             }
         }
 
@@ -750,6 +773,46 @@ class TechnicalServiceMessagingSettingsService
                     $value = trim((string) $values[$key]);
                     $next[$messageType][$key] = $value === '' ? null : $value;
                 }
+            }
+
+            foreach ([
+                'channel_policy',
+                'whatsapp_mode',
+                'sms_mode',
+                'whatsapp_provider',
+                'sms_provider',
+            ] as $key) {
+                if (! array_key_exists($key, $values)) {
+                    continue;
+                }
+
+                $value = trim((string) $values[$key]);
+
+                if ($key === 'channel_policy') {
+                    if (! in_array($value, self::SMS_CHANNEL_POLICIES, true)) {
+                        throw ValidationException::withMessages([
+                            'message_types' => "Bilinmeyen kanal politikası: {$value}",
+                        ]);
+                    }
+
+                    $next[$messageType][$key] = $value;
+
+                    continue;
+                }
+
+                if (in_array($key, ['whatsapp_mode', 'sms_mode'], true)) {
+                    if (! in_array($value, self::CHANNEL_MODES, true)) {
+                        throw ValidationException::withMessages([
+                            'message_types' => "Bilinmeyen kanal modu: {$value}",
+                        ]);
+                    }
+
+                    $next[$messageType][$key] = $value;
+
+                    continue;
+                }
+
+                $next[$messageType][$key] = $this->normalizeProviderKey($value);
             }
         }
 
@@ -813,6 +876,15 @@ class TechnicalServiceMessagingSettingsService
             throw ValidationException::withMessages([
                 'real_send_enabled' => 'Gerçek gönderim için mesaj sistemi, aktif provider, provider sözleşmesi, test telefonu ve en az bir gerçek gönderime açık mesaj tipi hazır olmalı.',
             ]);
+        }
+
+        foreach ($settings['message_types'] ?? [] as $messageType => $typeSettings) {
+            if (($typeSettings['whatsapp_mode'] ?? 'test') === 'live'
+                || ($typeSettings['sms_mode'] ?? 'disabled') === 'live') {
+                throw ValidationException::withMessages([
+                    'message_types' => "{$messageType} için canlı kanal modu REL-4D kuyruk/rate-limit ve REL-4F tekil test kanıtı tamamlanmadan açılamaz.",
+                ]);
+            }
         }
     }
 
@@ -1080,6 +1152,11 @@ class TechnicalServiceMessagingSettingsService
                 'enabled' => (bool) ($typeSettings['enabled'] ?? false),
                 'real_send_allowed' => (bool) ($typeSettings['real_send_allowed'] ?? false),
                 'test_send_allowed' => (bool) ($typeSettings['test_send_allowed'] ?? true),
+                'channel_policy' => $typeSettings['channel_policy'] ?? 'whatsapp_only',
+                'whatsapp_mode' => $typeSettings['whatsapp_mode'] ?? 'test',
+                'sms_mode' => $typeSettings['sms_mode'] ?? 'disabled',
+                'whatsapp_provider' => $typeSettings['whatsapp_provider'] ?? 'evo_whatsapp',
+                'sms_provider' => $typeSettings['sms_provider'] ?? 'nac_sms',
                 'template_key' => $typeSettings['template_key'] ?? null,
                 'notes' => $typeSettings['notes'] ?? null,
             ];
@@ -1228,8 +1305,11 @@ class TechnicalServiceMessagingSettingsService
         }
 
         foreach ([
+            'profile',
             'scheme',
             'host',
+            'path',
+            'request_shape',
             'sender',
             'title',
             'gateway_uuid',
@@ -1257,7 +1337,38 @@ class TechnicalServiceMessagingSettingsService
             $next['test_phone'] = $this->normalizePhone((string) $updates['test_phone']);
         }
 
+        if (array_key_exists('profile', $updates)) {
+            $next = $this->applyNacEndpointProfile($next);
+        }
+
         return $next;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function applyNacEndpointProfile(array $settings): array
+    {
+        return match ($settings['profile'] ?? 'legacy_working_http_9587') {
+            'docs_https_9588' => [
+                ...$settings,
+                'scheme' => 'https',
+                'host' => 'smslogin.nac.com.tr',
+                'port' => 9588,
+                'path' => '/sms/create',
+                'request_shape' => 'docs_full',
+            ],
+            'legacy_working_http_9587' => [
+                ...$settings,
+                'scheme' => 'http',
+                'host' => 'smslogin.nac.com.tr',
+                'port' => 9587,
+                'path' => '/sms/create',
+                'request_shape' => 'legacy_working_minimal',
+            ],
+            default => $settings,
+        };
     }
 
     /**
@@ -1311,12 +1422,30 @@ class TechnicalServiceMessagingSettingsService
      */
     private function validateNacSmsSettings(array $settings): void
     {
+        if (! in_array($settings['profile'], ['docs_https_9588', 'legacy_working_http_9587', 'custom'], true)) {
+            throw ValidationException::withMessages(['nac_sms.profile' => 'NAC SMS endpoint profili geçersiz.']);
+        }
+
         if (! in_array($settings['scheme'], ['https', 'http'], true)) {
             throw ValidationException::withMessages(['nac_sms.scheme' => 'NAC SMS şema http veya https olmalı.']);
         }
 
+        if (! in_array($settings['request_shape'], ['legacy_working_minimal', 'docs_full'], true)) {
+            throw ValidationException::withMessages(['nac_sms.request_shape' => 'NAC SMS request shape geçersiz.']);
+        }
+
+        $path = trim((string) ($settings['path'] ?? ''));
+        if ($path === '' || ! str_starts_with($path, '/')) {
+            throw ValidationException::withMessages(['nac_sms.path' => 'NAC SMS path / ile başlamalı.']);
+        }
+
         if ((int) $settings['port'] < 1 || (int) $settings['port'] > 65535) {
             throw ValidationException::withMessages(['nac_sms.port' => 'NAC SMS port 1-65535 arasında olmalı.']);
+        }
+
+        $title = trim((string) ($settings['title'] ?? ''));
+        if ($title !== '' && (mb_strlen($title) < 5 || mb_strlen($title) > 50)) {
+            throw ValidationException::withMessages(['nac_sms.title' => 'NAC SMS paket başlığı 5-50 karakter olmalı.']);
         }
 
         if (! in_array((int) $settings['encoding'], [0, 1, 2], true)) {
@@ -1327,8 +1456,8 @@ class TechnicalServiceMessagingSettingsService
             throw ValidationException::withMessages(['nac_sms.recipient_type' => 'NAC SMS alıcı tipi 0, 1 veya 2 olmalı.']);
         }
 
-        if ((int) $settings['validity'] < 3 || (int) $settings['validity'] > 6) {
-            throw ValidationException::withMessages(['nac_sms.validity' => 'NAC SMS validity 3 ile 6 arasında olmalı.']);
+        if ((int) $settings['validity'] < 60 || (int) $settings['validity'] > 1440) {
+            throw ValidationException::withMessages(['nac_sms.validity' => 'Single SMS geçerlilik süresi 60-1440 aralığında olmalıdır.']);
         }
 
         if (! (bool) $settings['use_shared_test_phone']
@@ -1361,7 +1490,7 @@ class TechnicalServiceMessagingSettingsService
         $credential = $this->credential('nac_sms');
         $credentialsReady = $credential?->basicAuthReady() ?? false;
         $senderReady = filled($nac['sender'] ?? null);
-        $hostReady = filled($nac['host'] ?? null) && filled($nac['port'] ?? null);
+        $hostReady = filled($nac['host'] ?? null) && filled($nac['port'] ?? null) && filled($nac['path'] ?? null);
         $testPhone = (bool) $nac['use_shared_test_phone']
             ? (string) $settings['test_phone']
             : (string) ($nac['test_phone'] ?? '');
@@ -1383,24 +1512,28 @@ class TechnicalServiceMessagingSettingsService
             $blocking[] = 'NAC SMS Basic Auth bilgileri eksik.';
         }
         if (! $senderReady) {
-            $blocking[] = 'NAC SMS sender/title eksik.';
+            $blocking[] = 'NAC SMS gönderen başlığı eksik.';
         }
         if (! $hostReady) {
-            $blocking[] = 'NAC SMS host/port eksik.';
+            $blocking[] = 'NAC SMS host/port/path eksik.';
         }
         if (! $testPhoneReady) {
             $blocking[] = 'Ortak test telefonu eksik veya geçersiz.';
         }
-        $blocking[] = 'SMS gerçek gönderimi REL-4D kuyruk ve REL-4F tekil test kanıtı bekliyor.';
+        $blocking[] = 'Business SMS gönderimi REL-4D kuyruk bağlanana kadar kapalı; açık onaylı test SMS sadece ortak test telefonuna gider.';
 
         return [
             'enabled' => (bool) $nac['enabled'],
+            'profile' => $nac['profile'],
             'scheme' => $nac['scheme'],
             'host' => $nac['host'],
             'port' => (int) $nac['port'],
+            'path' => $nac['path'],
+            'request_shape' => $nac['request_shape'],
             'base_url' => $this->nacBaseUrl($nac),
+            'endpoint_url' => $this->nacEndpointUrl($nac),
             'sender' => $nac['sender'],
-            'title' => $nac['title'],
+            'title' => $this->nacTitle($nac),
             'gateway_uuid' => $nac['gateway_uuid'],
             'encoding' => (int) $nac['encoding'],
             'commercial' => (bool) $nac['commercial'],
@@ -1509,7 +1642,7 @@ class TechnicalServiceMessagingSettingsService
             ['key' => 'nac_sms', 'label' => 'SMS API / NAC', 'ready' => $nac['test_ready'], 'summary' => 'NAC SMS Basic Auth, sender, gateway ve rapor altyapısı.'],
             ['key' => 'voibot', 'label' => 'Voibot Hazırlık', 'ready' => false, 'summary' => 'Voibot API sözleşmesi bekleniyor.'],
             ['key' => 'mikro_api', 'label' => 'Mikro API', 'ready' => $mikro['read_ready'], 'summary' => 'Mikro API credential, lisans ve yazma onayı altyapısı.'],
-            ['key' => 'templates', 'label' => 'Şablonlar', 'ready' => false, 'summary' => 'REL-4C template/preview bekliyor.'],
+            ['key' => 'templates', 'label' => 'Şablonlar', 'ready' => true, 'summary' => 'Template/preview/variable validation aktif; gönderim yok.'],
             ['key' => 'queue', 'label' => 'Kuyruk / Gönderim Logları', 'ready' => false, 'summary' => 'REL-4D outbox, duplicate ve rate-limit bekliyor.'],
             ['key' => 'health', 'label' => 'Entegrasyon Sağlığı', 'ready' => false, 'summary' => 'Canlı readiness blok nedenleri ve provider sağlık özeti.'],
         ];
@@ -1535,6 +1668,26 @@ class TechnicalServiceMessagingSettingsService
         $port = (int) $nac['port'];
 
         return "{$scheme}://{$host}:{$port}";
+    }
+
+    /**
+     * @param  array<string, mixed>  $nac
+     */
+    private function nacEndpointUrl(array $nac): string
+    {
+        $path = '/'.ltrim(trim((string) ($nac['path'] ?? '/sms/create')), '/');
+
+        return $this->nacBaseUrl($nac).$path;
+    }
+
+    /**
+     * @param  array<string, mixed>  $nac
+     */
+    private function nacTitle(array $nac): string
+    {
+        $title = trim((string) ($nac['title'] ?? ''));
+
+        return $title === '' ? 'EMAKS TEST' : $title;
     }
 
     private function maskValue(?string $value): ?string

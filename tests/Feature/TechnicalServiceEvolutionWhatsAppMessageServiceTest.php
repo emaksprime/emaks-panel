@@ -258,6 +258,75 @@ class TechnicalServiceEvolutionWhatsAppMessageServiceTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_evo_test_payload_preserves_newlines_and_sends_to_shared_phone_when_real_send_disabled(): void
+    {
+        $this->configureEvolution([
+            'services.evolution.real_send_enabled' => false,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response(['ok' => true], 200),
+        ]);
+
+        $dispatch = $this->service()->send(
+            'template_test_whatsapp',
+            'shared_test_phone',
+            '905467647428',
+            "EMAKS Prime Teknik Servis\n\nSayın PR88 Test,\nRandevu Bilgileri\nMRN: PR88-REL4C4",
+            [
+                'message_type' => 'appointment_approved_customer',
+                'manual_ui_send' => true,
+                'provider_test' => true,
+                'allow_unit_test_http_fake' => true,
+            ],
+        );
+
+        $payload = $dispatch->refresh()->request_payload;
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SENT, $dispatch->status);
+        $this->assertSame('shared_test_phone', $payload['target_type']);
+        $this->assertSame('905467647428', $payload['target_phone']);
+        $this->assertStringContainsString("\n\nSayın", $payload['text']);
+        $this->assertStringContainsString("\nRandevu Bilgileri\n", $payload['text']);
+
+        Http::assertSent(fn ($httpRequest): bool => $httpRequest->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
+            && $httpRequest['event'] === 'template_test_whatsapp'
+            && $httpRequest['target_type'] === 'shared_test_phone'
+            && $httpRequest['target_phone'] === '905467647428'
+            && str_contains($httpRequest['text'], "\n\nSayın"));
+    }
+
+    public function test_evo_test_failed_response_not_marked_sent(): void
+    {
+        $this->configureEvolution([
+            'services.evolution.real_send_enabled' => false,
+            'services.evolution.allow_unit_test_http_fake' => true,
+            'services.evolution.test_phone_min_seconds' => 0,
+        ]);
+        Http::fake([
+            'https://n8n.test/*' => Http::response('error code: 1033', 530),
+        ]);
+
+        $dispatch = $this->service()->send(
+            'template_test_whatsapp',
+            'shared_test_phone',
+            '905467647428',
+            "EMAKS Prime Teknik Servis\n\nSayın PR88 Test,\nRandevu Bilgileri\nMRN: PR88-REL4C5",
+            [
+                'message_type' => 'appointment_approved_customer',
+                'manual_ui_send' => true,
+                'provider_test' => true,
+                'allow_unit_test_http_fake' => true,
+            ],
+        );
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_FAILED, $dispatch->status);
+        $this->assertSame(530, $dispatch->response_payload['status'] ?? null);
+        $this->assertStringContainsString('error code: 1033', (string) $dispatch->error_message);
+        $this->assertStringContainsString("\nRandevu Bilgileri\n", $dispatch->request_payload['text']);
+    }
+
     public function test_customer_approval_manual_send_still_returns_clear_status(): void
     {
         $this->configureEvolution(['services.evolution.real_send_enabled' => true]);

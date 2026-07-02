@@ -104,7 +104,7 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertFalse($payload['mikro_api']['write_ready']);
     }
 
-    public function test_message_type_real_send_default_disabled(): void
+    public function test_channel_policy_message_type_real_send_default_disabled(): void
     {
         $types = $this->actingAs($this->admin())
             ->getJson('/api/technical-service/messaging-settings')
@@ -114,6 +114,12 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertNotEmpty($types);
         $this->assertContains('appointment_approved_customer', collect($types)->pluck('key'));
         $this->assertTrue(collect($types)->every(fn (array $type): bool => $type['real_send_allowed'] === false));
+        $customer = collect($types)->firstWhere('key', 'appointment_approved_customer');
+        $this->assertSame('whatsapp_only', $customer['channel_policy']);
+        $this->assertSame('test', $customer['whatsapp_mode']);
+        $this->assertSame('disabled', $customer['sms_mode']);
+        $this->assertSame('evo_whatsapp', $customer['whatsapp_provider']);
+        $this->assertSame('nac_sms', $customer['sms_provider']);
     }
 
     public function test_admin_can_save_safe_test_mode_settings(): void
@@ -139,6 +145,11 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
                         'enabled' => true,
                         'test_send_allowed' => true,
                         'real_send_allowed' => false,
+                        'channel_policy' => 'whatsapp_and_sms',
+                        'whatsapp_mode' => 'test',
+                        'sms_mode' => 'test',
+                        'whatsapp_provider' => 'evo_whatsapp',
+                        'sms_provider' => 'nac_sms',
                         'template_key' => 'future_template_key',
                     ],
                 ],
@@ -159,6 +170,35 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertSame('evo_whatsapp', data_get($layout, 'technical_service.messaging.active_provider'));
         $this->assertSame('905467647428', data_get($layout, 'technical_service.messaging.test_phone'));
         $this->assertSame('future_template_key', data_get($layout, 'technical_service.messaging.message_types.appointment_approved_customer.template_key'));
+        $this->assertSame('whatsapp_and_sms', data_get($layout, 'technical_service.messaging.message_types.appointment_approved_customer.channel_policy'));
+        $this->assertSame('test', data_get($layout, 'technical_service.messaging.message_types.appointment_approved_customer.sms_mode'));
+    }
+
+    public function test_message_type_live_channel_modes_are_blocked_until_queue_and_single_test_proof(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'message_types' => [
+                    'appointment_approved_customer' => [
+                        'enabled' => true,
+                        'whatsapp_mode' => 'live',
+                    ],
+                ],
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['message_types']);
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'message_types' => [
+                    'appointment_approved_customer' => [
+                        'enabled' => true,
+                        'sms_mode' => 'live',
+                    ],
+                ],
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['message_types']);
     }
 
     public function test_admin_can_save_nac_sms_non_secret_settings(): void
@@ -171,14 +211,17 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
                 'active_provider' => 'nac_sms',
                 'nac_sms' => [
                     'enabled' => true,
-                    'scheme' => 'https',
+                    'profile' => 'legacy_working_http_9587',
+                    'scheme' => 'http',
                     'host' => 'smslogin.nac.com.tr',
-                    'port' => 9588,
-                    'sender' => 'EMAKS',
-                    'title' => 'EMAKS',
+                    'port' => 9587,
+                    'path' => '/sms/create',
+                    'request_shape' => 'legacy_working_minimal',
+                    'sender' => 'EMAKS PRIME',
+                    'title' => '',
                     'encoding' => 0,
                     'recipient_type' => 0,
-                    'validity' => 6,
+                    'validity' => 60,
                     'use_shared_test_phone' => true,
                     'real_send_allowed' => false,
                 ],
@@ -192,7 +235,10 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->assertOk()
             ->assertJsonPath('messaging_settings.global.active_provider', 'nac_sms')
             ->assertJsonPath('messaging_settings.nac_sms.enabled', true)
-            ->assertJsonPath('messaging_settings.nac_sms.sender', 'EMAKS')
+            ->assertJsonPath('messaging_settings.nac_sms.profile', 'legacy_working_http_9587')
+            ->assertJsonPath('messaging_settings.nac_sms.endpoint_url', 'http://smslogin.nac.com.tr:9587/sms/create')
+            ->assertJsonPath('messaging_settings.nac_sms.sender', 'EMAKS PRIME')
+            ->assertJsonPath('messaging_settings.nac_sms.title', 'EMAKS TEST')
             ->assertJsonPath('messaging_settings.nac_sms.credentials_ready', false)
             ->assertJsonPath('messaging_settings.readiness.can_send_real', false);
 
@@ -201,7 +247,41 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
             ->value('layout_json');
 
         $this->assertSame('nac_sms', data_get($layout, 'technical_service.messaging.active_provider'));
-        $this->assertSame('EMAKS', data_get($layout, 'technical_service.messaging.nac_sms.sender'));
+        $this->assertSame('EMAKS PRIME', data_get($layout, 'technical_service.messaging.nac_sms.sender'));
+    }
+
+    public function test_nac_single_sms_validity_allows_60_and_1440_but_rejects_otp_six(): void
+    {
+        foreach ([60, 1440] as $validity) {
+            $this->actingAs($this->admin())
+                ->patchJson('/api/technical-service/messaging-settings', [
+                    'nac_sms' => [
+                        'enabled' => true,
+                        'profile' => 'legacy_working_http_9587',
+                        'sender' => 'EMAKS PRIME',
+                        'validity' => $validity,
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('messaging_settings.nac_sms.validity', $validity);
+        }
+
+        $response = $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'nac_sms' => [
+                    'enabled' => true,
+                    'profile' => 'legacy_working_http_9587',
+                    'sender' => 'EMAKS PRIME',
+                    'validity' => 6,
+                ],
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['nac_sms.validity']);
+
+        $this->assertStringContainsString(
+            'Single SMS geçerlilik süresi 60-1440 aralığında olmalıdır.',
+            (string) ($response->json('errors')['nac_sms.validity'][0] ?? ''),
+        );
     }
 
     public function test_nac_sms_credentials_are_encrypted_at_rest_and_masked_in_response(): void
@@ -248,8 +328,7 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
                 'active_provider' => 'nac_sms',
                 'nac_sms' => [
                     'enabled' => true,
-                    'sender' => 'EMAKS',
-                    'title' => 'EMAKS',
+                    'sender' => 'EMAKS PRIME',
                     'real_send_allowed' => true,
                 ],
                 'message_types' => [
@@ -440,6 +519,14 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Mesajlaşma Sağlayıcı Ayarları', $source);
         $this->assertStringContainsString('Voibot sözleşme bekliyor', $source);
         $this->assertStringContainsString('Provider readiness', $source);
+        $this->assertStringContainsString('Evo Test WhatsApp', $source);
+        $this->assertStringContainsString('NAC Test SMS', $source);
+        $this->assertStringContainsString('Mikro Bağlantı Testi', $source);
+        $this->assertStringContainsString('Null Local Dry-run', $source);
+        $this->assertStringContainsString('Öncelikli sağlayıcı', $source);
+        $this->assertStringContainsString('Varsayılan test sağlayıcısı', $source);
+        $this->assertStringContainsString('Hata yedeği sağlayıcı', $source);
+        $this->assertStringContainsString('Kanal politikası', $source);
         $this->assertStringContainsString('SMS API / NAC', $source);
         $this->assertStringContainsString('Mikro API', $source);
         $this->assertStringContainsString('admin_sections', $source);
@@ -449,7 +536,9 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Queue sender', $source);
         $this->assertStringContainsString('Mesaj tipi', $source);
         $this->assertStringContainsString('Test telefonu doğrula', $source);
-        $this->assertStringNotContainsString('WhatsApp test mesajı gönder', $source);
+        $this->assertStringContainsString('Test mesajı gönder', $source);
+        $this->assertStringContainsString('NAC altyapı test SMS’i gönder', $source);
+        $this->assertStringContainsString('Generic altyapı testi içindir.', $source);
         $this->assertStringNotContainsString('/sms/create', $source);
     }
 

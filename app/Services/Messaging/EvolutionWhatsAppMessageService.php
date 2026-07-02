@@ -10,6 +10,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Support\PartnerPortalPublicUrl;
+use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Http;
 use Throwable;
@@ -113,7 +114,7 @@ class EvolutionWhatsAppMessageService
             'sent_by' => $user?->id,
         ]);
 
-        $suppression = $this->suppressionStatus($request, $context);
+        $suppression = $this->suppressionStatus($event, $targetType, $resolvedPhone, $request, $context);
         if ($suppression !== null) {
             return $this->markSuppressed($dispatch, $suppression['status'], $suppression['message']);
         }
@@ -291,8 +292,13 @@ class EvolutionWhatsAppMessageService
      * @param  array<string, mixed>  $context
      * @return array{status:string,message:string}|null
      */
-    private function suppressionStatus(?TechnicalServiceRequest $request, array $context): ?array
-    {
+    private function suppressionStatus(
+        string $event,
+        string $targetType,
+        string $resolvedPhone,
+        ?TechnicalServiceRequest $request,
+        array $context,
+    ): ?array {
         $mrn = (string) ($request?->mrn ?? ($context['mrn'] ?? ''));
         if (filter_var($context['prepare_only'] ?? false, FILTER_VALIDATE_BOOL)) {
             return [
@@ -336,6 +342,10 @@ class EvolutionWhatsAppMessageService
             ];
         }
 
+        if ($this->allowsTemplateProviderTest($event, $targetType, $resolvedPhone, $context)) {
+            return null;
+        }
+
         if (! $this->realSendEnabled()) {
             return [
                 'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
@@ -355,6 +365,26 @@ class EvolutionWhatsAppMessageService
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function allowsTemplateProviderTest(string $event, string $targetType, string $resolvedPhone, array $context): bool
+    {
+        if ($event !== 'template_test_whatsapp' || $targetType !== 'shared_test_phone') {
+            return false;
+        }
+
+        if (! filter_var($context['provider_test'] ?? false, FILTER_VALIDATE_BOOL)
+            || ! filter_var($context['manual_ui_send'] ?? false, FILTER_VALIDATE_BOOL)) {
+            return false;
+        }
+
+        $testPhone = $this->normalizePhone((string) config('services.evolution.test_phone', ''));
+        $webhookUrl = trim((string) config('services.evolution.n8n_webhook_url', ''));
+
+        return $testPhone !== '' && $resolvedPhone === $testPhone && $webhookUrl !== '';
     }
 
     /**
@@ -624,7 +654,7 @@ class EvolutionWhatsAppMessageService
         }
 
         try {
-            return \Carbon\Carbon::parse($text)->format('d.m.Y');
+            return Carbon::parse($text)->format('d.m.Y');
         } catch (Throwable) {
             return $text;
         }

@@ -28,6 +28,7 @@ use App\Http\Controllers\PanelPageController;
 use App\Http\Controllers\PartnerPortalController;
 use App\Http\Controllers\ServiceJobConfirmationController;
 use App\Http\Controllers\SupportController;
+use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
@@ -555,6 +556,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
     Route::get('technical-service/admin', fn (
         QrPublicFlowSettingsService $settings,
         TechnicalServiceMessagingSettingsService $messagingSettings,
+        TechnicalServiceMessageTemplateService $messageTemplates,
         TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
         TechnicalServiceMailTransportSettingsService $mailTransportSettings,
     ) => Inertia::render('panel/technical-service-admin', [
@@ -569,6 +571,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
         ],
         'qrPublicFlowSettings' => $settings->payload(),
         'messagingSettings' => $messagingSettings->payload(),
+        'messageTemplateSettings' => $messageTemplates->payload(),
         'paymentProviderSettings' => $paymentProviderSettings->payload(),
         'mailTransportSettings' => $mailTransportSettings->payload(),
     ]))->middleware('panel.access:technical_service_admin')->name('technical-service.admin');
