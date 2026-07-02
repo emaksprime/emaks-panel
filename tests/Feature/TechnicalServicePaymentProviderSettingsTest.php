@@ -439,6 +439,11 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
 
     public function test_sandbox_readiness_allows_create_without_claiming_back_url_ready(): void
     {
+        config([
+            'services.public_urls.app_url' => null,
+            'services.public_urls.payment_base_url' => 'http://127.0.0.1:8000',
+        ]);
+
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY', $this->admin());
 
