@@ -174,6 +174,182 @@ type PaymentProviderSettings = {
   warning: string
 }
 
+type MessagingMessageType = {
+  key: string
+  label: string
+  recipient_role: string
+  description: string
+  future: boolean
+  enabled: boolean
+  real_send_allowed: boolean
+  test_send_allowed: boolean
+  template_key: string | null
+  notes: string | null
+}
+
+type MessagingProvider = {
+  key: string
+  label: string
+  channel: string
+  description: string
+  status_label: string
+  enabled: boolean
+  real_send_allowed: boolean
+  test_send_allowed: boolean
+  contract_confirmed: boolean
+  current_practical: boolean
+  active: boolean
+  default: boolean
+  fallback: boolean
+  real_ready: boolean
+  ready_reason: string | null
+  capabilities: Record<string, boolean>
+  notes: string | null
+}
+
+type MessagingNacSmsSettings = {
+  enabled: boolean
+  scheme: 'http' | 'https'
+  host: string | null
+  port: number
+  base_url: string
+  sender: string | null
+  title: string | null
+  gateway_uuid: string | null
+  encoding: number
+  commercial: boolean
+  skip_ahs_query: boolean
+  recipient_type: number
+  validity: number
+  report_push_url: string | null
+  use_shared_test_phone: boolean
+  test_phone: string | null
+  test_phone_masked: string | null
+  real_send_allowed: boolean
+  credentials_ready: boolean
+  username_mask: string | null
+  password_mask: string | null
+  test_ready: boolean
+  live_ready: boolean
+  queue_ready: boolean
+  blocking_reasons: string[]
+}
+
+type MessagingMikroApiSettings = {
+  enabled: boolean
+  base_url: string | null
+  api_version: string | null
+  application_code: string | null
+  application_name: string | null
+  company_code: string | null
+  branch_code: string | null
+  workstation_code: string | null
+  fiscal_year: string | null
+  timeout_seconds: number
+  license_status: string | null
+  app_customer_license_status: string | null
+  read_sync_enabled: boolean
+  write_enabled: boolean
+  write_approval_required: boolean
+  operation_catalog_status: string | null
+  credentials_ready: boolean
+  api_key_mask: string | null
+  token_mask: string | null
+  read_ready: boolean
+  write_ready: boolean
+  blocking_reasons: string[]
+}
+
+type MessagingAdminSection = {
+  key: string
+  label: string
+  ready: boolean
+  summary: string
+}
+
+type MessagingSettings = {
+  global: {
+    messaging_enabled: boolean
+    real_send_enabled: boolean
+    test_mode_enabled: boolean
+    test_phone: string | null
+    test_phone_masked: string | null
+    queue_paused: boolean
+    provider_key: string
+    active_provider: string
+    default_provider: string
+    fallback_provider: string
+    provider_priority: string[]
+    send_delay_seconds: number
+    duplicate_cooldown_minutes: number
+    hourly_limit: number
+    daily_limit: number
+    max_auto_retries: number
+    allow_browser_smoke_send: boolean
+    allow_test_fixture_send: boolean
+  }
+  readiness: {
+    messaging_enabled: boolean
+    real_send_enabled: boolean
+    test_mode_enabled: boolean
+    test_phone_configured: boolean
+    provider_webhook_configured: boolean
+    provider_secret_configured: boolean
+    active_provider: string
+    active_provider_label: string
+    default_provider: string
+    fallback_provider: string
+    provider_priority: string[]
+    active_provider_enabled: boolean
+    active_provider_supports_text: boolean
+    active_provider_contract_confirmed: boolean
+    active_provider_credentials_ready: boolean
+    active_provider_real_ready: boolean
+    queue_ready: boolean
+    can_send_test: boolean
+    can_send_real: boolean
+    effective_mode: string
+    disabled_reasons: string[]
+    real_allowed_message_types: string[]
+    test_allowed_message_types: string[]
+  }
+  provider: {
+    active_provider: string
+    default_provider: string
+    fallback_provider: string
+    provider_priority: string[]
+    webhook_url_configured: boolean
+    provider_secret_configured: boolean
+    webhook_url_value: string | null
+    secret_value: null
+    webhook_path: string
+    router: string
+  }
+  providers: MessagingProvider[]
+  capability_map: Record<string, Record<string, boolean>>
+  nac_sms: MessagingNacSmsSettings
+  mikro_api: MessagingMikroApiSettings
+  admin_sections: MessagingAdminSection[]
+  message_types: MessagingMessageType[]
+  warnings: string[]
+  helper_texts: {
+    secrets: string
+    queue: string
+    test_phone: string
+  }
+}
+
+type MessagingTypeInputs = Record<
+  string,
+  {
+    enabled: boolean
+    real_send_allowed: boolean
+    test_send_allowed: boolean
+    template_key: string
+    notes: string
+  }
+>
+
 type MailTransportSettings = {
   outgoing: {
     enabled: boolean
@@ -216,6 +392,63 @@ type MailTransportSettings = {
   }
 }
 
+function messageTypeInputsFromSettings(settings: MessagingSettings): MessagingTypeInputs {
+  return Object.fromEntries(
+    settings.message_types.map((item) => [
+      item.key,
+      {
+        enabled: item.enabled,
+        real_send_allowed: item.real_send_allowed,
+        test_send_allowed: item.test_send_allowed,
+        template_key: item.template_key ?? '',
+        notes: item.notes ?? '',
+      },
+    ]),
+  )
+}
+
+function nacSmsInputsFromSettings(settings: MessagingSettings) {
+  return {
+    enabled: settings.nac_sms.enabled,
+    scheme: settings.nac_sms.scheme,
+    host: settings.nac_sms.host ?? '',
+    port: String(settings.nac_sms.port),
+    sender: settings.nac_sms.sender ?? '',
+    title: settings.nac_sms.title ?? '',
+    gateway_uuid: settings.nac_sms.gateway_uuid ?? '',
+    encoding: String(settings.nac_sms.encoding),
+    commercial: settings.nac_sms.commercial,
+    skip_ahs_query: settings.nac_sms.skip_ahs_query,
+    recipient_type: String(settings.nac_sms.recipient_type),
+    validity: String(settings.nac_sms.validity),
+    report_push_url: settings.nac_sms.report_push_url ?? '',
+    use_shared_test_phone: settings.nac_sms.use_shared_test_phone,
+    test_phone: settings.nac_sms.test_phone ?? '',
+    real_send_allowed: settings.nac_sms.real_send_allowed,
+  }
+}
+
+function mikroApiInputsFromSettings(settings: MessagingSettings) {
+  return {
+    enabled: settings.mikro_api.enabled,
+    base_url: settings.mikro_api.base_url ?? '',
+    api_version: settings.mikro_api.api_version ?? 'V17',
+    application_code: settings.mikro_api.application_code ?? '',
+    application_name: settings.mikro_api.application_name ?? '',
+    company_code: settings.mikro_api.company_code ?? '',
+    branch_code: settings.mikro_api.branch_code ?? '',
+    workstation_code: settings.mikro_api.workstation_code ?? '',
+    fiscal_year: settings.mikro_api.fiscal_year ?? '',
+    timeout_seconds: String(settings.mikro_api.timeout_seconds),
+    license_status: settings.mikro_api.license_status ?? 'unknown',
+    app_customer_license_status: settings.mikro_api.app_customer_license_status ?? 'unknown',
+    read_sync_enabled: settings.mikro_api.read_sync_enabled,
+    write_enabled: settings.mikro_api.write_enabled,
+    write_approval_required: settings.mikro_api.write_approval_required,
+    operation_catalog_status: settings.mikro_api.operation_catalog_status ?? 'missing',
+  }
+}
+
 function csrfToken(): string {
   if (typeof document === 'undefined') {
     return ''
@@ -239,16 +472,19 @@ async function errorMessageFromResponse(response: Response, fallback: string): P
 
 export default function TechnicalServiceAdmin({
   qrPublicFlowSettings,
+  messagingSettings,
   paymentProviderSettings,
   mailTransportSettings,
 }: {
   qrPublicFlowSettings: QrPublicFlowSettings
+  messagingSettings: MessagingSettings
   paymentProviderSettings: PaymentProviderSettings
   mailTransportSettings: MailTransportSettings
 }) {
   const [preFormPaymentEnabled, setPreFormPaymentEnabled] = useState(
     qrPublicFlowSettings.pre_form_payment_for_mount_excluded_enabled,
   )
+  const [messaging, setMessaging] = useState(messagingSettings)
   const [paymentSettings, setPaymentSettings] = useState(paymentProviderSettings)
   const [mailSettings, setMailSettings] = useState(mailTransportSettings)
   const [opsDetailVisibility, setOpsDetailVisibility] = useState({
@@ -262,10 +498,36 @@ export default function TechnicalServiceAdmin({
   const [healthChecking, setHealthChecking] = useState(false)
   const [mailSaving, setMailSaving] = useState(false)
   const [mailTesting, setMailTesting] = useState(false)
+  const [messagingSaving, setMessagingSaving] = useState(false)
+  const [messagingPhoneChecking, setMessagingPhoneChecking] = useState(false)
+  const [integrationCredentialSaving, setIntegrationCredentialSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [paymentMessage, setPaymentMessage] = useState('')
   const [mailMessage, setMailMessage] = useState('')
+  const [messagingMessage, setMessagingMessage] = useState('')
   const [credentialInputs, setCredentialInputs] = useState({ api_key: '', secret_key: '' })
+  const [messagingInputs, setMessagingInputs] = useState({
+    messaging_enabled: messagingSettings.global.messaging_enabled,
+    real_send_enabled: messagingSettings.global.real_send_enabled,
+    test_mode_enabled: messagingSettings.global.test_mode_enabled,
+    test_phone: messagingSettings.global.test_phone ?? '',
+    queue_paused: messagingSettings.global.queue_paused,
+    active_provider: messagingSettings.global.active_provider,
+    default_provider: messagingSettings.global.default_provider,
+    fallback_provider: messagingSettings.global.fallback_provider,
+    send_delay_seconds: String(messagingSettings.global.send_delay_seconds),
+    duplicate_cooldown_minutes: String(messagingSettings.global.duplicate_cooldown_minutes),
+    hourly_limit: String(messagingSettings.global.hourly_limit),
+    daily_limit: String(messagingSettings.global.daily_limit),
+    max_auto_retries: String(messagingSettings.global.max_auto_retries),
+    allow_browser_smoke_send: messagingSettings.global.allow_browser_smoke_send,
+    allow_test_fixture_send: messagingSettings.global.allow_test_fixture_send,
+  })
+  const [nacSmsInputs, setNacSmsInputs] = useState(() => nacSmsInputsFromSettings(messagingSettings))
+  const [nacSmsCredentialInputs, setNacSmsCredentialInputs] = useState({ username: '', password: '' })
+  const [mikroApiInputs, setMikroApiInputs] = useState(() => mikroApiInputsFromSettings(messagingSettings))
+  const [mikroApiCredentialInputs, setMikroApiCredentialInputs] = useState({ api_key: '', token: '' })
+  const [messageTypeInputs, setMessageTypeInputs] = useState(() => messageTypeInputsFromSettings(messagingSettings))
   const [notificationInputs, setNotificationInputs] = useState({
     enabled: paymentProviderSettings.payment_notification.enabled,
     recipients: paymentProviderSettings.payment_notification.recipients_text ?? '',
@@ -291,6 +553,325 @@ export default function TechnicalServiceAdmin({
     password: '',
     mailbox: mailTransportSettings.incoming.mailbox ?? 'INBOX',
   })
+
+  const applyMessagingSettings = (nextSettings: MessagingSettings) => {
+    setMessaging(nextSettings)
+    setMessagingInputs({
+      messaging_enabled: nextSettings.global.messaging_enabled,
+      real_send_enabled: nextSettings.global.real_send_enabled,
+      test_mode_enabled: nextSettings.global.test_mode_enabled,
+      test_phone: nextSettings.global.test_phone ?? '',
+      queue_paused: nextSettings.global.queue_paused,
+      active_provider: nextSettings.global.active_provider,
+      default_provider: nextSettings.global.default_provider,
+      fallback_provider: nextSettings.global.fallback_provider,
+      send_delay_seconds: String(nextSettings.global.send_delay_seconds),
+      duplicate_cooldown_minutes: String(nextSettings.global.duplicate_cooldown_minutes),
+      hourly_limit: String(nextSettings.global.hourly_limit),
+      daily_limit: String(nextSettings.global.daily_limit),
+      max_auto_retries: String(nextSettings.global.max_auto_retries),
+      allow_browser_smoke_send: nextSettings.global.allow_browser_smoke_send,
+      allow_test_fixture_send: nextSettings.global.allow_test_fixture_send,
+    })
+    setNacSmsInputs(nacSmsInputsFromSettings(nextSettings))
+    setMikroApiInputs(mikroApiInputsFromSettings(nextSettings))
+    setMessageTypeInputs(messageTypeInputsFromSettings(nextSettings))
+  }
+
+  const saveMessagingSettings = async () => {
+    setMessagingSaving(true)
+    setMessagingMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/messaging-settings', {
+        method: 'PATCH',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          messaging_enabled: messagingInputs.messaging_enabled,
+          real_send_enabled: messagingInputs.real_send_enabled,
+          test_mode_enabled: messagingInputs.test_mode_enabled,
+          test_phone: messagingInputs.test_phone,
+          queue_paused: messagingInputs.queue_paused,
+          provider_key: messagingInputs.active_provider,
+          active_provider: messagingInputs.active_provider,
+          default_provider: messagingInputs.default_provider,
+          fallback_provider: messagingInputs.fallback_provider,
+          send_delay_seconds: Number(messagingInputs.send_delay_seconds),
+          duplicate_cooldown_minutes: Number(messagingInputs.duplicate_cooldown_minutes),
+          hourly_limit: Number(messagingInputs.hourly_limit),
+          daily_limit: Number(messagingInputs.daily_limit),
+          max_auto_retries: Number(messagingInputs.max_auto_retries),
+          allow_browser_smoke_send: messagingInputs.allow_browser_smoke_send,
+          allow_test_fixture_send: messagingInputs.allow_test_fixture_send,
+          shared_test_phone: messagingInputs.test_phone,
+          nac_sms: {
+            enabled: nacSmsInputs.enabled,
+            scheme: nacSmsInputs.scheme,
+            host: nacSmsInputs.host,
+            port: Number(nacSmsInputs.port),
+            sender: nacSmsInputs.sender,
+            title: nacSmsInputs.title,
+            gateway_uuid: nacSmsInputs.gateway_uuid,
+            encoding: Number(nacSmsInputs.encoding),
+            commercial: nacSmsInputs.commercial,
+            skip_ahs_query: nacSmsInputs.skip_ahs_query,
+            recipient_type: Number(nacSmsInputs.recipient_type),
+            validity: Number(nacSmsInputs.validity),
+            report_push_url: nacSmsInputs.report_push_url,
+            use_shared_test_phone: nacSmsInputs.use_shared_test_phone,
+            test_phone: nacSmsInputs.test_phone,
+            real_send_allowed: nacSmsInputs.real_send_allowed,
+          },
+          mikro_api: {
+            enabled: mikroApiInputs.enabled,
+            base_url: mikroApiInputs.base_url,
+            api_version: mikroApiInputs.api_version,
+            application_code: mikroApiInputs.application_code,
+            application_name: mikroApiInputs.application_name,
+            company_code: mikroApiInputs.company_code,
+            branch_code: mikroApiInputs.branch_code,
+            workstation_code: mikroApiInputs.workstation_code,
+            fiscal_year: mikroApiInputs.fiscal_year,
+            timeout_seconds: Number(mikroApiInputs.timeout_seconds),
+            license_status: mikroApiInputs.license_status,
+            app_customer_license_status: mikroApiInputs.app_customer_license_status,
+            read_sync_enabled: mikroApiInputs.read_sync_enabled,
+            write_enabled: mikroApiInputs.write_enabled,
+            write_approval_required: mikroApiInputs.write_approval_required,
+            operation_catalog_status: mikroApiInputs.operation_catalog_status,
+          },
+          message_types: messageTypeInputs,
+        }),
+      })
+
+      if (!response.ok) {
+        setMessagingMessage(await errorMessageFromResponse(response, 'Mesajlaşma sağlayıcı ayarları kaydedilemedi.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      applyMessagingSettings(responsePayload.messaging_settings)
+      setMessagingMessage('Mesajlaşma sağlayıcı ayarları kaydedildi. Gerçek mesaj gönderilmedi.')
+    } catch {
+      setMessagingMessage('Mesajlaşma sağlayıcı ayarları kaydedilemedi. Bağlantı durumunu kontrol edin.')
+    } finally {
+      setMessagingSaving(false)
+    }
+  }
+
+  const resetMessagingSettings = async () => {
+    if (typeof window !== 'undefined' && !window.confirm('Mesajlaşma sağlayıcı ayarları güvenli varsayılanlara dönsün mü?')) {
+      return
+    }
+
+    setMessagingSaving(true)
+    setMessagingMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/messaging-settings/reset', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+      })
+
+      if (!response.ok) {
+        setMessagingMessage(await errorMessageFromResponse(response, 'Mesajlaşma sağlayıcı ayarları sıfırlanamadı.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      applyMessagingSettings(responsePayload.messaging_settings)
+      setMessagingMessage(responsePayload.message ?? 'Mesajlaşma sağlayıcı ayarları güvenli varsayılanlara döndürüldü.')
+    } catch {
+      setMessagingMessage('Mesajlaşma sağlayıcı ayarları sıfırlanamadı.')
+    } finally {
+      setMessagingSaving(false)
+    }
+  }
+
+  const validateMessagingPhone = async () => {
+    setMessagingPhoneChecking(true)
+    setMessagingMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/messaging-settings/validate-phone', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ test_phone: messagingInputs.test_phone }),
+      })
+
+      if (!response.ok) {
+        setMessagingMessage(await errorMessageFromResponse(response, 'Test telefonu geçerli değil.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      setMessagingInputs((current) => ({
+        ...current,
+        test_phone: responsePayload.phone?.normalized ?? current.test_phone,
+      }))
+      setMessagingMessage(responsePayload.message ?? 'Test telefon numarası geçerli.')
+    } catch {
+      setMessagingMessage('Test telefonu doğrulanamadı.')
+    } finally {
+      setMessagingPhoneChecking(false)
+    }
+  }
+
+  const saveNacSmsCredentials = async () => {
+    setIntegrationCredentialSaving(true)
+    setMessagingMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/messaging-settings/nac-sms/credentials', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify(nacSmsCredentialInputs),
+      })
+
+      if (!response.ok) {
+        setMessagingMessage(await errorMessageFromResponse(response, 'NAC SMS bilgileri kaydedilemedi.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      applyMessagingSettings(responsePayload.messaging_settings)
+      setNacSmsCredentialInputs({ username: '', password: '' })
+      setMessagingMessage(responsePayload.message ?? 'NAC SMS bilgileri encrypted olarak kaydedildi.')
+    } catch {
+      setMessagingMessage('NAC SMS bilgileri kaydedilemedi. Bağlantı durumunu kontrol edin.')
+    } finally {
+      setIntegrationCredentialSaving(false)
+    }
+  }
+
+  const clearNacSmsCredentials = async () => {
+    if (typeof window !== 'undefined' && !window.confirm('NAC SMS credential bilgileri temizlensin mi?')) {
+      return
+    }
+
+    setIntegrationCredentialSaving(true)
+    setMessagingMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/messaging-settings/nac-sms/credentials/clear', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+      })
+
+      if (!response.ok) {
+        setMessagingMessage(await errorMessageFromResponse(response, 'NAC SMS bilgileri temizlenemedi.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      applyMessagingSettings(responsePayload.messaging_settings)
+      setNacSmsCredentialInputs({ username: '', password: '' })
+      setMessagingMessage(responsePayload.message ?? 'NAC SMS credential bilgileri temizlendi.')
+    } catch {
+      setMessagingMessage('NAC SMS bilgileri temizlenemedi.')
+    } finally {
+      setIntegrationCredentialSaving(false)
+    }
+  }
+
+  const saveMikroApiCredentials = async () => {
+    setIntegrationCredentialSaving(true)
+    setMessagingMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/messaging-settings/mikro-api/credentials', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify(mikroApiCredentialInputs),
+      })
+
+      if (!response.ok) {
+        setMessagingMessage(await errorMessageFromResponse(response, 'Mikro API bilgileri kaydedilemedi.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      applyMessagingSettings(responsePayload.messaging_settings)
+      setMikroApiCredentialInputs({ api_key: '', token: '' })
+      setMessagingMessage(responsePayload.message ?? 'Mikro API bilgileri encrypted olarak kaydedildi.')
+    } catch {
+      setMessagingMessage('Mikro API bilgileri kaydedilemedi. Bağlantı durumunu kontrol edin.')
+    } finally {
+      setIntegrationCredentialSaving(false)
+    }
+  }
+
+  const clearMikroApiCredentials = async () => {
+    if (typeof window !== 'undefined' && !window.confirm('Mikro API credential bilgileri temizlensin mi?')) {
+      return
+    }
+
+    setIntegrationCredentialSaving(true)
+    setMessagingMessage('')
+
+    try {
+      const response = await fetch('/api/technical-service/messaging-settings/mikro-api/credentials/clear', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken(),
+        },
+        credentials: 'same-origin',
+      })
+
+      if (!response.ok) {
+        setMessagingMessage(await errorMessageFromResponse(response, 'Mikro API bilgileri temizlenemedi.'))
+
+        return
+      }
+
+      const responsePayload = await response.json()
+      applyMessagingSettings(responsePayload.messaging_settings)
+      setMikroApiCredentialInputs({ api_key: '', token: '' })
+      setMessagingMessage(responsePayload.message ?? 'Mikro API credential bilgileri temizlendi.')
+    } catch {
+      setMessagingMessage('Mikro API bilgileri temizlenemedi.')
+    } finally {
+      setIntegrationCredentialSaving(false)
+    }
+  }
 
   const updateSettings = async (payload: {
     pre_form_payment_for_mount_excluded_enabled?: boolean
@@ -1153,6 +1734,543 @@ export default function TechnicalServiceAdmin({
                 </button>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="max-w-4xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                Mesajlaşma Sağlayıcı Ayarları
+              </p>
+              <h2 className="mt-2 text-lg font-bold text-slate-950">
+                Gerçek gönderim kapalı, test modu kontrollü.
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Evo WhatsApp mevcut pratik sağlayıcıdır. Voibot ses/mesaj sağlayıcısı sözleşme kesinleşince aynı
+                provider altyapısına bağlanacak. Randevu mesajı usta seçildiğinde değil OPS randevu onayında bağlanacak.
+              </p>
+              {messagingMessage ? (
+                <p className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800">
+                  {messagingMessage}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={messagingSaving}
+                onClick={() => {
+                  void saveMessagingSettings()
+                }}
+                className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {messagingSaving ? 'Kaydediliyor' : 'Kaydet'}
+              </button>
+              <button
+                type="button"
+                disabled={messagingSaving}
+                onClick={() => {
+                  void resetMessagingSettings()
+                }}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Ayarları varsayılana döndür
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-5">
+            {[
+              { label: 'Etkin mod', value: messaging.readiness.effective_mode, ok: messaging.readiness.can_send_test || messaging.readiness.can_send_real },
+              { label: 'Test telefonu', value: messaging.global.test_phone_masked ?? 'Eksik', ok: messaging.readiness.test_phone_configured },
+              { label: 'Aktif sağlayıcı', value: messaging.readiness.active_provider_label, ok: messaging.readiness.active_provider_enabled && messaging.readiness.active_provider_supports_text },
+              { label: 'Evo webhook', value: messaging.provider.webhook_url_configured ? 'Hazır' : 'Eksik', ok: messaging.provider.webhook_url_configured },
+              { label: 'Queue sender', value: messaging.readiness.queue_ready ? 'Hazır' : 'REL-4D bekliyor', ok: messaging.readiness.queue_ready },
+            ].map((item) => (
+              <div
+                key={item.label}
+                className={[
+                  'rounded-xl border px-4 py-3',
+                  item.ok ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+                ].join(' ')}
+              >
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] opacity-75">{item.label}</p>
+                <p className="mt-1 text-sm font-bold">{item.value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-sm font-bold text-slate-950">Provider readiness</p>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  Message type ayarları provider bağımsız kalır; gönderim REL-4D provider router üzerinden sıraya alınacak.
+                </p>
+              </div>
+              <p className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                Voibot sözleşme bekliyor
+              </p>
+            </div>
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              {[
+                ['active_provider', 'Aktif provider'],
+                ['default_provider', 'Varsayılan provider'],
+                ['fallback_provider', 'Fallback provider'],
+              ].map(([key, label]) => (
+                <label key={key} className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <span>{label}</span>
+                  <select
+                    value={String(messagingInputs[key as keyof typeof messagingInputs])}
+                    onChange={(event) => setMessagingInputs({ ...messagingInputs, [key]: event.target.value })}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    {messaging.providers.map((provider) => (
+                      <option key={provider.key} value={provider.key}>
+                        {provider.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-5">
+              {messaging.providers.map((provider) => (
+                <article
+                  key={provider.key}
+                  className={[
+                    'rounded-xl border bg-white p-3 text-sm',
+                    provider.active ? 'border-slate-900' : 'border-slate-200',
+                  ].join(' ')}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-bold text-slate-950">{provider.label}</p>
+                      <p className="mt-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{provider.channel}</p>
+                    </div>
+                    <span className={[
+                      'rounded-lg border px-2 py-1 text-xs font-bold',
+                      provider.contract_confirmed && provider.enabled ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+                    ].join(' ')}
+                    >
+                      {provider.status_label}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-600">{provider.description}</p>
+                  {provider.ready_reason ? (
+                    <p className="mt-2 text-xs font-semibold text-amber-700">{provider.ready_reason}</p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-1">
+                    {provider.active ? <span className="rounded bg-slate-900 px-2 py-1 text-xs font-bold text-white">Aktif</span> : null}
+                    {provider.default ? <span className="rounded bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">Default</span> : null}
+                    {provider.fallback ? <span className="rounded bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">Fallback</span> : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+
+            <p className="mt-3 text-xs font-semibold text-slate-500">
+              Provider önceliği: {messaging.provider.provider_priority.join(' > ')}
+            </p>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {messaging.admin_sections.map((section) => (
+              <article
+                key={section.key}
+                className={[
+                  'rounded-xl border p-3 text-sm',
+                  section.ready ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-slate-50 text-slate-700',
+                ].join(' ')}
+              >
+                <p className="font-bold">{section.label}</p>
+                <p className="mt-1 text-xs leading-5 opacity-80">{section.summary}</p>
+              </article>
+            ))}
+          </div>
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-slate-950">SMS API / NAC</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Basic Auth encrypted saklanır. Bu fazda kredi/sender okuma veya SMS gönderimi yapılmaz.
+                  </p>
+                </div>
+                <span className={[
+                  'rounded-lg border px-3 py-2 text-xs font-bold',
+                  messaging.nac_sms.test_ready ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+                ].join(' ')}
+                >
+                  {messaging.nac_sms.test_ready ? 'Test hazır' : 'Hazırlık eksik'}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {([
+                  ['enabled', 'NAC aktif'],
+                  ['use_shared_test_phone', 'Ortak test telefonu'],
+                  ['commercial', 'Ticari gönderim'],
+                  ['real_send_allowed', 'Gerçek gönderim izni'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(nacSmsInputs[key])}
+                      onChange={(event) => setNacSmsInputs({ ...nacSmsInputs, [key]: event.target.checked })}
+                      className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                    />
+                    {label}
+                  </label>
+                ))}
+                {([
+                  ['host', 'Host'],
+                  ['port', 'Port'],
+                  ['sender', 'Sender'],
+                  ['title', 'Title'],
+                  ['gateway_uuid', 'Gateway UUID'],
+                  ['validity', 'Validity'],
+                  ['test_phone', 'NAC test telefonu'],
+                  ['report_push_url', 'Report push URL'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <span>{label}</span>
+                    <input
+                      type={['port', 'validity'].includes(key) ? 'number' : 'text'}
+                      value={String(nacSmsInputs[key])}
+                      disabled={key === 'test_phone' && nacSmsInputs.use_shared_test_phone}
+                      onChange={(event) => setNacSmsInputs({ ...nacSmsInputs, [key]: event.target.value })}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+                <p className="text-sm font-bold text-slate-950">NAC credential</p>
+                <p className="mt-1 text-xs leading-5 text-slate-600">
+                  Kullanıcı: {messaging.nac_sms.username_mask ?? 'Eksik'} / Şifre: {messaging.nac_sms.password_mask ?? 'Eksik'}
+                </p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <input
+                    type="text"
+                    value={nacSmsCredentialInputs.username}
+                    onChange={(event) => setNacSmsCredentialInputs({ ...nacSmsCredentialInputs, username: event.target.value })}
+                    placeholder="NAC kullanıcı adı"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                  <input
+                    type="password"
+                    value={nacSmsCredentialInputs.password}
+                    onChange={(event) => setNacSmsCredentialInputs({ ...nacSmsCredentialInputs, password: event.target.value })}
+                    placeholder="NAC şifre"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={integrationCredentialSaving || nacSmsCredentialInputs.username.trim() === '' || nacSmsCredentialInputs.password === ''}
+                    onClick={() => {
+                      void saveNacSmsCredentials()
+                    }}
+                    className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    NAC bilgilerini kaydet
+                  </button>
+                  <button
+                    type="button"
+                    disabled={integrationCredentialSaving || !messaging.nac_sms.credentials_ready}
+                    onClick={() => {
+                      void clearNacSmsCredentials()
+                    }}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    NAC bilgilerini temizle
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-slate-950">Mikro API</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Mikro read/write hazırlığı panelden yönetilir. Yazma işlemleri onay/audit olmadan hazır sayılmaz.
+                  </p>
+                </div>
+                <span className={[
+                  'rounded-lg border px-3 py-2 text-xs font-bold',
+                  messaging.mikro_api.read_ready ? 'border-emerald-100 bg-emerald-50 text-emerald-900' : 'border-amber-100 bg-amber-50 text-amber-900',
+                ].join(' ')}
+                >
+                  {messaging.mikro_api.read_ready ? 'Read hazır' : 'Hazırlık eksik'}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {([
+                  ['enabled', 'Mikro aktif'],
+                  ['read_sync_enabled', 'Read sync açık'],
+                  ['write_enabled', 'Write açık'],
+                  ['write_approval_required', 'Write onayı zorunlu'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(mikroApiInputs[key])}
+                      onChange={(event) => setMikroApiInputs({ ...mikroApiInputs, [key]: event.target.checked })}
+                      className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                    />
+                    {label}
+                  </label>
+                ))}
+                {([
+                  ['base_url', 'Base URL'],
+                  ['api_version', 'API version'],
+                  ['application_code', 'Uygulama kodu'],
+                  ['application_name', 'Uygulama adı'],
+                  ['company_code', 'Firma kodu'],
+                  ['branch_code', 'Şube kodu'],
+                  ['workstation_code', 'Terminal kodu'],
+                  ['fiscal_year', 'Mali yıl'],
+                  ['timeout_seconds', 'Timeout saniye'],
+                  ['operation_catalog_status', 'Operasyon kataloğu'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <span>{label}</span>
+                    <input
+                      type={key === 'timeout_seconds' ? 'number' : 'text'}
+                      value={String(mikroApiInputs[key])}
+                      onChange={(event) => setMikroApiInputs({ ...mikroApiInputs, [key]: event.target.value })}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+                <p className="text-sm font-bold text-slate-950">Mikro credential</p>
+                <p className="mt-1 text-xs leading-5 text-slate-600">
+                  API key: {messaging.mikro_api.api_key_mask ?? 'Eksik'} / Token: {messaging.mikro_api.token_mask ?? 'Eksik'}
+                </p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <input
+                    type="password"
+                    value={mikroApiCredentialInputs.api_key}
+                    onChange={(event) => setMikroApiCredentialInputs({ ...mikroApiCredentialInputs, api_key: event.target.value })}
+                    placeholder="Mikro API key"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                  <input
+                    type="password"
+                    value={mikroApiCredentialInputs.token}
+                    onChange={(event) => setMikroApiCredentialInputs({ ...mikroApiCredentialInputs, token: event.target.value })}
+                    placeholder="Mikro token"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={integrationCredentialSaving || (mikroApiCredentialInputs.api_key.trim() === '' && mikroApiCredentialInputs.token.trim() === '')}
+                    onClick={() => {
+                      void saveMikroApiCredentials()
+                    }}
+                    className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Mikro bilgilerini kaydet
+                  </button>
+                  <button
+                    type="button"
+                    disabled={integrationCredentialSaving || !messaging.mikro_api.credentials_ready}
+                    onClick={() => {
+                      void clearMikroApiCredentials()
+                    }}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Mikro bilgilerini temizle
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-sm font-bold text-slate-950">Genel ayarlar</p>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                {messaging.helper_texts.secrets} {messaging.helper_texts.test_phone} {messaging.helper_texts.queue}
+              </p>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {[
+                  ['messaging_enabled', 'Mesaj sistemi aktif'],
+                  ['test_mode_enabled', 'Test modu'],
+                  ['real_send_enabled', 'Gerçek gönderim aktif'],
+                  ['queue_paused', 'Kuyruk duraklatıldı'],
+                  ['allow_browser_smoke_send', 'Browser smoke gönderimine izin'],
+                  ['allow_test_fixture_send', 'Test fixture gönderimine izin'],
+                ].map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(messagingInputs[key as keyof typeof messagingInputs])}
+                      onChange={(event) => setMessagingInputs({ ...messagingInputs, [key]: event.target.checked })}
+                      className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 md:col-span-2">
+                  <span>Test telefon numarası</span>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input
+                      type="text"
+                      value={messagingInputs.test_phone}
+                      onChange={(event) => setMessagingInputs({ ...messagingInputs, test_phone: event.target.value })}
+                      placeholder="905467647428"
+                      className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                    <button
+                      type="button"
+                      disabled={messagingPhoneChecking || messagingInputs.test_phone.trim() === ''}
+                      onClick={() => {
+                        void validateMessagingPhone()
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {messagingPhoneChecking ? 'Kontrol ediliyor' : 'Test telefonu doğrula'}
+                    </button>
+                  </div>
+                </label>
+                {[
+                  ['send_delay_seconds', 'Gönderim aralığı saniye', 30],
+                  ['duplicate_cooldown_minutes', 'Duplicate cooldown dakika', 1],
+                  ['hourly_limit', 'Saatlik limit', 1],
+                  ['daily_limit', 'Günlük limit', 1],
+                  ['max_auto_retries', 'Maksimum otomatik retry', 0],
+                ].map(([key, label, min]) => (
+                  <label key={key} className="grid gap-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <span>{label}</span>
+                    <input
+                      type="number"
+                      min={Number(min)}
+                      value={String(messagingInputs[key as keyof typeof messagingInputs])}
+                      onChange={(event) => setMessagingInputs({ ...messagingInputs, [key]: event.target.value })}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">
+                <p className="font-semibold text-slate-950">Readiness nedenleri</p>
+                <ul className="mt-2 space-y-1">
+                  {messaging.readiness.disabled_reasons.map((reason) => (
+                    <li key={reason}>- {reason}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-sm font-bold text-slate-950">Mesaj tipi ayarları</p>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                Mesaj tipi ayarları provider bağımsızdır. Gerçek gönderim varsayılan kapalıdır; test modu açıkken hedef
+                numara test telefonuna çevrilir.
+              </p>
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-[900px] text-left text-sm">
+                  <thead className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Mesaj tipi</th>
+                      <th className="px-3 py-2">Aktif</th>
+                      <th className="px-3 py-2">Test</th>
+                      <th className="px-3 py-2">Gerçek</th>
+                      <th className="px-3 py-2">Template key</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {messaging.message_types.map((type) => {
+                      const input = messageTypeInputs[type.key] ?? {
+                        enabled: false,
+                        test_send_allowed: false,
+                        real_send_allowed: false,
+                        template_key: '',
+                        notes: '',
+                      }
+
+                      return (
+                        <tr key={type.key} className="align-top">
+                          <td className="px-3 py-3">
+                            <p className="font-semibold text-slate-950">{type.label}</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-600">{type.description}</p>
+                            <p className="mt-1 text-xs font-semibold text-slate-500">{type.recipient_role}{type.future ? ' / future' : ''}</p>
+                          </td>
+                          {(['enabled', 'test_send_allowed', 'real_send_allowed'] as const).map((key) => (
+                            <td key={key} className="px-3 py-3">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(input[key])}
+                                onChange={(event) => setMessageTypeInputs({
+                                  ...messageTypeInputs,
+                                  [type.key]: {
+                                    ...input,
+                                    enabled: Boolean(input.enabled),
+                                    test_send_allowed: Boolean(input.test_send_allowed),
+                                    real_send_allowed: Boolean(input.real_send_allowed),
+                                    template_key: input.template_key ?? '',
+                                    notes: input.notes ?? '',
+                                    [key]: event.target.checked,
+                                  },
+                                })}
+                                className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                              />
+                            </td>
+                          ))}
+                          <td className="px-3 py-3">
+                            <input
+                              type="text"
+                              value={input.template_key ?? ''}
+                              onChange={(event) => setMessageTypeInputs({
+                                ...messageTypeInputs,
+                                [type.key]: {
+                                  ...input,
+                                  enabled: Boolean(input.enabled),
+                                  test_send_allowed: Boolean(input.test_send_allowed),
+                                  real_send_allowed: Boolean(input.real_send_allowed),
+                                  template_key: event.target.value,
+                                  notes: input.notes ?? '',
+                                },
+                              })}
+                              placeholder="REL-4C"
+                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-2 md:grid-cols-2">
+            {messaging.warnings.map((warning) => (
+              <p key={warning} className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+                {warning}
+              </p>
+            ))}
           </div>
         </section>
 

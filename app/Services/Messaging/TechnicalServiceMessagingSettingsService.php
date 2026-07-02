@@ -1,0 +1,1607 @@
+<?php
+
+namespace App\Services\Messaging;
+
+use App\Models\IntegrationProviderCredential;
+use App\Models\PageConfig;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\ValidationException;
+
+class TechnicalServiceMessagingSettingsService
+{
+    public const PAGE_CODE = 'technical_service_admin';
+
+    public const ROOT_KEY = 'technical_service.messaging';
+
+    private const PROVIDER_CAPABILITY_DEFAULTS = [
+        'supports_text' => false,
+        'supports_sms' => false,
+        'supports_whatsapp' => false,
+        'supports_voice' => false,
+        'supports_template' => false,
+        'supports_media' => false,
+        'supports_callback' => false,
+        'supports_delivery_receipt' => false,
+        'supports_reports' => false,
+        'supports_credit' => false,
+        'supports_sender_list' => false,
+        'supports_gateway_list' => false,
+        'supports_cancel' => false,
+        'supports_read' => false,
+        'supports_write' => false,
+        'requires_approval' => false,
+    ];
+
+    public const PROVIDERS = [
+        'null_local' => [
+            'label' => 'Null / Local',
+            'channel' => 'local',
+            'description' => 'Güvenli varsayılan; provider çağrısı yapmaz.',
+            'status_label' => 'Güvenli varsayılan',
+            'default_enabled' => true,
+            'contract_confirmed' => true,
+            'current_practical' => false,
+            'disabled_reason' => null,
+            'capabilities' => [
+                'supports_text' => true,
+                'supports_sms' => false,
+                'supports_whatsapp' => false,
+                'supports_voice' => false,
+                'supports_template' => false,
+                'supports_media' => false,
+                'supports_callback' => false,
+                'supports_delivery_receipt' => false,
+            ],
+        ],
+        'evo_whatsapp' => [
+            'label' => 'Evo WhatsApp',
+            'channel' => 'whatsapp',
+            'description' => 'Mevcut pratik WhatsApp sağlayıcısı; Laravel kuralları n8n webhook taşımasına payload gönderir.',
+            'status_label' => 'Mevcut sağlayıcı',
+            'default_enabled' => true,
+            'contract_confirmed' => true,
+            'current_practical' => true,
+            'disabled_reason' => null,
+            'capabilities' => [
+                'supports_text' => true,
+                'supports_sms' => false,
+                'supports_whatsapp' => true,
+                'supports_voice' => false,
+                'supports_template' => true,
+                'supports_media' => false,
+                'supports_callback' => false,
+                'supports_delivery_receipt' => false,
+            ],
+        ],
+        'nac_sms' => [
+            'label' => 'NAC SMS',
+            'channel' => 'sms',
+            'description' => 'NAC SMS API doğrudan Laravel adapter adayı; Basic Auth ve gönderici ayarları admin panelden yönetilir.',
+            'status_label' => 'SMS sağlayıcısı',
+            'default_enabled' => false,
+            'contract_confirmed' => true,
+            'current_practical' => true,
+            'disabled_reason' => 'SMS gerçek gönderimi REL-4D kuyruk ve REL-4F tekil test kanıtı tamamlanana kadar kapalıdır.',
+            'capabilities' => [
+                'supports_text' => true,
+                'supports_sms' => true,
+                'supports_template' => true,
+                'supports_callback' => true,
+                'supports_delivery_receipt' => true,
+                'supports_reports' => true,
+                'supports_credit' => true,
+                'supports_sender_list' => true,
+                'supports_gateway_list' => true,
+                'supports_cancel' => true,
+            ],
+        ],
+        'voibot_voice' => [
+            'label' => 'Voibot Voice',
+            'channel' => 'voice',
+            'description' => 'Sesli arama sağlayıcısı adayı; API/sözleşme kesinleşene kadar kapalıdır.',
+            'status_label' => 'Sözleşme bekliyor',
+            'default_enabled' => false,
+            'contract_confirmed' => false,
+            'current_practical' => false,
+            'disabled_reason' => 'Voibot API/Postman/OpenAPI, webhook ve outbound call sözleşmesi bekleniyor.',
+            'capabilities' => [
+                'supports_text' => false,
+                'supports_sms' => false,
+                'supports_whatsapp' => false,
+                'supports_voice' => true,
+                'supports_template' => false,
+                'supports_media' => false,
+                'supports_callback' => false,
+                'supports_delivery_receipt' => false,
+            ],
+        ],
+        'voibot_messaging_if_supported' => [
+            'label' => 'Voibot Messaging',
+            'channel' => 'messaging',
+            'description' => 'Voibot WhatsApp/SMS/message-send desteği doğrulanırsa bağlanacak aday.',
+            'status_label' => 'Message API bekliyor',
+            'default_enabled' => false,
+            'contract_confirmed' => false,
+            'current_practical' => false,
+            'disabled_reason' => 'Voibot message-send desteği ve limitleri doğrulanmadı.',
+            'capabilities' => [
+                'supports_text' => false,
+                'supports_sms' => false,
+                'supports_whatsapp' => false,
+                'supports_voice' => false,
+                'supports_template' => false,
+                'supports_media' => false,
+                'supports_callback' => false,
+                'supports_delivery_receipt' => false,
+            ],
+        ],
+        'future_sms_provider' => [
+            'label' => 'Future SMS Provider',
+            'channel' => 'sms',
+            'description' => 'Gelecek SMS sağlayıcısı için ayrılmış pasif slot.',
+            'status_label' => 'Gelecek',
+            'default_enabled' => false,
+            'contract_confirmed' => false,
+            'current_practical' => false,
+            'disabled_reason' => 'SMS sağlayıcı seçimi yapılmadı.',
+            'capabilities' => [
+                'supports_text' => true,
+                'supports_sms' => true,
+                'supports_whatsapp' => false,
+                'supports_voice' => false,
+                'supports_template' => false,
+                'supports_media' => false,
+                'supports_callback' => false,
+                'supports_delivery_receipt' => false,
+            ],
+        ],
+        'mikro_api' => [
+            'label' => 'Mikro API',
+            'channel' => 'erp',
+            'description' => 'Mikro read/write entegrasyon sağlayıcısı; yazma işlemleri ayrı onay ve audit olmadan açılmaz.',
+            'status_label' => 'ERP API hazırlığı',
+            'default_enabled' => false,
+            'contract_confirmed' => false,
+            'current_practical' => false,
+            'disabled_reason' => 'Mikro API lisans/sözleşme, operasyon kataloğu ve yazma onayı doğrulanmadı.',
+            'capabilities' => [
+                'supports_read' => true,
+                'supports_write' => true,
+                'requires_approval' => true,
+            ],
+        ],
+    ];
+
+    public const SMS_CHANNEL_POLICIES = [
+        'whatsapp_only',
+        'sms_only',
+        'whatsapp_primary_sms_fallback',
+        'whatsapp_and_sms',
+        'disabled',
+    ];
+
+    public const MESSAGE_TYPES = [
+        'appointment_approved_customer' => [
+            'label' => 'Müşteri randevu onayı',
+            'recipient_role' => 'customer',
+            'description' => 'OPS randevuyu onayladığında müşteriye gider.',
+        ],
+        'appointment_approved_technician' => [
+            'label' => 'Usta randevu onayı',
+            'recipient_role' => 'technician',
+            'description' => 'OPS randevuyu onayladığında ustaya iş ve adres bilgisini verir.',
+        ],
+        'appointment_updated_customer' => [
+            'label' => 'Müşteri randevu güncelleme',
+            'recipient_role' => 'customer',
+            'description' => 'Onaylı randevuda anlamlı tarih/saat değişikliği olursa müşteriye gider.',
+        ],
+        'appointment_updated_technician' => [
+            'label' => 'Usta randevu güncelleme',
+            'recipient_role' => 'technician',
+            'description' => 'Onaylı randevuda anlamlı tarih/saat değişikliği olursa ustaya gider.',
+        ],
+        'customer_approval_request' => [
+            'label' => 'Müşteri işlem onayı',
+            'recipient_role' => 'customer',
+            'description' => 'Saha tamamlandıktan sonra müşteri onay linki için kullanılır.',
+        ],
+        'payment_link_customer' => [
+            'label' => 'Müşteri ödeme linki',
+            'recipient_role' => 'customer',
+            'description' => 'Açık aksiyonla gönderilir; link oluşturmak tek başına mesaj göndermez.',
+        ],
+        'customer_pays_technician_notice' => [
+            'label' => 'Ustaya ödeme bilgilendirmesi',
+            'recipient_role' => 'customer',
+            'description' => 'Müşteri ustaya ödeme yapacaksa açık tutar zorunludur.',
+        ],
+        'assignment_offer_technician' => [
+            'label' => 'Usta iş teklifi',
+            'recipient_role' => 'technician',
+            'description' => 'Usta atama/teklif bilgilendirmesi; müşteri randevu mesajı değildir.',
+        ],
+        'earnings_message_technician' => [
+            'label' => 'Usta hakediş mesajı',
+            'recipient_role' => 'technician',
+            'description' => 'Hakediş ekranındaki manuel bilgilendirme mesajı.',
+        ],
+        'completion_submitted_ops' => [
+            'label' => 'OPS tamamlandı bildirimi',
+            'recipient_role' => 'ops',
+            'description' => 'Usta işi tamamladığında OPS bilgilendirmesi.',
+        ],
+        'support_request_ops' => [
+            'label' => 'OPS destek talebi',
+            'recipient_role' => 'ops',
+            'description' => 'Usta/partner destek istediğinde OPS bilgilendirmesi.',
+        ],
+        'job_rejected_ops' => [
+            'label' => 'OPS iş reddi',
+            'recipient_role' => 'ops',
+            'description' => 'Usta işi reddettiğinde OPS bilgilendirmesi.',
+        ],
+        'price_revision_requested_ops' => [
+            'label' => 'OPS fiyat revizyonu',
+            'recipient_role' => 'ops',
+            'description' => 'Usta fiyat revizyonu istediğinde OPS bilgilendirmesi.',
+        ],
+        'future_survey_customer' => [
+            'label' => 'Müşteri anketi',
+            'recipient_role' => 'customer',
+            'description' => 'REL-14 için kayıtlı gelecek mesaj tipi.',
+            'future' => true,
+        ],
+    ];
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function payload(): array
+    {
+        $settings = $this->settings();
+        $readiness = $this->readiness($settings);
+
+        return [
+            'keys' => [
+                'root' => self::ROOT_KEY,
+            ],
+            'global' => [
+                'messaging_enabled' => (bool) $settings['messaging_enabled'],
+                'real_send_enabled' => (bool) $settings['real_send_enabled'],
+                'test_mode_enabled' => (bool) $settings['test_mode_enabled'],
+                'shared_test_phone' => $settings['test_phone'],
+                'shared_test_phone_masked' => $this->maskPhone($settings['test_phone']),
+                'test_phone' => $settings['test_phone'],
+                'test_phone_masked' => $this->maskPhone($settings['test_phone']),
+                'queue_paused' => (bool) $settings['queue_paused'],
+                'provider_key' => $settings['provider_key'],
+                'active_provider' => $settings['active_provider'],
+                'default_provider' => $settings['default_provider'],
+                'fallback_provider' => $settings['fallback_provider'],
+                'provider_priority' => $settings['provider_priority'],
+                'send_delay_seconds' => (int) $settings['send_delay_seconds'],
+                'duplicate_cooldown_minutes' => (int) $settings['duplicate_cooldown_minutes'],
+                'hourly_limit' => (int) $settings['hourly_limit'],
+                'daily_limit' => (int) $settings['daily_limit'],
+                'max_auto_retries' => (int) $settings['max_auto_retries'],
+                'allow_browser_smoke_send' => (bool) $settings['allow_browser_smoke_send'],
+                'allow_test_fixture_send' => (bool) $settings['allow_test_fixture_send'],
+            ],
+            'readiness' => $readiness,
+            'provider' => [
+                'active_provider' => $settings['active_provider'],
+                'default_provider' => $settings['default_provider'],
+                'fallback_provider' => $settings['fallback_provider'],
+                'provider_priority' => $settings['provider_priority'],
+                'webhook_url_configured' => $readiness['provider_webhook_configured'],
+                'provider_secret_configured' => $readiness['provider_secret_configured'],
+                'webhook_url_value' => $readiness['provider_webhook_configured'] ? 'configured' : null,
+                'secret_value' => null,
+                'webhook_path' => 'emaks/evo/send-message',
+                'router' => 'Laravel messaging provider router; Evo n8n webhook is the current transport.',
+            ],
+            'providers' => $this->providerPayload($settings, $readiness),
+            'capability_map' => $this->capabilityMap(),
+            'nac_sms' => $this->nacSmsPayload($settings),
+            'mikro_api' => $this->mikroApiPayload($settings),
+            'admin_sections' => $this->adminSections($settings, $readiness),
+            'message_types' => $this->messageTypePayload($settings['message_types']),
+            'warnings' => [
+                'Gerçek gönderim açılmadan önce tekil test mesajı zorunludur.',
+                'Randevu mesajları usta seçildiğinde değil OPS randevu onayında gider.',
+                'Test modu açıkken hedef numara test numarasına çevrilir.',
+                'Queue/rate limit REL-4D’de aktif gönderim yoluna bağlanacak.',
+                'Voibot ses/mesaj sağlayıcısı API sözleşmesi doğrulanana kadar kapalıdır.',
+                'NAC SMS ve Mikro API canlı aksiyonları credential/readiness/queue/onay tamamlanmadan çalışmaz.',
+            ],
+            'helper_texts' => [
+                'secrets' => 'Evo, NAC, Voibot, Mikro veya n8n token/API key bu ekranda düz metin saklanmaz ve gösterilmez.',
+                'queue' => 'Queue sender REL-4D’de bağlanana kadar gerçek gönderim yolu hazır sayılmaz.',
+                'test_phone' => 'Test modu açıkken müşteri/usta yerine ortak test telefonuna yönlenir.',
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    public function update(array $values): array
+    {
+        $current = $this->settings();
+        $next = $current;
+
+        foreach ([
+            'messaging_enabled',
+            'real_send_enabled',
+            'test_mode_enabled',
+            'queue_paused',
+            'allow_browser_smoke_send',
+            'allow_test_fixture_send',
+        ] as $key) {
+            if (array_key_exists($key, $values)) {
+                $next[$key] = (bool) $values[$key];
+            }
+        }
+
+        foreach ([
+            'provider_key',
+            'active_provider',
+            'default_provider',
+            'fallback_provider',
+        ] as $key) {
+            if (array_key_exists($key, $values)) {
+                $next[$key] = $this->normalizeProviderKey((string) $values[$key]);
+            }
+        }
+
+        if (array_key_exists('active_provider', $values) && ! array_key_exists('provider_key', $values)) {
+            $next['provider_key'] = $next['active_provider'];
+        }
+
+        if (array_key_exists('provider_priority', $values)) {
+            $next['provider_priority'] = $this->normalizeProviderPriority((array) $values['provider_priority']);
+        }
+
+        if (array_key_exists('shared_test_phone', $values)) {
+            $next['test_phone'] = $this->normalizePhone((string) $values['shared_test_phone']);
+        } elseif (array_key_exists('test_phone', $values)) {
+            $next['test_phone'] = $this->normalizePhone((string) $values['test_phone']);
+        }
+
+        foreach ([
+            'send_delay_seconds',
+            'duplicate_cooldown_minutes',
+            'hourly_limit',
+            'daily_limit',
+            'max_auto_retries',
+        ] as $key) {
+            if (array_key_exists($key, $values)) {
+                $next[$key] = (int) $values[$key];
+            }
+        }
+
+        if (array_key_exists('message_types', $values)) {
+            $next['message_types'] = $this->mergeMessageTypeSettings($current['message_types'], (array) $values['message_types']);
+        }
+
+        if (array_key_exists('nac_sms', $values)) {
+            $next['nac_sms'] = $this->mergeNacSmsSettings($current['nac_sms'], (array) $values['nac_sms']);
+        }
+
+        if (array_key_exists('mikro_api', $values)) {
+            $next['mikro_api'] = $this->mergeMikroApiSettings($current['mikro_api'], (array) $values['mikro_api']);
+        }
+
+        $this->validateSettings($next);
+
+        $layout = $this->layout();
+        Arr::set($layout, self::ROOT_KEY, $next);
+
+        PageConfig::query()->firstOrCreate(
+            ['page_code' => self::PAGE_CODE],
+            ['layout_json' => []],
+        )->forceFill(['layout_json' => $layout])->save();
+
+        return $this->payload();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function reset(): array
+    {
+        $layout = $this->layout();
+        Arr::set($layout, self::ROOT_KEY, $this->defaultSettings());
+
+        PageConfig::query()->firstOrCreate(
+            ['page_code' => self::PAGE_CODE],
+            ['layout_json' => []],
+        )->forceFill(['layout_json' => $layout])->save();
+
+        return $this->payload();
+    }
+
+    /**
+     * @return array{valid:bool,normalized:string,masked:string}
+     */
+    public function validatePhone(string $phone): array
+    {
+        $normalized = $this->normalizePhone($phone);
+
+        if (! $this->validPhone($normalized)) {
+            throw ValidationException::withMessages([
+                'test_phone' => 'Geçerli bir test telefon numarası girilmeli.',
+            ]);
+        }
+
+        return [
+            'valid' => true,
+            'normalized' => $normalized,
+            'masked' => $this->maskPhone($normalized),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    public function saveNacSmsCredentials(array $values): array
+    {
+        $username = trim((string) ($values['username'] ?? ''));
+        $password = (string) ($values['password'] ?? '');
+
+        if ($username === '' || $password === '') {
+            throw ValidationException::withMessages([
+                'username' => 'NAC SMS kullanıcı adı ve şifre zorunlu.',
+            ]);
+        }
+
+        $credential = IntegrationProviderCredential::query()->updateOrCreate(
+            [
+                'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                'provider' => 'nac_sms',
+                'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
+                'mode' => IntegrationProviderCredential::MODE_LIVE,
+            ],
+            [
+                'username_encrypted' => $username,
+                'password_encrypted' => $password,
+                'username_mask' => $this->maskValue($username),
+                'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
+                'created_by' => Auth::id(),
+                'updated_by' => Auth::id(),
+                'metadata' => ['auth' => 'basic'],
+            ],
+        );
+
+        if ($credential->created_by === null) {
+            $credential->forceFill(['created_by' => Auth::id()])->save();
+        }
+
+        return $this->payload();
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    public function saveMikroApiCredentials(array $values): array
+    {
+        $apiKey = trim((string) ($values['api_key'] ?? ''));
+        $token = trim((string) ($values['token'] ?? ''));
+
+        if ($apiKey === '' && $token === '') {
+            throw ValidationException::withMessages([
+                'api_key' => 'Mikro API key veya token zorunlu.',
+            ]);
+        }
+
+        $credential = IntegrationProviderCredential::query()->updateOrCreate(
+            [
+                'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                'provider' => 'mikro_api',
+                'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
+                'mode' => IntegrationProviderCredential::MODE_LIVE,
+            ],
+            [
+                'api_key_encrypted' => $apiKey === '' ? null : $apiKey,
+                'token_encrypted' => $token === '' ? null : $token,
+                'api_key_mask' => $apiKey === '' ? null : $this->maskValue($apiKey),
+                'token_mask' => $token === '' ? null : $this->maskValue($token),
+                'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
+                'created_by' => Auth::id(),
+                'updated_by' => Auth::id(),
+                'metadata' => ['auth' => $token === '' ? 'api_key' : 'token'],
+            ],
+        );
+
+        if ($credential->created_by === null) {
+            $credential->forceFill(['created_by' => Auth::id()])->save();
+        }
+
+        return $this->payload();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function clearProviderCredentials(string $provider): array
+    {
+        $provider = $this->normalizeProviderKey($provider);
+
+        if (! in_array($provider, ['nac_sms', 'mikro_api'], true)) {
+            throw ValidationException::withMessages([
+                'provider' => 'Bu sağlayıcının credential temizleme işlemi bu ekranda desteklenmiyor.',
+            ]);
+        }
+
+        IntegrationProviderCredential::query()
+            ->where('scope', IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE)
+            ->where('provider', $provider)
+            ->where('profile_key', IntegrationProviderCredential::PROFILE_DEFAULT)
+            ->delete();
+
+        return $this->payload();
+    }
+
+    public function testModeEnabled(): bool
+    {
+        return (bool) $this->settings()['test_mode_enabled'];
+    }
+
+    public function realSendEnabled(): bool
+    {
+        $settings = $this->settings();
+
+        return (bool) $settings['messaging_enabled']
+            && (bool) $settings['real_send_enabled']
+            && $this->readiness($settings)['can_send_real'];
+    }
+
+    public function testPhone(): string
+    {
+        return (string) $this->settings()['test_phone'];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function settings(): array
+    {
+        $stored = Arr::get($this->layout(), self::ROOT_KEY, []);
+        $defaults = $this->defaultSettings();
+        $settings = is_array($stored) ? array_replace_recursive($defaults, $stored) : $defaults;
+        $settings['message_types'] = $this->mergeMessageTypeSettings(
+            $defaults['message_types'],
+            is_array($settings['message_types'] ?? null) ? $settings['message_types'] : [],
+        );
+        $settings['provider_key'] = $this->normalizeProviderKey((string) ($settings['provider_key'] ?? $defaults['provider_key']));
+        $settings['active_provider'] = $this->normalizeProviderKey((string) ($settings['active_provider'] ?? $settings['provider_key']));
+        $settings['default_provider'] = $this->normalizeProviderKey((string) ($settings['default_provider'] ?? $defaults['default_provider']));
+        $settings['fallback_provider'] = $this->normalizeProviderKey((string) ($settings['fallback_provider'] ?? $defaults['fallback_provider']));
+        $settings['provider_priority'] = $this->normalizeProviderPriority(is_array($settings['provider_priority'] ?? null) ? $settings['provider_priority'] : []);
+        $settings['providers'] = $this->mergeProviderSettings(
+            $defaults['providers'],
+            is_array($settings['providers'] ?? null) ? $settings['providers'] : [],
+        );
+        $settings['nac_sms'] = $this->mergeNacSmsSettings(
+            $defaults['nac_sms'],
+            is_array($settings['nac_sms'] ?? null) ? $settings['nac_sms'] : [],
+        );
+        $settings['mikro_api'] = $this->mergeMikroApiSettings(
+            $defaults['mikro_api'],
+            is_array($settings['mikro_api'] ?? null) ? $settings['mikro_api'] : [],
+        );
+
+        return $settings;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function defaultSettings(): array
+    {
+        return [
+            'messaging_enabled' => false,
+            'real_send_enabled' => false,
+            'test_mode_enabled' => true,
+            'test_phone' => $this->normalizePhone((string) config('services.evolution.test_phone', '')),
+            'queue_paused' => false,
+            'provider_key' => 'null_local',
+            'active_provider' => 'null_local',
+            'default_provider' => 'null_local',
+            'fallback_provider' => 'evo_whatsapp',
+            'provider_priority' => array_keys(self::PROVIDERS),
+            'providers' => $this->defaultProviderSettings(),
+            'send_delay_seconds' => 90,
+            'duplicate_cooldown_minutes' => 10,
+            'hourly_limit' => 30,
+            'daily_limit' => 200,
+            'max_auto_retries' => 0,
+            'allow_browser_smoke_send' => false,
+            'allow_test_fixture_send' => false,
+            'message_types' => $this->defaultMessageTypeSettings(),
+            'nac_sms' => [
+                'enabled' => false,
+                'scheme' => 'https',
+                'host' => 'smslogin.nac.com.tr',
+                'port' => 9588,
+                'sender' => null,
+                'title' => null,
+                'gateway_uuid' => null,
+                'encoding' => 0,
+                'commercial' => false,
+                'skip_ahs_query' => false,
+                'recipient_type' => 0,
+                'validity' => 6,
+                'report_push_url' => null,
+                'use_shared_test_phone' => true,
+                'test_phone' => null,
+                'real_send_allowed' => false,
+                'last_credit_check_status' => null,
+                'last_sender_list_status' => null,
+                'last_gateway_list_status' => null,
+                'last_error_redacted' => null,
+            ],
+            'mikro_api' => [
+                'enabled' => false,
+                'base_url' => null,
+                'api_version' => 'V17',
+                'application_code' => null,
+                'application_name' => null,
+                'company_code' => null,
+                'branch_code' => null,
+                'workstation_code' => null,
+                'fiscal_year' => null,
+                'timeout_seconds' => 15,
+                'license_status' => 'unknown',
+                'app_customer_license_status' => 'unknown',
+                'read_sync_enabled' => false,
+                'write_enabled' => false,
+                'write_approval_required' => true,
+                'operation_catalog_status' => 'missing',
+                'last_health_check_status' => null,
+                'last_error_redacted' => null,
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function defaultProviderSettings(): array
+    {
+        $defaults = [];
+
+        foreach (self::PROVIDERS as $key => $definition) {
+            $defaults[$key] = [
+                'enabled' => (bool) $definition['default_enabled'],
+                'real_send_allowed' => false,
+                'test_send_allowed' => true,
+                'notes' => null,
+            ];
+        }
+
+        return $defaults;
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function defaultMessageTypeSettings(): array
+    {
+        $defaults = [];
+
+        foreach (self::MESSAGE_TYPES as $key => $definition) {
+            $defaults[$key] = [
+                'enabled' => false,
+                'real_send_allowed' => false,
+                'test_send_allowed' => true,
+                'template_key' => null,
+                'notes' => null,
+            ];
+
+            if (($definition['future'] ?? false) === true) {
+                $defaults[$key]['test_send_allowed'] = false;
+            }
+        }
+
+        return $defaults;
+    }
+
+    /**
+     * @param  array<string, mixed>  $current
+     * @param  array<string, mixed>  $updates
+     * @return array<string, mixed>
+     */
+    private function mergeMessageTypeSettings(array $current, array $updates): array
+    {
+        $next = $current;
+
+        foreach ($updates as $messageType => $values) {
+            if (! array_key_exists((string) $messageType, self::MESSAGE_TYPES)) {
+                throw ValidationException::withMessages([
+                    'message_types' => "Bilinmeyen mesaj tipi: {$messageType}",
+                ]);
+            }
+
+            if (! is_array($values)) {
+                continue;
+            }
+
+            foreach ([
+                'enabled',
+                'real_send_allowed',
+                'test_send_allowed',
+            ] as $key) {
+                if (array_key_exists($key, $values)) {
+                    $next[$messageType][$key] = (bool) $values[$key];
+                }
+            }
+
+            foreach ([
+                'template_key',
+                'notes',
+            ] as $key) {
+                if (array_key_exists($key, $values)) {
+                    $value = trim((string) $values[$key]);
+                    $next[$messageType][$key] = $value === '' ? null : $value;
+                }
+            }
+        }
+
+        return $next;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function validateSettings(array $settings): void
+    {
+        if ((bool) $settings['messaging_enabled']
+            && (bool) $settings['test_mode_enabled']
+            && ! $this->validPhone((string) $settings['test_phone'])) {
+            throw ValidationException::withMessages([
+                'test_phone' => 'Test modu aktifken geçerli test telefon numarası zorunlu.',
+            ]);
+        }
+
+        if ((int) $settings['send_delay_seconds'] < 30) {
+            throw ValidationException::withMessages([
+                'send_delay_seconds' => 'Gönderim aralığı en az 30 saniye olmalı.',
+            ]);
+        }
+
+        if ((int) $settings['duplicate_cooldown_minutes'] < 1) {
+            throw ValidationException::withMessages([
+                'duplicate_cooldown_minutes' => 'Duplicate cooldown en az 1 dakika olmalı.',
+            ]);
+        }
+
+        if ((int) $settings['hourly_limit'] < 1 || (int) $settings['daily_limit'] < 1) {
+            throw ValidationException::withMessages([
+                'limits' => 'Saatlik ve günlük limit pozitif olmalı.',
+            ]);
+        }
+
+        if ((int) $settings['max_auto_retries'] < 0 || (int) $settings['max_auto_retries'] > 3) {
+            throw ValidationException::withMessages([
+                'max_auto_retries' => 'Maksimum otomatik retry 0 ile 3 arasında olmalı.',
+            ]);
+        }
+
+        $this->validateNacSmsSettings($settings['nac_sms']);
+        $this->validateMikroApiSettings($settings['mikro_api']);
+
+        foreach ([
+            'provider_key',
+            'active_provider',
+            'default_provider',
+            'fallback_provider',
+        ] as $providerField) {
+            if (! array_key_exists((string) $settings[$providerField], self::PROVIDERS)) {
+                throw ValidationException::withMessages([
+                    $providerField => 'Bilinmeyen mesajlaşma sağlayıcısı seçildi.',
+                ]);
+            }
+        }
+
+        if ((bool) $settings['real_send_enabled'] && ! $this->readiness($settings)['can_send_real']) {
+            throw ValidationException::withMessages([
+                'real_send_enabled' => 'Gerçek gönderim için mesaj sistemi, aktif provider, provider sözleşmesi, test telefonu ve en az bir gerçek gönderime açık mesaj tipi hazır olmalı.',
+            ]);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function readiness(array $settings): array
+    {
+        $webhookConfigured = trim((string) config('services.evolution.n8n_webhook_url', '')) !== '';
+        $providerSecretConfigured = false;
+        $testPhoneConfigured = $this->validPhone((string) $settings['test_phone']);
+        $activeProvider = $this->normalizeProviderKey((string) $settings['active_provider']);
+        $activeProviderDefinition = self::PROVIDERS[$activeProvider];
+        $activeProviderEnabled = $this->providerEnabled($activeProvider, $settings);
+        $activeProviderSupportsText = (bool) ($activeProviderDefinition['capabilities']['supports_text'] ?? false);
+        $activeProviderCredentialsReady = $this->providerCredentialsReady($activeProvider, $settings, $webhookConfigured);
+        $activeProviderRealReady = $this->providerRealReady($activeProvider, $settings, $webhookConfigured);
+        $realAllowedTypes = collect($settings['message_types'] ?? [])
+            ->filter(fn (array $type): bool => (bool) ($type['enabled'] ?? false) && (bool) ($type['real_send_allowed'] ?? false))
+            ->keys()
+            ->values()
+            ->all();
+        $testAllowedTypes = collect($settings['message_types'] ?? [])
+            ->filter(fn (array $type): bool => (bool) ($type['enabled'] ?? false) && (bool) ($type['test_send_allowed'] ?? false))
+            ->keys()
+            ->values()
+            ->all();
+
+        $disabledReasons = [];
+
+        if (! (bool) $settings['messaging_enabled']) {
+            $disabledReasons[] = 'Mesaj sistemi kapalı.';
+        }
+        if (! $testPhoneConfigured) {
+            $disabledReasons[] = 'Test telefonu eksik.';
+        }
+        if (! $webhookConfigured && $activeProvider === 'evo_whatsapp') {
+            $disabledReasons[] = 'n8n webhook URL eksik.';
+        }
+        if ($activeProvider === 'nac_sms' && ! $activeProviderCredentialsReady) {
+            $disabledReasons[] = 'NAC SMS Basic Auth bilgileri eksik.';
+        }
+        if ($activeProvider === 'mikro_api' && ! $activeProviderCredentialsReady) {
+            $disabledReasons[] = 'Mikro API key/token eksik.';
+        }
+        if (! $activeProviderEnabled) {
+            $disabledReasons[] = 'Aktif mesajlaşma sağlayıcısı kapalı.';
+        }
+        if (! $activeProviderSupportsText) {
+            $disabledReasons[] = 'Aktif sağlayıcı mesaj gönderimini desteklemiyor veya sözleşmesi bekleniyor.';
+        }
+        if (! (bool) ($activeProviderDefinition['contract_confirmed'] ?? false)) {
+            $disabledReasons[] = 'Aktif sağlayıcının API sözleşmesi doğrulanmadı.';
+        }
+        if ($realAllowedTypes === []) {
+            $disabledReasons[] = 'Gerçek gönderime açık mesaj tipi yok.';
+        }
+        $disabledReasons[] = 'Queue sender REL-4D bekliyor.';
+
+        $canSendTest = (bool) $settings['messaging_enabled']
+            && (bool) $settings['test_mode_enabled']
+            && $testPhoneConfigured
+            && $testAllowedTypes !== []
+            && $activeProviderEnabled
+            && $activeProviderSupportsText;
+        $canSendReal = (bool) $settings['messaging_enabled']
+            && (bool) $settings['real_send_enabled']
+            && ! (bool) $settings['test_mode_enabled']
+            && $testPhoneConfigured
+            && $realAllowedTypes !== []
+            && $activeProviderRealReady;
+
+        return [
+            'messaging_enabled' => (bool) $settings['messaging_enabled'],
+            'real_send_enabled' => (bool) $settings['real_send_enabled'],
+            'test_mode_enabled' => (bool) $settings['test_mode_enabled'],
+            'test_phone_configured' => $testPhoneConfigured,
+            'provider_webhook_configured' => $webhookConfigured,
+            'provider_secret_configured' => $providerSecretConfigured,
+            'active_provider' => $activeProvider,
+            'active_provider_label' => $activeProviderDefinition['label'],
+            'default_provider' => $settings['default_provider'],
+            'fallback_provider' => $settings['fallback_provider'],
+            'provider_priority' => $settings['provider_priority'],
+            'active_provider_enabled' => $activeProviderEnabled,
+            'active_provider_supports_text' => $activeProviderSupportsText,
+            'active_provider_contract_confirmed' => (bool) ($activeProviderDefinition['contract_confirmed'] ?? false),
+            'active_provider_credentials_ready' => $activeProviderCredentialsReady,
+            'active_provider_real_ready' => $activeProviderRealReady,
+            'queue_ready' => false,
+            'can_send_test' => $canSendTest,
+            'can_send_real' => $canSendReal,
+            'effective_mode' => $this->effectiveMode($settings, $webhookConfigured, $testPhoneConfigured),
+            'disabled_reasons' => array_values(array_unique($disabledReasons)),
+            'real_allowed_message_types' => $realAllowedTypes,
+            'test_allowed_message_types' => $testAllowedTypes,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function effectiveMode(array $settings, bool $webhookConfigured, bool $testPhoneConfigured): string
+    {
+        $activeProvider = $this->normalizeProviderKey((string) $settings['active_provider']);
+        $activeProviderDefinition = self::PROVIDERS[$activeProvider];
+
+        if (! (bool) $settings['messaging_enabled']) {
+            return 'disabled';
+        }
+
+        if (! $this->providerEnabled($activeProvider, $settings)) {
+            return 'blocked_provider_disabled';
+        }
+
+        if (! (bool) ($activeProviderDefinition['capabilities']['supports_text'] ?? false)) {
+            return 'blocked_provider_contract_pending';
+        }
+
+        if ((bool) $settings['test_mode_enabled']) {
+            return $testPhoneConfigured ? 'test_redirect' : 'blocked_missing_test_phone';
+        }
+
+        if ($activeProvider === 'evo_whatsapp' && ! $webhookConfigured) {
+            return 'blocked_provider_missing';
+        }
+
+        if (! (bool) $settings['real_send_enabled']) {
+            return 'blocked_real_send_disabled';
+        }
+
+        if (! $this->providerRealReady($activeProvider, $settings, $webhookConfigured)) {
+            return 'blocked_provider_not_ready';
+        }
+
+        return 'real_ready';
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function providerCredentialsReady(string $provider, array $settings, bool $webhookConfigured): bool
+    {
+        $provider = $this->normalizeProviderKey($provider);
+
+        if ($provider === 'null_local') {
+            return true;
+        }
+
+        if ($provider === 'evo_whatsapp') {
+            return $webhookConfigured;
+        }
+
+        if ($provider === 'nac_sms') {
+            return $this->credential('nac_sms')?->basicAuthReady() ?? false;
+        }
+
+        if ($provider === 'mikro_api') {
+            return $this->credential('mikro_api')?->apiKeyReady() ?? false;
+        }
+
+        return false;
+    }
+
+    private function providerRealReady(string $provider, array $settings, bool $webhookConfigured): bool
+    {
+        $provider = $this->normalizeProviderKey($provider);
+        $definition = self::PROVIDERS[$provider];
+
+        if (! $this->providerEnabled($provider, $settings)
+            || ! $this->providerRealSendAllowed($provider, $settings)
+            || ! (bool) ($definition['contract_confirmed'] ?? false)
+            || ! (bool) ($definition['capabilities']['supports_text'] ?? false)) {
+            return false;
+        }
+
+        if ($provider === 'evo_whatsapp') {
+            return $webhookConfigured;
+        }
+
+        if ($provider === 'nac_sms') {
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @param  array<string, mixed>  $readiness
+     * @return array<int, array<string, mixed>>
+     */
+    private function providerPayload(array $settings, array $readiness): array
+    {
+        $payload = [];
+
+        foreach (self::PROVIDERS as $key => $definition) {
+            $providerSettings = $settings['providers'][$key] ?? [];
+            $realReady = $this->providerRealReady($key, $settings, (bool) $readiness['provider_webhook_configured']);
+            $readyReason = $definition['disabled_reason'] ?? null;
+
+            if ($key === 'evo_whatsapp' && ! (bool) $readiness['provider_webhook_configured']) {
+                $readyReason = 'Evo/n8n webhook URL eksik.';
+            }
+
+            if ($key === 'null_local') {
+                $readyReason = 'Provider çağrısı yapmayan güvenli yerel mod.';
+            }
+
+            $payload[] = [
+                'key' => $key,
+                'label' => $definition['label'],
+                'channel' => $definition['channel'],
+                'description' => $definition['description'],
+                'status_label' => $definition['status_label'],
+                'enabled' => $this->providerEnabled($key, $settings),
+                'real_send_allowed' => $this->providerRealSendAllowed($key, $settings),
+                'test_send_allowed' => (bool) ($providerSettings['test_send_allowed'] ?? false),
+                'contract_confirmed' => (bool) ($definition['contract_confirmed'] ?? false),
+                'current_practical' => (bool) ($definition['current_practical'] ?? false),
+                'active' => $readiness['active_provider'] === $key,
+                'default' => $settings['default_provider'] === $key,
+                'fallback' => $settings['fallback_provider'] === $key,
+                'real_ready' => $realReady,
+                'ready_reason' => $readyReason,
+                'capabilities' => $this->providerCapabilities($key),
+                'notes' => $providerSettings['notes'] ?? null,
+            ];
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @return array<string, array<string, bool>>
+     */
+    private function capabilityMap(): array
+    {
+        $map = [];
+
+        foreach (self::PROVIDERS as $key => $definition) {
+            $map[$key] = $this->providerCapabilities($key);
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array<int, array<string, mixed>>
+     */
+    private function messageTypePayload(array $settings): array
+    {
+        $payload = [];
+
+        foreach (self::MESSAGE_TYPES as $key => $definition) {
+            $typeSettings = $settings[$key] ?? [];
+            $payload[] = [
+                'key' => $key,
+                'label' => $definition['label'],
+                'recipient_role' => $definition['recipient_role'],
+                'description' => $definition['description'],
+                'future' => (bool) ($definition['future'] ?? false),
+                'enabled' => (bool) ($typeSettings['enabled'] ?? false),
+                'real_send_allowed' => (bool) ($typeSettings['real_send_allowed'] ?? false),
+                'test_send_allowed' => (bool) ($typeSettings['test_send_allowed'] ?? true),
+                'template_key' => $typeSettings['template_key'] ?? null,
+                'notes' => $typeSettings['notes'] ?? null,
+            ];
+        }
+
+        return $payload;
+    }
+
+    private function normalizeProviderKey(string $provider): string
+    {
+        $provider = trim($provider);
+
+        if ($provider === 'evolution_n8n') {
+            return 'evo_whatsapp';
+        }
+
+        if ($provider === 'sms_nac') {
+            return 'nac_sms';
+        }
+
+        return array_key_exists($provider, self::PROVIDERS) ? $provider : 'null_local';
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function providerEnabled(string $provider, array $settings): bool
+    {
+        $provider = $this->normalizeProviderKey($provider);
+
+        if ($provider === 'nac_sms') {
+            return (bool) ($settings['nac_sms']['enabled'] ?? false);
+        }
+
+        if ($provider === 'mikro_api') {
+            return (bool) ($settings['mikro_api']['enabled'] ?? false);
+        }
+
+        return (bool) ($settings['providers'][$provider]['enabled'] ?? false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function providerRealSendAllowed(string $provider, array $settings): bool
+    {
+        $provider = $this->normalizeProviderKey($provider);
+
+        if ($provider === 'nac_sms') {
+            return (bool) ($settings['nac_sms']['real_send_allowed'] ?? false);
+        }
+
+        return (bool) ($settings['providers'][$provider]['real_send_allowed'] ?? false);
+    }
+
+    /**
+     * @param  array<int, mixed>  $priority
+     * @return array<int, string>
+     */
+    private function normalizeProviderPriority(array $priority): array
+    {
+        $normalized = [];
+
+        foreach ($priority as $provider) {
+            $key = $this->normalizeProviderKey((string) $provider);
+
+            if (! in_array($key, $normalized, true)) {
+                $normalized[] = $key;
+            }
+        }
+
+        foreach (array_keys(self::PROVIDERS) as $provider) {
+            if (! in_array($provider, $normalized, true)) {
+                $normalized[] = $provider;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  array<string, mixed>  $current
+     * @param  array<string, mixed>  $updates
+     * @return array<string, mixed>
+     */
+    private function mergeProviderSettings(array $current, array $updates): array
+    {
+        $next = $current;
+
+        foreach ($updates as $provider => $values) {
+            $key = $this->normalizeProviderKey((string) $provider);
+
+            if (! is_array($values)) {
+                continue;
+            }
+
+            foreach ([
+                'enabled',
+                'real_send_allowed',
+                'test_send_allowed',
+            ] as $field) {
+                if (array_key_exists($field, $values)) {
+                    $next[$key][$field] = (bool) $values[$field];
+                }
+            }
+
+            if (array_key_exists('notes', $values)) {
+                $value = trim((string) $values['notes']);
+                $next[$key]['notes'] = $value === '' ? null : $value;
+            }
+        }
+
+        return $next;
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    private function providerCapabilities(string $provider): array
+    {
+        return array_replace(
+            self::PROVIDER_CAPABILITY_DEFAULTS,
+            self::PROVIDERS[$provider]['capabilities'] ?? [],
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $current
+     * @param  array<string, mixed>  $updates
+     * @return array<string, mixed>
+     */
+    private function mergeNacSmsSettings(array $current, array $updates): array
+    {
+        $next = $current;
+
+        foreach ([
+            'enabled',
+            'commercial',
+            'skip_ahs_query',
+            'use_shared_test_phone',
+            'real_send_allowed',
+        ] as $field) {
+            if (array_key_exists($field, $updates)) {
+                $next[$field] = (bool) $updates[$field];
+            }
+        }
+
+        foreach ([
+            'scheme',
+            'host',
+            'sender',
+            'title',
+            'gateway_uuid',
+            'report_push_url',
+            'test_phone',
+        ] as $field) {
+            if (array_key_exists($field, $updates)) {
+                $value = trim((string) $updates[$field]);
+                $next[$field] = $value === '' ? null : $value;
+            }
+        }
+
+        foreach ([
+            'port',
+            'encoding',
+            'recipient_type',
+            'validity',
+        ] as $field) {
+            if (array_key_exists($field, $updates)) {
+                $next[$field] = (int) $updates[$field];
+            }
+        }
+
+        if (array_key_exists('test_phone', $updates) && filled($updates['test_phone'])) {
+            $next['test_phone'] = $this->normalizePhone((string) $updates['test_phone']);
+        }
+
+        return $next;
+    }
+
+    /**
+     * @param  array<string, mixed>  $current
+     * @param  array<string, mixed>  $updates
+     * @return array<string, mixed>
+     */
+    private function mergeMikroApiSettings(array $current, array $updates): array
+    {
+        $next = $current;
+
+        foreach ([
+            'enabled',
+            'read_sync_enabled',
+            'write_enabled',
+            'write_approval_required',
+        ] as $field) {
+            if (array_key_exists($field, $updates)) {
+                $next[$field] = (bool) $updates[$field];
+            }
+        }
+
+        foreach ([
+            'base_url',
+            'api_version',
+            'application_code',
+            'application_name',
+            'company_code',
+            'branch_code',
+            'workstation_code',
+            'fiscal_year',
+            'license_status',
+            'app_customer_license_status',
+            'operation_catalog_status',
+        ] as $field) {
+            if (array_key_exists($field, $updates)) {
+                $value = trim((string) $updates[$field]);
+                $next[$field] = $value === '' ? null : $value;
+            }
+        }
+
+        if (array_key_exists('timeout_seconds', $updates)) {
+            $next['timeout_seconds'] = (int) $updates['timeout_seconds'];
+        }
+
+        return $next;
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function validateNacSmsSettings(array $settings): void
+    {
+        if (! in_array($settings['scheme'], ['https', 'http'], true)) {
+            throw ValidationException::withMessages(['nac_sms.scheme' => 'NAC SMS şema http veya https olmalı.']);
+        }
+
+        if ((int) $settings['port'] < 1 || (int) $settings['port'] > 65535) {
+            throw ValidationException::withMessages(['nac_sms.port' => 'NAC SMS port 1-65535 arasında olmalı.']);
+        }
+
+        if (! in_array((int) $settings['encoding'], [0, 1, 2], true)) {
+            throw ValidationException::withMessages(['nac_sms.encoding' => 'NAC SMS encoding 0, 1 veya 2 olmalı.']);
+        }
+
+        if (! in_array((int) $settings['recipient_type'], [0, 1, 2], true)) {
+            throw ValidationException::withMessages(['nac_sms.recipient_type' => 'NAC SMS alıcı tipi 0, 1 veya 2 olmalı.']);
+        }
+
+        if ((int) $settings['validity'] < 3 || (int) $settings['validity'] > 6) {
+            throw ValidationException::withMessages(['nac_sms.validity' => 'NAC SMS validity 3 ile 6 arasında olmalı.']);
+        }
+
+        if (! (bool) $settings['use_shared_test_phone']
+            && filled($settings['test_phone'])
+            && ! $this->validPhone((string) $settings['test_phone'])) {
+            throw ValidationException::withMessages(['nac_sms.test_phone' => 'NAC SMS test telefonu geçerli olmalı.']);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function validateMikroApiSettings(array $settings): void
+    {
+        if ((int) $settings['timeout_seconds'] < 3 || (int) $settings['timeout_seconds'] > 120) {
+            throw ValidationException::withMessages(['mikro_api.timeout_seconds' => 'Mikro API timeout 3-120 saniye arasında olmalı.']);
+        }
+
+        if ((bool) $settings['write_enabled'] && ! (bool) $settings['write_approval_required']) {
+            throw ValidationException::withMessages(['mikro_api.write_approval_required' => 'Mikro yazma işlemleri onaysız açılamaz.']);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function nacSmsPayload(array $settings): array
+    {
+        $nac = $settings['nac_sms'];
+        $credential = $this->credential('nac_sms');
+        $credentialsReady = $credential?->basicAuthReady() ?? false;
+        $senderReady = filled($nac['sender'] ?? null);
+        $hostReady = filled($nac['host'] ?? null) && filled($nac['port'] ?? null);
+        $testPhone = (bool) $nac['use_shared_test_phone']
+            ? (string) $settings['test_phone']
+            : (string) ($nac['test_phone'] ?? '');
+        $testPhoneReady = $this->validPhone($testPhone);
+        $queueReady = false;
+        $liveReady = (bool) $nac['enabled']
+            && $credentialsReady
+            && $senderReady
+            && $hostReady
+            && $queueReady
+            && (bool) $settings['real_send_enabled']
+            && (bool) $nac['real_send_allowed'];
+
+        $blocking = [];
+        if (! (bool) $nac['enabled']) {
+            $blocking[] = 'NAC SMS sağlayıcısı kapalı.';
+        }
+        if (! $credentialsReady) {
+            $blocking[] = 'NAC SMS Basic Auth bilgileri eksik.';
+        }
+        if (! $senderReady) {
+            $blocking[] = 'NAC SMS sender/title eksik.';
+        }
+        if (! $hostReady) {
+            $blocking[] = 'NAC SMS host/port eksik.';
+        }
+        if (! $testPhoneReady) {
+            $blocking[] = 'Ortak test telefonu eksik veya geçersiz.';
+        }
+        $blocking[] = 'SMS gerçek gönderimi REL-4D kuyruk ve REL-4F tekil test kanıtı bekliyor.';
+
+        return [
+            'enabled' => (bool) $nac['enabled'],
+            'scheme' => $nac['scheme'],
+            'host' => $nac['host'],
+            'port' => (int) $nac['port'],
+            'base_url' => $this->nacBaseUrl($nac),
+            'sender' => $nac['sender'],
+            'title' => $nac['title'],
+            'gateway_uuid' => $nac['gateway_uuid'],
+            'encoding' => (int) $nac['encoding'],
+            'commercial' => (bool) $nac['commercial'],
+            'skip_ahs_query' => (bool) $nac['skip_ahs_query'],
+            'recipient_type' => (int) $nac['recipient_type'],
+            'validity' => (int) $nac['validity'],
+            'report_push_url' => $nac['report_push_url'],
+            'use_shared_test_phone' => (bool) $nac['use_shared_test_phone'],
+            'test_phone' => $nac['test_phone'],
+            'test_phone_masked' => $this->maskPhone($testPhone),
+            'real_send_allowed' => (bool) $nac['real_send_allowed'],
+            'credentials_ready' => $credentialsReady,
+            'username_mask' => $credential?->username_mask,
+            'password_mask' => $credentialsReady ? '********' : null,
+            'test_ready' => (bool) $nac['enabled'] && $credentialsReady && $senderReady && $hostReady && $testPhoneReady,
+            'live_ready' => $liveReady,
+            'queue_ready' => $queueReady,
+            'last_credit_check_status' => $nac['last_credit_check_status'],
+            'last_sender_list_status' => $nac['last_sender_list_status'],
+            'last_gateway_list_status' => $nac['last_gateway_list_status'],
+            'last_error_redacted' => $nac['last_error_redacted'],
+            'blocking_reasons' => array_values(array_unique($blocking)),
+            'endpoints' => [
+                'single_sms' => 'POST /sms/create',
+                'credit' => 'GET /user/credit',
+                'sender_list' => 'POST /sms/list-sender',
+                'gateway_list' => 'POST /sms/list-gateway',
+                'report' => 'POST /sms/list',
+                'report_item' => 'POST /sms/list-item',
+                'cancel' => 'POST /sms/cancel',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mikroApiPayload(array $settings): array
+    {
+        $mikro = $settings['mikro_api'];
+        $credential = $this->credential('mikro_api');
+        $credentialsReady = $credential?->apiKeyReady() ?? false;
+        $baseReady = filled($mikro['base_url'] ?? null);
+        $writeApprovalRequired = (bool) $mikro['write_approval_required'];
+        $writeReady = (bool) $mikro['write_enabled'] && $writeApprovalRequired && $credentialsReady && $baseReady;
+
+        $blocking = [];
+        if (! (bool) $mikro['enabled']) {
+            $blocking[] = 'Mikro API kapalı.';
+        }
+        if (! $baseReady) {
+            $blocking[] = 'Mikro API base URL eksik.';
+        }
+        if (! $credentialsReady) {
+            $blocking[] = 'Mikro API key/token eksik.';
+        }
+        if (! $writeApprovalRequired) {
+            $blocking[] = 'Mikro yazma onayı zorunlu olmalı.';
+        }
+        if ($mikro['operation_catalog_status'] !== 'active') {
+            $blocking[] = 'Mikro operasyon kataloğu aktif değil.';
+        }
+
+        return [
+            'enabled' => (bool) $mikro['enabled'],
+            'base_url' => $mikro['base_url'],
+            'api_version' => $mikro['api_version'],
+            'application_code' => $mikro['application_code'],
+            'application_name' => $mikro['application_name'],
+            'company_code' => $mikro['company_code'],
+            'branch_code' => $mikro['branch_code'],
+            'workstation_code' => $mikro['workstation_code'],
+            'fiscal_year' => $mikro['fiscal_year'],
+            'timeout_seconds' => (int) $mikro['timeout_seconds'],
+            'license_status' => $mikro['license_status'],
+            'app_customer_license_status' => $mikro['app_customer_license_status'],
+            'read_sync_enabled' => (bool) $mikro['read_sync_enabled'],
+            'write_enabled' => (bool) $mikro['write_enabled'],
+            'write_approval_required' => $writeApprovalRequired,
+            'operation_catalog_status' => $mikro['operation_catalog_status'],
+            'credentials_ready' => $credentialsReady,
+            'api_key_mask' => $credential?->api_key_mask,
+            'token_mask' => $credential?->token_mask,
+            'read_ready' => (bool) $mikro['enabled'] && $credentialsReady && $baseReady,
+            'write_ready' => $writeReady,
+            'last_health_check_status' => $mikro['last_health_check_status'],
+            'last_error_redacted' => $mikro['last_error_redacted'],
+            'blocking_reasons' => array_values(array_unique($blocking)),
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function adminSections(array $settings, array $readiness): array
+    {
+        $nac = $this->nacSmsPayload($settings);
+        $mikro = $this->mikroApiPayload($settings);
+
+        return [
+            ['key' => 'general', 'label' => 'Genel / Panel Görünümü', 'ready' => true, 'summary' => 'UI görünürlük ve operasyon detay kontrolleri.'],
+            ['key' => 'payments', 'label' => 'Ödeme Sağlayıcıları', 'ready' => true, 'summary' => 'Iyzico/fake ödeme, reconcile ve ödeme mail durumu.'],
+            ['key' => 'mail', 'label' => 'Mail Ayarları', 'ready' => true, 'summary' => 'SMTP outgoing ve IMAP/POP3 incoming ayarları.'],
+            ['key' => 'messaging', 'label' => 'Mesajlaşma Sağlayıcıları', 'ready' => $readiness['can_send_test'], 'summary' => 'Test modu, gerçek gönderim guard ve kanal politikaları.'],
+            ['key' => 'evo', 'label' => 'WhatsApp / Evo', 'ready' => $readiness['provider_webhook_configured'], 'summary' => 'Evo/n8n mevcut WhatsApp taşıyıcısı.'],
+            ['key' => 'nac_sms', 'label' => 'SMS API / NAC', 'ready' => $nac['test_ready'], 'summary' => 'NAC SMS Basic Auth, sender, gateway ve rapor altyapısı.'],
+            ['key' => 'voibot', 'label' => 'Voibot Hazırlık', 'ready' => false, 'summary' => 'Voibot API sözleşmesi bekleniyor.'],
+            ['key' => 'mikro_api', 'label' => 'Mikro API', 'ready' => $mikro['read_ready'], 'summary' => 'Mikro API credential, lisans ve yazma onayı altyapısı.'],
+            ['key' => 'templates', 'label' => 'Şablonlar', 'ready' => false, 'summary' => 'REL-4C template/preview bekliyor.'],
+            ['key' => 'queue', 'label' => 'Kuyruk / Gönderim Logları', 'ready' => false, 'summary' => 'REL-4D outbox, duplicate ve rate-limit bekliyor.'],
+            ['key' => 'health', 'label' => 'Entegrasyon Sağlığı', 'ready' => false, 'summary' => 'Canlı readiness blok nedenleri ve provider sağlık özeti.'],
+        ];
+    }
+
+    private function credential(string $provider): ?IntegrationProviderCredential
+    {
+        return IntegrationProviderCredential::query()
+            ->where('scope', IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE)
+            ->where('provider', $provider)
+            ->where('profile_key', IntegrationProviderCredential::PROFILE_DEFAULT)
+            ->where('mode', IntegrationProviderCredential::MODE_LIVE)
+            ->first();
+    }
+
+    /**
+     * @param  array<string, mixed>  $nac
+     */
+    private function nacBaseUrl(array $nac): string
+    {
+        $scheme = in_array($nac['scheme'], ['https', 'http'], true) ? $nac['scheme'] : 'https';
+        $host = trim((string) $nac['host']);
+        $port = (int) $nac['port'];
+
+        return "{$scheme}://{$host}:{$port}";
+    }
+
+    private function maskValue(?string $value): ?string
+    {
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        if (strlen($value) <= 6) {
+            return substr($value, 0, 1).'****'.substr($value, -1);
+        }
+
+        return substr($value, 0, 3).'****'.substr($value, -3);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function layout(): array
+    {
+        $layout = PageConfig::query()
+            ->where('page_code', self::PAGE_CODE)
+            ->value('layout_json');
+
+        return is_array($layout) ? $layout : [];
+    }
+
+    private function normalizePhone(?string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $phone) ?: '';
+
+        if ($digits === '') {
+            return '';
+        }
+
+        if (str_starts_with($digits, '00')) {
+            $digits = substr($digits, 2);
+        }
+
+        if (str_starts_with($digits, '0')) {
+            return '90'.substr($digits, 1);
+        }
+
+        if (strlen($digits) === 10) {
+            return '90'.$digits;
+        }
+
+        return $digits;
+    }
+
+    private function validPhone(string $phone): bool
+    {
+        $normalized = $this->normalizePhone($phone);
+
+        return preg_match('/^[1-9][0-9]{10,14}$/', $normalized) === 1;
+    }
+
+    private function maskPhone(?string $phone): ?string
+    {
+        $normalized = $this->normalizePhone($phone);
+
+        if ($normalized === '') {
+            return null;
+        }
+
+        return substr($normalized, 0, 4).'****'.substr($normalized, -3);
+    }
+}

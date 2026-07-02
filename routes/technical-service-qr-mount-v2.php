@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceMessagingSettingsController;
 use App\Http\Controllers\Api\TechnicalServicePaymentProviderSettingsController;
 use App\Http\Controllers\Api\TechnicalServiceQrFlowSettingsController;
 use App\Http\Controllers\Api\TechnicalServiceQrLinkController;
@@ -76,6 +77,30 @@ Route::middleware(['auth', 'panel.session'])
         Route::patch('qr-flow-settings', [TechnicalServiceQrFlowSettingsController::class, 'update'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.qr-flow-settings.update');
+        Route::get('messaging-settings', [TechnicalServiceMessagingSettingsController::class, 'show'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.show');
+        Route::patch('messaging-settings', [TechnicalServiceMessagingSettingsController::class, 'update'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.update');
+        Route::post('messaging-settings/reset', [TechnicalServiceMessagingSettingsController::class, 'reset'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.reset');
+        Route::post('messaging-settings/validate-phone', [TechnicalServiceMessagingSettingsController::class, 'validatePhone'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.validate-phone');
+        Route::post('messaging-settings/nac-sms/credentials', [TechnicalServiceMessagingSettingsController::class, 'saveNacSmsCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.nac-sms.credentials.save');
+        Route::post('messaging-settings/nac-sms/credentials/clear', [TechnicalServiceMessagingSettingsController::class, 'clearNacSmsCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.nac-sms.credentials.clear');
+        Route::post('messaging-settings/mikro-api/credentials', [TechnicalServiceMessagingSettingsController::class, 'saveMikroApiCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.mikro-api.credentials.save');
+        Route::post('messaging-settings/mikro-api/credentials/clear', [TechnicalServiceMessagingSettingsController::class, 'clearMikroApiCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.mikro-api.credentials.clear');
         Route::get('payment-provider-settings', [TechnicalServicePaymentProviderSettingsController::class, 'show'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.payment-provider-settings.show');

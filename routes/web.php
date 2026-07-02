@@ -1,9 +1,9 @@
 <?php
 
+use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\B2B\B2BDashboardController;
 use App\Http\Controllers\Api\B2B\B2BPartnerController;
 use App\Http\Controllers\Api\B2B\B2BPartnerUserController;
-use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\CariBilgiDataController;
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\PageConfigController;
@@ -14,12 +14,12 @@ use App\Http\Controllers\Api\SalesMainDataController;
 use App\Http\Controllers\Api\StockCriticalSettingController;
 use App\Http\Controllers\Api\SupportActivationCodeSearchController;
 use App\Http\Controllers\Api\SupportManagementController;
-use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceAdminOverrideController;
+use App\Http\Controllers\Api\TechnicalServiceController;
 use App\Http\Controllers\Api\TechnicalServiceEarningController;
 use App\Http\Controllers\Api\TechnicalServiceMikroController;
-use App\Http\Controllers\Api\TechnicalServicePartRequestController;
 use App\Http\Controllers\Api\TechnicalServicePartnerPortalOpsController;
+use App\Http\Controllers\Api\TechnicalServicePartRequestController;
 use App\Http\Controllers\Api\TechnicalServiceTechnicianController;
 use App\Http\Controllers\Api\TechnicalServiceWarrantyController;
 use App\Http\Controllers\B2BPortalPreviewController;
@@ -28,6 +28,7 @@ use App\Http\Controllers\PanelPageController;
 use App\Http\Controllers\PartnerPortalController;
 use App\Http\Controllers\ServiceJobConfirmationController;
 use App\Http\Controllers\SupportController;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Services\TechnicalService\QrPublicFlowSettingsService;
@@ -553,6 +554,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
 
     Route::get('technical-service/admin', fn (
         QrPublicFlowSettingsService $settings,
+        TechnicalServiceMessagingSettingsService $messagingSettings,
         TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
         TechnicalServiceMailTransportSettingsService $mailTransportSettings,
     ) => Inertia::render('panel/technical-service-admin', [
@@ -566,6 +568,7 @@ Route::middleware(['auth', 'panel.session'])->group(function () {
             'buttons' => [],
         ],
         'qrPublicFlowSettings' => $settings->payload(),
+        'messagingSettings' => $messagingSettings->payload(),
         'paymentProviderSettings' => $paymentProviderSettings->payload(),
         'mailTransportSettings' => $mailTransportSettings->payload(),
     ]))->middleware('panel.access:technical_service_admin')->name('technical-service.admin');
