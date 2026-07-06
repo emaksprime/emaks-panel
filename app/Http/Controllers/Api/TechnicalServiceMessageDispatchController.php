@@ -11,10 +11,20 @@ use Illuminate\Http\Request;
 
 class TechnicalServiceMessageDispatchController extends Controller
 {
-    public function index(TechnicalServiceMessageDispatchLogService $logs): JsonResponse
+    public function index(Request $request, TechnicalServiceMessageDispatchLogService $logs): JsonResponse
     {
         return response()->json([
-            'message_dispatch_queue' => $logs->payload(),
+            'message_dispatch_queue' => $logs->payload($request),
+        ]);
+    }
+
+    public function show(
+        TechnicalServiceMessageDispatch $dispatch,
+        TechnicalServiceMessageDispatchLogService $logs,
+        Request $request,
+    ): JsonResponse {
+        return response()->json([
+            'dispatch' => $logs->detail($dispatch, $request->user()),
         ]);
     }
 

@@ -55,6 +55,7 @@ class TechnicalServiceMessageVariableRegistry
             'payment_amount_formatted' => $this->definition('Ödeme tutarı', 'SMS/ödeme linki mesajı için formatlı tutar.', '1.250,00 TL', 'payment_provider'),
             'customer_payment_amount' => $this->definition('Müşteri ödeme tutarı', 'Müşteriye bildirilecek ham tutar.', 1250.0, 'payment_ownership'),
             'customer_payment_amount_formatted' => $this->definition('Formatlı ödeme tutarı', 'TRY formatlı müşteri ödeme tutarı.', '1.250,00 TL', 'payment_ownership'),
+            'customer_payment_note_text' => $this->definition('Müşteri ödeme notu', 'Customer-pays-technician bağlamında müşteriye gösterilecek nakit/havale notu.', 'Ödemeler nakit ve havale kabul edilmektedir.', 'payment_instruction_builder'),
             'payment_instruction_text' => $this->definition('Ödeme açıklaması', 'Payer-state uyumlu müşteri ödeme metni.', 'Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', 'payment_instruction_builder'),
             'payment_instruction_block' => $this->definition('Ödeme bilgi bloğu', 'Payer-state uyumlu müşteri ödeme bölümü.', 'Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', 'payment_instruction_builder'),
             'short_payment_instruction' => $this->definition('Kısa ödeme açıklaması', 'SMS için kısa payer-state ödeme metni.', 'Ustaya ödenecek tutar: 1.250,00 TL.', 'payment_instruction_builder'),

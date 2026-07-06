@@ -100,6 +100,12 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('messaging-settings/nac-sms/test-send', [TechnicalServiceMessagingSettingsController::class, 'testNacSms'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.nac-sms.test-send');
+        Route::post('messaging-settings/evo-whatsapp/credentials', [TechnicalServiceMessagingSettingsController::class, 'saveEvoWhatsappCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.evo-whatsapp.credentials.save');
+        Route::post('messaging-settings/evo-whatsapp/credentials/clear', [TechnicalServiceMessagingSettingsController::class, 'clearEvoWhatsappCredentials'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.evo-whatsapp.credentials.clear');
         Route::post('messaging-settings/mikro-api/credentials', [TechnicalServiceMessagingSettingsController::class, 'saveMikroApiCredentials'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.mikro-api.credentials.save');
@@ -127,6 +133,9 @@ Route::middleware(['auth', 'panel.session'])
         Route::get('message-dispatches', [TechnicalServiceMessageDispatchController::class, 'index'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.message-dispatches.index');
+        Route::get('message-dispatches/{dispatch}', [TechnicalServiceMessageDispatchController::class, 'show'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-dispatches.show');
         Route::post('message-dispatches/{dispatch}/cancel', [TechnicalServiceMessageDispatchController::class, 'cancel'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.message-dispatches.cancel');

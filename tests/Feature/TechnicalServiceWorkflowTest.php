@@ -4370,7 +4370,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
             ->assertJsonPath('request.status', 'Atandı')
             ->assertJsonPath('request.technician_approved_at', null)
-            ->assertJsonPath('request.assignment_offer.metadata.message_dispatch.status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED);
+            ->assertJsonPath('request.assignment_offer.metadata.message_dispatch.status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
 
         $request->refresh();
         $this->assertNull($request->technician_approved_at);
@@ -4381,11 +4381,13 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->latest('id')
             ->firstOrFail();
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame('null_local', $dispatch->provider_key);
+        $this->assertSame('system', $dispatch->channel);
         $this->assertSame('905467647428', $dispatch->target_phone);
-        $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?', (string) data_get($dispatch->request_payload, 'job_link'));
-        $this->assertStringContainsString('partner_id='.$partner->id, (string) data_get($dispatch->request_payload, 'job_link'));
-        $this->assertStringContainsString('job_id='.$request->id, (string) data_get($dispatch->request_payload, 'job_link'));
+        $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?', (string) data_get($dispatch->request_payload, 'context.job_link'));
+        $this->assertStringContainsString('partner_id='.$partner->id, (string) data_get($dispatch->request_payload, 'context.job_link'));
+        $this->assertStringContainsString('job_id='.$request->id, (string) data_get($dispatch->request_payload, 'context.job_link'));
         $this->assertStringContainsString('Ürün: E10 Kilit / Plus', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringContainsString('Seri: SN-ASSIGN-MSG', (string) data_get($dispatch->request_payload, 'message_text'));
         $this->assertStringContainsString('Aktivasyon: ACT-ASSIGN-MSG', (string) data_get($dispatch->request_payload, 'message_text'));

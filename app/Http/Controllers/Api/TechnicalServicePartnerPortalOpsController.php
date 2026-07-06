@@ -12,13 +12,17 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceTechnician;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
+use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
+use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
-use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\WarrantyService;
 use App\Support\PartnerPortalPublicUrl;
+use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -30,6 +34,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflow,
         private readonly EvolutionWhatsAppMessageService $messages,
+        private readonly TechnicalServiceAppointmentMessageDispatchService $appointmentMessages,
+        private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
         private readonly TechnicalServiceServiceVisitService $serviceVisits,
     ) {}
 
@@ -69,28 +75,15 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'note' => $validated['note'] ?? 'Partner portal randevu önerisi onaylandı.',
             ], $request->user());
 
-            $messages = $this->appointmentApprovalMessages($job->refresh(), $slot, $hadAppointment);
-            $customerDispatch = $this->messages->send(
-                $hadAppointment ? 'appointment_updated_customer' : 'appointment_approved_customer',
-                'customer',
-                $job->customer_phone,
-                (string) ($messages['customer']['message_text'] ?? ''),
-                [...($messages['customer'] ?? []), 'manual_ui_send' => true],
-                $job,
-                $request->user(),
+            $messageDispatchSummary = $this->appointmentMessages->dispatchApproval(
+                $job->refresh(),
                 $partnerJobAction,
-            );
-            $technicianPhone = $job->technicianRecord?->phone_e164
-                ?: ($job->technicianRecord?->phone_display ?: $job->technicianRecord?->phone);
-            $technicianDispatch = $this->messages->send(
-                $hadAppointment ? 'appointment_updated_technician' : 'appointment_approved_technician',
-                'technician',
-                $technicianPhone,
-                $this->technicianAppointmentMessageText($messages['technician'] ?? []),
-                [...($messages['technician'] ?? []), 'manual_ui_send' => true],
-                $job,
                 $request->user(),
-                $partnerJobAction,
+                [
+                    'appointment_updated' => $hadAppointment,
+                    'slot' => $slot,
+                    'trigger_source' => 'ops_appointment_approval',
+                ],
             );
             $payload['approval'] = [
                 'approved_at' => now()->toISOString(),
@@ -100,11 +93,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'selected_slot' => $slot,
                 'technician_confirmation_required' => false,
                 'note' => $validated['note'] ?? null,
-                'messages' => $messages,
-                'message_dispatches' => [
-                    'customer' => ['id' => $customerDispatch->id, 'status' => $customerDispatch->status],
-                    'technician' => ['id' => $technicianDispatch->id, 'status' => $technicianDispatch->status],
-                ],
+                'message_dispatch_summary' => $messageDispatchSummary,
+                'message_dispatches' => $messageDispatchSummary['dispatches'] ?? [],
             ];
             $partnerJobAction->forceFill([
                 'status' => TechnicalServicePartnerJobAction::STATUS_APPLIED,
@@ -121,13 +111,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'metadata' => [
                     'partner_job_action_id' => $partnerJobAction->id,
                     'proposal' => $slot,
-                    'messages' => $messages,
+                    'message_dispatch_summary' => $messageDispatchSummary,
                 ],
             ]);
 
             return [
                 'status' => 'applied',
-                'message_payloads' => $messages,
+                'message_payloads' => $messageDispatchSummary,
+                'message_dispatch_summary' => $messageDispatchSummary,
                 'request' => $this->workflow->serialize($job->refresh(), true),
             ];
         });
@@ -388,7 +379,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     }
 
     /**
-     * @param array<int, mixed>|null $approvedVisitIds
+     * @param  array<int, mixed>|null  $approvedVisitIds
      * @return array<string, mixed>
      */
     private function completionPayoutApprovalContext(TechnicalServiceRequest $request, ?array $approvedVisitIds): array
@@ -454,7 +445,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $approval
+     * @param  array<string, mixed>  $approval
      */
     private function persistOpsFinalPayoutApproval(TechnicalServiceRequest $job, array $approval, Request $request): void
     {
@@ -532,19 +523,25 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $metadata['revised_by_user_id'] = $request->user()?->id;
             $technicianPhone = $assignmentOffer->technician?->phone_e164
                 ?: ($assignmentOffer->technician?->phone_display ?: $assignmentOffer->technician?->phone);
-            $dispatch = $this->messages->send(
+            $dispatch = $this->workflowMessages->queueSystemMessage(
+                $job,
                 'price_revision_response_technician',
                 'technician',
-                $technicianPhone,
                 $this->assignmentOfferMessageText($metadata['message_payload'] ?? []),
                 [
                     ...(is_array($metadata['message_payload'] ?? null) ? $metadata['message_payload'] : []),
                     'manual_ui_send' => true,
                 ],
-                $job,
                 $request->user(),
                 null,
-                $assignmentOffer,
+                [
+                    'recipient_phone' => $technicianPhone,
+                    'triggered_by' => 'ops_price_revision_response',
+                    'metadata' => [
+                        'assignment_offer_id' => $assignmentOffer->id,
+                        'manual_ui_send' => true,
+                    ],
+                ],
             );
             $metadata['message_dispatch'] = [
                 'id' => $dispatch->id,
@@ -719,10 +716,10 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ],
             ]);
 
-            $dispatch = $this->messages->send(
+            $dispatch = $this->workflowMessages->queueSystemMessage(
+                $job,
                 'customer_approval_request',
                 'customer',
-                $job->customer_phone,
                 $messageText,
                 [
                     'confirmation_url' => $approvalUrl,
@@ -733,9 +730,16 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                     'message_type' => 'customer_approval_request',
                     'manual_ui_send' => true,
                 ],
-                $job,
                 $request->user(),
                 $action,
+                [
+                    'recipient_phone' => $job->customer_phone,
+                    'triggered_by' => 'ops_customer_approval_request_resend',
+                    'metadata' => [
+                        'force_resend' => true,
+                        'manual_ui_send' => true,
+                    ],
+                ],
             );
             $dispatchSummary = $this->dispatchSummary($dispatch);
             $actionPayload = is_array($action->payload) ? $action->payload : [];
@@ -829,9 +833,9 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     }
 
     /**
-     * @return \Illuminate\Support\Collection<string, TechnicalServiceRequestUpload>
+     * @return Collection<string, TechnicalServiceRequestUpload>
      */
-    private function currentFieldCompletionDocuments(TechnicalServiceRequest $request): \Illuminate\Support\Collection
+    private function currentFieldCompletionDocuments(TechnicalServiceRequest $request): Collection
     {
         return $request->uploads()
             ->whereIn('category', [
@@ -858,8 +862,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
     private function recordPredatesActiveReopen(TechnicalServiceRequest $request, mixed $recordAt): bool
     {
-        return $request->reopened_at instanceof \Carbon\CarbonInterface
-            && $recordAt instanceof \Carbon\CarbonInterface
+        return $request->reopened_at instanceof CarbonInterface
+            && $recordAt instanceof CarbonInterface
             && $recordAt->lessThanOrEqualTo($request->reopened_at);
     }
 
@@ -1035,7 +1039,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $paymentContext
+     * @param  array<string, mixed>  $paymentContext
      */
     private function appointmentCustomerPaymentLine(array $paymentContext): ?string
     {
@@ -1218,7 +1222,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
 
         return [
             'dispatch_status' => $dispatch->status,
-            'dispatch_provider' => 'evolution_n8n',
+            'dispatch_provider' => $dispatch->provider_key ?: data_get($requestPayload, 'provider') ?: 'null_local',
             'target_phone' => $dispatch->target_phone,
             'test_mode' => (bool) $dispatch->test_mode,
             'response_status_code' => is_numeric($responseStatusCode) ? (int) $responseStatusCode : null,
@@ -1254,6 +1258,10 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $warning = trim((string) ($summary['public_url_warning'] ?? ''));
 
             return 'WhatsApp onay mesajı gönderildi.'.($warning !== '' ? ' '.$warning : '');
+        }
+
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_QUEUED) {
+            return 'Müşteri onay mesajı kuyruğa alındı.';
         }
 
         if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE) {

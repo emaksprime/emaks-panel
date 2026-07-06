@@ -2,13 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\B2B\B2BCariSnapshot;
+use App\Models\B2B\B2BCariSnapshotRun;
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerAuditLog;
 use App\Models\B2B\B2BPartnerCapability;
 use App\Models\B2B\B2BPartnerOrder;
 use App\Models\B2B\B2BPartnerTechnician;
-use App\Models\B2B\B2BCariSnapshot;
-use App\Models\B2B\B2BCariSnapshotRun;
 use App\Models\B2B\B2BPartnerUserAccess;
 use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\DataSource;
@@ -19,15 +19,15 @@ use App\Models\Resource;
 use App\Models\Role;
 use App\Models\RoleResourcePermission;
 use App\Models\TechnicalServiceAssignmentOffer;
+use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceEarning;
 use App\Models\TechnicalServiceEarningItem;
 use App\Models\TechnicalServiceEarningsPeriod;
-use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
-use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
@@ -36,17 +36,22 @@ use App\Models\TechnicalServiceSettlement;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
+use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\PanelAccessService;
 use App\Services\PanelNavigationService;
+use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
+use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
+use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Illuminate\Http\UploadedFile;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
@@ -5070,7 +5075,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'action' => TechnicalServicePartnerJobAction::ACTION_APPOINTMENT_CHANGE_REQUESTED,
             'status' => TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW,
         ]);
-        $appointmentChangeState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)
+        $appointmentChangeState = app(TechnicalServiceOperationalStatePresenter::class)
             ->present($acceptJob->fresh());
         $this->assertSame('assignment_pending', $appointmentChangeState['ops_column']);
         $this->assertSame('Usta randevu değişikliği istiyor', $appointmentChangeState['display_action_label']);
@@ -5327,7 +5332,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNotContains($job->id, collect($opsPayload)->pluck('id')->all());
         $this->assertContains($child->id, collect($opsPayload)->pluck('id')->all());
 
-        $childState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
+        $childState = app(TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
         $this->assertSame('assigned', $childState['ops_column']);
         $this->assertSame('Usta randevu önerecek', $childState['display_action_label']);
         $this->assertFalse($childState['is_field_docs_required']);
@@ -5494,10 +5499,10 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('raw_payload->part_request_id', $partRequest->id)
             ->firstOrFail();
         $this->assertNotEmpty($chargeableResponse->json('customer_charge.payment_url'));
-        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)
+        app(TechnicalServicePaymentSettlementService::class)
             ->markPaid($customerCharge, ['fake_approved' => true]);
 
-        $paidSummary = app(\App\Services\TechnicalService\TechnicalServiceWorkflowService::class)
+        $paidSummary = app(TechnicalServiceWorkflowService::class)
             ->serialize($job->refresh(), true)['sale_and_payment']['payment_summary'];
         $this->assertSame(3500.0, (float) $paidSummary['mount']['amount']);
         $this->assertSame(1000.0, (float) $paidSummary['service']['amount']);
@@ -5533,13 +5538,13 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertNull($child->customer_closure_approval_status);
         $this->assertSame(0, $child->uploads()->whereIn('field_code', ['before_photo', 'after_photo', 'warranty_document_photo'])->count());
 
-        $childOpsState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
+        $childOpsState = app(TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
         $this->assertSame('assigned', $childOpsState['ops_column']);
         $this->assertSame('Usta randevu önerecek', $childOpsState['display_action_label']);
         $this->assertFalse($childOpsState['is_field_docs_required']);
         $this->assertFalse($childOpsState['is_customer_approval_required']);
 
-        $board = app(\App\Services\B2B\B2BPartnerPortalDataService::class)->serviceJobBoardFor($partner);
+        $board = app(B2BPartnerPortalDataService::class)->serviceJobBoardFor($partner);
         $activeMrns = collect($board['columns'])
             ->flatMap(fn (array $column): array => $column['jobs'] ?? [])
             ->pluck('mrn')
@@ -5765,10 +5770,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame(1000.0, (float) ($customerCharge->raw_payload['service_amount'] ?? 0));
         $this->assertSame(750.0, (float) ($customerCharge->raw_payload['part_amount'] ?? 0));
 
-        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)
+        app(TechnicalServicePaymentSettlementService::class)
             ->markPaid($customerCharge, ['fake_approved' => true]);
 
-        $summary = app(\App\Services\TechnicalService\TechnicalServiceWorkflowService::class)
+        $summary = app(TechnicalServiceWorkflowService::class)
             ->serialize($job->refresh(), true)['sale_and_payment']['payment_summary'];
 
         $this->assertSame(3500.0, (float) $summary['mount']['amount']);
@@ -5811,7 +5816,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $payment = TechnicalServiceMountPayment::query()
             ->where('raw_payload->part_request_id', $partRequest->id)
             ->firstOrFail();
-        app(\App\Services\TechnicalService\TechnicalServicePaymentSettlementService::class)
+        app(TechnicalServicePaymentSettlementService::class)
             ->markPaid($payment, ['receipt_no' => 'DEKONT-PART-55']);
         $child = $this->serviceRequestForTechnician($technician, 'SRV-PART-PAYMENT-REF-001', [
             'parent_request_id' => $job->id,
@@ -6268,7 +6273,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ],
         ]);
 
-        $parentState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
+        $parentState = app(TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
         $this->assertFalse($parentState['is_pending_final_check']);
         $this->assertSame('assigned', $parentState['ops_column']);
 
@@ -6326,7 +6331,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'linked_mrn' => $job->mrn,
         ]);
 
-        $childState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
+        $childState = app(TechnicalServiceOperationalStatePresenter::class)->present($child->fresh());
         $this->assertSame('new', $childState['ops_column']);
         $this->assertFalse($childState['is_pending_final_check']);
 
@@ -6346,7 +6351,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('srv_delegated', $job->field_status);
         $this->assertSame('SRV ile takip ediliyor', $job->next_action);
         $this->assertFalse((bool) $job->requires_second_visit);
-        $delegatedParentState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
+        $delegatedParentState = app(TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
         $this->assertNotSame('review', $delegatedParentState['ops_column']);
         $this->assertNotSame('revisit', $delegatedParentState['partner_column']);
         $this->assertFalse($delegatedParentState['requires_ops_action']);
@@ -6432,13 +6437,13 @@ class B2BPartnerPanelAccessTest extends TestCase
             'scheduled_date' => now()->addDays(2)->toDateString(),
             'scheduled_time' => '15:00',
         ]);
-        $parentState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($parent->fresh());
+        $parentState = app(TechnicalServiceOperationalStatePresenter::class)->present($parent->fresh());
         $this->assertNull($parent->fresh()->completed_at);
         $this->assertNull($parent->fresh()->installation_completed_at);
         $this->assertNotSame('Tamamlandı', $parent->fresh()->workflow_status);
         $this->assertSame($parent->id, $child->parent_request_id);
         $this->assertSame(1, $parent->childRequests()->count());
-        $this->assertTrue(app(\App\Services\B2B\B2BPartnerServiceJobScopeService::class)->shouldHideActiveParentWithChild($parent->fresh()));
+        $this->assertTrue(app(B2BPartnerServiceJobScopeService::class)->shouldHideActiveParentWithChild($parent->fresh()));
         $this->assertNotSame('review', $parentState['ops_column']);
         $this->assertNotSame('revisit', $parentState['partner_column']);
         $this->assertFalse($parentState['requires_ops_action']);
@@ -6528,7 +6533,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'completed_at' => now(),
         ]);
 
-        $closedParent = app(\App\Services\TechnicalService\TechnicalServiceServiceVisitService::class)
+        $closedParent = app(TechnicalServiceServiceVisitService::class)
             ->closeParentIfChildCompleted($child, $admin);
 
         $this->assertNotNull($closedParent);
@@ -6562,7 +6567,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'completed_at' => now(),
         ]);
 
-        $closedParent = app(\App\Services\TechnicalService\TechnicalServiceServiceVisitService::class)
+        $closedParent = app(TechnicalServiceServiceVisitService::class)
             ->closeParentIfChildCompleted($child, $admin);
 
         $this->assertNull($closedParent);
@@ -7052,11 +7057,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
-            ->assertJsonPath('dispatch.dispatch_status', 'sent')
+            ->assertJsonPath('dispatch.dispatch_status', 'queued')
             ->assertJsonPath('dispatch.target_phone', '905467647428')
             ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false)
-            ->assertJsonPath('job.customer_otp_request.payload.message_payload.dispatch_status', 'sent')
-            ->assertJsonPath('message', 'WhatsApp onay mesajı gönderildi.');
+            ->assertJsonPath('job.customer_otp_request.payload.message_payload.dispatch_status', 'queued')
+            ->assertJsonPath('message', 'Müşteri onay mesajı kuyruğa alındı.');
 
         $this->assertDatabaseHas('technical_service_customer_confirmations', [
             'id' => $oldConfirmation->id,
@@ -7084,20 +7089,17 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringNotContainsString('127.0.0.1', $messageText);
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
         $this->assertSame("https://portal.test/service-job-confirmation/{$confirmation->token}", $confirmation->payload['message_payload']['confirmation_url'] ?? null);
-        $this->assertSame('sent', $confirmation->payload['message_payload']['dispatch_status'] ?? null);
+        $this->assertSame('queued', $confirmation->payload['message_payload']['dispatch_status'] ?? null);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
             'event' => 'customer_approval_request',
             'target_type' => 'customer',
             'target_phone' => '905467647428',
             'test_mode' => true,
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'provider_key' => 'null_local',
         ]);
-        Http::assertSent(fn ($request): bool => $request->url() === 'https://n8n.test/webhook/emaks/evo/send-message'
-            && $request['event'] === 'customer_approval_request'
-            && $request['target_phone'] === '905467647428'
-            && str_contains((string) $request['message_text'], 'Özel onay mesajı')
-            && str_contains((string) $request['message_text'], "https://portal.test/service-job-confirmation/{$confirmation->token}")
-            && $request['confirmation_url'] === "https://portal.test/service-job-confirmation/{$confirmation->token}");
+        Http::assertNothingSent();
 
         $this->get("/service-job-confirmation/{$confirmation->token}")
             ->assertOk()
@@ -7917,7 +7919,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('son_kontrol', $job->field_status);
         $this->assertNull($job->completed_at);
         $this->assertNull($job->technician_completed_at);
-        $state = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
+        $state = app(TechnicalServiceOperationalStatePresenter::class)->present($job->fresh());
         $this->assertTrue($state['is_pending_final_check']);
         $this->assertSame('final_check', $state['ops_column']);
         $this->assertSame('final_check', $state['partner_column']);
@@ -8154,7 +8156,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'Ops linki tekrar istedi.',
             ])
             ->assertOk()
-            ->assertJsonPath('dispatch.dispatch_status', 'suppressed_testing_environment')
+            ->assertJsonPath('dispatch.dispatch_status', 'queued')
             ->assertJsonPath('request.partner_portal_actions.0.action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
 
         $messagePayload = $response->json('request.partner_portal_actions.0.payload.message_payload');
@@ -8274,7 +8276,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'Müşteriye tekrar gönder.',
             ])
             ->assertOk()
-            ->assertJsonPath('dispatch.dispatch_status', 'sent')
+            ->assertJsonPath('dispatch.dispatch_status', 'queued')
             ->assertJsonPath('dispatch.target_phone', '905467647428');
 
         $this->assertDatabaseHas('technical_service_customer_confirmations', [
@@ -8291,9 +8293,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->where('technical_service_request_id', $job->id)
             ->where('status', TechnicalServiceCustomerConfirmation::STATUS_PENDING)
             ->count());
-        Http::assertSent(fn ($request): bool => $request['event'] === 'customer_approval_request'
-            && $request['target_phone'] === '905467647428'
-            && str_starts_with((string) $request['confirmation_url'], 'https://panel.test/service-job-confirmation/'));
+        Http::assertNothingSent();
     }
 
     public function test_public_customer_door_photos_do_not_count_as_partner_field_documents(): void
@@ -8386,7 +8386,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk();
 
-        $opsState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)
+        $opsState = app(TechnicalServiceOperationalStatePresenter::class)
             ->present($scope['jobA']->refresh());
         $labels = collect($opsState['display_tags'])->pluck('label')->all();
 
@@ -8467,7 +8467,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'payload' => ['slots' => [['date' => now()->addDay()->toDateString(), 'slot' => '10:00-11:00']]],
         ]);
 
-        $board = app(\App\Services\B2B\B2BPartnerPortalDataService::class)->serviceJobBoardFor($partner);
+        $board = app(B2BPartnerPortalDataService::class)->serviceJobBoardFor($partner);
         $newJobs = collect($board['columns'])->firstWhere('key', 'new_jobs')['jobs'];
 
         $this->assertSame('MRN-SORT-PROPOSED', $newJobs[0]['mrn']);
@@ -8529,8 +8529,26 @@ class B2BPartnerPanelAccessTest extends TestCase
 
     public function test_appointment_message_context_is_prepared_when_ops_approves_partner_proposal(): void
     {
+        Http::fake();
         (new B2BPartnerPermissionSeeder)->run();
         $admin = $this->userWithRole('admin', true);
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'message_types' => [
+                'appointment_approved_customer' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_only',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                ],
+                'appointment_approved_technician' => [
+                    'enabled' => true,
+                    'channel_policy' => 'whatsapp_only',
+                    'whatsapp_provider' => 'evo_whatsapp',
+                ],
+            ],
+        ]);
         $partner = $this->partner([
             'partner_type' => B2BPartner::TYPE_LOCKSMITH,
             'capabilities' => [B2BPartner::TYPE_LOCKSMITH],
@@ -8581,7 +8599,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('job.appointment_label', 'Randevu önerildi')
             ->assertJsonPath('job.can_propose_appointment', false);
         $this->assertContains('Operasyon onayı bekleniyor', $proposalResponse->json('job.badges'));
-        $opsState = app(\App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter::class)->present($job->refresh());
+        $opsState = app(TechnicalServiceOperationalStatePresenter::class)->present($job->refresh());
         $this->assertSame('Usta randevu önerdi', $opsState['display_action_label']);
         $this->assertContains('Randevuyu onaylayın', collect($opsState['display_tags'])->pluck('label')->all());
 
@@ -8621,11 +8639,14 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('status', 'applied')
             ->assertJsonPath('request.workflow_status', 'Planlı')
             ->assertJsonPath('request.technician_approval_status', 'onayladı')
-            ->assertJsonPath('message_payloads.customer.slot_text', 'öğleden önce')
-            ->assertJsonPath('message_payloads.customer.payer_state_key', 'customer_pays_technician')
-            ->assertJsonPath('message_payloads.customer.customer_should_pay_technician', true)
-            ->assertJsonPath('message_payloads.customer.customer_direct_to_technician_amount', 600)
-            ->assertJsonPath('message_payloads.technician.mrn', 'MRN-APPOINTMENT-PROPOSE');
+            ->assertJsonPath('message_payloads.event_type', 'appointment_approved')
+            ->assertJsonPath('message_payloads.queued', 2)
+            ->assertJsonPath('message_payloads.blocked', 0)
+            ->assertJsonPath('message_payloads.dispatches.0.message_type', 'appointment_approved_customer')
+            ->assertJsonPath('message_payloads.dispatches.0.status', TechnicalServiceMessageDispatch::STATUS_QUEUED)
+            ->assertJsonPath('message_payloads.dispatches.0.test_redirect_applied', true)
+            ->assertJsonPath('message_payloads.dispatches.1.message_type', 'appointment_approved_technician')
+            ->assertJsonPath('message_payloads.dispatches.1.status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
 
         $portalJobResponse = $this->actingAs($portalUser)
             ->getJson("/api/partner/service-jobs/{$job->id}")
@@ -8643,18 +8664,37 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
-            'event' => 'appointment_approved_customer',
+            'message_type' => 'appointment_approved_customer',
             'target_type' => 'customer',
-            'target_phone' => '905467647428',
             'test_mode' => true,
+            'test_redirect_applied' => true,
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
         ]);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
-            'event' => 'appointment_approved_technician',
+            'message_type' => 'appointment_approved_technician',
             'target_type' => 'technician',
-            'target_phone' => '905467647428',
             'test_mode' => true,
+            'test_redirect_applied' => true,
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
         ]);
+        $customerDispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('message_type', 'appointment_approved_customer')
+            ->firstOrFail();
+        $technicianDispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $job->id)
+            ->where('message_type', 'appointment_approved_technician')
+            ->firstOrFail();
+
+        $this->assertSame('905467647428', $customerDispatch->target_phone);
+        $this->assertNotEmpty($customerDispatch->original_phone);
+        $this->assertSame('9054***428', $customerDispatch->effective_target_phone_mask);
+        $this->assertStringContainsString('09:00 - 13:00 arası', (string) ($customerDispatch->request_payload['body'] ?? ''));
+        $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 600,00 TL.', (string) ($customerDispatch->request_payload['body'] ?? ''));
+        $this->assertStringContainsString('10:00 - 11:00', (string) ($technicianDispatch->request_payload['body'] ?? ''));
+        $this->assertStringContainsString('İş Kartı', (string) ($technicianDispatch->request_payload['body'] ?? ''));
+        Http::assertNothingSent();
     }
 
     public function test_locksmith_partner_can_reject_job_without_removing_assignment(): void
@@ -8887,12 +8927,18 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringNotContainsString('TRY', (string) ($offer->metadata['message_payload']['message_text'] ?? ''));
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
-            'technical_service_assignment_offer_id' => $offer->id,
             'event' => 'assignment_offer_technician',
             'target_type' => 'technician',
             'target_phone' => '905467647428',
             'test_mode' => true,
-            'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED,
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'provider_key' => 'null_local',
+            'channel' => 'system',
+        ]);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $job->id,
+            'event' => 'assignment_offer_technician',
+            'metadata->assignment_offer_id' => $offer->id,
         ]);
         $this->assertDatabaseHas('technical_service_request_events', [
             'technical_service_request_id' => $job->id,
@@ -8915,7 +8961,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.assignment_offer.message_payload.route_fee_amount', 1000)
             ->assertJsonPath('request.assignment_offer.message_payload.total_amount', 3000)
             ->assertJsonPath('request.assignment_offer.job_link', $offer->metadata['message_payload']['job_link'])
-            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED)
+            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_QUEUED)
             ->assertJsonPath('request.travel_fee_amount', '1000.00')
             ->assertJsonPath('request.technician_payment_amount', '2000.00');
 

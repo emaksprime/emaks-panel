@@ -4,25 +4,28 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\B2B\B2BPartner;
+use App\Models\TechnicalServiceAdminOverride;
 use App\Models\TechnicalServiceAssignmentArchive;
 use App\Models\TechnicalServiceAssignmentOffer;
 use App\Models\TechnicalServiceCustomerConfirmation;
 use App\Models\TechnicalServiceMessageDispatch;
-use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
-use App\Services\PanelAccessService;
 use App\Services\Messaging\EvolutionWhatsAppMessageService;
+use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
+use App\Services\PanelAccessService;
 use App\Services\TechnicalService\TechnicalServiceAdminOverrideService;
-use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\TechnicalServicePartRequestService;
 use App\Services\TechnicalService\TechnicalServiceUiLabelService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Closure;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
@@ -96,6 +99,7 @@ class PartnerServiceJobController extends Controller
         private readonly TechnicalServiceAdminOverrideService $adminOverrides,
         private readonly PanelAccessService $panelAccess,
         private readonly EvolutionWhatsAppMessageService $messages,
+        private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -288,15 +292,24 @@ class PartnerServiceJobController extends Controller
             return $action;
         });
 
-        $this->messages->send(
+        $this->workflowMessages->queueSystemMessage(
+            $job->refresh(),
             'job_rejected_ops',
             'ops',
-            null,
             "Usta işi reddetti. MRN: {$job->mrn}. Neden: ".$this->rejectReasonLabel($data['reason']).". Açıklama: {$data['note']}",
-            ['reason' => $data['reason'], 'partner_id' => $partner->id],
-            $job,
+            [
+                'actor_name' => $user->name,
+                'technician_name' => $job->technicianRecord?->name ?: $job->technician_name ?: $partner->display_name,
+                'technician_phone' => $job->technicianRecord?->phone_e164 ?: ($job->technicianRecord?->phone_display ?: $job->technicianRecord?->phone),
+                'rejection_reason' => $this->rejectReasonLabel($data['reason']).' - '.$data['note'],
+                'rejected_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
+                'next_action_text' => 'OPS yeniden atama yapmalı.',
+                'partner_id' => $partner->id,
+                'reason' => $data['reason'],
+            ],
             $user,
             $action,
+            ['triggered_by' => 'partner_portal_job_rejected'],
         );
 
         return response()->json([
@@ -332,6 +345,7 @@ class PartnerServiceJobController extends Controller
             'job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
         ]);
     }
+
     public function submitCompletion(Request $request, TechnicalServiceRequest $technicalServiceRequest): JsonResponse
     {
         [$user, $job, $partner] = $this->authorizedJob($request, $technicalServiceRequest);
@@ -389,15 +403,22 @@ class PartnerServiceJobController extends Controller
             $message .= " Not: {$completionNote}";
         }
 
-        $this->messages->send(
+        $this->workflowMessages->queueSystemMessage(
+            $job->refresh(),
             'completion_submitted_ops',
             'ops',
-            null,
             $message,
-            ['partner_id' => $partner->id, 'result' => $data['result']],
-            $job,
+            [
+                'actor_name' => $user->name,
+                'technician_name' => $job->technicianRecord?->name ?: $job->technician_name ?: $partner->display_name,
+                'completed_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
+                'next_action_text' => 'OPS son kontrol / müşteri onayı',
+                'partner_id' => $partner->id,
+                'result' => $data['result'],
+            ],
             $user,
             $job->partnerJobActions()->latest()->first(),
+            ['triggered_by' => 'partner_portal_completion_submitted'],
         );
 
         return response()->json($result);
@@ -457,7 +478,7 @@ class PartnerServiceJobController extends Controller
                 $filename = $fieldCode.'-'.Str::uuid().'.'.$extension;
                 $path = $file->storeAs("technical-service/requests/{$job->id}/partner-portal", $filename, 'public');
                 $uploadedAt = now();
-                if ($job->reopened_at instanceof \Carbon\CarbonInterface
+                if ($job->reopened_at instanceof CarbonInterface
                     && $uploadedAt->lessThanOrEqualTo($job->reopened_at->copy()->addSecond())) {
                     $uploadedAt = $job->reopened_at->copy()->addSecond();
                 }
@@ -570,10 +591,10 @@ class PartnerServiceJobController extends Controller
                 ],
             ], $data['note'] ?? 'Müşteri montaj onay bağlantısı hazırlandı.', $job->workflow_status);
 
-            $dispatch = $this->messages->send(
+            $dispatch = $this->workflowMessages->queueSystemMessage(
+                $job,
                 'customer_approval_request',
                 'customer',
-                $job->customer_phone,
                 $messageText,
                 [
                     'confirmation_url' => $approvalUrl,
@@ -583,9 +604,13 @@ class PartnerServiceJobController extends Controller
                     'public_url_warning' => $publicUrlWarning,
                     'manual_ui_send' => true,
                 ],
-                $job,
                 $user,
                 $action,
+                [
+                    'recipient_phone' => $job->customer_phone,
+                    'triggered_by' => 'partner_portal_customer_approval_request',
+                    'metadata' => ['manual_ui_send' => true],
+                ],
             );
             $dispatchSummary = $this->dispatchSummary($dispatch);
             $messagePayload = [
@@ -658,15 +683,22 @@ class PartnerServiceJobController extends Controller
             return $action;
         });
 
-        $this->messages->send(
+        $this->workflowMessages->queueSystemMessage(
+            $job->refresh(),
             'support_request_ops',
             'ops',
-            null,
             "Usta ek talep oluşturdu. MRN: {$job->mrn}. Talep: ".$this->supportTypeLabel($data['type']).". Açıklama: {$data['description']}",
-            ['partner_id' => $partner->id, 'type' => $data['type']],
-            $job,
+            [
+                'actor_name' => $user->name,
+                'support_subject' => $this->supportTypeLabel($data['type']),
+                'support_note' => $data['description'],
+                'created_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
+                'partner_id' => $partner->id,
+                'type' => $data['type'],
+            ],
             $user,
             $action,
+            ['triggered_by' => 'partner_portal_support_request'],
         );
 
         return response()->json([
@@ -723,19 +755,23 @@ class PartnerServiceJobController extends Controller
             ], $data['note'], $job->workflow_status);
         });
 
-        $this->messages->send(
+        $this->workflowMessages->queueSystemMessage(
+            $job->refresh(),
             'price_revision_requested_ops',
             'ops',
-            null,
             "Usta hakediş revize talebi oluşturdu. MRN: {$job->mrn}. Açıklama: {$data['note']}",
             [
+                'actor_name' => $user->name,
+                'old_amount_formatted' => $this->moneyLabel((float) ($job->technician_payment_amount ?? 0)),
+                'requested_amount_formatted' => $this->moneyLabel(round((float) ($data['labor_amount'] ?? 0) + (float) ($data['route_fee_amount'] ?? 0), 2)),
+                'revision_reason' => $data['note'],
                 'labor_amount' => $data['labor_amount'] ?? null,
                 'route_fee_amount' => $data['route_fee_amount'] ?? null,
                 'partner_id' => $partner->id,
             ],
-            $job,
             $user,
             $action,
+            ['triggered_by' => 'partner_portal_price_revision_request'],
         );
 
         return response()->json([
@@ -797,7 +833,7 @@ class PartnerServiceJobController extends Controller
             ],
             $user,
             true,
-            \App\Models\TechnicalServiceAdminOverride::SOURCE_PARTNER_REQUEST,
+            TechnicalServiceAdminOverride::SOURCE_PARTNER_REQUEST,
         );
 
         return response()->json([
@@ -1228,6 +1264,11 @@ class PartnerServiceJobController extends Controller
         };
     }
 
+    private function moneyLabel(float $amount): string
+    {
+        return number_format($amount, 2, ',', '.').' TL';
+    }
+
     private function ensureFieldActionStage(TechnicalServiceRequest $job, string $message): void
     {
         if (! $this->canUseFieldActions($job)) {
@@ -1252,7 +1293,7 @@ class PartnerServiceJobController extends Controller
             ->where('action', TechnicalServicePartnerJobAction::ACTION_COMPLETION_SUBMITTED)
             ->where('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
 
-        if ($job->reopened_at instanceof \Carbon\CarbonInterface) {
+        if ($job->reopened_at instanceof CarbonInterface) {
             $query->where(function ($query) use ($job): void {
                 $query->where('created_at', '>=', $job->reopened_at)
                     ->orWhere('updated_at', '>=', $job->reopened_at);
@@ -1273,7 +1314,7 @@ class PartnerServiceJobController extends Controller
             ->where('technical_service_request_id', $job->id)
             ->where('status', TechnicalServiceCustomerConfirmation::STATUS_APPROVED);
 
-        if ($job->reopened_at instanceof \Carbon\CarbonInterface) {
+        if ($job->reopened_at instanceof CarbonInterface) {
             $approvedConfirmationQuery->where(function ($query) use ($job): void {
                 $query->where('created_at', '>', $job->reopened_at)
                     ->orWhere('updated_at', '>', $job->reopened_at)
@@ -1601,7 +1642,7 @@ class PartnerServiceJobController extends Controller
 
         return [
             'dispatch_status' => $status,
-            'dispatch_provider' => 'evolution_n8n',
+            'dispatch_provider' => $dispatch->provider_key ?: data_get($requestPayload, 'provider') ?: 'null_local',
             'target_phone' => $dispatch->target_phone,
             'test_mode' => (bool) $dispatch->test_mode,
             'response_status_code' => is_numeric($responseStatusCode) ? (int) $responseStatusCode : null,
@@ -1637,6 +1678,10 @@ class PartnerServiceJobController extends Controller
             $warning = trim((string) ($summary['public_url_warning'] ?? ''));
 
             return 'WhatsApp onay mesajı gönderildi.'.($warning !== '' ? ' '.$warning : '');
+        }
+
+        if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_QUEUED) {
+            return 'Müşteri onay mesajı kuyruğa alındı.';
         }
 
         if (($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_DUPLICATE) {
@@ -1703,14 +1748,14 @@ class PartnerServiceJobController extends Controller
     private function recordPredatesActiveReopen(TechnicalServiceRequest $job, mixed $recordAt): bool
     {
         return $job->reopened_at !== null
-            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt instanceof CarbonInterface
             && $recordAt->lessThan($job->reopened_at);
     }
 
     private function portalDocumentPredatesActiveReopen(TechnicalServiceRequest $job, mixed $recordAt): bool
     {
         return $job->reopened_at !== null
-            && $recordAt instanceof \Carbon\CarbonInterface
+            && $recordAt instanceof CarbonInterface
             && $recordAt->lessThanOrEqualTo($job->reopened_at);
     }
 }

@@ -135,6 +135,9 @@ class TechnicalServiceMessageContextBuilder
         $appointmentDate = $request->scheduled_date?->format('d.m.Y') ?: $request->scheduled_at?->format('d.m.Y');
         $appointmentTime = $request->scheduled_time ?: $request->scheduled_at?->format('H:i');
         $amount = $this->money($ownership['active_customer_direct_to_technician_amount'] ?? 0);
+        $laborAmount = $this->money($request->technician_payment_amount);
+        $routeAmount = $this->money($request->travel_fee_amount);
+        $totalAmount = round($laborAmount + $routeAmount, 2);
         $mapsUrl = $request->location_map_url ?: $this->mapsLink($request);
 
         return [
@@ -163,9 +166,9 @@ class TechnicalServiceMessageContextBuilder
             'payer_state_label' => $ownership['payer_state_label'] ?? null,
             'payment_instruction_for_customer' => $ownership['payment_instruction_for_customer'] ?? null,
             'technician_job_card_url' => null,
-            'labor_amount_formatted' => null,
-            'route_fee_formatted' => $this->money($request->travel_fee_amount) > 0.0 ? $this->formatTry($this->money($request->travel_fee_amount)) : null,
-            'technician_earning_total_formatted' => $this->money($request->technician_payment_amount) > 0.0 ? $this->formatTry($this->money($request->technician_payment_amount)) : null,
+            'labor_amount_formatted' => $laborAmount > 0.0 ? $this->formatTry($laborAmount) : null,
+            'route_fee_formatted' => $routeAmount > 0.0 ? $this->formatTry($routeAmount) : null,
+            'technician_earning_total_formatted' => $totalAmount > 0.0 ? $this->formatTry($totalAmount) : null,
         ];
     }
 
@@ -522,6 +525,7 @@ class TechnicalServiceMessageContextBuilder
         $payerState = (string) ($context['payer_state_key'] ?? '');
         $amount = $this->money($context['customer_payment_amount'] ?? null);
         $formatted = $this->filledString($context['customer_payment_amount_formatted'] ?? null);
+        $paymentNote = $this->customerPaymentNoteText($context);
 
         if ($amount > 0.0 && $formatted === null) {
             $formatted = $this->formatTry($amount);
@@ -544,9 +548,18 @@ class TechnicalServiceMessageContextBuilder
             ],
             TechnicalServicePaymentOwnershipService::STATE_CUSTOMER_PAYS_TECHNICIAN => [
                 'payment_instruction_text' => $formatted !== null ? "Randevu sırasında ustaya ödenecek tutar: {$formatted}." : '',
-                'payment_instruction_block' => $formatted !== null ? "Randevu sırasında ustaya ödenecek tutar: {$formatted}." : '',
-                'short_payment_instruction' => $formatted !== null ? "Ustaya ödenecek tutar: {$formatted}." : '',
-                'sms_payment_line' => $formatted !== null ? "Ustaya ödenecek tutar: {$formatted}." : '',
+                'payment_instruction_block' => implode("\n", array_filter([
+                    $formatted !== null ? "Randevu sırasında ustaya ödenecek tutar: {$formatted}." : '',
+                    $paymentNote !== null ? "Not: {$paymentNote}" : '',
+                ])),
+                'short_payment_instruction' => implode(' ', array_filter([
+                    $formatted !== null ? "Ustaya ödenecek tutar: {$formatted}." : '',
+                    $paymentNote !== null ? $this->shortCustomerPaymentNote($paymentNote) : '',
+                ])),
+                'sms_payment_line' => implode(' ', array_filter([
+                    $formatted !== null ? "Ustaya ödenecek tutar: {$formatted}." : '',
+                    $paymentNote !== null ? $this->shortCustomerPaymentNote($paymentNote) : '',
+                ])),
                 'technician_payment_context' => $formatted !== null ? "Müşteri randevuda ustaya {$formatted} ödeyecek." : '',
             ],
             TechnicalServicePaymentOwnershipService::STATE_PENDING_ONLINE_PAYMENT => [
@@ -564,6 +577,41 @@ class TechnicalServiceMessageContextBuilder
                 'technician_payment_context' => '',
             ],
         };
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function customerPaymentNoteText(array $context): ?string
+    {
+        foreach ([
+            'customer_payment_note_text',
+            'customer_visible_payment_note',
+            'payment_note_text',
+        ] as $key) {
+            $value = $this->filledString($context[$key] ?? null);
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        $methods = mb_strtolower((string) ($context['customer_payment_methods'] ?? $context['payment_methods'] ?? ''), 'UTF-8');
+        if (str_contains($methods, 'nakit') || str_contains($methods, 'havale')) {
+            return 'Ödemeler nakit ve havale kabul edilmektedir.';
+        }
+
+        return null;
+    }
+
+    private function shortCustomerPaymentNote(string $note): string
+    {
+        $lower = mb_strtolower($note, 'UTF-8');
+
+        if (str_contains($lower, 'nakit') && str_contains($lower, 'havale')) {
+            return 'Nakit/havale kabul edilir.';
+        }
+
+        return mb_strlen($note) > 48 ? mb_substr($note, 0, 45).'...' : $note;
     }
 
     /**

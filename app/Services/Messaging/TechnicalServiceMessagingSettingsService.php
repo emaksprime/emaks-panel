@@ -57,7 +57,7 @@ class TechnicalServiceMessagingSettingsService
         'evo_whatsapp' => [
             'label' => 'Evo WhatsApp',
             'channel' => 'whatsapp',
-            'description' => 'Mevcut pratik WhatsApp sağlayıcısı; Laravel kuralları n8n webhook taşımasına payload gönderir.',
+            'description' => 'Mevcut WhatsApp sağlayıcısı; queue mesajları Laravel üzerinden Direct Evolution API ile gönderilir.',
             'status_label' => 'Mevcut sağlayıcı',
             'default_enabled' => true,
             'contract_confirmed' => true,
@@ -267,6 +267,7 @@ class TechnicalServiceMessagingSettingsService
     public function payload(): array
     {
         $settings = $this->settings();
+        $evo = $this->evoWhatsappPayload($settings);
         $readiness = $this->readiness($settings);
 
         return [
@@ -302,14 +303,17 @@ class TechnicalServiceMessagingSettingsService
                 'fallback_provider' => $settings['fallback_provider'],
                 'provider_priority' => $settings['provider_priority'],
                 'webhook_url_configured' => $readiness['provider_webhook_configured'],
+                'direct_api_ready' => $evo['direct_api_ready'],
+                'direct_api_endpoint' => $evo['endpoint_url'],
                 'provider_secret_configured' => $readiness['provider_secret_configured'],
                 'webhook_url_value' => $readiness['provider_webhook_configured'] ? 'configured' : null,
                 'secret_value' => null,
-                'webhook_path' => 'emaks/evo/send-message',
-                'router' => 'Laravel messaging provider router; Evo n8n webhook is the current transport.',
+                'webhook_path' => null,
+                'router' => 'Laravel queue mesajları Direct Evolution API ile gönderir; n8n/webhook queue runtime değildir.',
             ],
             'providers' => $this->providerPayload($settings, $readiness),
             'capability_map' => $this->capabilityMap(),
+            'evo_whatsapp' => $evo,
             'nac_sms' => $this->nacSmsPayload($settings),
             'mikro_api' => $this->mikroApiPayload($settings),
             'admin_sections' => $this->adminSections($settings, $readiness),
@@ -320,7 +324,7 @@ class TechnicalServiceMessagingSettingsService
                 'Test modu açıkken hedef numara test numarasına çevrilir.',
                 'Queue/rate limit REL-4D’de aktif gönderim yoluna bağlanacak.',
                 'Voibot ses/mesaj sağlayıcısı API sözleşmesi doğrulanana kadar kapalıdır.',
-                'NAC SMS ve Mikro API canlı aksiyonları credential/readiness/queue/onay tamamlanmadan çalışmaz.',
+                'Evo Direct API, NAC SMS ve Mikro API canlı aksiyonları credential/readiness/queue/onay tamamlanmadan çalışmaz.',
             ],
             'helper_texts' => [
                 'secrets' => 'Evo, NAC, Voibot, Mikro veya n8n token/API key bu ekranda düz metin saklanmaz ve gösterilmez.',
@@ -399,6 +403,10 @@ class TechnicalServiceMessagingSettingsService
 
         if (array_key_exists('nac_sms', $values)) {
             $next['nac_sms'] = $this->mergeNacSmsSettings($current['nac_sms'], (array) $values['nac_sms']);
+        }
+
+        if (array_key_exists('evo_whatsapp', $values)) {
+            $next['evo_whatsapp'] = $this->mergeEvoWhatsappSettings($current['evo_whatsapp'], (array) $values['evo_whatsapp']);
         }
 
         if (array_key_exists('mikro_api', $values)) {
@@ -536,13 +544,54 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    public function saveEvoWhatsappCredentials(array $values): array
+    {
+        $apiKey = trim((string) ($values['api_key'] ?? ''));
+        $token = trim((string) ($values['token'] ?? ''));
+
+        if ($apiKey === '' && $token === '') {
+            throw ValidationException::withMessages([
+                'api_key' => 'Evo Direct API key veya token zorunlu.',
+            ]);
+        }
+
+        $credential = IntegrationProviderCredential::query()->updateOrCreate(
+            [
+                'scope' => IntegrationProviderCredential::SCOPE_TECHNICAL_SERVICE,
+                'provider' => 'evo_whatsapp',
+                'profile_key' => IntegrationProviderCredential::PROFILE_DEFAULT,
+                'mode' => IntegrationProviderCredential::MODE_LIVE,
+            ],
+            [
+                'api_key_encrypted' => $apiKey === '' ? null : $apiKey,
+                'token_encrypted' => $token === '' ? null : $token,
+                'api_key_mask' => $apiKey === '' ? null : $this->maskValue($apiKey),
+                'token_mask' => $token === '' ? null : $this->maskValue($token),
+                'credentials_status' => IntegrationProviderCredential::STATUS_CONFIGURED,
+                'created_by' => Auth::id(),
+                'updated_by' => Auth::id(),
+                'metadata' => ['auth' => $token === '' ? 'api_key' : 'token', 'transport' => 'direct_evolution_api'],
+            ],
+        );
+
+        if ($credential->created_by === null) {
+            $credential->forceFill(['created_by' => Auth::id()])->save();
+        }
+
+        return $this->payload();
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function clearProviderCredentials(string $provider): array
     {
         $provider = $this->normalizeProviderKey($provider);
 
-        if (! in_array($provider, ['nac_sms', 'mikro_api'], true)) {
+        if (! in_array($provider, ['nac_sms', 'mikro_api', 'evo_whatsapp'], true)) {
             throw ValidationException::withMessages([
                 'provider' => 'Bu sağlayıcının credential temizleme işlemi bu ekranda desteklenmiyor.',
             ]);
@@ -604,6 +653,10 @@ class TechnicalServiceMessagingSettingsService
         if ((int) $settings['nac_sms']['validity'] < 60) {
             $settings['nac_sms']['validity'] = 60;
         }
+        $settings['evo_whatsapp'] = $this->mergeEvoWhatsappSettings(
+            $defaults['evo_whatsapp'],
+            is_array($settings['evo_whatsapp'] ?? null) ? $settings['evo_whatsapp'] : [],
+        );
         $settings['mikro_api'] = $this->mergeMikroApiSettings(
             $defaults['mikro_api'],
             is_array($settings['mikro_api'] ?? null) ? $settings['mikro_api'] : [],
@@ -637,6 +690,15 @@ class TechnicalServiceMessagingSettingsService
             'allow_browser_smoke_send' => false,
             'allow_test_fixture_send' => false,
             'message_types' => $this->defaultMessageTypeSettings(),
+            'evo_whatsapp' => [
+                'direct_api_enabled' => false,
+                'direct_api_base_url' => null,
+                'direct_api_instance_name' => null,
+                'delay' => 0,
+                'link_preview' => false,
+                'last_test_status' => null,
+                'last_error_redacted' => null,
+            ],
             'nac_sms' => [
                 'enabled' => false,
                 'profile' => 'legacy_working_http_9587',
@@ -878,6 +940,22 @@ class TechnicalServiceMessagingSettingsService
             ]);
         }
 
+        $evo = $settings['evo_whatsapp'] ?? [];
+        $evoBaseUrl = trim((string) ($evo['direct_api_base_url'] ?? ''));
+        $evoInstanceName = trim((string) ($evo['direct_api_instance_name'] ?? ''));
+
+        if ($evoBaseUrl !== '' && ! filter_var($evoBaseUrl, FILTER_VALIDATE_URL)) {
+            throw ValidationException::withMessages([
+                'evo_whatsapp.direct_api_base_url' => 'Evo Direct API base URL geçerli bir URL olmalı.',
+            ]);
+        }
+
+        if ($evoInstanceName !== '' && ! preg_match('/^[A-Za-z0-9._:-]+$/', $evoInstanceName)) {
+            throw ValidationException::withMessages([
+                'evo_whatsapp.direct_api_instance_name' => 'Evo instance adı sadece harf, sayı, nokta, tire, alt çizgi veya iki nokta içerebilir.',
+            ]);
+        }
+
         foreach ($settings['message_types'] ?? [] as $messageType => $typeSettings) {
             if (($typeSettings['whatsapp_mode'] ?? 'test') === 'live'
                 || ($typeSettings['sms_mode'] ?? 'disabled') === 'live') {
@@ -895,7 +973,8 @@ class TechnicalServiceMessagingSettingsService
     private function readiness(array $settings): array
     {
         $webhookConfigured = trim((string) config('services.evolution.n8n_webhook_url', '')) !== '';
-        $providerSecretConfigured = false;
+        $evoDirect = $this->evoWhatsappReadiness($settings);
+        $providerSecretConfigured = $evoDirect['credentials_ready'];
         $testPhoneConfigured = $this->validPhone((string) $settings['test_phone']);
         $activeProvider = $this->normalizeProviderKey((string) $settings['active_provider']);
         $activeProviderDefinition = self::PROVIDERS[$activeProvider];
@@ -922,8 +1001,8 @@ class TechnicalServiceMessagingSettingsService
         if (! $testPhoneConfigured) {
             $disabledReasons[] = 'Test telefonu eksik.';
         }
-        if (! $webhookConfigured && $activeProvider === 'evo_whatsapp') {
-            $disabledReasons[] = 'n8n webhook URL eksik.';
+        if ($activeProvider === 'evo_whatsapp' && ! $evoDirect['ready']) {
+            $disabledReasons[] = 'Evo Direct API base URL/instance/API key eksik.';
         }
         if ($activeProvider === 'nac_sms' && ! $activeProviderCredentialsReady) {
             $disabledReasons[] = 'NAC SMS Basic Auth bilgileri eksik.';
@@ -965,6 +1044,11 @@ class TechnicalServiceMessagingSettingsService
             'test_phone_configured' => $testPhoneConfigured,
             'provider_webhook_configured' => $webhookConfigured,
             'provider_secret_configured' => $providerSecretConfigured,
+            'evo_direct_api_enabled' => $evoDirect['enabled'],
+            'evo_direct_api_ready' => $evoDirect['ready'],
+            'evo_direct_api_credentials_ready' => $evoDirect['credentials_ready'],
+            'evo_direct_api_base_url_configured' => $evoDirect['base_url_ready'],
+            'evo_direct_api_instance_configured' => $evoDirect['instance_ready'],
             'active_provider' => $activeProvider,
             'active_provider_label' => $activeProviderDefinition['label'],
             'default_provider' => $settings['default_provider'],
@@ -978,7 +1062,7 @@ class TechnicalServiceMessagingSettingsService
             'queue_ready' => false,
             'can_send_test' => $canSendTest,
             'can_send_real' => $canSendReal,
-            'effective_mode' => $this->effectiveMode($settings, $webhookConfigured, $testPhoneConfigured),
+            'effective_mode' => $this->effectiveMode($settings, $testPhoneConfigured),
             'disabled_reasons' => array_values(array_unique($disabledReasons)),
             'real_allowed_message_types' => $realAllowedTypes,
             'test_allowed_message_types' => $testAllowedTypes,
@@ -988,7 +1072,7 @@ class TechnicalServiceMessagingSettingsService
     /**
      * @param  array<string, mixed>  $settings
      */
-    private function effectiveMode(array $settings, bool $webhookConfigured, bool $testPhoneConfigured): string
+    private function effectiveMode(array $settings, bool $testPhoneConfigured): string
     {
         $activeProvider = $this->normalizeProviderKey((string) $settings['active_provider']);
         $activeProviderDefinition = self::PROVIDERS[$activeProvider];
@@ -1009,7 +1093,7 @@ class TechnicalServiceMessagingSettingsService
             return $testPhoneConfigured ? 'test_redirect' : 'blocked_missing_test_phone';
         }
 
-        if ($activeProvider === 'evo_whatsapp' && ! $webhookConfigured) {
+        if ($activeProvider === 'evo_whatsapp' && ! $this->evoWhatsappReadiness($settings)['ready']) {
             return 'blocked_provider_missing';
         }
 
@@ -1017,7 +1101,7 @@ class TechnicalServiceMessagingSettingsService
             return 'blocked_real_send_disabled';
         }
 
-        if (! $this->providerRealReady($activeProvider, $settings, $webhookConfigured)) {
+        if (! $this->providerRealReady($activeProvider, $settings, false)) {
             return 'blocked_provider_not_ready';
         }
 
@@ -1036,7 +1120,7 @@ class TechnicalServiceMessagingSettingsService
         }
 
         if ($provider === 'evo_whatsapp') {
-            return $webhookConfigured;
+            return $this->evoWhatsappReadiness($settings)['ready'];
         }
 
         if ($provider === 'nac_sms') {
@@ -1063,7 +1147,7 @@ class TechnicalServiceMessagingSettingsService
         }
 
         if ($provider === 'evo_whatsapp') {
-            return $webhookConfigured;
+            return $this->evoWhatsappReadiness($settings)['ready'];
         }
 
         if ($provider === 'nac_sms') {
@@ -1087,8 +1171,8 @@ class TechnicalServiceMessagingSettingsService
             $realReady = $this->providerRealReady($key, $settings, (bool) $readiness['provider_webhook_configured']);
             $readyReason = $definition['disabled_reason'] ?? null;
 
-            if ($key === 'evo_whatsapp' && ! (bool) $readiness['provider_webhook_configured']) {
-                $readyReason = 'Evo/n8n webhook URL eksik.';
+            if ($key === 'evo_whatsapp' && ! (bool) ($readiness['evo_direct_api_ready'] ?? false)) {
+                $readyReason = 'Evo Direct API base URL/instance/API key eksik.';
             }
 
             if ($key === 'null_local') {
@@ -1281,6 +1365,43 @@ class TechnicalServiceMessagingSettingsService
             self::PROVIDER_CAPABILITY_DEFAULTS,
             self::PROVIDERS[$provider]['capabilities'] ?? [],
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $current
+     * @param  array<string, mixed>  $updates
+     * @return array<string, mixed>
+     */
+    private function mergeEvoWhatsappSettings(array $current, array $updates): array
+    {
+        $next = $current;
+
+        foreach ([
+            'direct_api_enabled',
+            'link_preview',
+        ] as $field) {
+            if (array_key_exists($field, $updates)) {
+                $next[$field] = (bool) $updates[$field];
+            }
+        }
+
+        foreach ([
+            'direct_api_base_url',
+            'direct_api_instance_name',
+            'last_test_status',
+            'last_error_redacted',
+        ] as $field) {
+            if (array_key_exists($field, $updates)) {
+                $value = trim((string) $updates[$field]);
+                $next[$field] = $value === '' ? null : $value;
+            }
+        }
+
+        if (array_key_exists('delay', $updates)) {
+            $next['delay'] = max(0, min(120, (int) $updates['delay']));
+        }
+
+        return $next;
     }
 
     /**
@@ -1484,6 +1605,84 @@ class TechnicalServiceMessagingSettingsService
     /**
      * @return array<string, mixed>
      */
+    private function evoWhatsappPayload(array $settings): array
+    {
+        $evo = $settings['evo_whatsapp'];
+        $credential = $this->credential('evo_whatsapp');
+        $readiness = $this->evoWhatsappReadiness($settings);
+
+        $blocking = [];
+        if (! $readiness['enabled']) {
+            $blocking[] = 'Evo Direct API kapalı.';
+        }
+        if (! $readiness['base_url_ready']) {
+            $blocking[] = 'Evo Direct API base URL eksik.';
+        }
+        if (! $readiness['instance_ready']) {
+            $blocking[] = 'Evo instance adı eksik.';
+        }
+        if (! $readiness['credentials_ready']) {
+            $blocking[] = 'Evo Direct API key/token eksik.';
+        }
+
+        return [
+            'direct_api_enabled' => $readiness['enabled'],
+            'direct_api_base_url' => $evo['direct_api_base_url'],
+            'direct_api_instance_name' => $evo['direct_api_instance_name'],
+            'endpoint_url' => $this->evoEndpointUrl((string) ($evo['direct_api_base_url'] ?? ''), (string) ($evo['direct_api_instance_name'] ?? '')),
+            'delay' => (int) $evo['delay'],
+            'link_preview' => (bool) $evo['link_preview'],
+            'credentials_ready' => $readiness['credentials_ready'],
+            'api_key_mask' => $credential?->api_key_mask,
+            'token_mask' => $credential?->token_mask,
+            'direct_api_ready' => $readiness['ready'],
+            'queue_ready' => $readiness['ready'],
+            'test_ready' => $readiness['ready'],
+            'live_ready' => $readiness['ready'] && (bool) $settings['real_send_enabled'],
+            'legacy_webhook_configured' => trim((string) config('services.evolution.n8n_webhook_url', '')) !== '',
+            'transport' => 'direct_evolution_api',
+            'last_test_status' => $evo['last_test_status'],
+            'last_error_redacted' => $evo['last_error_redacted'],
+            'blocking_reasons' => array_values(array_unique($blocking)),
+        ];
+    }
+
+    /**
+     * @return array{enabled:bool,ready:bool,credentials_ready:bool,base_url_ready:bool,instance_ready:bool}
+     */
+    private function evoWhatsappReadiness(array $settings): array
+    {
+        $evo = $settings['evo_whatsapp'] ?? [];
+        $credential = $this->credential('evo_whatsapp');
+        $enabled = (bool) ($evo['direct_api_enabled'] ?? false);
+        $baseUrlReady = trim((string) ($evo['direct_api_base_url'] ?? '')) !== '';
+        $instanceReady = trim((string) ($evo['direct_api_instance_name'] ?? '')) !== '';
+        $credentialsReady = $credential?->apiKeyReady() ?? false;
+
+        return [
+            'enabled' => $enabled,
+            'ready' => $enabled && $baseUrlReady && $instanceReady && $credentialsReady,
+            'credentials_ready' => $credentialsReady,
+            'base_url_ready' => $baseUrlReady,
+            'instance_ready' => $instanceReady,
+        ];
+    }
+
+    private function evoEndpointUrl(string $baseUrl, string $instanceName): ?string
+    {
+        $baseUrl = trim($baseUrl);
+        $instanceName = trim($instanceName);
+
+        if ($baseUrl === '' || $instanceName === '') {
+            return null;
+        }
+
+        return rtrim($baseUrl, '/').'/message/sendText/'.$instanceName;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     private function nacSmsPayload(array $settings): array
     {
         $nac = $settings['nac_sms'];
@@ -1630,6 +1829,7 @@ class TechnicalServiceMessagingSettingsService
      */
     private function adminSections(array $settings, array $readiness): array
     {
+        $evo = $this->evoWhatsappPayload($settings);
         $nac = $this->nacSmsPayload($settings);
         $mikro = $this->mikroApiPayload($settings);
 
@@ -1638,7 +1838,7 @@ class TechnicalServiceMessagingSettingsService
             ['key' => 'payments', 'label' => 'Ödeme Sağlayıcıları', 'ready' => true, 'summary' => 'Iyzico/fake ödeme, reconcile ve ödeme mail durumu.'],
             ['key' => 'mail', 'label' => 'Mail Ayarları', 'ready' => true, 'summary' => 'SMTP outgoing ve IMAP/POP3 incoming ayarları.'],
             ['key' => 'messaging', 'label' => 'Mesajlaşma Sağlayıcıları', 'ready' => $readiness['can_send_test'], 'summary' => 'Test modu, gerçek gönderim guard ve kanal politikaları.'],
-            ['key' => 'evo', 'label' => 'WhatsApp / Evo', 'ready' => $readiness['provider_webhook_configured'], 'summary' => 'Evo/n8n mevcut WhatsApp taşıyıcısı.'],
+            ['key' => 'evo', 'label' => 'WhatsApp / Evo', 'ready' => $evo['direct_api_ready'], 'summary' => 'Queue WhatsApp mesajları Direct Evolution API ile gönderilir.'],
             ['key' => 'nac_sms', 'label' => 'SMS API / NAC', 'ready' => $nac['test_ready'], 'summary' => 'NAC SMS Basic Auth, sender, gateway ve rapor altyapısı.'],
             ['key' => 'voibot', 'label' => 'Voibot Hazırlık', 'ready' => false, 'summary' => 'Voibot API sözleşmesi bekleniyor.'],
             ['key' => 'mikro_api', 'label' => 'Mikro API', 'ready' => $mikro['read_ready'], 'summary' => 'Mikro API credential, lisans ve yazma onayı altyapısı.'],

@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Heading from '@/components/heading';
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks';
 
@@ -306,6 +306,27 @@ type MessagingProvider = {
     notes: string | null;
 };
 
+type MessagingEvoWhatsAppSettings = {
+    direct_api_enabled: boolean;
+    direct_api_base_url: string | null;
+    direct_api_instance_name: string | null;
+    endpoint_url: string | null;
+    delay: number;
+    link_preview: boolean;
+    credentials_ready: boolean;
+    api_key_mask: string | null;
+    token_mask: string | null;
+    direct_api_ready: boolean;
+    queue_ready: boolean;
+    test_ready: boolean;
+    live_ready: boolean;
+    legacy_webhook_configured: boolean;
+    transport: string;
+    last_test_status: string | null;
+    last_error_redacted: string | null;
+    blocking_reasons: string[];
+};
+
 type MessagingNacSmsSettings = {
     enabled: boolean;
     profile: 'docs_https_9588' | 'legacy_working_http_9587' | 'custom';
@@ -398,6 +419,11 @@ type MessagingSettings = {
         test_phone_configured: boolean;
         provider_webhook_configured: boolean;
         provider_secret_configured: boolean;
+        evo_direct_api_enabled: boolean;
+        evo_direct_api_ready: boolean;
+        evo_direct_api_credentials_ready: boolean;
+        evo_direct_api_base_url_configured: boolean;
+        evo_direct_api_instance_configured: boolean;
         active_provider: string;
         active_provider_label: string;
         default_provider: string;
@@ -425,11 +451,14 @@ type MessagingSettings = {
         provider_secret_configured: boolean;
         webhook_url_value: string | null;
         secret_value: null;
-        webhook_path: string;
+        webhook_path: string | null;
+        direct_api_ready: boolean;
+        direct_api_endpoint: string | null;
         router: string;
     };
     providers: MessagingProvider[];
     capability_map: Record<string, Record<string, boolean>>;
+    evo_whatsapp: MessagingEvoWhatsAppSettings;
     nac_sms: MessagingNacSmsSettings;
     mikro_api: MessagingMikroApiSettings;
     admin_sections: MessagingAdminSection[];
@@ -453,30 +482,119 @@ type MessageDispatchQueuePayload = {
         | 'cancelled',
         number
     >;
-    recent: Array<{
-        id: number;
-        status: string;
-        provider_key: string | null;
-        channel: string | null;
-        message_type: string | null;
-        recipient_role: string | null;
-        target_masked: string | null;
-        idempotency_key_short: string | null;
-        attempt_count: number;
-        provider_message_id: string | null;
-        last_error_redacted: string | null;
-        force_resend_reason: string | null;
-        created_by: number | null;
-        created_at: string | null;
-        sent_at: string | null;
-    }>;
+    recent: MessageDispatchRow[];
     filters: {
-        providers: string[];
-        channels: string[];
-        recipient_roles: string[];
-        statuses: string[];
+        providers: QueueFilterOption[];
+        channels: QueueFilterOption[];
+        recipient_roles: QueueFilterOption[];
+        statuses: QueueFilterOption[];
+        message_types: QueueFilterOption[];
+    };
+    labels: Record<string, Record<string, string>>;
+    pagination: {
+        current_page: number;
+        per_page: number;
+        total: number;
+        last_page: number;
     };
     warnings: string[];
+};
+
+type QueueFilterOption = {
+    value: string;
+    label: string;
+};
+
+type QueueDatePayload = {
+    utc: string | null;
+    local: string | null;
+    human: string | null;
+};
+
+type MessageDispatchRow = {
+    id: number;
+    status: string;
+    status_label: string;
+    status_badge_tone: string;
+    provider_key: string | null;
+    provider_label: string;
+    channel: string | null;
+    channel_label: string;
+    message_type: string | null;
+    message_type_label: string;
+    recipient_role: string | null;
+    recipient_role_label: string;
+    target_masked: string | null;
+    reference: string | number | null;
+    idempotency_key_short: string | null;
+    attempt_count: number;
+    max_attempts: number;
+    provider_message_id: string | null;
+    template_key: string | null;
+    payload_hash_short: string | null;
+    message_preview: string;
+    last_error_redacted: string | null;
+    force_resend_reason: string | null;
+    created_by: number | null;
+    created_at: QueueDatePayload | null;
+    queued_at: QueueDatePayload | null;
+    sent_at: QueueDatePayload | null;
+    failed_at: QueueDatePayload | null;
+    display_time: QueueDatePayload | null;
+};
+
+type MessageDispatchDetail = MessageDispatchRow & {
+    target_phone_full: string | null;
+    target_phone_masked: string | null;
+    original_recipient_phone_full: string | null;
+    original_recipient_phone_masked: string | null;
+    test_redirect_applied: boolean;
+    request_id: number | null;
+    template_key: string | null;
+    template_label: string;
+    template_version: number | null;
+    channel_policy: string | null;
+    idempotency_label: string;
+    payload_hash: string | null;
+    payload_hash_short: string | null;
+    rendered_body_hash: string | null;
+    sending_started_at: QueueDatePayload | null;
+    provider_status: string | null;
+    provider_response_redacted: unknown;
+    provider_payload_body_hash: string | null;
+    provider_payload_body_matches_dispatch: boolean | null;
+    provider_request_target_phone: string | null;
+    provider_request_target_type: string | null;
+    provider_request_recipient_role: string | null;
+    provider_request_preview: string | null;
+    provider_payload_warning: string | null;
+    last_error_code: string | null;
+    parent_dispatch_id: number | null;
+    force_resend: boolean;
+    triggered_by: string | null;
+    rendered_message_content: string;
+    message_content_missing_reason: string | null;
+    message_content_source: string | null;
+    message_preview: string;
+    sms_footer_note: string | null;
+    technical_keys: Record<string, string | number | null>;
+};
+
+type QueueFilterState = {
+    status: string[];
+    provider: string[];
+    channel: string[];
+    recipient_role: string[];
+    message_type: string[];
+    date_from: string;
+    date_to: string;
+    q: string;
+    phone: string;
+    only_failed: boolean;
+    only_queued: boolean;
+    only_test: boolean;
+    only_business: boolean;
+    only_duplicate_blocked: boolean;
 };
 
 type MessagingTypeInputs = Record<
@@ -822,6 +940,17 @@ function nacSmsInputsFromSettings(settings: MessagingSettings) {
     };
 }
 
+function evoWhatsappInputsFromSettings(settings: MessagingSettings) {
+    return {
+        direct_api_enabled: settings.evo_whatsapp.direct_api_enabled,
+        direct_api_base_url: settings.evo_whatsapp.direct_api_base_url ?? '',
+        direct_api_instance_name:
+            settings.evo_whatsapp.direct_api_instance_name ?? '',
+        delay: String(settings.evo_whatsapp.delay),
+        link_preview: settings.evo_whatsapp.link_preview,
+    };
+}
+
 function mikroApiInputsFromSettings(settings: MessagingSettings) {
     return {
         enabled: settings.mikro_api.enabled,
@@ -897,7 +1026,34 @@ export default function TechnicalServiceAdmin({
     const [messageTemplates, setMessageTemplates] = useState(
         messageTemplateSettings,
     );
-    const [dispatchQueue] = useState(messageDispatchQueue);
+    const [dispatchQueue, setDispatchQueue] = useState(messageDispatchQueue);
+    const [queueFilters, setQueueFilters] = useState<QueueFilterState>({
+        status: [],
+        provider: [],
+        channel: [],
+        recipient_role: [],
+        message_type: [],
+        date_from: '',
+        date_to: '',
+        q: '',
+        phone: '',
+        only_failed: false,
+        only_queued: false,
+        only_test: false,
+        only_business: false,
+        only_duplicate_blocked: false,
+    });
+    const [queueLoading, setQueueLoading] = useState(false);
+    const [queueBackgroundRefreshing, setQueueBackgroundRefreshing] =
+        useState(false);
+    const [queueAutoRefreshEnabled, setQueueAutoRefreshEnabled] =
+        useState(true);
+    const [queueLastRefreshedAt, setQueueLastRefreshedAt] = useState('');
+    const [queueRefreshError, setQueueRefreshError] = useState('');
+    const [queueDetailLoading, setQueueDetailLoading] = useState(false);
+    const [selectedDispatchDetail, setSelectedDispatchDetail] =
+        useState<MessageDispatchDetail | null>(null);
+    const queueRefreshAbortRef = useRef<AbortController | null>(null);
     const [paymentSettings, setPaymentSettings] = useState(
         paymentProviderSettings,
     );
@@ -995,6 +1151,14 @@ export default function TechnicalServiceAdmin({
         username: '',
         password: '',
     });
+    const [evoWhatsappInputs, setEvoWhatsappInputs] = useState(() =>
+        evoWhatsappInputsFromSettings(messagingSettings),
+    );
+    const [evoWhatsappCredentialInputs, setEvoWhatsappCredentialInputs] =
+        useState({
+            api_key: '',
+            token: '',
+        });
     const [mikroApiInputs, setMikroApiInputs] = useState(() =>
         mikroApiInputsFromSettings(messagingSettings),
     );
@@ -1039,6 +1203,297 @@ export default function TechnicalServiceAdmin({
         messageTemplates.templates.find(
             (template) => template.template_key === selectedTemplateKey,
         ) ?? messageTemplates.templates[0];
+    const updateQueueFilter = (
+        key:
+            | 'date_from'
+            | 'date_to'
+            | 'q'
+            | 'phone'
+            | 'only_failed'
+            | 'only_queued'
+            | 'only_test'
+            | 'only_business'
+            | 'only_duplicate_blocked',
+        value: string | boolean,
+    ) => {
+        setQueueFilters((current) => ({
+            ...current,
+            [key]: value,
+        }));
+    };
+    const toggleQueueMultiFilter = (
+        key:
+            | 'status'
+            | 'provider'
+            | 'channel'
+            | 'recipient_role'
+            | 'message_type',
+        value: string,
+    ) => {
+        setQueueFilters((current) => {
+            const values = current[key].includes(value)
+                ? current[key].filter((item) => item !== value)
+                : [...current[key], value];
+
+            return {
+                ...current,
+                [key]: values,
+            };
+        });
+    };
+    const emptyQueueFilters = (): QueueFilterState => ({
+        status: [],
+        provider: [],
+        channel: [],
+        recipient_role: [],
+        message_type: [],
+        date_from: '',
+        date_to: '',
+        q: '',
+        phone: '',
+        only_failed: false,
+        only_queued: false,
+        only_test: false,
+        only_business: false,
+        only_duplicate_blocked: false,
+    });
+    const clearQueueFilters = () => {
+        const empty = emptyQueueFilters();
+        setQueueFilters(empty);
+        void loadDispatchQueue(empty);
+    };
+    const queueFilterOptionLabel = (
+        key:
+            | 'status'
+            | 'provider'
+            | 'channel'
+            | 'recipient_role'
+            | 'message_type',
+        value: string,
+    ): string => {
+        const optionMap = {
+            status: dispatchQueue.filters.statuses,
+            provider: dispatchQueue.filters.providers,
+            channel: dispatchQueue.filters.channels,
+            recipient_role: dispatchQueue.filters.recipient_roles,
+            message_type: dispatchQueue.filters.message_types,
+        }[key];
+
+        return (
+            optionMap.find((option) => option.value === value)?.label ?? value
+        );
+    };
+    const activeQueueFilterChips = [
+        ...(
+            [
+                ['status', 'Durum'],
+                ['provider', 'Sağlayıcı'],
+                ['channel', 'Kanal'],
+                ['recipient_role', 'Rol'],
+                ['message_type', 'Mesaj'],
+            ] as const
+        ).flatMap(([key, label]) =>
+            queueFilters[key].map((value) => ({
+                key: `${key}:${value}`,
+                label: `${label}: ${queueFilterOptionLabel(key, value)}`,
+            })),
+        ),
+        ...(
+            [
+                ['date_from', 'Başlangıç'],
+                ['date_to', 'Bitiş'],
+                ['q', 'Arama'],
+                ['phone', 'Telefon'],
+            ] as const
+        )
+            .filter(([key]) => queueFilters[key].trim() !== '')
+            .map(([key, label]) => ({
+                key,
+                label: `${label}: ${queueFilters[key]}`,
+            })),
+        ...(
+            [
+                ['only_failed', 'Sadece hatalılar'],
+                ['only_queued', 'Sadece kuyrukta'],
+                ['only_test', 'Sadece test'],
+                ['only_business', 'Sadece iş akışı'],
+                ['only_duplicate_blocked', 'Tekrar engellenenler'],
+            ] as const
+        )
+            .filter(([key]) => queueFilters[key])
+            .map(([key, label]) => ({ key, label })),
+    ];
+    const queueFilterParams = useCallback((filters: QueueFilterState) => {
+        const params = new URLSearchParams();
+
+        (
+            [
+                'status',
+                'provider',
+                'channel',
+                'recipient_role',
+                'message_type',
+            ] as const
+        ).forEach((key) => {
+            filters[key].forEach((value) => params.append(`${key}[]`, value));
+        });
+
+        (['date_from', 'date_to', 'q', 'phone'] as const).forEach((key) => {
+            const value = filters[key].trim();
+
+            if (value !== '') {
+                params.set(key, value);
+            }
+        });
+
+        (
+            [
+                'only_failed',
+                'only_queued',
+                'only_test',
+                'only_business',
+                'only_duplicate_blocked',
+            ] as const
+        ).forEach((key) => {
+            if (filters[key]) {
+                params.set(key, '1');
+            }
+        });
+
+        return params;
+    }, []);
+
+    const loadDispatchQueue = useCallback(
+        async (
+            filters: QueueFilterState = queueFilters,
+            options: { silent?: boolean } = {},
+        ) => {
+            const silent = options.silent === true;
+            queueRefreshAbortRef.current?.abort();
+            const controller = new AbortController();
+            queueRefreshAbortRef.current = controller;
+
+            if (silent) {
+                setQueueBackgroundRefreshing(true);
+            } else {
+                setQueueLoading(true);
+            }
+
+            setQueueRefreshError('');
+
+            try {
+                const params = queueFilterParams(filters);
+                const suffix = params.toString() ? `?${params.toString()}` : '';
+                const response = await fetch(
+                    `/api/technical-service/message-dispatches${suffix}`,
+                    {
+                        headers: { Accept: 'application/json' },
+                        signal: controller.signal,
+                    },
+                );
+
+                if (!response.ok) {
+                    throw new Error(
+                        await errorMessageFromResponse(
+                            response,
+                            'Kuyruk logları alınamadı.',
+                        ),
+                    );
+                }
+
+                const payload = await response.json();
+                setDispatchQueue(payload.message_dispatch_queue);
+                setQueueLastRefreshedAt(
+                    new Intl.DateTimeFormat('tr-TR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: false,
+                    }).format(new Date()),
+                );
+
+                if (!silent) {
+                    setMessage('Kuyruk logları güncellendi.');
+                }
+            } catch (error) {
+                if (
+                    error instanceof DOMException &&
+                    error.name === 'AbortError'
+                ) {
+                    return;
+                }
+
+                const nextMessage =
+                    error instanceof Error
+                        ? error.message
+                        : 'Kuyruk logları alınamadı.';
+                setQueueRefreshError(nextMessage);
+
+                if (!silent) {
+                    setMessage(nextMessage);
+                }
+            } finally {
+                if (queueRefreshAbortRef.current === controller) {
+                    queueRefreshAbortRef.current = null;
+                }
+
+                if (silent) {
+                    setQueueBackgroundRefreshing(false);
+                } else {
+                    setQueueLoading(false);
+                }
+            }
+        },
+        [queueFilterParams, queueFilters],
+    );
+    useEffect(() => {
+        if (activeAdminSection !== 'queue' || !queueAutoRefreshEnabled) {
+            return;
+        }
+
+        const intervalId = window.setInterval(() => {
+            void loadDispatchQueue(queueFilters, { silent: true });
+        }, 15000);
+
+        return () => {
+            window.clearInterval(intervalId);
+        };
+    }, [
+        activeAdminSection,
+        loadDispatchQueue,
+        queueAutoRefreshEnabled,
+        queueFilters,
+    ]);
+    const openDispatchDetail = async (dispatchId: number) => {
+        setQueueDetailLoading(true);
+
+        try {
+            const response = await fetch(
+                `/api/technical-service/message-dispatches/${dispatchId}`,
+                { headers: { Accept: 'application/json' } },
+            );
+
+            if (!response.ok) {
+                throw new Error(
+                    await errorMessageFromResponse(
+                        response,
+                        'Dispatch detayı alınamadı.',
+                    ),
+                );
+            }
+
+            const payload = await response.json();
+            setSelectedDispatchDetail(payload.dispatch);
+        } catch (error) {
+            setMessage(
+                error instanceof Error
+                    ? error.message
+                    : 'Dispatch detayı alınamadı.',
+            );
+        } finally {
+            setQueueDetailLoading(false);
+        }
+    };
     const templatePreviewStatus =
         !templatePreview && templateMessage.includes('önizlemesi alınamadı')
             ? 'error'
@@ -1154,6 +1609,7 @@ export default function TechnicalServiceAdmin({
                 nextSettings.global.allow_test_fixture_send,
         });
         setNacSmsInputs(nacSmsInputsFromSettings(nextSettings));
+        setEvoWhatsappInputs(evoWhatsappInputsFromSettings(nextSettings));
         setMikroApiInputs(mikroApiInputsFromSettings(nextSettings));
         setMessageTypeInputs(messageTypeInputsFromSettings(nextSettings));
     };
@@ -1536,6 +1992,16 @@ export default function TechnicalServiceAdmin({
                             test_phone: nacSmsInputs.test_phone,
                             real_send_allowed: nacSmsInputs.real_send_allowed,
                         },
+                        evo_whatsapp: {
+                            direct_api_enabled:
+                                evoWhatsappInputs.direct_api_enabled,
+                            direct_api_base_url:
+                                evoWhatsappInputs.direct_api_base_url,
+                            direct_api_instance_name:
+                                evoWhatsappInputs.direct_api_instance_name,
+                            delay: Number(evoWhatsappInputs.delay),
+                            link_preview: evoWhatsappInputs.link_preview,
+                        },
                         mikro_api: {
                             enabled: mikroApiInputs.enabled,
                             base_url: mikroApiInputs.base_url,
@@ -1779,6 +2245,104 @@ export default function TechnicalServiceAdmin({
             );
         } catch {
             setMessagingMessage('NAC SMS bilgileri temizlenemedi.');
+        } finally {
+            setIntegrationCredentialSaving(false);
+        }
+    };
+
+    const saveEvoWhatsappCredentials = async () => {
+        setIntegrationCredentialSaving(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/evo-whatsapp/credentials',
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(evoWhatsappCredentialInputs),
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Evo Direct API bilgileri kaydedilemedi.',
+                    ),
+                );
+
+                return;
+            }
+
+            const responsePayload = await response.json();
+            applyMessagingSettings(responsePayload.messaging_settings);
+            setEvoWhatsappCredentialInputs({ api_key: '', token: '' });
+            setMessagingMessage(
+                responsePayload.message ??
+                    'Evo Direct API bilgileri encrypted olarak kaydedildi.',
+            );
+        } catch {
+            setMessagingMessage(
+                'Evo Direct API bilgileri kaydedilemedi. Bağlantı durumunu kontrol edin.',
+            );
+        } finally {
+            setIntegrationCredentialSaving(false);
+        }
+    };
+
+    const clearEvoWhatsappCredentials = async () => {
+        if (
+            typeof window !== 'undefined' &&
+            !window.confirm(
+                'Evo Direct API credential bilgileri temizlensin mi?',
+            )
+        ) {
+            return;
+        }
+
+        setIntegrationCredentialSaving(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/evo-whatsapp/credentials/clear',
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Evo Direct API bilgileri temizlenemedi.',
+                    ),
+                );
+
+                return;
+            }
+
+            const responsePayload = await response.json();
+            applyMessagingSettings(responsePayload.messaging_settings);
+            setEvoWhatsappCredentialInputs({ api_key: '', token: '' });
+            setMessagingMessage(
+                responsePayload.message ??
+                    'Evo Direct API credential bilgileri temizlendi.',
+            );
+        } catch {
+            setMessagingMessage('Evo Direct API bilgileri temizlenemedi.');
         } finally {
             setIntegrationCredentialSaving(false);
         }
@@ -4155,13 +4719,13 @@ export default function TechnicalServiceAdmin({
                                                 .active_provider_supports_text,
                                     },
                                     {
-                                        label: 'Evo webhook',
-                                        value: messaging.provider
-                                            .webhook_url_configured
+                                        label: 'Evo Direct API',
+                                        value: messaging.evo_whatsapp
+                                            .direct_api_ready
                                             ? 'Hazır'
                                             : 'Eksik',
-                                        ok: messaging.provider
-                                            .webhook_url_configured,
+                                        ok: messaging.evo_whatsapp
+                                            .direct_api_ready,
                                     },
                                     {
                                         label: 'Queue sender',
@@ -4803,6 +5367,234 @@ export default function TechnicalServiceAdmin({
                                                 NAC bilgilerini temizle
                                             </button>
                                         </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : null}
+
+                        {activeAdminSection === 'integrations' &&
+                        activeIntegrationSection === 'evo' ? (
+                            <div className="mt-5 grid gap-4 xl:grid-cols-2">
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                    <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                                        <div>
+                                            <p className="text-sm font-bold text-slate-950">
+                                                Evo / WhatsApp Direct API
+                                            </p>
+                                            <p className="mt-1 text-sm leading-6 text-slate-600">
+                                                Queue mesajları n8n yerine
+                                                Direct Evolution API ile
+                                                gönderilir. Endpoint:
+                                                /message/sendText/&#123;instance&#125;.
+                                                Hedef numara dispatch kaydından
+                                                alınır.
+                                            </p>
+                                        </div>
+                                        <span
+                                            className={[
+                                                'rounded-lg border px-3 py-2 text-xs font-bold',
+                                                messaging.evo_whatsapp
+                                                    .direct_api_ready
+                                                    ? 'border-emerald-100 bg-emerald-50 text-emerald-900'
+                                                    : 'border-amber-100 bg-amber-50 text-amber-900',
+                                            ].join(' ')}
+                                        >
+                                            {messaging.evo_whatsapp
+                                                .direct_api_ready
+                                                ? 'Direct API hazır'
+                                                : 'Hazırlık eksik'}
+                                        </span>
+                                    </div>
+
+                                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                        <label className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800">
+                                            <input
+                                                type="checkbox"
+                                                checked={
+                                                    evoWhatsappInputs.direct_api_enabled
+                                                }
+                                                onChange={(event) =>
+                                                    setEvoWhatsappInputs({
+                                                        ...evoWhatsappInputs,
+                                                        direct_api_enabled:
+                                                            event.target
+                                                                .checked,
+                                                    })
+                                                }
+                                                className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                                            />
+                                            Direct API aktif
+                                        </label>
+                                        <label className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800">
+                                            <input
+                                                type="checkbox"
+                                                checked={
+                                                    evoWhatsappInputs.link_preview
+                                                }
+                                                onChange={(event) =>
+                                                    setEvoWhatsappInputs({
+                                                        ...evoWhatsappInputs,
+                                                        link_preview:
+                                                            event.target
+                                                                .checked,
+                                                    })
+                                                }
+                                                className="h-5 w-5 rounded border-slate-300 text-slate-950 focus:ring-slate-400"
+                                            />
+                                            Link preview
+                                        </label>
+                                        {(
+                                            [
+                                                [
+                                                    'direct_api_base_url',
+                                                    'Direct API base URL',
+                                                ],
+                                                [
+                                                    'direct_api_instance_name',
+                                                    'Instance adı',
+                                                ],
+                                                ['delay', 'Delay (sn)'],
+                                            ] as const
+                                        ).map(([key, label]) => (
+                                            <label
+                                                key={key}
+                                                className="grid gap-1 text-xs font-semibold tracking-[0.12em] text-slate-500 uppercase"
+                                            >
+                                                <span>{label}</span>
+                                                <input
+                                                    type={
+                                                        key === 'delay'
+                                                            ? 'number'
+                                                            : 'text'
+                                                    }
+                                                    value={String(
+                                                        evoWhatsappInputs[key],
+                                                    )}
+                                                    onChange={(event) =>
+                                                        setEvoWhatsappInputs({
+                                                            ...evoWhatsappInputs,
+                                                            [key]: event.target
+                                                                .value,
+                                                        })
+                                                    }
+                                                    placeholder={
+                                                        key ===
+                                                        'direct_api_base_url'
+                                                            ? 'http://10.0.26.110:8086'
+                                                            : key ===
+                                                                'direct_api_instance_name'
+                                                              ? 'instance'
+                                                              : '0'
+                                                    }
+                                                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-900 normal-case focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
+                                                />
+                                            </label>
+                                        ))}
+                                    </div>
+
+                                    <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
+                                        <span className="font-bold text-slate-900">
+                                            Direct endpoint:
+                                        </span>{' '}
+                                        {messaging.evo_whatsapp.endpoint_url ??
+                                            'Base URL ve instance eksik'}
+                                    </div>
+                                    {messaging.evo_whatsapp.blocking_reasons
+                                        .length ? (
+                                        <div className="mt-3 grid gap-2">
+                                            {messaging.evo_whatsapp.blocking_reasons.map(
+                                                (reason) => (
+                                                    <p
+                                                        key={reason}
+                                                        className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900"
+                                                    >
+                                                        {reason}
+                                                    </p>
+                                                ),
+                                            )}
+                                        </div>
+                                    ) : null}
+                                </div>
+
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                    <p className="text-sm font-bold text-slate-950">
+                                        Evo Direct API credential
+                                    </p>
+                                    <p className="mt-1 text-sm leading-6 text-slate-600">
+                                        API key/token encrypted saklanır ve tam
+                                        değer response veya loglarda
+                                        gösterilmez. Queue gönderiminde target
+                                        dispatch effective target telefonudur.
+                                    </p>
+                                    <p className="mt-2 text-xs leading-5 text-slate-600">
+                                        API key:{' '}
+                                        {messaging.evo_whatsapp.api_key_mask ??
+                                            'Eksik'}{' '}
+                                        / Token:{' '}
+                                        {messaging.evo_whatsapp.token_mask ??
+                                            'Eksik'}
+                                    </p>
+                                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                        <input
+                                            type="password"
+                                            value={
+                                                evoWhatsappCredentialInputs.api_key
+                                            }
+                                            onChange={(event) =>
+                                                setEvoWhatsappCredentialInputs({
+                                                    ...evoWhatsappCredentialInputs,
+                                                    api_key: event.target.value,
+                                                })
+                                            }
+                                            placeholder="Evo API key"
+                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
+                                        />
+                                        <input
+                                            type="password"
+                                            value={
+                                                evoWhatsappCredentialInputs.token
+                                            }
+                                            onChange={(event) =>
+                                                setEvoWhatsappCredentialInputs({
+                                                    ...evoWhatsappCredentialInputs,
+                                                    token: event.target.value,
+                                                })
+                                            }
+                                            placeholder="Evo token (opsiyonel)"
+                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
+                                        />
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                integrationCredentialSaving ||
+                                                (evoWhatsappCredentialInputs.api_key.trim() ===
+                                                    '' &&
+                                                    evoWhatsappCredentialInputs.token.trim() ===
+                                                        '')
+                                            }
+                                            onClick={() => {
+                                                void saveEvoWhatsappCredentials();
+                                            }}
+                                            className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            Evo bilgilerini kaydet
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                integrationCredentialSaving ||
+                                                !messaging.evo_whatsapp
+                                                    .credentials_ready
+                                            }
+                                            onClick={() => {
+                                                void clearEvoWhatsappCredentials();
+                                            }}
+                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            Evo bilgilerini temizle
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -6193,7 +6985,9 @@ export default function TechnicalServiceAdmin({
                         ) : null}
 
                         {activeAdminSection === 'integrations' &&
-                        activeIntegrationSection !== 'mikro_api' ? (
+                        !['evo', 'mikro_api'].includes(
+                            activeIntegrationSection,
+                        ) ? (
                             <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                                 <p className="font-bold text-slate-950">
                                     {activeIntegrationSection ===
@@ -6750,28 +7544,73 @@ export default function TechnicalServiceAdmin({
                             Kuyruk / Loglar
                         </p>
                         <h2 className="mt-2 text-lg font-bold text-slate-950">
-                            Mesaj dispatch kuyruğu ve güvenlik logları
+                            Mesaj kuyruğu ve işlem logları
                         </h2>
                         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                            REL-4D işleyici business trigger bağlamaz. Queue,
-                            duplicate guard, rate limit ve provider router
-                            kayıtları burada maskeli izlenir.
+                            Modal aksiyonları burada dispatch olarak izlenir.
+                            Provider gönderimi queue processor üzerinden yürür;
+                            tablo maskeli, detay kaydı admin odaklıdır.
                         </p>
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="space-y-1">
+                                <p className="text-xs font-bold text-slate-700">
+                                    {queueBackgroundRefreshing
+                                        ? 'Güncelleniyor...'
+                                        : 'Kuyruk logları hazır'}
+                                </p>
+                                <p className="text-xs font-semibold text-slate-500">
+                                    Son yenileme:{' '}
+                                    {queueLastRefreshedAt || 'Henüz yok'}
+                                </p>
+                                {queueRefreshError ? (
+                                    <p className="text-xs font-semibold text-rose-700">
+                                        {queueRefreshError}
+                                    </p>
+                                ) : null}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+                                    <input
+                                        type="checkbox"
+                                        checked={queueAutoRefreshEnabled}
+                                        onChange={(event) =>
+                                            setQueueAutoRefreshEnabled(
+                                                event.target.checked,
+                                            )
+                                        }
+                                    />
+                                    <span>Otomatik yenile</span>
+                                </label>
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        void loadDispatchQueue(queueFilters)
+                                    }
+                                    disabled={queueLoading}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                >
+                                    {queueLoading ? 'Yükleniyor' : 'Yenile'}
+                                </button>
+                            </div>
+                        </div>
                         <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
                             {[
-                                ['Queued', dispatchQueue.summary.queued],
-                                ['Sending', dispatchQueue.summary.sending],
-                                ['Sent', dispatchQueue.summary.sent],
-                                ['Failed', dispatchQueue.summary.failed],
+                                ['Kuyrukta', dispatchQueue.summary.queued],
+                                ['Gönderiliyor', dispatchQueue.summary.sending],
+                                ['Gönderildi', dispatchQueue.summary.sent],
+                                ['Başarısız', dispatchQueue.summary.failed],
                                 [
-                                    'Duplicate',
+                                    'Tekrar engellendi',
                                     dispatchQueue.summary.duplicate_blocked,
                                 ],
                                 [
-                                    'Rate limited',
+                                    'Limit bekliyor',
                                     dispatchQueue.summary.rate_limited,
                                 ],
-                                ['Cancelled', dispatchQueue.summary.cancelled],
+                                [
+                                    'İptal edildi',
+                                    dispatchQueue.summary.cancelled,
+                                ],
                             ].map(([label, value]) => (
                                 <div
                                     key={String(label)}
@@ -6786,73 +7625,292 @@ export default function TechnicalServiceAdmin({
                                 </div>
                             ))}
                         </div>
-                        <div className="grid gap-3 lg:grid-cols-4">
-                            {[
-                                [
-                                    'Provider filtreleri',
-                                    dispatchQueue.filters.providers.join(', '),
-                                ],
-                                [
-                                    'Kanal filtreleri',
-                                    dispatchQueue.filters.channels.join(', '),
-                                ],
-                                [
-                                    'Hedef rolleri',
-                                    dispatchQueue.filters.recipient_roles.join(
-                                        ', ',
-                                    ),
-                                ],
-                                [
-                                    'Durumlar',
-                                    dispatchQueue.filters.statuses.join(', '),
-                                ],
-                            ].map(([label, value]) => (
-                                <div
-                                    key={label}
-                                    className="rounded-xl border border-slate-200 bg-white p-3 text-sm"
-                                >
-                                    <p className="font-semibold text-slate-900">
-                                        {label}
-                                    </p>
-                                    <p className="mt-1 leading-5 text-slate-600">
-                                        {value}
-                                    </p>
+                        <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                                {(
+                                    [
+                                        [
+                                            'Durum',
+                                            'status',
+                                            dispatchQueue.filters.statuses,
+                                        ],
+                                        [
+                                            'Sağlayıcı',
+                                            'provider',
+                                            dispatchQueue.filters.providers,
+                                        ],
+                                        [
+                                            'Kanal',
+                                            'channel',
+                                            dispatchQueue.filters.channels,
+                                        ],
+                                        [
+                                            'Hedef Rol',
+                                            'recipient_role',
+                                            dispatchQueue.filters
+                                                .recipient_roles,
+                                        ],
+                                        [
+                                            'Mesaj',
+                                            'message_type',
+                                            dispatchQueue.filters.message_types,
+                                        ],
+                                    ] as const
+                                ).map(([label, key, options]) => (
+                                    <fieldset
+                                        key={key}
+                                        className="grid content-start gap-2 rounded-lg border border-slate-200 bg-white p-3"
+                                    >
+                                        <legend className="text-xs font-bold text-slate-700">
+                                            {label}
+                                        </legend>
+                                        <div className="grid max-h-44 gap-1 overflow-y-auto pr-1">
+                                            {options.map((option) => (
+                                                <label
+                                                    key={option.value}
+                                                    className={[
+                                                        'flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1.5 text-xs font-semibold',
+                                                        queueFilters[
+                                                            key
+                                                        ].includes(option.value)
+                                                            ? 'border-slate-900 bg-slate-900 text-white'
+                                                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300',
+                                                    ].join(' ')}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={queueFilters[
+                                                            key
+                                                        ].includes(
+                                                            option.value,
+                                                        )}
+                                                        onChange={() =>
+                                                            toggleQueueMultiFilter(
+                                                                key,
+                                                                option.value,
+                                                            )
+                                                        }
+                                                        className="h-3.5 w-3.5"
+                                                    />
+                                                    {option.label}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </fieldset>
+                                ))}
+                            </div>
+                            {activeQueueFilterChips.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                    {activeQueueFilterChips.map((chip) => (
+                                        <span
+                                            key={chip.key}
+                                            className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                                        >
+                                            {chip.label}
+                                        </span>
+                                    ))}
                                 </div>
-                            ))}
+                            ) : (
+                                <p className="text-xs font-semibold text-slate-500">
+                                    Aktif filtre yok. Varsayılan görünüm son 50
+                                    dispatch kaydını listeler.
+                                </p>
+                            )}
+                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                                    <span>Başlangıç tarihi</span>
+                                    <input
+                                        type="date"
+                                        value={queueFilters.date_from}
+                                        onChange={(event) =>
+                                            updateQueueFilter(
+                                                'date_from',
+                                                event.target.value,
+                                            )
+                                        }
+                                        className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900"
+                                    />
+                                </label>
+                                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                                    <span>Bitiş tarihi</span>
+                                    <input
+                                        type="date"
+                                        value={queueFilters.date_to}
+                                        onChange={(event) =>
+                                            updateQueueFilter(
+                                                'date_to',
+                                                event.target.value,
+                                            )
+                                        }
+                                        className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900"
+                                    />
+                                </label>
+                                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                                    <span>MRN / SRV / pkgID / anahtar</span>
+                                    <input
+                                        type="search"
+                                        value={queueFilters.q}
+                                        onChange={(event) =>
+                                            updateQueueFilter(
+                                                'q',
+                                                event.target.value,
+                                            )
+                                        }
+                                        className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900"
+                                        placeholder="MRN, SRV, provider id"
+                                    />
+                                </label>
+                                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                                    <span>Telefon arama</span>
+                                    <input
+                                        type="search"
+                                        value={queueFilters.phone}
+                                        onChange={(event) =>
+                                            updateQueueFilter(
+                                                'phone',
+                                                event.target.value,
+                                            )
+                                        }
+                                        className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900"
+                                        placeholder="905..."
+                                    />
+                                </label>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3">
+                                {(
+                                    [
+                                        ['only_failed', 'Sadece hatalılar'],
+                                        ['only_queued', 'Sadece kuyrukta'],
+                                        ['only_test', 'Sadece test'],
+                                        ['only_business', 'Sadece iş akışı'],
+                                        [
+                                            'only_duplicate_blocked',
+                                            'Tekrar engellenenler',
+                                        ],
+                                    ] as const
+                                ).map(([key, label]) => (
+                                    <label
+                                        key={key}
+                                        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={queueFilters[key]}
+                                            onChange={(event) =>
+                                                updateQueueFilter(
+                                                    key,
+                                                    event.target.checked,
+                                                )
+                                            }
+                                        />
+                                        <span>{label}</span>
+                                    </label>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        void loadDispatchQueue(queueFilters)
+                                    }
+                                    disabled={queueLoading}
+                                    className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
+                                >
+                                    {queueLoading ? 'Yükleniyor' : 'Filtrele'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={clearQueueFilters}
+                                    disabled={queueLoading}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                >
+                                    Filtreleri temizle
+                                </button>
+                            </div>
                         </div>
                         <div className="overflow-hidden rounded-xl border border-slate-200">
-                            <div className="grid grid-cols-7 gap-2 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600">
-                                <span>Status</span>
-                                <span>Provider</span>
+                            <div className="grid grid-cols-11 gap-2 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600">
+                                <span>Tarih / Saat</span>
+                                <span>Durum</span>
                                 <span>Kanal</span>
-                                <span>Tip</span>
+                                <span>Sağlayıcı</span>
+                                <span>Mesaj</span>
+                                <span>Rol</span>
                                 <span>Hedef</span>
-                                <span>Attempt</span>
+                                <span>Referans</span>
+                                <span>Deneme</span>
                                 <span>Son hata</span>
+                                <span>Detay</span>
                             </div>
                             {dispatchQueue.recent.length > 0 ? (
                                 dispatchQueue.recent.map((dispatch) => (
                                     <div
                                         key={dispatch.id}
-                                        className="grid grid-cols-7 gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-700"
+                                        className="grid grid-cols-11 gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-700"
                                     >
-                                        <span className="font-semibold">
-                                            {dispatch.status}
+                                        <span>
+                                            {dispatch.display_time?.human ??
+                                                '-'}
                                         </span>
                                         <span>
-                                            {dispatch.provider_key ?? '-'}
+                                            <span
+                                                className={[
+                                                    'inline-flex rounded-full px-2 py-0.5 font-semibold',
+                                                    dispatch.status_badge_tone ===
+                                                    'success'
+                                                        ? 'bg-emerald-100 text-emerald-800'
+                                                        : dispatch.status_badge_tone ===
+                                                            'danger'
+                                                          ? 'bg-rose-100 text-rose-800'
+                                                          : dispatch.status_badge_tone ===
+                                                              'warning'
+                                                            ? 'bg-amber-100 text-amber-800'
+                                                            : dispatch.status_badge_tone ===
+                                                                'info'
+                                                              ? 'bg-sky-100 text-sky-800'
+                                                              : 'bg-slate-100 text-slate-700',
+                                                ].join(' ')}
+                                            >
+                                                {dispatch.status_label}
+                                            </span>
                                         </span>
-                                        <span>{dispatch.channel ?? '-'}</span>
+                                        <span>{dispatch.channel_label}</span>
+                                        <span>{dispatch.provider_label}</span>
+                                        <span className="min-w-0">
+                                            <span className="block font-semibold text-slate-900">
+                                                {dispatch.message_type_label}
+                                            </span>
+                                            {dispatch.message_preview ? (
+                                                <span className="mt-1 block truncate text-[11px] font-medium text-slate-500">
+                                                    {dispatch.message_preview}
+                                                </span>
+                                            ) : null}
+                                        </span>
                                         <span>
-                                            {dispatch.message_type ?? '-'}
+                                            {dispatch.recipient_role_label}
                                         </span>
                                         <span>
                                             {dispatch.target_masked ?? '-'}
                                         </span>
-                                        <span>{dispatch.attempt_count}</span>
+                                        <span>{dispatch.reference ?? '-'}</span>
+                                        <span>
+                                            {dispatch.attempt_count}/
+                                            {dispatch.max_attempts}
+                                        </span>
                                         <span className="truncate">
                                             {dispatch.last_error_redacted ??
                                                 '-'}
+                                        </span>
+                                        <span>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    void openDispatchDetail(
+                                                        dispatch.id,
+                                                    )
+                                                }
+                                                className="rounded-md border border-slate-300 px-2 py-1 font-semibold text-slate-700 hover:bg-slate-50"
+                                            >
+                                                Detay
+                                            </button>
                                         </span>
                                     </div>
                                 ))
@@ -6862,16 +7920,280 @@ export default function TechnicalServiceAdmin({
                                 </p>
                             )}
                         </div>
+                        <p className="text-xs font-semibold text-slate-500">
+                            Toplam {dispatchQueue.pagination.total} kayıt, sayfa{' '}
+                            {dispatchQueue.pagination.current_page}/
+                            {dispatchQueue.pagination.last_page}. Liste
+                            varsayılan olarak son{' '}
+                            {dispatchQueue.pagination.per_page} kayıtla
+                            sınırlıdır.
+                        </p>
                         <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                             {dispatchQueue.warnings.map((warning) => (
                                 <p key={warning}>{warning}</p>
                             ))}
                             <p>
                                 Force resend API nedeni zorunlu tutar;
-                                telefonlar maskeli, provider secret ve Basic
-                                Auth değerleri gizlidir.
+                                telefonlar maskeli, provider kimlik doğrulama
+                                bilgileri gizlidir.
                             </p>
                         </div>
+                        {selectedDispatchDetail ? (
+                            <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4">
+                                <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+                                    <div className="flex items-start justify-between gap-4">
+                                        <div>
+                                            <p className="text-xs font-semibold tracking-[0.14em] text-slate-500 uppercase">
+                                                Dispatch detayı
+                                            </p>
+                                            <h3 className="mt-1 text-lg font-bold text-slate-950">
+                                                {
+                                                    selectedDispatchDetail.message_type_label
+                                                }
+                                            </h3>
+                                            <p className="mt-1 text-sm text-slate-600">
+                                                {
+                                                    selectedDispatchDetail
+                                                        .display_time?.human
+                                                }{' '}
+                                                /{' '}
+                                                {
+                                                    selectedDispatchDetail.status_label
+                                                }
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setSelectedDispatchDetail(null)
+                                            }
+                                            className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                                        >
+                                            Kapat
+                                        </button>
+                                    </div>
+                                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                        {[
+                                            [
+                                                'Dispatch ID',
+                                                selectedDispatchDetail.id,
+                                            ],
+                                            [
+                                                'Durum',
+                                                selectedDispatchDetail.status_label,
+                                            ],
+                                            [
+                                                'Sağlayıcı',
+                                                selectedDispatchDetail.provider_label,
+                                            ],
+                                            [
+                                                'Kanal',
+                                                selectedDispatchDetail.channel_label,
+                                            ],
+                                            [
+                                                'Hedef rol',
+                                                selectedDispatchDetail.recipient_role_label,
+                                            ],
+                                            [
+                                                'Tam hedef telefon',
+                                                selectedDispatchDetail.target_phone_full ??
+                                                    '-',
+                                            ],
+                                            [
+                                                'Maskeli hedef',
+                                                selectedDispatchDetail.target_phone_masked ??
+                                                    '-',
+                                            ],
+                                            [
+                                                'Orijinal alıcı',
+                                                selectedDispatchDetail.original_recipient_phone_full ??
+                                                    '-',
+                                            ],
+                                            [
+                                                'Test yönlendirme',
+                                                selectedDispatchDetail.test_redirect_applied
+                                                    ? 'Uygulandı'
+                                                    : 'Yok',
+                                            ],
+                                            [
+                                                'Referans',
+                                                selectedDispatchDetail.reference ??
+                                                    '-',
+                                            ],
+                                            [
+                                                'Oluşturulma',
+                                                selectedDispatchDetail
+                                                    .created_at?.human ?? '-',
+                                            ],
+                                            [
+                                                'Kuyruğa alınma',
+                                                selectedDispatchDetail.queued_at
+                                                    ?.human ?? '-',
+                                            ],
+                                            [
+                                                'Gönderim başladı',
+                                                selectedDispatchDetail
+                                                    .sending_started_at
+                                                    ?.human ?? '-',
+                                            ],
+                                            [
+                                                'Gönderildi',
+                                                selectedDispatchDetail.sent_at
+                                                    ?.human ?? '-',
+                                            ],
+                                            [
+                                                'Başarısız oldu',
+                                                selectedDispatchDetail.failed_at
+                                                    ?.human ?? '-',
+                                            ],
+                                            [
+                                                'Template',
+                                                selectedDispatchDetail.template_label,
+                                            ],
+                                            [
+                                                'Provider ID / pkgID',
+                                                selectedDispatchDetail.provider_message_id ??
+                                                    '-',
+                                            ],
+                                            [
+                                                'Idempotency',
+                                                selectedDispatchDetail.idempotency_label,
+                                            ],
+                                            [
+                                                'Payload hash',
+                                                selectedDispatchDetail.payload_hash_short ??
+                                                    'Eski kayıt / payload hash yok',
+                                            ],
+                                            [
+                                                'Provider body hash',
+                                                selectedDispatchDetail.provider_payload_body_hash ??
+                                                    'Provider body hash yok',
+                                            ],
+                                            [
+                                                'Provider payload eşleşmesi',
+                                                selectedDispatchDetail.provider_payload_warning ??
+                                                    (selectedDispatchDetail.provider_payload_body_matches_dispatch ===
+                                                    true
+                                                        ? 'Dispatch body ile eşleşiyor'
+                                                        : selectedDispatchDetail.provider_payload_body_matches_dispatch ===
+                                                            false
+                                                          ? 'Provider payload uyuşmazlığı'
+                                                          : 'Eski kayıt / payload karşılaştırması yok'),
+                                            ],
+                                            [
+                                                'Provider hedef telefonu',
+                                                selectedDispatchDetail.provider_request_target_phone ??
+                                                    '-',
+                                            ],
+                                            [
+                                                'Provider hedef rolü',
+                                                [
+                                                    selectedDispatchDetail.provider_request_recipient_role,
+                                                    selectedDispatchDetail.provider_request_target_type,
+                                                ]
+                                                    .filter(Boolean)
+                                                    .join(' / ') || '-',
+                                            ],
+                                            [
+                                                'Deneme',
+                                                `${selectedDispatchDetail.attempt_count}/${selectedDispatchDetail.max_attempts}`,
+                                            ],
+                                            [
+                                                'Force resend nedeni',
+                                                selectedDispatchDetail.force_resend_reason ??
+                                                    '-',
+                                            ],
+                                            [
+                                                'Son hata',
+                                                selectedDispatchDetail.last_error_redacted ??
+                                                    '-',
+                                            ],
+                                        ].map(([label, value]) => (
+                                            <div
+                                                key={String(label)}
+                                                className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm"
+                                            >
+                                                <p className="text-xs font-semibold text-slate-500">
+                                                    {label}
+                                                </p>
+                                                <p className="mt-1 break-words text-slate-900">
+                                                    {String(value ?? '-')}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="mt-4 grid gap-3">
+                                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                                            <p className="text-xs font-semibold text-slate-500">
+                                                Mesaj içeriği
+                                            </p>
+                                            <pre className="mt-2 rounded-lg bg-slate-950 p-3 text-xs leading-5 whitespace-pre-wrap text-white">
+                                                {
+                                                    selectedDispatchDetail.rendered_message_content
+                                                }
+                                            </pre>
+                                            {selectedDispatchDetail.message_content_missing_reason ? (
+                                                <p className="mt-2 text-xs font-semibold text-amber-700">
+                                                    {
+                                                        selectedDispatchDetail.message_content_missing_reason
+                                                    }
+                                                </p>
+                                            ) : null}
+                                            {selectedDispatchDetail.message_content_source ? (
+                                                <p className="mt-2 text-xs text-slate-500">
+                                                    Kaynak:{' '}
+                                                    {
+                                                        selectedDispatchDetail.message_content_source
+                                                    }
+                                                </p>
+                                            ) : null}
+                                        </div>
+                                        {selectedDispatchDetail.provider_request_preview ? (
+                                            <div className="rounded-lg border border-slate-200 bg-white p-3">
+                                                <p className="text-xs font-semibold text-slate-500">
+                                                    Provider request önizleme
+                                                </p>
+                                                <p className="mt-2 text-sm leading-6 whitespace-pre-wrap text-slate-800">
+                                                    {
+                                                        selectedDispatchDetail.provider_request_preview
+                                                    }
+                                                </p>
+                                            </div>
+                                        ) : null}
+                                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                                            <p className="text-xs font-semibold text-slate-500">
+                                                Redakte provider yanıtı
+                                            </p>
+                                            <pre className="mt-2 max-h-52 overflow-auto rounded-lg bg-slate-100 p-3 text-xs leading-5 text-slate-800">
+                                                {JSON.stringify(
+                                                    selectedDispatchDetail.provider_response_redacted ??
+                                                        {},
+                                                    null,
+                                                    2,
+                                                )}
+                                            </pre>
+                                        </div>
+                                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                                            <p className="text-xs font-semibold text-slate-500">
+                                                Teknik anahtar
+                                            </p>
+                                            <pre className="mt-2 max-h-44 overflow-auto rounded-lg bg-slate-100 p-3 text-xs leading-5 text-slate-800">
+                                                {JSON.stringify(
+                                                    selectedDispatchDetail.technical_keys,
+                                                    null,
+                                                    2,
+                                                )}
+                                            </pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : null}
+                        {queueDetailLoading ? (
+                            <p className="text-sm font-semibold text-slate-600">
+                                Dispatch detayı yükleniyor.
+                            </p>
+                        ) : null}
                     </section>
                 ) : null}
 

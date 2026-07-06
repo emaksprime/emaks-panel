@@ -24,7 +24,7 @@ use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRequestUpload;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
-use App\Services\Messaging\EvolutionWhatsAppMessageService;
+use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
@@ -55,7 +55,7 @@ class TechnicalServiceController extends Controller
 {
     public function __construct(
         private readonly TechnicalServiceWorkflowService $workflowService,
-        private readonly EvolutionWhatsAppMessageService $messages,
+        private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
         private readonly TechnicalServiceCodeGenerator $codeGenerator,
         private readonly TechnicalServiceServiceVisitService $serviceVisitService,
         private readonly TechnicalServiceAssignmentSettlementService $assignmentSettlementService,
@@ -627,10 +627,10 @@ class TechnicalServiceController extends Controller
         $earningPayload = is_array($operationControl['technician_earning_message'] ?? null)
             ? $operationControl['technician_earning_message']
             : [];
-        $this->messages->send(
+        $this->workflowMessages->queueSystemMessage(
+            $technicalServiceRequest,
             'earnings_message_technician',
             'technician',
-            $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
             $result['message_text'],
             [
                 'copy_text' => $result['copy_text'],
@@ -640,10 +640,14 @@ class TechnicalServiceController extends Controller
                 'total_amount' => $earningPayload['total_amount'] ?? null,
                 'submitted_total_amount' => $earningPayload['submitted_total_amount'] ?? null,
                 'total_amount_corrected' => $earningPayload['total_amount_corrected'] ?? false,
-                'manual_ui_send' => true,
             ],
-            $technicalServiceRequest,
             $request->user(),
+            null,
+            [
+                'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
+                'triggered_by' => 'technical_service_earnings_message',
+                'metadata' => ['manual_ui_send' => true],
+            ],
         );
 
         return response()->json([
@@ -2123,16 +2127,22 @@ class TechnicalServiceController extends Controller
             ],
         ]);
 
-        $dispatch = $this->messages->send(
+        $dispatch = $this->workflowMessages->queueSystemMessage(
+            $request,
             'assignment_offer_technician',
             'technician',
-            $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
             $messageText,
-            [...$messagePayload, 'prepare_only' => true, 'manual_ui_send' => false],
-            $request,
+            [...$messagePayload, 'prepare_only' => true],
             $user,
             null,
-            $offer,
+            [
+                'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
+                'triggered_by' => 'technical_service_assignment_offer',
+                'metadata' => [
+                    'assignment_offer_id' => $offer->id,
+                    'manual_ui_send' => false,
+                ],
+            ],
         );
         $metadata = is_array($offer->metadata) ? $offer->metadata : [];
         $metadata['message_dispatch'] = [

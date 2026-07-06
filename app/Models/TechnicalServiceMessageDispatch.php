@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Arr;
 
 class TechnicalServiceMessageDispatch extends Model
 {
@@ -169,5 +170,104 @@ class TechnicalServiceMessageDispatch extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function bodyForProvider(): string
+    {
+        foreach ([
+            'final_body_redacted',
+            'rendered_body_redacted',
+            'final_body',
+            'rendered_body',
+            'body',
+            'message_text',
+            'content',
+            'text',
+            'preview_text_validated',
+            'payload.body',
+            'payload.content',
+            'payload.message_text',
+        ] as $path) {
+            $value = Arr::get($this->request_payload ?? [], $path);
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return '';
+    }
+
+    public function providerBodyHash(): ?string
+    {
+        $body = $this->bodyForProvider();
+
+        return $body === '' ? null : hash('sha256', $body);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function providerBodyValidationErrors(): array
+    {
+        $body = $this->bodyForProvider();
+        if ($body === '') {
+            return ['Dispatch mesaj içeriği yok; provider gönderimi engellendi.'];
+        }
+
+        $errors = [];
+        $dashSentinels = [
+            '/Sayın\s*[-–—](?:\s|,|\.)/u' => 'Sayın -',
+            '/Ürün:\s*[-–—](?:\s|$)/u' => 'Ürün: -',
+            '/Randevu tarihi:\s*[-–—](?:\s|$)/u' => 'Randevu tarihi: -',
+            '/Randevu aralığı:\s*[-–—](?:\s|$)/u' => 'Randevu aralığı: -',
+            '/Tarih:\s*[-–—](?:\s|$)/u' => 'Tarih: -',
+            '/Aralık:\s*[-–—](?:\s|$)/u' => 'Aralık: -',
+        ];
+
+        foreach ($dashSentinels as $pattern => $label) {
+            if (preg_match($pattern, $body) === 1) {
+                $errors[] = "Mesaj içeriğinde eksik zorunlu değer var: {$label}";
+            }
+        }
+
+        if (preg_match('/\{[A-Za-z0-9_.]+\}/', $body) === 1) {
+            $errors[] = 'Mesaj içeriğinde çözümlenmemiş değişken var.';
+        }
+
+        if (preg_match('/\b(undefined|null|NaN)\b/i', $body) === 1) {
+            $errors[] = 'Mesaj içeriğinde geçersiz placeholder değeri var.';
+        }
+
+        return array_values(array_unique($errors));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function roleBodyValidationErrors(): array
+    {
+        $body = $this->bodyForProvider();
+        $role = (string) $this->recipient_role;
+        $messageType = (string) $this->message_type;
+        $errors = [];
+
+        if ($role === 'customer' && preg_match('/\bYeni iş kartı\b|Servis Kaydı|Müşteri Bilgileri|İş Kartı/u', $body) === 1) {
+            $errors[] = 'Dispatch role/body mismatch; müşteri rolünde usta/iç operasyon gövdesi var.';
+        }
+
+        if ($role === 'technician') {
+            if (preg_match('/Sayın\s+.+randevunuz\s+(onaylanmıştır|güncellenmiştir|onaylandı|güncellendi)/iu', $body) === 1) {
+                $errors[] = 'Dispatch role/body mismatch; usta rolünde müşteri randevu gövdesi var.';
+            }
+
+            $hasJobCardReference = str_contains($body, 'İş Kartı')
+                || preg_match('/(?:^|\R)Kart\s+https?:\/\//u', $body) === 1;
+
+            if (str_contains($messageType, 'appointment_') && ! $hasJobCardReference) {
+                $errors[] = 'Dispatch role/body mismatch; usta randevu mesajında iş kartı eksik.';
+            }
+        }
+
+        return array_values(array_unique($errors));
     }
 }

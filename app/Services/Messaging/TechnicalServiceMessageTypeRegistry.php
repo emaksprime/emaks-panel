@@ -353,7 +353,7 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS Prime\n{customer_appointment_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}\n{sms_payment_line}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_appointment_action_phrase}\n\nRandevu Bilgileri\nTarih: {appointment_date_formatted}\nSaat Aralığı: {appointment_customer_window}\n\n{payment_instruction_block}\n\nRandevu aralığında adreste olunmasını rica ederiz.\n{customer_visible_note_block}",
             'appointment_approved_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\nYeni iş kartı.\nMRN: {mrn}\nMüşteri: {customer_name}\nTel: {customer_phone}\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nİş Kartı: {technician_job_card_short_url}"
+                ? "EMAKS\nİş {mrn}\nMüşteri {customer_name}\nTel {customer_phone}\nRandevu {appointment_date_formatted} {appointment_exact_time_range}\nKart {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nYeni iş kartı hazır.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_date_formatted} {appointment_exact_time_range}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_earning_summary_block}\n{technician_visible_note_block}",
             'appointment_updated_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_update_action_phrase}\nTarih: {appointment_date_formatted}\nAralık: {appointment_customer_window}"

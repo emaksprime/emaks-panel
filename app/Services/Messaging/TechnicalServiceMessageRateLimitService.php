@@ -74,6 +74,8 @@ class TechnicalServiceMessageRateLimitService
             ->where('id', '!=', $dispatch->id)
             ->where('effective_target_phone_hash', $dispatch->effective_target_phone_hash)
             ->where('message_type', $dispatch->message_type)
+            ->where('channel', $dispatch->channel)
+            ->where('provider_key', $dispatch->provider_key)
             ->whereIn('status', TechnicalServiceMessageDispatch::SUCCESS_STATUSES)
             ->where('created_at', '>=', now()->subMinutes($minutes))
             ->latest('id')

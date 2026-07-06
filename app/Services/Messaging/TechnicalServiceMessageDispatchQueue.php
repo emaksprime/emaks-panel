@@ -22,10 +22,7 @@ class TechnicalServiceMessageDispatchQueue
         $targetPhone = $this->idempotency->normalizePhone((string) ($input['target_phone'] ?? $input['effective_target_phone'] ?? ''));
         $recipientHash = $this->idempotency->phoneHash((string) ($input['recipient_phone'] ?? $targetPhone));
         $effectiveHash = $this->idempotency->phoneHash($targetPhone);
-        $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [
-            'body' => $input['rendered_body'] ?? null,
-            'event' => $input['event'] ?? null,
-        ];
+        $payload = $this->messagePayload($input);
         $payloadHash = (string) ($input['payload_hash'] ?? $this->idempotency->payloadHash($payload));
         $forceResend = filter_var($input['force_resend'] ?? false, FILTER_VALIDATE_BOOL);
 
@@ -198,8 +195,8 @@ class TechnicalServiceMessageDispatchQueue
             'idempotency_key' => $idempotencyKey,
             'channel_policy' => $input['channel_policy'] ?? null,
             'target_type' => $input['target_type'] ?? $input['recipient_role'] ?? 'internal',
-            'original_phone' => null,
-            'target_phone' => null,
+            'original_phone' => $input['recipient_phone'] ?? null,
+            'target_phone' => $targetPhone !== '' ? $targetPhone : null,
             'test_mode' => (bool) ($input['test_mode'] ?? false),
             'attempt_count' => (int) ($input['attempt_count'] ?? 0),
             'max_attempts' => (int) ($input['max_attempts'] ?? 1),
@@ -209,10 +206,33 @@ class TechnicalServiceMessageDispatchQueue
             'created_by' => $actor?->id,
             'triggered_by' => $input['triggered_by'] ?? 'rel4d_queue',
             'metadata' => $input['metadata'] ?? [],
-            'request_payload' => $this->redactedPayload(is_array($input['payload'] ?? null) ? $input['payload'] : []),
+            'request_payload' => $this->redactedPayload($this->messagePayload($input)),
             'sent_by' => $actor?->id,
             ...$overrides,
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     */
+    private function messagePayload(array $input): array
+    {
+        $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [];
+        $renderedBody = $input['rendered_body'] ?? $payload['body'] ?? $payload['message_text'] ?? null;
+
+        if (is_string($renderedBody) && trim($renderedBody) !== '') {
+            $payload['body'] ??= $renderedBody;
+            $payload['rendered_body'] ??= $renderedBody;
+            $payload['message_preview'] ??= mb_substr($renderedBody, 0, 240);
+        }
+
+        $payload['event'] ??= $input['event'] ?? null;
+        $payload['message_type'] ??= $input['message_type'] ?? null;
+        $payload['channel'] ??= $input['channel'] ?? null;
+        $payload['provider_key'] ??= $input['provider_key'] ?? null;
+
+        return $payload;
     }
 
     /**

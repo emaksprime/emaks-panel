@@ -3,7 +3,9 @@
 namespace App\Services\Messaging;
 
 use App\Models\TechnicalServiceMessageDispatch;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class TechnicalServiceMessageDispatchProcessor
 {
@@ -11,10 +13,12 @@ class TechnicalServiceMessageDispatchProcessor
         private readonly TechnicalServiceMessageRateLimitService $rateLimiter,
         private readonly TechnicalServiceMessageProviderRouter $router,
         private readonly TechnicalServiceMessageDispatchQueue $queue,
+        private readonly TechnicalServiceMessageChannelPlanner $channelPlanner,
+        private readonly TechnicalServiceMessageTemplateService $templates,
     ) {}
 
     /**
-     * @param  array{limit?:int,provider?:string|null,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool}  $options
+     * @param  array{limit?:int,provider?:string|null,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null}  $options
      * @return array<string, mixed>
      */
     public function dryRun(array $options = []): array
@@ -36,17 +40,36 @@ class TechnicalServiceMessageDispatchProcessor
     }
 
     /**
-     * @param  array{limit?:int,provider?:string|null,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool}  $options
+     * @param  array{limit?:int,provider?:string|null,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null}  $options
      * @return array<string, mixed>
      */
     public function process(array $options = []): array
     {
         $processed = [];
         $limit = max(1, (int) ($options['limit'] ?? 10));
+        $allowlistedPhones = (array) ($options['allowlisted_phones'] ?? []);
+
+        if (! (bool) ($options['no_external'] ?? false)
+            && $allowlistedPhones !== []
+            && empty($options['dispatch_id'])) {
+            return [
+                'dry_run' => false,
+                'count' => 0,
+                'blocked' => true,
+                'reason' => 'Kontrollü gerçek smoke için tekil dispatch-id zorunlu.',
+                'dispatches' => [],
+            ];
+        }
+
         $ids = $this->candidateQuery($options)->limit($limit)->pluck('id')->all();
 
         foreach ($ids as $id) {
-            $processed[] = $this->processOne((int) $id, (bool) ($options['no_external'] ?? false));
+            $processed[] = $this->processOne(
+                (int) $id,
+                (bool) ($options['no_external'] ?? false),
+                $allowlistedPhones,
+                $options,
+            );
         }
 
         return [
@@ -59,9 +82,12 @@ class TechnicalServiceMessageDispatchProcessor
     /**
      * @return array<string, mixed>
      */
-    public function processOne(int $dispatchId, bool $noExternal = false): array
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    public function processOne(int $dispatchId, bool $noExternal = false, array $allowlistedPhones = [], array $options = []): array
     {
-        return DB::transaction(function () use ($dispatchId, $noExternal): array {
+        return DB::transaction(function () use ($dispatchId, $noExternal, $allowlistedPhones, $options): array {
             /** @var TechnicalServiceMessageDispatch|null $dispatch */
             $dispatch = TechnicalServiceMessageDispatch::query()
                 ->whereKey($dispatchId)
@@ -74,6 +100,74 @@ class TechnicalServiceMessageDispatchProcessor
 
             if (! in_array($dispatch->status, [TechnicalServiceMessageDispatch::STATUS_QUEUED, TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED], true)) {
                 return ['id' => $dispatch->id, 'status' => $dispatch->status, 'skipped' => true];
+            }
+
+            if (! $noExternal && $allowlistedPhones !== [] && ! $this->targetIsAllowlisted($dispatch, $allowlistedPhones)) {
+                $dispatch->forceFill([
+                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                    'failed_at' => now(),
+                    'last_error_code' => 'allowlist_blocked',
+                    'last_error_message_redacted' => 'Kontrollü smoke allowlist dışında hedef telefon engellendi.',
+                ])->save();
+                $this->queue->recordEvent($dispatch, 'message_allowlist_blocked', 'Mesaj allowlist dışı hedef nedeniyle engellendi.');
+
+                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $dispatch->last_error_message_redacted];
+            }
+
+            if (! $noExternal && $allowlistedPhones !== []) {
+                $smokeValidation = $this->controlledSmokeValidationErrors($dispatch, $options);
+                if ($smokeValidation !== []) {
+                    $reason = implode(' ', $smokeValidation);
+                    $dispatch->forceFill([
+                        'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                        'failed_at' => now(),
+                        'last_error_code' => 'stale_or_invalid_smoke_dispatch',
+                        'last_error_message_redacted' => $reason,
+                    ])->save();
+                    $this->queue->recordEvent($dispatch, 'message_smoke_blocked', 'Mesaj kontrollü smoke koşulu eksik olduğu için engellendi.');
+
+                    return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
+                }
+            }
+
+            if (! $noExternal && $allowlistedPhones !== [] && ! $this->isControlledSmokeDispatch($dispatch, $options)) {
+                $dispatch->forceFill([
+                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                    'failed_at' => now(),
+                    'last_error_code' => 'test_smoke_required',
+                    'last_error_message_redacted' => 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.',
+                ])->save();
+                $this->queue->recordEvent($dispatch, 'message_smoke_blocked', 'Mesaj kontrollü smoke koşulu eksik olduğu için engellendi.');
+
+                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $dispatch->last_error_message_redacted];
+            }
+
+            $bodyValidation = $dispatch->providerBodyValidationErrors();
+            if ($bodyValidation !== []) {
+                $reason = implode(' ', $bodyValidation);
+                $dispatch->forceFill([
+                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                    'failed_at' => now(),
+                    'last_error_code' => 'invalid_dispatch_body',
+                    'last_error_message_redacted' => $reason,
+                ])->save();
+                $this->queue->recordEvent($dispatch, 'message_body_blocked', 'Mesaj içeriği provider gönderimi öncesi engellendi.');
+
+                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
+            }
+
+            $roleBodyValidation = $dispatch->roleBodyValidationErrors();
+            if ($roleBodyValidation !== []) {
+                $reason = implode(' ', $roleBodyValidation);
+                $dispatch->forceFill([
+                    'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+                    'failed_at' => now(),
+                    'last_error_code' => 'role_body_mismatch',
+                    'last_error_message_redacted' => $reason,
+                ])->save();
+                $this->queue->recordEvent($dispatch, 'message_role_body_blocked', 'Mesaj rol/gövde uyumsuzluğu nedeniyle engellendi.');
+
+                return ['id' => $dispatch->id, 'status' => $dispatch->status, 'reason' => $reason];
             }
 
             $rateLimit = $this->rateLimiter->evaluateBeforeProcessing($dispatch);
@@ -94,7 +188,7 @@ class TechnicalServiceMessageDispatchProcessor
                 'attempt_count' => (int) $dispatch->attempt_count + 1,
             ])->save();
 
-            $result = $this->router->dispatch($dispatch, $noExternal);
+            $result = $this->router->dispatch($dispatch, $noExternal, $allowlistedPhones);
             $status = (string) $result['status'];
 
             $dispatch->forceFill([
@@ -115,14 +209,216 @@ class TechnicalServiceMessageDispatchProcessor
                 in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true) ? 'message_sent' : 'message_failed',
                 in_array($status, TechnicalServiceMessageDispatch::SUCCESS_STATUSES, true) ? 'Mesaj provider tarafından kabul edildi.' : 'Mesaj provider tarafından gönderilemedi.',
             );
+            $fallback = $this->createFallbackIfNeeded($dispatch);
 
             return [
                 'id' => $dispatch->id,
                 'status' => $dispatch->status,
                 'provider_status' => $dispatch->provider_status,
                 'provider_message_id' => $dispatch->provider_message_id,
+                'fallback_dispatch_id' => $fallback?->id,
             ];
         });
+    }
+
+    /**
+     * @param  array<int, string>  $allowlistedPhones
+     */
+    private function targetIsAllowlisted(TechnicalServiceMessageDispatch $dispatch, array $allowlistedPhones): bool
+    {
+        $target = $this->normalizePhone($dispatch->target_phone);
+        if ($target === '') {
+            return false;
+        }
+
+        $allowed = array_map(fn (string $phone): string => $this->normalizePhone($phone), $allowlistedPhones);
+
+        return in_array($target, array_filter($allowed), true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    private function isControlledSmokeDispatch(TechnicalServiceMessageDispatch $dispatch, array $options = []): bool
+    {
+        if (! filter_var(data_get($dispatch->metadata, 'test_smoke', false), FILTER_VALIDATE_BOOL)) {
+            return false;
+        }
+
+        $smokeRunId = trim((string) ($options['smoke_run_id'] ?? ''));
+        if ($smokeRunId !== '') {
+            return (string) data_get($dispatch->metadata, 'smoke_run_id', '') === $smokeRunId;
+        }
+
+        return filled(data_get($dispatch->metadata, 'smoke_run_id'));
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array<int, string>
+     */
+    private function controlledSmokeValidationErrors(TechnicalServiceMessageDispatch $dispatch, array $options): array
+    {
+        $errors = [];
+        $body = $dispatch->bodyForProvider();
+        $metadata = (array) $dispatch->metadata;
+        $smokeRunId = trim((string) ($options['smoke_run_id'] ?? ''));
+
+        if (! filter_var($metadata['test_smoke'] ?? false, FILTER_VALIDATE_BOOL)) {
+            $errors[] = 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.';
+        }
+
+        if ($smokeRunId === '') {
+            $errors[] = 'Kontrollü gerçek smoke için --smoke-run-id zorunlu.';
+        } elseif ((string) ($metadata['smoke_run_id'] ?? '') !== $smokeRunId) {
+            $errors[] = 'Dispatch current smoke_run_id ile eşleşmiyor; stale dispatch işlenmedi.';
+        }
+
+        $startedAt = trim((string) ($options['smoke_started_at'] ?? ''));
+        if ($startedAt !== '') {
+            try {
+                $boundary = CarbonImmutable::parse($startedAt);
+                if ($dispatch->created_at !== null && $dispatch->created_at->lt($boundary->subSecond())) {
+                    $errors[] = 'Dispatch smoke başlangıcından önce oluşturulmuş; stale dispatch işlenmedi.';
+                }
+            } catch (Throwable) {
+                $errors[] = '--smoke-started-at geçerli ISO tarih olmalı.';
+            }
+        }
+
+        $expectedBodyToken = trim((string) ($options['expected_body_token'] ?? ($metadata['expected_body_token'] ?? '')));
+        if ($expectedBodyToken !== '' && ! str_contains($body, $expectedBodyToken)) {
+            $errors[] = 'Dispatch body beklenen smoke referansını içermiyor; stale/yanlış içerik engellendi.';
+        }
+
+        if (str_contains($body, 'MRN-REL4C') || str_contains($body, 'SRV-REL4C')) {
+            $errors[] = 'REL-4E smoke içinde eski REL-4C referanslı body engellendi.';
+        }
+
+        $roleTargetPhone = $this->roleTargetPhone($metadata, $options, (string) $dispatch->recipient_role);
+        if ($roleTargetPhone !== null && $this->normalizePhone($dispatch->target_phone) !== $roleTargetPhone) {
+            $errors[] = 'Dispatch hedef telefonu rol için beklenen allowlist hedefiyle eşleşmiyor.';
+        }
+
+        return array_values(array_unique($errors));
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     * @param  array<string, mixed>  $options
+     */
+    private function roleTargetPhone(array $metadata, array $options, string $recipientRole): ?string
+    {
+        $metadataTarget = $metadata['role_target_phone'] ?? null;
+        if (is_scalar($metadataTarget) && trim((string) $metadataTarget) !== '') {
+            return $this->normalizePhone((string) $metadataTarget);
+        }
+
+        $targets = (array) ($options['role_target_phones'] ?? []);
+        $target = $targets[$recipientRole] ?? null;
+        if (! is_scalar($target) || trim((string) $target) === '') {
+            return null;
+        }
+
+        return $this->normalizePhone((string) $target);
+    }
+
+    private function normalizePhone(?string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $phone) ?: '';
+        if (str_starts_with($digits, '0')) {
+            return '90'.substr($digits, 1);
+        }
+
+        if (strlen($digits) === 10) {
+            return '90'.$digits;
+        }
+
+        return $digits;
+    }
+
+    private function createFallbackIfNeeded(TechnicalServiceMessageDispatch $dispatch): ?TechnicalServiceMessageDispatch
+    {
+        $plan = $this->channelPlanner->fallbackAfter($dispatch);
+        if ($plan === null || $dispatch->request_id === null) {
+            return null;
+        }
+
+        $context = data_get($dispatch->request_payload, 'context');
+        $preview = $this->templates->preview([
+            'message_type' => $dispatch->message_type,
+            'channel' => 'sms',
+            'provider_key' => 'nac_sms',
+            'request_id' => $dispatch->request_id,
+            'sample_context' => false,
+            'context' => is_array($context) ? $context : [],
+        ]);
+
+        $blockers = array_values((array) ($preview['blockers'] ?? []));
+        if ($blockers !== [] || ! (bool) ($preview['preview_ready'] ?? false)) {
+            $dispatch->forceFill([
+                'metadata' => [
+                    ...((array) $dispatch->metadata),
+                    'fallback_blocked_reason' => implode(' ', $blockers) ?: 'SMS fallback şablonu bloklu.',
+                ],
+            ])->save();
+
+            return null;
+        }
+
+        $template = (array) ($preview['template'] ?? []);
+
+        return $this->queue->enqueue([
+            'event' => (string) ($plan['event'] ?? $dispatch->event.'_sms_fallback'),
+            'technical_service_request_id' => $dispatch->technical_service_request_id ?? $dispatch->request_id,
+            'request_id' => $dispatch->request_id,
+            'related_type' => $dispatch->related_type,
+            'related_id' => $dispatch->related_id,
+            'root_mrn' => $dispatch->root_mrn,
+            'mrn' => $dispatch->mrn,
+            'srv' => $dispatch->srv,
+            'message_type' => $dispatch->message_type,
+            'channel' => 'sms',
+            'provider_key' => 'nac_sms',
+            'recipient_role' => $dispatch->recipient_role,
+            'target_type' => $dispatch->target_type,
+            'recipient_phone' => $dispatch->original_phone ?: $dispatch->target_phone,
+            'target_phone' => $dispatch->target_phone,
+            'test_redirect_applied' => (bool) $dispatch->test_redirect_applied,
+            'test_mode' => (bool) $dispatch->test_mode,
+            'template_key' => $template['template_key'] ?? null,
+            'template_version' => $template['version'] ?? null,
+            'rendered_body' => (string) ($preview['rendered_body'] ?? ''),
+            'payload' => [
+                'body' => $preview['rendered_body'] ?? '',
+                'rendered_body' => $preview['rendered_body'] ?? '',
+                'message_type' => $dispatch->message_type,
+                'channel' => 'sms',
+                'provider_key' => 'nac_sms',
+                'fallback_from_dispatch_id' => $dispatch->id,
+                'context' => is_array($context) ? $context : [],
+                'sms' => $preview['sms'] ?? null,
+            ],
+            'business_event_id' => 'fallback-'.$dispatch->id,
+            'channel_policy' => $dispatch->channel_policy,
+            'parent_dispatch_id' => $dispatch->id,
+            'triggered_by' => 'whatsapp_failure_fallback',
+            'metadata' => [
+                ...array_intersect_key((array) $dispatch->metadata, array_flip([
+                    'test_smoke',
+                    'allowlisted_target',
+                    'pr88_rel',
+                    'smoke_run_id',
+                    'created_by_smoke_at',
+                    'expected_body_token',
+                    'prefix',
+                    'created_via',
+                ])),
+                ...((array) ($plan['metadata'] ?? [])),
+                'fallback_from_dispatch_id' => $dispatch->id,
+                'fallback_reason' => $dispatch->last_error_message_redacted,
+            ],
+        ], $dispatch->creator);
     }
 
     /**

@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
 use App\Models\B2B\B2BPartnerTechnician;
-use App\Models\TechnicalServiceEarningPayment;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
@@ -165,13 +164,15 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             'customer_direct_to_technician_amount' => 1000,
         ])
             ->assertOk()
-            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_REAL_SEND_DISABLED);
+            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
 
         $this->assertDatabaseCount('technical_service_earning_payments', 0);
         $this->assertSame(1, TechnicalServiceMessageDispatch::query()->where('technical_service_request_id', $request->id)->count());
         $dispatch = TechnicalServiceMessageDispatch::query()
             ->where('technical_service_request_id', $request->id)
             ->firstOrFail();
+        $this->assertSame('null_local', $dispatch->provider_key);
+        $this->assertSame('system', $dispatch->channel);
         $this->assertSame('appointment_approval', $dispatch->request_payload['context']['payment_message_trigger'] ?? null);
         $this->assertFalse((bool) ($dispatch->request_payload['context']['payment_instruction_included'] ?? true));
         Http::assertNothingSent();

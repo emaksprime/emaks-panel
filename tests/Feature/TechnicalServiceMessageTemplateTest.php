@@ -202,6 +202,57 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertStringContainsString('1.250,00 TL', $payload['rendered_body']);
     }
 
+    public function test_customer_payment_note_customer_pays_technician_whatsapp_includes_cash_transfer_note(): void
+    {
+        $body = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/message-templates/preview', [
+                'message_type' => 'appointment_approved_customer',
+                'channel' => 'whatsapp',
+                'sample_context' => false,
+                'context' => [
+                    'customer_name' => 'PR88 Ödeme Notu',
+                    'mrn' => 'MRN-PR88-NOTE',
+                    'appointment_date' => '2026-07-08',
+                    'appointment_time' => '14:00 - 16:00',
+                    'payer_state_key' => 'customer_pays_technician',
+                    'customer_payment_amount' => 1250,
+                    'customer_payment_note_text' => 'Ödemeler nakit ve havale kabul edilmektedir.',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.preview_ready', true)
+            ->json('preview.rendered_body');
+
+        $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', $body);
+        $this->assertStringContainsString('Not: Ödemeler nakit ve havale kabul edilmektedir.', $body);
+    }
+
+    public function test_customer_payment_note_company_collected_and_no_payment_omit_payment_note(): void
+    {
+        foreach (['company_collected_online', 'no_payment'] as $payerState) {
+            $body = $this->actingAs($this->admin())
+                ->postJson('/api/technical-service/message-templates/preview', [
+                    'message_type' => 'appointment_approved_customer',
+                    'channel' => 'whatsapp',
+                    'sample_context' => false,
+                    'context' => [
+                        'customer_name' => 'PR88 Ödeme Yok',
+                        'mrn' => 'MRN-PR88-NO-PAY',
+                        'appointment_date' => '2026-07-08',
+                        'appointment_time' => '14:00 - 16:00',
+                        'payer_state_key' => $payerState,
+                        'customer_payment_note_text' => 'Ödemeler nakit ve havale kabul edilmektedir.',
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('preview.preview_ready', true)
+                ->json('preview.rendered_body');
+
+            $this->assertStringNotContainsString('Ödemeler nakit ve havale kabul edilmektedir.', $body);
+            $this->assertStringNotContainsString('ustaya ödenecek tutar', mb_strtolower($body, 'UTF-8'));
+        }
+    }
+
     public function test_company_collected_message_cannot_say_pay_technician(): void
     {
         $this->actingAs($this->admin())
@@ -735,12 +786,12 @@ class TechnicalServiceMessageTemplateTest extends TestCase
         $this->assertStringContainsString("Randevu Bilgileri\nTarih: 03.07.2026", $body);
         $this->assertStringContainsString('Saat Aralığı:', $body);
         $this->assertStringContainsString('Randevu sırasında ustaya ödenecek tutar: 1.250,00 TL.', $body);
+        $this->assertStringContainsString('Not: Ödemeler nakit ve havale kabul edilmektedir.', $body);
         $this->assertStringNotContainsString('MRN:', $body);
         $this->assertStringNotContainsString('SRV:', $body);
         $this->assertStringNotContainsString('Ödeme:', $body);
         $this->assertStringNotContainsString('Talep:', $body);
         $this->assertStringNotContainsString('Yeni randevu:', $body);
-        $this->assertStringNotContainsString('Not:', $body);
     }
 
     public function test_template_readability_customer_whatsapp_is_sectioned_and_not_dense(): void
@@ -826,8 +877,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertJsonPath('preview.preview_ready', true)
             ->json('preview.rendered_body');
 
-        $this->assertStringContainsString('İş Kartı: https://e.ms/job/PR88', $technician);
-        $this->assertStringContainsString('Randevu: 03.07.2026 14:00 - 16:00', $technician);
+        $this->assertStringContainsString('Kart https://e.ms/job/PR88', $technician);
+        $this->assertStringContainsString('Randevu 03.07.2026 14:00 - 16:00', $technician);
         $this->assertStringNotContainsString('13:00 - 19:00 arası', $technician);
         $this->assertStringNotContainsString('Adres:', $technician);
         $this->assertStringNotContainsString('Harita:', $technician);
@@ -1038,7 +1089,8 @@ class TechnicalServiceMessageTemplateTest extends TestCase
             ->assertJsonPath('preview.preview_ready', true)
             ->json('preview.rendered_body');
 
-        $this->assertStringContainsString('Randevu: 03.07.2026 14:00 - 16:00', $technician);
+        $this->assertStringContainsString('Randevu 03.07.2026 14:00 - 16:00', $technician);
+        $this->assertStringContainsString('Kart https://e.ms/job/R4C11', $technician);
         $this->assertStringNotContainsString('13:00 - 19:00 arası', $technician);
     }
 

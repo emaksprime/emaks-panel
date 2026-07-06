@@ -97,11 +97,86 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
 
         $sections = collect($payload['admin_sections'])->pluck('key');
 
+        $this->assertContains('evo', $sections);
         $this->assertContains('nac_sms', $sections);
         $this->assertContains('mikro_api', $sections);
         $this->assertContains('health', $sections);
+        $this->assertFalse($payload['evo_whatsapp']['direct_api_ready']);
         $this->assertFalse($payload['nac_sms']['live_ready']);
         $this->assertFalse($payload['mikro_api']['write_ready']);
+    }
+
+    public function test_evo_direct_api_settings_are_saved_without_plaintext_secret(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'evo_whatsapp' => [
+                    'direct_api_enabled' => true,
+                    'direct_api_base_url' => 'https://evo-api.example.test',
+                    'direct_api_instance_name' => 'evolution_exchange',
+                    'delay' => 3,
+                    'link_preview' => false,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.evo_whatsapp.direct_api_enabled', true)
+            ->assertJsonPath('messaging_settings.evo_whatsapp.endpoint_url', 'https://evo-api.example.test/message/sendText/evolution_exchange')
+            ->assertJsonPath('messaging_settings.evo_whatsapp.credentials_ready', false)
+            ->assertJsonPath('messaging_settings.evo_whatsapp.direct_api_ready', false);
+
+        $layout = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
+            ->value('layout_json');
+
+        $this->assertSame('https://evo-api.example.test', data_get($layout, 'technical_service.messaging.evo_whatsapp.direct_api_base_url'));
+        $this->assertSame('evolution_exchange', data_get($layout, 'technical_service.messaging.evo_whatsapp.direct_api_instance_name'));
+        $this->assertStringNotContainsString('evo-secret-key', json_encode($layout, JSON_THROW_ON_ERROR));
+    }
+
+    public function test_evo_direct_api_credentials_encrypted_masked_and_not_in_page_configs(): void
+    {
+        $secret = 'PR88_EVO_DIRECT_SECRET_ONLY';
+
+        $response = $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/evo-whatsapp/credentials', [
+                'api_key' => $secret,
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.evo_whatsapp.credentials_ready', true)
+            ->json('messaging_settings');
+
+        $this->assertSame('PR8****NLY', $response['evo_whatsapp']['api_key_mask']);
+        $this->assertArrayNotHasKey('api_key', $response['evo_whatsapp']);
+
+        $row = DB::table('integration_provider_credentials')->where('provider', 'evo_whatsapp')->first();
+        $encoded = json_encode($row, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($secret, (string) $row->api_key_encrypted);
+        $this->assertStringNotContainsString($secret, $encoded);
+        $this->assertSame('configured', IntegrationProviderCredential::query()->where('provider', 'evo_whatsapp')->value('credentials_status'));
+        $this->assertStringNotContainsString($secret, json_encode(PageConfig::query()->pluck('layout_json')->all(), JSON_THROW_ON_ERROR));
+    }
+
+    public function test_evo_direct_api_readiness_requires_base_url_instance_and_key(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/technical-service/messaging-settings/evo-whatsapp/credentials', [
+                'api_key' => 'evo-secret-key',
+            ])
+            ->assertOk();
+
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/messaging-settings', [
+                'evo_whatsapp' => [
+                    'direct_api_enabled' => true,
+                    'direct_api_base_url' => 'https://evo-api.example.test',
+                    'direct_api_instance_name' => 'evolution_exchange',
+                    'delay' => 0,
+                    'link_preview' => false,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('messaging_settings.evo_whatsapp.direct_api_ready', true)
+            ->assertJsonPath('messaging_settings.readiness.evo_direct_api_ready', true);
     }
 
     public function test_channel_policy_message_type_real_send_default_disabled(): void

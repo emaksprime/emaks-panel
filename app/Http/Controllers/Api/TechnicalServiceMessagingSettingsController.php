@@ -75,6 +75,12 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'nac_sms.use_shared_test_phone' => ['sometimes', 'boolean'],
             'nac_sms.test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'nac_sms.real_send_allowed' => ['sometimes', 'boolean'],
+            'evo_whatsapp' => ['sometimes', 'array'],
+            'evo_whatsapp.direct_api_enabled' => ['sometimes', 'boolean'],
+            'evo_whatsapp.direct_api_base_url' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'evo_whatsapp.direct_api_instance_name' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'evo_whatsapp.delay' => ['sometimes', 'required', 'integer', 'min:0', 'max:120'],
+            'evo_whatsapp.link_preview' => ['sometimes', 'boolean'],
             'mikro_api' => ['sometimes', 'array'],
             'mikro_api.enabled' => ['sometimes', 'boolean'],
             'mikro_api.base_url' => ['sometimes', 'nullable', 'string', 'max:500'],
@@ -140,6 +146,27 @@ class TechnicalServiceMessagingSettingsController extends Controller
         return response()->json([
             'messaging_settings' => $settings->clearProviderCredentials('nac_sms'),
             'message' => 'NAC SMS credential bilgileri temizlendi.',
+        ]);
+    }
+
+    public function saveEvoWhatsappCredentials(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    {
+        $data = $request->validate([
+            'api_key' => ['nullable', 'string', 'max:2000', 'required_without:token'],
+            'token' => ['nullable', 'string', 'max:2000', 'required_without:api_key'],
+        ]);
+
+        return response()->json([
+            'messaging_settings' => $settings->saveEvoWhatsappCredentials($data),
+            'message' => 'Evo Direct API bilgileri encrypted olarak kaydedildi. Tam değerler tekrar gösterilmez.',
+        ]);
+    }
+
+    public function clearEvoWhatsappCredentials(TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    {
+        return response()->json([
+            'messaging_settings' => $settings->clearProviderCredentials('evo_whatsapp'),
+            'message' => 'Evo Direct API credential bilgileri temizlendi.',
         ]);
     }
 
