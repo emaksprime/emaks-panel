@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\TechnicalServiceController;
+use App\Http\Controllers\Api\TechnicalServiceMessageDispatchController;
 use App\Http\Controllers\Api\TechnicalServiceMessageTemplateController;
 use App\Http\Controllers\Api\TechnicalServiceMessagingSettingsController;
 use App\Http\Controllers\Api\TechnicalServicePaymentProviderSettingsController;
@@ -123,6 +124,18 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('message-templates/test-send', [TechnicalServiceMessageTemplateController::class, 'testSend'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.message-templates.test-send');
+        Route::get('message-dispatches', [TechnicalServiceMessageDispatchController::class, 'index'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-dispatches.index');
+        Route::post('message-dispatches/{dispatch}/cancel', [TechnicalServiceMessageDispatchController::class, 'cancel'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-dispatches.cancel');
+        Route::post('message-dispatches/{dispatch}/retry', [TechnicalServiceMessageDispatchController::class, 'retry'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-dispatches.retry');
+        Route::post('message-dispatches/{dispatch}/force-resend', [TechnicalServiceMessageDispatchController::class, 'forceResend'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.message-dispatches.force-resend');
         Route::get('payment-provider-settings', [TechnicalServicePaymentProviderSettingsController::class, 'show'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.payment-provider-settings.show');

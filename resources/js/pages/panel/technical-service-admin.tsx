@@ -442,6 +442,43 @@ type MessagingSettings = {
     };
 };
 
+type MessageDispatchQueuePayload = {
+    summary: Record<
+        | 'queued'
+        | 'sending'
+        | 'sent'
+        | 'failed'
+        | 'duplicate_blocked'
+        | 'rate_limited'
+        | 'cancelled',
+        number
+    >;
+    recent: Array<{
+        id: number;
+        status: string;
+        provider_key: string | null;
+        channel: string | null;
+        message_type: string | null;
+        recipient_role: string | null;
+        target_masked: string | null;
+        idempotency_key_short: string | null;
+        attempt_count: number;
+        provider_message_id: string | null;
+        last_error_redacted: string | null;
+        force_resend_reason: string | null;
+        created_by: number | null;
+        created_at: string | null;
+        sent_at: string | null;
+    }>;
+    filters: {
+        providers: string[];
+        channels: string[];
+        recipient_roles: string[];
+        statuses: string[];
+    };
+    warnings: string[];
+};
+
 type MessagingTypeInputs = Record<
     string,
     {
@@ -842,12 +879,14 @@ export default function TechnicalServiceAdmin({
     qrPublicFlowSettings,
     messagingSettings,
     messageTemplateSettings,
+    messageDispatchQueue,
     paymentProviderSettings,
     mailTransportSettings,
 }: {
     qrPublicFlowSettings: QrPublicFlowSettings;
     messagingSettings: MessagingSettings;
     messageTemplateSettings: MessageTemplateSettings;
+    messageDispatchQueue: MessageDispatchQueuePayload;
     paymentProviderSettings: PaymentProviderSettings;
     mailTransportSettings: MailTransportSettings;
 }) {
@@ -858,6 +897,7 @@ export default function TechnicalServiceAdmin({
     const [messageTemplates, setMessageTemplates] = useState(
         messageTemplateSettings,
     );
+    const [dispatchQueue] = useState(messageDispatchQueue);
     const [paymentSettings, setPaymentSettings] = useState(
         paymentProviderSettings,
     );
@@ -6705,18 +6745,133 @@ export default function TechnicalServiceAdmin({
                 ) : null}
 
                 {activeAdminSection === 'queue' ? (
-                    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                         <p className="text-xs font-semibold tracking-[0.14em] text-slate-500 uppercase">
                             Kuyruk / Loglar
                         </p>
                         <h2 className="mt-2 text-lg font-bold text-slate-950">
-                            REL-4D outbox ve rate-limit ekranı bekleniyor.
+                            Mesaj dispatch kuyruğu ve güvenlik logları
                         </h2>
                         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                            Bu fazda gerçek provider gönderimi yok. Mesaj
-                            kuyruğu, duplicate guard, manuel resend nedeni ve
-                            provider logları REL-4D içinde bağlanacak.
+                            REL-4D işleyici business trigger bağlamaz. Queue,
+                            duplicate guard, rate limit ve provider router
+                            kayıtları burada maskeli izlenir.
                         </p>
+                        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
+                            {[
+                                ['Queued', dispatchQueue.summary.queued],
+                                ['Sending', dispatchQueue.summary.sending],
+                                ['Sent', dispatchQueue.summary.sent],
+                                ['Failed', dispatchQueue.summary.failed],
+                                [
+                                    'Duplicate',
+                                    dispatchQueue.summary.duplicate_blocked,
+                                ],
+                                [
+                                    'Rate limited',
+                                    dispatchQueue.summary.rate_limited,
+                                ],
+                                ['Cancelled', dispatchQueue.summary.cancelled],
+                            ].map(([label, value]) => (
+                                <div
+                                    key={String(label)}
+                                    className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                                >
+                                    <p className="text-xs font-semibold text-slate-500">
+                                        {label}
+                                    </p>
+                                    <p className="mt-1 text-2xl font-bold text-slate-950">
+                                        {value}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="grid gap-3 lg:grid-cols-4">
+                            {[
+                                [
+                                    'Provider filtreleri',
+                                    dispatchQueue.filters.providers.join(', '),
+                                ],
+                                [
+                                    'Kanal filtreleri',
+                                    dispatchQueue.filters.channels.join(', '),
+                                ],
+                                [
+                                    'Hedef rolleri',
+                                    dispatchQueue.filters.recipient_roles.join(
+                                        ', ',
+                                    ),
+                                ],
+                                [
+                                    'Durumlar',
+                                    dispatchQueue.filters.statuses.join(', '),
+                                ],
+                            ].map(([label, value]) => (
+                                <div
+                                    key={label}
+                                    className="rounded-xl border border-slate-200 bg-white p-3 text-sm"
+                                >
+                                    <p className="font-semibold text-slate-900">
+                                        {label}
+                                    </p>
+                                    <p className="mt-1 leading-5 text-slate-600">
+                                        {value}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="overflow-hidden rounded-xl border border-slate-200">
+                            <div className="grid grid-cols-7 gap-2 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600">
+                                <span>Status</span>
+                                <span>Provider</span>
+                                <span>Kanal</span>
+                                <span>Tip</span>
+                                <span>Hedef</span>
+                                <span>Attempt</span>
+                                <span>Son hata</span>
+                            </div>
+                            {dispatchQueue.recent.length > 0 ? (
+                                dispatchQueue.recent.map((dispatch) => (
+                                    <div
+                                        key={dispatch.id}
+                                        className="grid grid-cols-7 gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-700"
+                                    >
+                                        <span className="font-semibold">
+                                            {dispatch.status}
+                                        </span>
+                                        <span>
+                                            {dispatch.provider_key ?? '-'}
+                                        </span>
+                                        <span>{dispatch.channel ?? '-'}</span>
+                                        <span>
+                                            {dispatch.message_type ?? '-'}
+                                        </span>
+                                        <span>
+                                            {dispatch.target_masked ?? '-'}
+                                        </span>
+                                        <span>{dispatch.attempt_count}</span>
+                                        <span className="truncate">
+                                            {dispatch.last_error_redacted ??
+                                                '-'}
+                                        </span>
+                                    </div>
+                                ))
+                            ) : (
+                                <p className="border-t border-slate-100 px-3 py-4 text-sm text-slate-600">
+                                    Henüz dispatch log kaydı yok.
+                                </p>
+                            )}
+                        </div>
+                        <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                            {dispatchQueue.warnings.map((warning) => (
+                                <p key={warning}>{warning}</p>
+                            ))}
+                            <p>
+                                Force resend API nedeni zorunlu tutar;
+                                telefonlar maskeli, provider secret ve Basic
+                                Auth değerleri gizlidir.
+                            </p>
+                        </div>
                     </section>
                 ) : null}
 
