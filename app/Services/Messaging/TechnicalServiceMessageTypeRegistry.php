@@ -89,6 +89,15 @@ class TechnicalServiceMessageTypeRegistry
                 'appointment_exact_time_range',
                 'technician_job_card_url',
             ],
+            'appointment_cancelled_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+            ],
+            'appointment_cancelled_technician' => [
+                'mrn',
+                'customer_name',
+                'technician_job_card_url',
+            ],
             'customer_approval_request' => [
                 'customer_name',
                 'customer_reference_phrase',
@@ -119,10 +128,44 @@ class TechnicalServiceMessageTypeRegistry
                 'route_fee_formatted',
                 'technician_earning_total_formatted',
             ],
+            'price_revision_response_technician' => [
+                'mrn',
+                'technician_job_card_url',
+                'labor_amount_formatted',
+                'route_fee_formatted',
+                'technician_earning_total_formatted',
+            ],
+            'final_control_completed_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+            ],
+            'activation_code_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'activation_code',
+            ],
+            'warranty_started_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'warranty_started_at_formatted',
+            ],
             'completion_submitted_ops' => [
                 'internal_job_reference',
                 'technician_name',
                 'completed_at_formatted',
+            ],
+            'part_request_ops' => [
+                'internal_job_reference',
+                'actor_name',
+                'part_name',
+                'part_reason',
+                'next_action_text',
+            ],
+            'part_fee_payment_link_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'payment_link',
+                'payment_amount_formatted',
             ],
             'support_request_ops' => [
                 'internal_job_reference',
@@ -217,6 +260,38 @@ class TechnicalServiceMessageTypeRegistry
                     'srv_line',
                     'technician_visible_note_block',
                 ],
+                'appointment_cancelled_customer',
+                'final_control_completed_customer',
+                'activation_code_customer',
+                'warranty_started_customer',
+                'part_fee_payment_link_customer' => [
+                    'customer_reference_code',
+                    'customer_job_type_label',
+                    'customer_payment_amount_formatted',
+                    'payment_amount_formatted',
+                    'payment_link',
+                    'payment_link_sms',
+                    'activation_code',
+                    'warranty_started_at_formatted',
+                    'warranty_ends_at_formatted',
+                    'customer_visible_note',
+                    'customer_visible_note_block',
+                ],
+                'appointment_cancelled_technician',
+                'price_revision_response_technician' => [
+                    'technician_name',
+                    'customer_phone',
+                    'address',
+                    'maps_url',
+                    'maps_url_line',
+                    'technician_job_card_short_url',
+                    'labor_amount_formatted',
+                    'route_fee_formatted',
+                    'technician_earning_total_formatted',
+                    'technician_earning_summary_block',
+                    'srv_line',
+                    'technician_visible_note_block',
+                ],
                 'customer_approval_request' => [
                     'technician_name',
                     'confirmation_link',
@@ -239,6 +314,7 @@ class TechnicalServiceMessageTypeRegistry
                     'customer_reference_phrase',
                 ],
                 'completion_submitted_ops',
+                'part_request_ops',
                 'support_request_ops',
                 'job_rejected_ops',
                 'price_revision_requested_ops' => [
@@ -254,6 +330,10 @@ class TechnicalServiceMessageTypeRegistry
                     'revision_reason',
                     'completed_at_formatted',
                     'next_action_text',
+                    'part_name',
+                    'part_code',
+                    'part_quantity',
+                    'part_reason',
                 ],
                 default => [],
             },
@@ -266,7 +346,8 @@ class TechnicalServiceMessageTypeRegistry
     public function payerStateRequirements(string $messageType): array
     {
         return match ($messageType) {
-            'payment_link_customer' => [
+            'payment_link_customer',
+            'part_fee_payment_link_customer' => [
                 'requires_payment_link' => true,
                 'block_if_company_collected' => true,
             ],
@@ -343,6 +424,11 @@ class TechnicalServiceMessageTypeRegistry
                 'customer_approval_request' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır. Onay bağlantısı mesaj olarak paylaşılır. Bu sadece sesli arama script önizlemesidir.',
                 'payment_link_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için ödeme bağlantısı mesaj olarak paylaşılır. Tutar {payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
                 'customer_pays_technician_notice' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar {customer_payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
+                'appointment_cancelled_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_reference_phrase} randevunuz iptal edilmiştir. Detay için operasyon ekibimiz sizinle iletişime geçecektir. Bu sadece sesli arama script önizlemesidir.',
+                'final_control_completed_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizin son kontrolü tamamlanmıştır. Bu sadece sesli arama script önizlemesidir.',
+                'activation_code_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için aktivasyon kodunuz mesaj olarak paylaşılır. Bu sadece sesli arama script önizlemesidir.',
+                'warranty_started_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizin garanti başlangıç bilgisi mesaj olarak paylaşılır. Bu sadece sesli arama script önizlemesidir.',
+                'part_fee_payment_link_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için parça ücreti ödeme bağlantısı mesaj olarak paylaşılır. Tutar {payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
                 'future_survey_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz sonrası memnuniyet anketi bağlantısı paylaşılır. Bu sadece gelecek Voibot script önizlemesidir.',
                 default => 'Merhaba. EMAKS Prime Teknik Servis operasyon bilgilendirme script önizlemesi. İş referansı {internal_job_reference}. Gerçek Voibot çağrısı yapılmaz.',
             };
@@ -361,12 +447,21 @@ class TechnicalServiceMessageTypeRegistry
             'appointment_updated_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\nİş kartı güncellendi.\nMRN: {mrn}\nMüşteri: {customer_name}\nRandevu: {appointment_date_formatted} {appointment_exact_time_range}\nİş Kartı: {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nServis randevusu güncellendi.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_date_formatted} {appointment_exact_time_range}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_visible_note_block}",
+            'appointment_cancelled_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} randevunuz iptal edilmiştir."
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} randevunuz iptal edilmiştir.\n\nDetay için operasyon ekibimiz sizinle iletişime geçecektir.",
+            'appointment_cancelled_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\nİş iptal edildi.\nMRN: {mrn}\nKart: {technician_job_card_short_url}"
+                : "EMAKS Prime Teknik Servis\n\nİş/randevu iptal edildi.\n\nMRN: {mrn}\nMüşteri: {customer_name}\nİş Kartı: {technician_job_card_url}",
             'customer_approval_request' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} işleminizi onaylamak için:\n{confirmation_link_sms}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır.\n\nİşlemi kontrol edip onaylamak için:\n{confirmation_link}",
             'payment_link_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} için ödeme bağlantınız:\n{payment_link_sms}\nTutar: {payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için ödeme bağlantınız aşağıdadır.\n\nTutar: {payment_amount_formatted}\nÖdeme Bağlantısı:\n{payment_link}",
+            'part_fee_payment_link_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} parça ücreti ödeme linki:\n{payment_link_sms}\nTutar: {payment_amount_formatted}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için parça ücreti ödeme bağlantınız aşağıdadır.\n\nTutar: {payment_amount_formatted}\nÖdeme Bağlantısı:\n{payment_link}",
             'customer_pays_technician_notice' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase}\nUstaya ödenecek tutar: {customer_payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar:\n\n{customer_payment_amount_formatted}\n\nRandevu aralığında adreste olunmasını rica ederiz.",
@@ -376,9 +471,24 @@ class TechnicalServiceMessageTypeRegistry
             'earnings_message_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\nHakediş güncellendi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nİş Kartı: {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nHakediş bilgisi güncellendi.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}",
+            'price_revision_response_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\nHakediş revize edildi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nKart: {technician_job_card_short_url}"
+                : "EMAKS Prime Teknik Servis\n\nHakediş revizyon cevabı hazır.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}",
+            'final_control_completed_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} işleminizin son kontrolü tamamlandı."
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminizin son kontrolü tamamlanmıştır.\n\nBizi tercih ettiğiniz için teşekkür ederiz.",
+            'activation_code_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} aktivasyon kodu: {activation_code}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için aktivasyon kodunuz:\n\n{activation_code}",
+            'warranty_started_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase} garanti başlangıcı: {warranty_started_at_formatted}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} için garanti başlangıç tarihi:\n\n{warranty_started_at_formatted}\n{warranty_ends_at_formatted}",
             'completion_submitted_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nUsta işi tamamladı.\nİş: {internal_job_reference}\nUsta: {technician_name}\nTarih: {completed_at_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nUsta işi tamamladığını bildirdi.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nTamamlama Tarihi: {completed_at_formatted}\nSonraki Aksiyon: OPS son kontrol / müşteri onayı",
+            'part_request_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nParça talebi.\nİş: {internal_job_reference}\nParça: {part_name}\nAksiyon: {next_action_text}"
+                : "EMAKS Prime Teknik Servis\n\nParça talebi oluştu.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nParça: {part_name}\nAdet: {part_quantity}\nNeden: {part_reason}\nSonraki Aksiyon: {next_action_text}",
             'support_request_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nDestek talebi.\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nKonu: {support_subject}"
                 : "EMAKS Prime Teknik Servis\n\nDestek talebi oluştu.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nKonu: {support_subject}\nAçıklama: {support_note}\nTarih: {created_at_formatted}",
@@ -406,6 +516,12 @@ class TechnicalServiceMessageTypeRegistry
             'appointment_updated_technician' => "Usta randevu güncelleme - {$channelLabel}",
             'assignment_offer_technician' => "Usta iş ataması - {$channelLabel}",
             'earnings_message_technician' => "Usta hakediş bilgilendirme - {$channelLabel}",
+            'price_revision_response_technician' => "Usta hakediş revizyon cevabı - {$channelLabel}",
+            'final_control_completed_customer' => "Müşteri son kontrol tamamlandı - {$channelLabel}",
+            'activation_code_customer' => "Müşteri aktivasyon kodu - {$channelLabel}",
+            'warranty_started_customer' => "Müşteri garanti başlangıcı - {$channelLabel}",
+            'part_request_ops' => "OPS parça talebi - {$channelLabel}",
+            'part_fee_payment_link_customer' => "Parça ücreti ödeme bağlantısı - {$channelLabel}",
             default => "{$fallback} - {$channelLabel}",
         };
     }
@@ -433,7 +549,8 @@ class TechnicalServiceMessageTypeRegistry
                 'sms_short_address',
                 'technician_job_card_short_url',
             ],
-            'payment_link_customer' => [
+            'payment_link_customer',
+            'part_fee_payment_link_customer' => [
                 'customer_reference_phrase',
                 'payment_link_sms',
                 'payment_amount_formatted',
@@ -446,6 +563,19 @@ class TechnicalServiceMessageTypeRegistry
                 'mrn',
                 'technician_earning_total_formatted',
                 'technician_job_card_short_url',
+            ],
+            'price_revision_response_technician' => [
+                'mrn',
+                'technician_earning_total_formatted',
+                'technician_job_card_short_url',
+            ],
+            'activation_code_customer' => [
+                'customer_reference_phrase',
+                'activation_code',
+            ],
+            'warranty_started_customer' => [
+                'customer_reference_phrase',
+                'warranty_started_at_formatted',
             ],
             default => $requiredVariables,
         };

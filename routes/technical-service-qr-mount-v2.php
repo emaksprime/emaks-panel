@@ -199,6 +199,9 @@ Route::middleware(['auth', 'panel.session'])
         Route::get('requests/{technicalServiceRequest}/payments/{payment}/status', [TechnicalServiceController::class, 'mountPaymentStatus'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.status');
+        Route::post('requests/{technicalServiceRequest}/payments/{payment}/send-link', [TechnicalServiceController::class, 'sendMountPaymentLink'])
+            ->middleware('panel.access:technical_service_manage')
+            ->name('api.technical-service.requests.payments.send-link');
         Route::post('requests/{technicalServiceRequest}/payments/{payment}/cancel', [TechnicalServiceController::class, 'cancelMountPayment'])
             ->middleware('panel.access:technical_service_manage')
             ->name('api.technical-service.requests.payments.cancel');

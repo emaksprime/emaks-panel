@@ -208,6 +208,16 @@ class TechnicalServiceMessagingSettingsService
             'recipient_role' => 'technician',
             'description' => 'Onaylı randevuda anlamlı tarih/saat değişikliği olursa ustaya gider.',
         ],
+        'appointment_cancelled_customer' => [
+            'label' => 'Müşteri randevu iptali',
+            'recipient_role' => 'customer',
+            'description' => 'Randevu/iş iptal edildiğinde müşteriye gider.',
+        ],
+        'appointment_cancelled_technician' => [
+            'label' => 'Usta randevu iptali',
+            'recipient_role' => 'technician',
+            'description' => 'Randevu/iş iptal edildiğinde ustaya gider.',
+        ],
         'customer_approval_request' => [
             'label' => 'Müşteri işlem onayı',
             'recipient_role' => 'customer',
@@ -233,10 +243,40 @@ class TechnicalServiceMessagingSettingsService
             'recipient_role' => 'technician',
             'description' => 'Hakediş ekranındaki manuel bilgilendirme mesajı.',
         ],
+        'price_revision_response_technician' => [
+            'label' => 'Usta hakediş revizyon cevabı',
+            'recipient_role' => 'technician',
+            'description' => 'OPS hakediş revizyonuna yanıt verdiğinde ustaya gider.',
+        ],
+        'final_control_completed_customer' => [
+            'label' => 'Müşteri son kontrol tamamlandı',
+            'recipient_role' => 'customer',
+            'description' => 'OPS son kontrolü tamamladığında müşteriye kapanış bilgisi gider.',
+        ],
+        'activation_code_customer' => [
+            'label' => 'Müşteri aktivasyon kodu',
+            'recipient_role' => 'customer',
+            'description' => 'Aktivasyon kodu hazır olduğunda müşteriye gider.',
+        ],
+        'warranty_started_customer' => [
+            'label' => 'Müşteri garanti başlangıcı',
+            'recipient_role' => 'customer',
+            'description' => 'Garanti başlangıcı netleştiğinde müşteriye gider.',
+        ],
         'completion_submitted_ops' => [
             'label' => 'OPS tamamlandı bildirimi',
             'recipient_role' => 'ops',
             'description' => 'Usta işi tamamladığında OPS bilgilendirmesi.',
+        ],
+        'part_request_ops' => [
+            'label' => 'OPS parça talebi',
+            'recipient_role' => 'ops',
+            'description' => 'Parça talebi oluştuğunda OPS bilgilendirmesi.',
+        ],
+        'part_fee_payment_link_customer' => [
+            'label' => 'Parça ücreti ödeme bağlantısı',
+            'recipient_role' => 'customer',
+            'description' => 'Ücretli parça kararı sonrası müşteriye ödeme linki gönderimi.',
         ],
         'support_request_ops' => [
             'label' => 'OPS destek talebi',
@@ -278,6 +318,15 @@ class TechnicalServiceMessagingSettingsService
                 'messaging_enabled' => (bool) $settings['messaging_enabled'],
                 'real_send_enabled' => (bool) $settings['real_send_enabled'],
                 'test_mode_enabled' => (bool) $settings['test_mode_enabled'],
+                'manual_e2e_enabled' => (bool) ($settings['manual_e2e_enabled'] ?? false),
+                'manual_e2e_allowlisted_phones' => $settings['manual_e2e_allowlisted_phones'] ?? [],
+                'manual_e2e_allowlisted_phone_masks' => array_map(
+                    fn (string $phone): string => $this->maskPhone($phone),
+                    $settings['manual_e2e_allowlisted_phones'] ?? [],
+                ),
+                'ops_whatsapp_enabled' => (bool) ($settings['ops_whatsapp_enabled'] ?? false),
+                'ops_whatsapp_phone' => $settings['ops_whatsapp_phone'] ?? null,
+                'ops_whatsapp_phone_masked' => $this->maskPhone((string) ($settings['ops_whatsapp_phone'] ?? '')),
                 'shared_test_phone' => $settings['test_phone'],
                 'shared_test_phone_masked' => $this->maskPhone($settings['test_phone']),
                 'test_phone' => $settings['test_phone'],
@@ -354,6 +403,8 @@ class TechnicalServiceMessagingSettingsService
             'queue_paused',
             'allow_browser_smoke_send',
             'allow_test_fixture_send',
+            'manual_e2e_enabled',
+            'ops_whatsapp_enabled',
         ] as $key) {
             if (array_key_exists($key, $values)) {
                 $next[$key] = (bool) $values[$key];
@@ -383,6 +434,17 @@ class TechnicalServiceMessagingSettingsService
             $next['test_phone'] = $this->normalizePhone((string) $values['shared_test_phone']);
         } elseif (array_key_exists('test_phone', $values)) {
             $next['test_phone'] = $this->normalizePhone((string) $values['test_phone']);
+        }
+
+        if (array_key_exists('ops_whatsapp_phone', $values)) {
+            $next['ops_whatsapp_phone'] = $this->normalizePhone((string) $values['ops_whatsapp_phone']);
+        }
+
+        if (array_key_exists('manual_e2e_allowlisted_phones', $values)) {
+            $next['manual_e2e_allowlisted_phones'] = array_values(array_unique(array_filter(array_map(
+                fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+                (array) $values['manual_e2e_allowlisted_phones'],
+            ))));
         }
 
         foreach ([
@@ -689,6 +751,10 @@ class TechnicalServiceMessagingSettingsService
             'max_auto_retries' => 0,
             'allow_browser_smoke_send' => false,
             'allow_test_fixture_send' => false,
+            'manual_e2e_enabled' => false,
+            'manual_e2e_allowlisted_phones' => [],
+            'ops_whatsapp_enabled' => false,
+            'ops_whatsapp_phone' => null,
             'message_types' => $this->defaultMessageTypeSettings(),
             'evo_whatsapp' => [
                 'direct_api_enabled' => false,

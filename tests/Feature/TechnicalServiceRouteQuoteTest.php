@@ -1037,7 +1037,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'Google Routes tek yön mesafesi',
             'Ödeme linki tutarı',
             'Ödeme linki oluştur',
-            'WhatsApp ile gönder',
+            'Linki müşteriye gönder',
             'Teknik detay',
             'Rota mesafesi düz çizgi mesafesine göre yüksek',
             'Montaj durumu',

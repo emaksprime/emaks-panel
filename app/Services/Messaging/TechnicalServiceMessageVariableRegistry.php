@@ -94,6 +94,13 @@ class TechnicalServiceMessageVariableRegistry
             'revision_reason' => $this->definition('Revizyon açıklaması', 'Fiyat revizyon gerekçesi.', 'Adres uzaklığı ve ek işçilik eklendi.', 'technical_service_event'),
             'completed_at_formatted' => $this->definition('Tamamlama tarihi', 'Ustanın işi tamamladığını bildirdiği zaman.', '03.07.2026 18:10', 'technical_service_event'),
             'next_action_text' => $this->definition('Sonraki aksiyon', 'OPS için net sonraki aksiyon.', 'OPS son kontrol / müşteri onayı', 'technical_service_event'),
+            'activation_code' => $this->definition('Aktivasyon kodu', 'Müşteriye gönderilecek ürün aktivasyon kodu.', 'ACT-REL4E10', 'technical_service_request.activation_code'),
+            'warranty_started_at_formatted' => $this->definition('Garanti başlangıç tarihi', 'Müşteriye gösterilecek garanti başlangıç tarihi.', '07.07.2026', 'warranty_service'),
+            'warranty_ends_at_formatted' => $this->definition('Garanti bitiş tarihi', 'Varsa müşteriye gösterilecek garanti bitiş tarihi.', '07.07.2028', 'warranty_service'),
+            'part_name' => $this->definition('Parça adı', 'Parça talebi/ücreti mesajındaki parça adı.', 'Kilit gövdesi', 'technical_service_part_request'),
+            'part_code' => $this->definition('Parça kodu', 'Parça talebi varsa operasyon parça kodu.', 'PRT-001', 'technical_service_part_request'),
+            'part_quantity' => $this->definition('Parça adedi', 'Talep edilen parça adedi.', '1', 'technical_service_part_request'),
+            'part_reason' => $this->definition('Parça nedeni', 'Parça talebi veya ücret gerekçesi.', 'Parça değişimi gerekiyor.', 'technical_service_part_request'),
             'survey_link' => $this->definition('Anket linki', 'REL-14 müşteri anket linki.', 'https://panel.example.test/anket/PR88', 'future'),
             'support_phone' => $this->definition('Destek telefonu', 'Gelecek destek hattı.', '08500000000', 'future'),
         ];

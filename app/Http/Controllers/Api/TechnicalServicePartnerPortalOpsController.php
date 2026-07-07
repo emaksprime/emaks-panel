@@ -368,9 +368,73 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                     ]);
                 }
             }
+            $completionVersion = $job->updated_at?->timestamp ?? 'missing';
+            $warrantyStartedAt = $job->installation_completed_at ?: $job->completed_at ?: $job->field_completed_at;
+            $warrantyVersion = $warrantyStartedAt?->timestamp ?? 'missing';
+
+            $messageSummaries = [
+                'final_control_completed_customer' => $this->workflowMessages->queueWorkflowDispatches(
+                    $job->refresh(),
+                    'final_control_completed_customer',
+                    'customer',
+                    [
+                        'completed_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
+                    ],
+                    $request->user(),
+                    $partnerJobAction,
+                    [
+                        'recipient_phone' => $job->customer_phone,
+                        'triggered_by' => 'ops_final_control_completed',
+                        'event_version' => 'final-control:'.$partnerJobAction->id.':'.$completionVersion,
+                        'metadata' => [
+                            'partner_job_action_id' => $partnerJobAction->id,
+                            'workflow_event' => 'final_control_completed',
+                        ],
+                    ],
+                ),
+                'activation_code_customer' => $this->workflowMessages->queueWorkflowDispatches(
+                    $job->refresh(),
+                    'activation_code_customer',
+                    'customer',
+                    [
+                        'activation_code' => $job->activation_code,
+                    ],
+                    $request->user(),
+                    $partnerJobAction,
+                    [
+                        'recipient_phone' => $job->customer_phone,
+                        'triggered_by' => 'ops_activation_code_ready',
+                        'event_version' => 'activation:'.$partnerJobAction->id.':'.($job->activation_code ?: 'missing'),
+                        'metadata' => [
+                            'partner_job_action_id' => $partnerJobAction->id,
+                            'workflow_event' => 'activation_code_ready',
+                        ],
+                    ],
+                ),
+                'warranty_started_customer' => $this->workflowMessages->queueWorkflowDispatches(
+                    $job->refresh(),
+                    'warranty_started_customer',
+                    'customer',
+                    [
+                        'warranty_started_at_formatted' => $warrantyStartedAt?->timezone('Europe/Istanbul')->format('d.m.Y'),
+                    ],
+                    $request->user(),
+                    $partnerJobAction,
+                    [
+                        'recipient_phone' => $job->customer_phone,
+                        'triggered_by' => 'ops_warranty_started',
+                        'event_version' => 'warranty:'.$partnerJobAction->id.':'.$warrantyVersion,
+                        'metadata' => [
+                            'partner_job_action_id' => $partnerJobAction->id,
+                            'workflow_event' => 'warranty_started',
+                        ],
+                    ],
+                ),
+            ];
 
             return [
                 'status' => 'applied',
+                'message_dispatches' => $messageSummaries,
                 'request' => $this->workflow->serialize($job->refresh(), true),
             ];
         });
@@ -684,8 +748,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             ]);
 
             $approvalUrl = PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]);
-            $publicUrlWarning = $this->messages->testMode() && PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
-                ? 'Onay linki lokal URL içeriyor; telefondan açılamaz. PARTNER_PORTAL_PUBLIC_URL ayarlanmalı.'
+            $publicUrlWarning = PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
+                ? 'Müşteri onay linki telefondan açılabilir public URL gerektirir. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.'
                 : null;
             $messageText = $this->customerApprovalMessageText($job, $approvalUrl);
             $action = TechnicalServicePartnerJobAction::query()->create([
@@ -698,14 +762,14 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'note' => $validated['note'] ?? 'Müşteri onay linki operasyon tarafından tekrar gönderildi.',
                 'payload' => [
                     'confirmation_method' => 'customer_link',
-                    'provider' => 'evolution_n8n',
+                    'provider' => 'dispatch_queue',
                     'confirmation_id' => $confirmation->id,
                     'approval_url' => $approvalUrl,
                     'confirmation_url' => $approvalUrl,
                     'requested_at' => now()->toISOString(),
                     'message_payload' => [
                         'recipient' => 'customer',
-                        'channel' => 'evolution_n8n',
+                        'channel' => 'dispatch_queue',
                         'mrn' => $job->mrn,
                         'customer_phone' => $job->customer_phone,
                         'message_text' => $messageText,
@@ -722,6 +786,8 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 'customer',
                 $messageText,
                 [
+                    'confirmation_link' => $approvalUrl,
+                    'confirmation_link_sms' => $approvalUrl,
                     'confirmation_url' => $approvalUrl,
                     'approval_url' => $approvalUrl,
                     'confirmation_id' => $confirmation->id,
@@ -735,6 +801,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 [
                     'recipient_phone' => $job->customer_phone,
                     'triggered_by' => 'ops_customer_approval_request_resend',
+                    'requires_public_url' => $approvalUrl,
                     'metadata' => [
                         'force_resend' => true,
                         'manual_ui_send' => true,

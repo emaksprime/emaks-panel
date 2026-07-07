@@ -3492,6 +3492,40 @@ export function TechnicalServiceOperationCenter() {
     }
   }
 
+  const handleMountPaymentSend = async (paymentId: number | string) => {
+    if (!selectedId) {
+      return
+    }
+
+    try {
+      const response = await apiRequest(`/api/technical-service/requests/${selectedId}/payments/${paymentId}/send-link`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      const updatedRequest = response.request ? mapApiRequest(response.request) : null
+
+      if (!updatedRequest) {
+        setExtraPaymentCreateError('Ödeme linki kuyruğa alındı ancak talep detayı güncellenemedi.')
+
+        return
+      }
+
+      preserveDetailScroll(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === updatedRequest.id ? updatedRequest : request
+        )))
+        setSelectedListRequest((current) => (
+          current?.id === updatedRequest.id ? updatedRequest : current
+        ))
+        setSelectedDetailRequest(updatedRequest)
+      })
+    } catch (caught) {
+      setExtraPaymentCreateError(caught instanceof Error ? caught.message : 'Ödeme linki mesaj kuyruğuna alınamadı.')
+
+      throw caught
+    }
+  }
+
   const handleTechnicianEarningMessageCreate = async (payload: ServiceRequestTechnicianEarningMessagePayload) => {
     if (!selectedId) {
       return undefined
@@ -4914,7 +4948,7 @@ export function TechnicalServiceOperationCenter() {
                       <Input
                         type="number"
                         min="0"
-                        step="0.01"
+                        step="1"
                         value={assignOfferLaborAmount}
                         onChange={(event) => setAssignOfferLaborAmount(event.target.value)}
                         placeholder={assignmentTechnicianLaborAmount !== null ? String(assignmentTechnicianLaborAmount) : '0'}
@@ -4925,7 +4959,7 @@ export function TechnicalServiceOperationCenter() {
                       <Input
                         type="number"
                         min="0"
-                        step="0.01"
+                        step="1"
                         value={assignOfferRouteFeeAmount}
                         onChange={(event) => setAssignOfferRouteFeeAmount(event.target.value)}
                         placeholder={assignmentRouteFeeAmount !== null ? String(assignmentRouteFeeAmount) : '0'}
@@ -4936,7 +4970,7 @@ export function TechnicalServiceOperationCenter() {
                       <Input
                         type="number"
                         min="0"
-                        step="0.01"
+                        step="1"
                         value={assignCustomerDirectAmount}
                         onChange={(event) => setAssignCustomerDirectAmount(event.target.value)}
                         placeholder={String(finalAssignmentCustomerDirectDefault)}
@@ -5027,7 +5061,7 @@ export function TechnicalServiceOperationCenter() {
                     <Input
                       type="number"
                       min="0"
-                      step="0.01"
+                      step="1"
                       value={assignOfferLaborAmount}
                       onChange={(event) => setAssignOfferLaborAmount(event.target.value)}
                       placeholder={String(assignmentTechnicianLaborAmount ?? 0)}
@@ -5038,7 +5072,7 @@ export function TechnicalServiceOperationCenter() {
                     <Input
                       type="number"
                       min="0"
-                      step="0.01"
+                      step="1"
                       value={assignOfferRouteFeeAmount}
                       onChange={(event) => setAssignOfferRouteFeeAmount(event.target.value)}
                       placeholder={String(assignmentRouteFeeAmount ?? 0)}
@@ -5050,7 +5084,7 @@ export function TechnicalServiceOperationCenter() {
                     <Input
                       type="number"
                       min="0"
-                      step="0.01"
+                      step="1"
                       value={assignCustomerDirectAmount}
                       onChange={(event) => setAssignCustomerDirectAmount(event.target.value)}
                       placeholder={String(finalAssignmentCustomerDirectDefault)}
@@ -5840,6 +5874,7 @@ export function TechnicalServiceOperationCenter() {
                     onExtraMountPaymentCreate={handleExtraMountPaymentCreate}
                     onMountPaymentCancel={handleMountPaymentCancel}
                     onMountPaymentSync={handleMountPaymentSync}
+                    onMountPaymentSend={handleMountPaymentSend}
                     onTechnicianEarningMessageCreate={handleTechnicianEarningMessageCreate}
                     onPartnerAppointmentProposalApprove={handlePartnerAppointmentProposalApprove}
                     onPartnerAppointmentProposalReject={handlePartnerAppointmentProposalReject}

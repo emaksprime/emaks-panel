@@ -163,6 +163,21 @@ class TechnicalServiceAppointmentMessageDispatchService
             return $this->addBlocked($request, $actor, $summary, $messageType, $recipientRole, $channel, $providerKey, 'real_send_disabled', 'Gerçek gönderim kapalı.');
         }
 
+        $manualE2eMetadata = $this->manualE2eMetadata($global, $recipientRole, $targetPhone, $request);
+        if ((bool) ($global['manual_e2e_enabled'] ?? false) && $manualE2eMetadata === null) {
+            return $this->addBlocked(
+                $request,
+                $actor,
+                $summary,
+                $messageType,
+                $recipientRole,
+                $channel,
+                $providerKey,
+                'manual_e2e_allowlist_blocked',
+                'Manuel E2E canlı test modunda allowlist dışı hedefe mesaj oluşturulmadı.',
+            );
+        }
+
         $context = $this->contextOverrides($request, $sourceAction, $options);
         $preview = $this->templates->preview([
             'message_type' => $messageType,
@@ -229,6 +244,7 @@ class TechnicalServiceAppointmentMessageDispatchService
             'metadata' => [
                 ...((array) ($plan['metadata'] ?? [])),
                 ...((array) ($options['metadata'] ?? [])),
+                ...($manualE2eMetadata ?? []),
                 'appointment_event_type' => $eventType,
                 'business_event_id' => $businessEventId,
                 'source_partner_job_action_id' => $sourceAction?->id,
@@ -345,6 +361,39 @@ class TechnicalServiceAppointmentMessageDispatchService
         $normalized = $this->idempotency->normalizePhone((string) $target);
 
         return $normalized === '' ? null : $normalized;
+    }
+
+    /**
+     * @param  array<string, mixed>  $global
+     * @return array<string, mixed>|null
+     */
+    private function manualE2eMetadata(array $global, string $recipientRole, string $targetPhone, TechnicalServiceRequest $request): ?array
+    {
+        if (! (bool) ($global['manual_e2e_enabled'] ?? false)) {
+            return [];
+        }
+
+        $normalizedTarget = $this->idempotency->normalizePhone($targetPhone);
+        $allowlist = array_values(array_filter(array_map(
+            fn (mixed $phone): string => $this->idempotency->normalizePhone((string) $phone),
+            (array) ($global['manual_e2e_allowlisted_phones'] ?? []),
+        )));
+
+        if ($normalizedTarget === '' || ! in_array($normalizedTarget, $allowlist, true)) {
+            return null;
+        }
+
+        $reference = $request->mrn ?: $request->service_code ?: (string) $request->id;
+
+        return [
+            'test_smoke' => true,
+            'manual_e2e' => true,
+            'allowlisted_target' => true,
+            'smoke_run_id' => 'MANUAL-E2E-LIVE-TEST',
+            'expected_body_token' => $reference,
+            'role_target_phone' => $normalizedTarget,
+            'recipient_role_expected' => $recipientRole,
+        ];
     }
 
     /**

@@ -139,6 +139,7 @@ type ServiceRequestDetailsProps = {
   onExtraMountPaymentCreate?: (payload: ServiceRequestExtraMountPaymentPayload) => void | Promise<void>
   onMountPaymentCancel?: (paymentId: number | string, payload?: { reason?: string | null }) => void | Promise<void>
   onMountPaymentSync?: (paymentId: number | string) => void | Promise<void>
+  onMountPaymentSend?: (paymentId: number | string) => void | Promise<void>
   onTechnicianEarningMessageCreate?: (payload: ServiceRequestTechnicianEarningMessagePayload) => void | Promise<{ message_text?: string, whatsapp_url?: string, copy_text?: string } | void>
   onAssignSelectedTechnician?: () => void | Promise<void>
   onPartnerAppointmentProposalApprove?: (actionId: number | string, payload?: { note?: string | null, selected_slot_index?: number }) => void | Promise<void>
@@ -1494,6 +1495,7 @@ export function ServiceRequestDetails({
   onExtraMountPaymentCreate,
   onMountPaymentCancel,
   onMountPaymentSync,
+  onMountPaymentSend,
   onTechnicianEarningMessageCreate,
   onAssignSelectedTechnician,
   onPartnerAppointmentProposalApprove,
@@ -1695,6 +1697,7 @@ export function ServiceRequestDetails({
   const [routeFeeExtraPaymentInput, setRouteFeeExtraPaymentInput] = useState('')
   const [paymentCancelInFlight, setPaymentCancelInFlight] = useState<number | string | null>(null)
   const [paymentSyncInFlight, setPaymentSyncInFlight] = useState<number | string | null>(null)
+  const [paymentSendInFlight, setPaymentSendInFlight] = useState<number | string | null>(null)
   const [paymentCancelError, setPaymentCancelError] = useState<string | null>(null)
   const [paymentLinkCopyMessage, setPaymentLinkCopyMessage] = useState<string | null>(null)
   const [paymentLinkManualCopyValue, setPaymentLinkManualCopyValue] = useState<string | null>(null)
@@ -2769,6 +2772,31 @@ export function ServiceRequestDetails({
       setPaymentSyncInFlight(null)
     }
   }
+  const handlePendingPaymentSend = async (payment: NonNullable<typeof pendingMountPaymentRecords[number]>) => {
+    if (!payment.id) {
+      setPaymentCancelError('Gönderilecek ödeme kaydı bulunamadı.')
+
+      return
+    }
+
+    if (!onMountPaymentSend) {
+      setPaymentCancelError('Ödeme linki mesaj kuyruğu servisi bağlı değil.')
+
+      return
+    }
+
+    setPaymentSendInFlight(payment.id)
+    setPaymentCancelError(null)
+
+    try {
+      await onMountPaymentSend(payment.id)
+      setRouteFeeEditorMessage('Ödeme linki müşteriye gönderilmek üzere kuyruğa alındı.')
+    } catch (caught) {
+      setPaymentCancelError(caught instanceof Error ? caught.message : 'Ödeme linki müşteriye gönderilemedi.')
+    } finally {
+      setPaymentSendInFlight(null)
+    }
+  }
   const handleCreatePaymentLinkAction = () => {
     scrollToNextActionSection('assignment')
 
@@ -3041,9 +3069,6 @@ export function ServiceRequestDetails({
       ? `Emaks Prime servis/parça ödemeniz için bağlantı:\n\n${latestCustomerChargePaymentUrl}`
       : 'Emaks Prime servis/parça ödemeniz için ödeme bağlantısı oluşturulacaktır.')
   const customerChargeMessageText = customerChargeMessageInput.trim() || customerChargeDefaultMessage
-  const customerChargeWhatsappUrl = whatsappHref && customerChargeMessageText.trim() !== ''
-    ? `${whatsappHref}?text=${encodeURIComponent(customerChargeMessageText)}`
-    : ''
   const openCustomerChargeModal = () => {
     setCustomerChargeCopyMessage(null)
     setCustomerChargeModalOpen(true)
@@ -3064,11 +3089,11 @@ export function ServiceRequestDetails({
           <div className="grid gap-3 sm:grid-cols-3">
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Servis ücreti
-              <Input type="number" min="0" step="0.01" value={customerServiceChargeInput} onChange={(event) => setCustomerServiceChargeInput(event.target.value)} />
+              <Input type="number" min="0" step="1" value={customerServiceChargeInput} onChange={(event) => setCustomerServiceChargeInput(event.target.value)} />
             </label>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Parça ücreti
-              <Input type="number" min="0" step="0.01" value={customerPartChargeInput} onChange={(event) => setCustomerPartChargeInput(event.target.value)} />
+              <Input type="number" min="0" step="1" value={customerPartChargeInput} onChange={(event) => setCustomerPartChargeInput(event.target.value)} />
             </label>
             <MiniMetric label="Toplam" value={formatMoneyValue(customerChargeTotalAmount)} />
           </div>
@@ -3105,17 +3130,23 @@ export function ServiceRequestDetails({
                     <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerChargePaymentUrl, 'Link kopyalandı.')}>
                       Linki kopyala
                     </Button>
+                    {latestCustomerCharge.id ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={paymentSendInFlight === latestCustomerCharge.id}
+                        onClick={() => void handlePendingPaymentSend(latestCustomerCharge)}
+                      >
+                        {paymentSendInFlight === latestCustomerCharge.id ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
+                      </Button>
+                    ) : null}
                     <Button asChild type="button" size="sm" variant="outline">
                       <a href={latestCustomerChargePaymentUrl} target="_blank" rel="noreferrer">Linki aç</a>
                     </Button>
                     <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(customerChargeMessageText, 'Mesaj metni kopyalandı.')}>
                       Mesaj metnini kopyala
                     </Button>
-                    {customerChargeWhatsappUrl ? (
-                      <Button asChild type="button" size="sm" variant="outline">
-                        <a href={customerChargeWhatsappUrl} target="_blank" rel="noreferrer">WhatsApp mesajını aç</a>
-                      </Button>
-                    ) : null}
                   </div>
                 </>
               ) : null}
@@ -3282,6 +3313,17 @@ export function ServiceRequestDetails({
                         <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}>
                           Linki kopyala
                         </Button>
+                        {payment.id ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={paymentSendInFlight === payment.id}
+                            onClick={() => void handlePendingPaymentSend(payment)}
+                          >
+                            {paymentSendInFlight === payment.id ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
+                          </Button>
+                        ) : null}
                         {payment.is_external_provider ? (
                           <Button
                             type="button"
@@ -3359,7 +3401,7 @@ export function ServiceRequestDetails({
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px]">
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               {pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı'}
-              <Input type="number" min="0" step="0.01" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+              <Input type="number" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
               <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
             </label>
             <MiniMetric label="Durum" value={paidOnlinePaymentLink ? 'Ödeme düzenleme' : pendingOnlinePaymentLink ? 'Bekleyen link' : 'Yeni link'} />
@@ -3434,11 +3476,11 @@ export function ServiceRequestDetails({
               <div className="grid gap-3 sm:grid-cols-3">
                 <label className="grid gap-1 text-xs font-semibold text-slate-600">
                   Servis bedeli
-                  <Input type="number" min="0" step="0.01" value={partCreateServiceAmount} onChange={(event) => setPartCreateServiceAmount(event.target.value)} />
+                  <Input type="number" min="0" step="1" value={partCreateServiceAmount} onChange={(event) => setPartCreateServiceAmount(event.target.value)} />
                 </label>
                 <label className="grid gap-1 text-xs font-semibold text-slate-600">
                   Parça bedeli
-                  <Input type="number" min="0" step="0.01" value={partCreatePartAmount} onChange={(event) => setPartCreatePartAmount(event.target.value)} />
+                  <Input type="number" min="0" step="1" value={partCreatePartAmount} onChange={(event) => setPartCreatePartAmount(event.target.value)} />
                 </label>
                 <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partCreateServiceAmount) ?? 0) + (parseNumericInput(partCreatePartAmount) ?? 0)))} />
               </div>
@@ -3490,11 +3532,11 @@ export function ServiceRequestDetails({
             <div className="grid gap-3 sm:grid-cols-3">
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 Servis bedeli
-                <Input type="number" min="0" step="0.01" value={partDecisionServiceAmount} onChange={(event) => setPartDecisionServiceAmount(event.target.value)} />
+                <Input type="number" min="0" step="1" value={partDecisionServiceAmount} onChange={(event) => setPartDecisionServiceAmount(event.target.value)} />
               </label>
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 Parça bedeli
-                <Input type="number" min="0" step="0.01" value={partDecisionPartAmount} onChange={(event) => setPartDecisionPartAmount(event.target.value)} />
+                <Input type="number" min="0" step="1" value={partDecisionPartAmount} onChange={(event) => setPartDecisionPartAmount(event.target.value)} />
               </label>
               <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partDecisionServiceAmount) ?? 0) + (parseNumericInput(partDecisionPartAmount) ?? 0)))} />
             </div>
@@ -5610,8 +5652,8 @@ export function ServiceRequestDetails({
                       </div>
                     ) : null}
                     <div className="grid gap-2 sm:grid-cols-[140px_140px_minmax(0,1fr)]">
-                      <Input type="number" min="0" step="0.01" value={offerLaborInput} onChange={(event) => setOfferLaborInput(event.target.value)} placeholder={String(assignmentOffer.labor_amount)} />
-                      <Input type="number" min="0" step="0.01" value={offerRouteInput} onChange={(event) => setOfferRouteInput(event.target.value)} placeholder={String(assignmentOffer.route_fee_amount)} />
+                      <Input type="number" min="0" step="1" value={offerLaborInput} onChange={(event) => setOfferLaborInput(event.target.value)} placeholder={String(assignmentOffer.labor_amount)} />
+                      <Input type="number" min="0" step="1" value={offerRouteInput} onChange={(event) => setOfferRouteInput(event.target.value)} placeholder={String(assignmentOffer.route_fee_amount)} />
                       <Input value={offerNoteInput} onChange={(event) => setOfferNoteInput(event.target.value)} placeholder="Revize notu" />
                     </div>
                     <div className="flex justify-end">
@@ -5937,11 +5979,11 @@ export function ServiceRequestDetails({
                       </label>
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
                         Usta yol hakedişi
-                        <Input type="number" min="0" step="0.01" value={routeFeeAmountInput} onChange={(event) => handleRouteFeeAmountChange(event.target.value)} />
+                        <Input type="number" min="0" step="1" value={routeFeeAmountInput} onChange={(event) => handleRouteFeeAmountChange(event.target.value)} />
                       </label>
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
                         Ödeme linki tutarı
-                        <Input type="number" min="0" step="0.01" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+                        <Input type="number" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
                         <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
                       </label>
                     </div>
@@ -5974,6 +6016,17 @@ export function ServiceRequestDetails({
                           <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>
                             Linki kopyala
                           </Button>
+                          {extraMountPayment.id && extraMountPayment.status === 'pending' ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={paymentSendInFlight === extraMountPayment.id}
+                              onClick={() => void handlePendingPaymentSend(extraMountPayment)}
+                            >
+                              {paymentSendInFlight === extraMountPayment.id ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
+                            </Button>
+                          ) : null}
                           {extraMountPayment.is_external_provider && extraMountPayment.status === 'pending' ? (
                             <Button
                               type="button"
@@ -5985,11 +6038,6 @@ export function ServiceRequestDetails({
                               {paymentSyncInFlight === extraMountPayment.id ? 'Kontrol ediliyor...' : 'Durumu Kontrol Et'}
                             </Button>
                           ) : null}
-                          <Button asChild type="button" size="sm" variant="outline">
-                            <a href={`${whatsappHref || '#'}${whatsappHref ? `?text=${encodeURIComponent(`Ek montaj ödemeniz için link: ${paymentLinkCopyUrl(extraMountPayment)}`)}` : ''}`} target="_blank" rel="noreferrer">
-                              WhatsApp ile gönder
-                            </a>
-                          </Button>
                         </div>
                       </div>
                     ) : null}
@@ -6115,7 +6163,7 @@ export function ServiceRequestDetails({
                     <Input
                       type="number"
                       min="0"
-                      step="0.01"
+                      step="1"
                       value={earningTotalAmount !== null ? numericInputValue(earningTotalAmount) : ''}
                       readOnly
                       placeholder={totalTechnicianCostAmount !== null ? String(totalTechnicianCostAmount) : '0'}

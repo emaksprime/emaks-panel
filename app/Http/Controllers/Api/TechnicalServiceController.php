@@ -936,6 +936,84 @@ class TechnicalServiceController extends Controller
         ]);
     }
 
+    public function sendMountPaymentLink(
+        Request $request,
+        TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServiceMountPayment $payment,
+    ): JsonResponse {
+        abort_unless((int) $payment->technical_service_request_id === (int) $technicalServiceRequest->id, 404);
+
+        if ($payment->status !== TechnicalServiceMountPayment::STATUS_PENDING) {
+            throw ValidationException::withMessages([
+                'payment' => 'Yalnızca bekleyen ödeme linkleri müşteriye gönderilebilir.',
+            ]);
+        }
+
+        $paymentUrl = trim((string) ($payment->payment_url ?? ''));
+        if ($paymentUrl === '') {
+            throw ValidationException::withMessages([
+                'payment' => 'Ödeme linki olmadan müşteriye mesaj kuyruğu oluşturulamaz.',
+            ]);
+        }
+
+        $amount = round((float) $payment->amount, 2);
+        if ($amount <= 0) {
+            throw ValidationException::withMessages([
+                'amount' => 'Ödeme tutarı 0 TL üzerinde olmalı.',
+            ]);
+        }
+
+        $amountLabel = number_format($amount, 2, ',', '.').' TL';
+        $summary = $this->workflowMessages->queueWorkflowDispatches(
+            $technicalServiceRequest->refresh(),
+            'payment_link_customer',
+            'customer',
+            [
+                'payment_link' => $paymentUrl,
+                'payment_link_sms' => $paymentUrl,
+                'payment_amount_formatted' => $amountLabel,
+                'customer_payment_amount' => $amount,
+                'customer_payment_amount_formatted' => $amountLabel,
+            ],
+            $request->user(),
+            null,
+            [
+                'recipient_phone' => $technicalServiceRequest->customer_phone,
+                'triggered_by' => 'ops_payment_link_send',
+                'event_version' => 'payment-link:'.$payment->id.':'.$payment->status.':'.hash('sha256', $paymentUrl),
+                'requires_public_url' => $paymentUrl,
+                'metadata' => [
+                    'payment_id' => $payment->id,
+                    'payment_provider' => $payment->provider,
+                    'manual_ui_send' => true,
+                ],
+            ],
+        );
+
+        $technicalServiceRequest->events()->create([
+            'event_type' => 'mount_payment_link_send_requested',
+            'title' => 'Ödeme linki mesaj kuyruğuna alındı',
+            'note' => null,
+            'from_status' => $technicalServiceRequest->workflow_status,
+            'to_status' => $technicalServiceRequest->workflow_status,
+            'author_user_id' => $request->user()?->id,
+            'metadata' => [
+                'payment_id' => $payment->id,
+                'message_dispatches' => $summary,
+            ],
+        ]);
+
+        return response()->json([
+            'ok' => true,
+            'message' => $summary['queued'] > 0
+                ? 'Ödeme linki müşteriye gönderilmek üzere kuyruğa alındı.'
+                : 'Ödeme linki mesajı oluşturulamadı; kuyruk/log detayını kontrol edin.',
+            'dispatches' => $summary,
+            'payment' => $this->mountPaymentResponse($payment->refresh()),
+            'request' => $this->workflowService->serialize($technicalServiceRequest->refresh(), true),
+        ]);
+    }
+
     public function cancelMountPayment(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,

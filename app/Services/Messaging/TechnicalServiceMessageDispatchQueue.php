@@ -98,6 +98,41 @@ class TechnicalServiceMessageDispatchQueue
         return $dispatch;
     }
 
+    /**
+     * @param  array<string, mixed>  $input
+     */
+    public function blocked(array $input, ?User $actor, string $code, string $message): TechnicalServiceMessageDispatch
+    {
+        $targetPhone = $this->idempotency->normalizePhone((string) ($input['target_phone'] ?? $input['effective_target_phone'] ?? ''));
+        $recipientHash = $this->idempotency->phoneHash((string) ($input['recipient_phone'] ?? $targetPhone));
+        $effectiveHash = $this->idempotency->phoneHash($targetPhone);
+        $payload = $this->messagePayload($input);
+        $payloadHash = (string) ($input['payload_hash'] ?? $this->idempotency->payloadHash($payload));
+        $idempotencyKey = (string) ($input['idempotency_key'] ?? hash('sha256', implode('|', [
+            $input['request_id'] ?? $input['technical_service_request_id'] ?? 'no-request',
+            $input['message_type'] ?? $input['event'] ?? 'message_dispatch',
+            $input['channel'] ?? 'system',
+            $input['provider_key'] ?? 'null_local',
+            $targetPhone,
+            $code,
+            microtime(true),
+        ])));
+
+        $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
+            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            'last_error_code' => $code,
+            'last_error_message_redacted' => $message,
+            'metadata' => [
+                ...((array) ($input['metadata'] ?? [])),
+                'blocked_code' => $code,
+                'blocked_reason' => $message,
+            ],
+        ]);
+        $this->recordEvent($dispatch, 'message_blocked', 'Mesaj oluşturulamadı: eksik bilgi');
+
+        return $dispatch;
+    }
+
     public function retryFailed(TechnicalServiceMessageDispatch $dispatch, ?User $actor = null): TechnicalServiceMessageDispatch
     {
         if (! in_array($dispatch->status, [TechnicalServiceMessageDispatch::STATUS_FAILED, TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR], true)) {

@@ -566,21 +566,21 @@ class PartnerServiceJobController extends Controller
                 ],
             ]);
             $approvalUrl = PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]);
-            $publicUrlWarning = $this->messages->testMode() && PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
-                ? 'Onay linki lokal URL içeriyor; telefondan açılamaz. PARTNER_PORTAL_PUBLIC_URL ayarlanmalı.'
+            $publicUrlWarning = PartnerPortalPublicUrl::isLocalUrl($approvalUrl)
+                ? 'Müşteri onay linki telefondan açılabilir public URL gerektirir. PARTNER_PORTAL_PUBLIC_URL / public portal URL ayarlanmalı.'
                 : null;
             $messageText = $this->customerApprovalMessageText($job, $approvalUrl, $data['message_text'] ?? null);
             $whatsappUrl = 'https://wa.me/'.$this->normalizedPhoneForWa($job->customer_phone).'?text='.rawurlencode($messageText);
 
             $action = $this->recordAction($job, $partner, $user, TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED, TechnicalServicePartnerJobAction::STATUS_SUBMITTED, [
                 'confirmation_method' => 'customer_link',
-                'provider' => 'system_payload',
+                'provider' => 'dispatch_queue',
                 'confirmation_id' => $confirmation->id,
                 'approval_url' => $approvalUrl,
                 'requested_at' => now()->toISOString(),
                 'message_payload' => [
                     'recipient' => 'customer',
-                    'channel' => 'system_payload',
+                    'channel' => 'dispatch_queue',
                     'mrn' => $job->mrn,
                     'customer_phone' => $job->customer_phone,
                     'message_text' => $messageText,
@@ -597,6 +597,8 @@ class PartnerServiceJobController extends Controller
                 'customer',
                 $messageText,
                 [
+                    'confirmation_link' => $approvalUrl,
+                    'confirmation_link_sms' => $approvalUrl,
                     'confirmation_url' => $approvalUrl,
                     'approval_url' => $approvalUrl,
                     'confirmation_id' => $confirmation->id,
@@ -609,6 +611,7 @@ class PartnerServiceJobController extends Controller
                 [
                     'recipient_phone' => $job->customer_phone,
                     'triggered_by' => 'partner_portal_customer_approval_request',
+                    'requires_public_url' => $approvalUrl,
                     'metadata' => ['manual_ui_send' => true],
                 ],
             );

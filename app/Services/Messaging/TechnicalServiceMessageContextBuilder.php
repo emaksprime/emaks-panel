@@ -101,6 +101,13 @@ class TechnicalServiceMessageContextBuilder
             'sms_payment_line',
             'technician_payment_context',
             'internal_job_reference',
+            'activation_code',
+            'warranty_started_at_formatted',
+            'warranty_ends_at_formatted',
+            'part_name',
+            'part_code',
+            'part_quantity',
+            'part_reason',
         ] as $key) {
             if (! array_key_exists($key, $overrides)) {
                 unset($context[$key]);
@@ -139,6 +146,7 @@ class TechnicalServiceMessageContextBuilder
         $routeAmount = $this->money($request->travel_fee_amount);
         $totalAmount = round($laborAmount + $routeAmount, 2);
         $mapsUrl = $request->location_map_url ?: $this->mapsLink($request);
+        $completedAt = $request->installation_completed_at ?: $request->completed_at ?: $request->field_completed_at;
 
         return [
             'customer_name' => $request->customer_name,
@@ -169,6 +177,9 @@ class TechnicalServiceMessageContextBuilder
             'labor_amount_formatted' => $laborAmount > 0.0 ? $this->formatTry($laborAmount) : null,
             'route_fee_formatted' => $routeAmount > 0.0 ? $this->formatTry($routeAmount) : null,
             'technician_earning_total_formatted' => $totalAmount > 0.0 ? $this->formatTry($totalAmount) : null,
+            'activation_code' => $request->activation_code ?? null,
+            'completed_at_formatted' => $completedAt ? $completedAt->timezone('Europe/Istanbul')->format('d.m.Y H:i') : null,
+            'warranty_started_at_formatted' => $completedAt ? $completedAt->timezone('Europe/Istanbul')->format('d.m.Y') : null,
         ];
     }
 
@@ -264,6 +275,20 @@ class TechnicalServiceMessageContextBuilder
         $context['completed_at_formatted'] = $this->filledString($context['completed_at_formatted'] ?? null) ?: '';
         $context['next_action_text'] = $this->filledString($context['next_action_text'] ?? null)
             ?: 'OPS son kontrol / müşteri onayı';
+        $context['activation_code'] = $this->filledString($context['activation_code'] ?? null)
+            ?: ($sampleContext ? 'ACT-REL4E10' : '');
+        $context['warranty_started_at_formatted'] = $this->filledString($context['warranty_started_at_formatted'] ?? null)
+            ?: ($sampleContext ? '07.07.2026' : '');
+        $context['warranty_ends_at_formatted'] = $this->filledString($context['warranty_ends_at_formatted'] ?? null)
+            ?: ($sampleContext ? '07.07.2028' : '');
+        $context['part_name'] = $this->filledString($context['part_name'] ?? null)
+            ?: ($sampleContext ? 'Kilit gövdesi' : '');
+        $context['part_code'] = $this->filledString($context['part_code'] ?? null)
+            ?: ($sampleContext ? 'PRT-001' : '');
+        $context['part_quantity'] = $this->filledString($context['part_quantity'] ?? null)
+            ?: ($sampleContext ? '1' : '');
+        $context['part_reason'] = $this->filledString($context['part_reason'] ?? null)
+            ?: ($sampleContext ? 'Parça değişimi gerekiyor.' : '');
 
         return $context;
     }

@@ -5,13 +5,17 @@ namespace Tests\Feature;
 use App\Models\B2B\B2BPartner;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMessageTemplate;
+use App\Models\TechnicalServiceMountPayment;
+use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
 use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -277,6 +281,332 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertStringNotContainsString('Hakediş Özeti', $customerWhatsappBody);
     }
 
+    public function test_manual_e2e_dispatches_are_tagged_and_allowlist_blocks_wrong_target(): void
+    {
+        $actor = $this->admin();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'manual_e2e_enabled' => true,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'nac_sms' => [
+                'enabled' => true,
+                'sender' => 'EMAKS PRIME',
+            ],
+            'message_types' => [
+                'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            ],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'customer_phone' => '05372081633',
+            'mrn' => 'MRN-MANUAL-E2E-OK',
+        ]);
+        $action = $this->appointmentAction($request);
+
+        $summary = app(TechnicalServiceAppointmentMessageDispatchService::class)->dispatchApproval(
+            $request->refresh(),
+            $action,
+            $actor,
+            [
+                'slot' => ['date' => '2026-07-08', 'start_time' => '14:00', 'end_time' => '16:00'],
+                'metadata' => ['test_smoke' => true],
+                'controlled_smoke_targets' => ['customer' => '905372081633'],
+            ],
+        );
+
+        $this->assertSame(1, $summary['queued']);
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'appointment_approved_customer')
+            ->firstOrFail();
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
+        $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'smoke_run_id'));
+        $this->assertSame('905372081633', data_get($dispatch->metadata, 'role_target_phone'));
+
+        $blockedRequest = $this->technicalServiceRequest([
+            'customer_phone' => '05330000000',
+            'mrn' => 'MRN-MANUAL-E2E-BLOCK',
+        ]);
+        $blockedAction = $this->appointmentAction($blockedRequest);
+        $blocked = app(TechnicalServiceAppointmentMessageDispatchService::class)->dispatchApproval(
+            $blockedRequest->refresh(),
+            $blockedAction,
+            $actor,
+            [
+                'slot' => ['date' => '2026-07-08', 'start_time' => '14:00', 'end_time' => '16:00'],
+                'metadata' => ['test_smoke' => true],
+                'controlled_smoke_targets' => ['customer' => '905330000000'],
+            ],
+        );
+
+        $this->assertSame(0, $blocked['queued']);
+        $this->assertSame(1, $blocked['blocked']);
+        $this->assertStringContainsString('allowlist dışı', json_encode($blocked['blockers'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+    }
+
+    public function test_ops_workflow_message_uses_whatsapp_only_to_configured_ops_phone(): void
+    {
+        $actor = $this->admin();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'manual_e2e_enabled' => true,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '0546 764 74 28',
+            'message_types' => [
+                'job_rejected_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            ],
+        ]);
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-OPS-WP-UNIT']);
+
+        $dispatch = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueSystemMessage(
+            $request,
+            'job_rejected_ops',
+            'ops',
+            'Usta işi reddetti. MRN: MRN-OPS-WP-UNIT. Neden: Test.',
+            ['next_action_text' => 'OPS yeniden atama yapmalı.'],
+            $actor,
+            null,
+            ['triggered_by' => 'partner_portal_job_rejected'],
+        );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame('whatsapp', $dispatch->channel);
+        $this->assertSame('evo_whatsapp', $dispatch->provider_key);
+        $this->assertSame('ops', $dispatch->recipient_role);
+        $this->assertSame('905467647428', $dispatch->target_phone);
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
+        $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'smoke_run_id'));
+        $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
+    }
+
+    public function test_payment_link_send_creates_customer_whatsapp_and_sms_dispatches_without_provider_call(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E10-PAYMENT',
+            'customer_phone' => '05372081633',
+        ]);
+        $session = $this->mountSession('REL4E10-PAYMENT');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'pay-rel4e10',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 1250,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/mount/rel4e10',
+            'raw_payload' => ['source' => 'rel4e10_test'],
+        ]);
+
+        $response = $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link");
+
+        $response->assertOk()
+            ->assertJsonPath('dispatches.queued', 2);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'payment_link_customer',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+        ]);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'payment_link_customer',
+            'channel' => 'sms',
+            'recipient_role' => 'customer',
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+        ]);
+
+        $body = (string) TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_link_customer')
+            ->where('channel', 'whatsapp')
+            ->firstOrFail()
+            ->request_payload['body'];
+
+        $this->assertStringContainsString('https://pay.example.test/mount/rel4e10', $body);
+        $this->assertStringContainsString('1.250,00 TL', $body);
+        $this->assertDatabaseHas('technical_service_request_events', [
+            'technical_service_request_id' => $request->id,
+            'event_type' => 'mount_payment_link_send_requested',
+        ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_customer_approval_blocks_provider_dispatch_without_public_url(): void
+    {
+        $this->configureMessaging([
+            'customer_approval_request' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E10-APPROVAL',
+            'customer_phone' => '05372081633',
+        ]);
+
+        $summary = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+            $request,
+            'customer_approval_request',
+            'customer',
+            [
+                'approval_url' => 'http://10.0.28.64:8000/service-job-confirmation/rel4e10',
+                'confirmation_link' => 'http://10.0.28.64:8000/service-job-confirmation/rel4e10',
+                'confirmation_link_sms' => 'http://10.0.28.64:8000/service-job-confirmation/rel4e10',
+            ],
+            $this->admin(),
+            null,
+            [
+                'recipient_phone' => $request->customer_phone,
+                'requires_public_url' => 'http://10.0.28.64:8000/service-job-confirmation/rel4e10',
+            ],
+        );
+
+        $this->assertSame(0, $summary['queued']);
+        $this->assertSame(2, $summary['blocked']);
+        $this->assertStringContainsString('PARTNER_PORTAL_PUBLIC_URL', json_encode($summary['blockers'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'customer_approval_request',
+            'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
+            'last_error_code' => 'public_url_missing',
+        ]);
+    }
+
+    public function test_part_request_creates_ops_whatsapp_and_part_fee_customer_dispatches(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '0546 764 74 28',
+            'nac_sms' => [
+                'enabled' => true,
+                'sender' => 'EMAKS PRIME',
+            ],
+            'message_types' => [
+                'part_request_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+                'part_fee_payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            ],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E10-PART',
+            'customer_phone' => '05372081633',
+        ]);
+        $session = $this->mountSession('REL4E10-PART');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+
+        $response = $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/part-requests", [
+                'part_name' => 'REL4E10 Kilit Gövdesi',
+                'part_code' => 'REL4E10-PART',
+                'quantity' => 1,
+                'charge_decision' => 'chargeable',
+                'service_amount' => 500,
+                'part_amount' => 750,
+                'note' => 'Parça değişimi gerekiyor.',
+                'customer_message' => 'Parça ücreti için ödeme bağlantısı gönderilecek.',
+            ]);
+
+        $response->assertCreated();
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'part_request_ops',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'ops',
+        ]);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'part_fee_payment_link_customer',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+        ]);
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'part_fee_payment_link_customer',
+            'channel' => 'sms',
+            'recipient_role' => 'customer',
+        ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_final_control_activation_and_warranty_customer_messages_use_queue_only(): void
+    {
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'final_control_completed_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            'activation_code_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            'warranty_started_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E10-FINAL',
+            'customer_phone' => '05372081633',
+        ]);
+
+        $summaries = [
+            app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+                $request,
+                'final_control_completed_customer',
+                'customer',
+                ['completed_at_formatted' => '07.07.2026 11:30'],
+                $actor,
+            ),
+            app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+                $request,
+                'activation_code_customer',
+                'customer',
+                ['activation_code' => 'ACT-REL4E10'],
+                $actor,
+            ),
+            app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+                $request,
+                'warranty_started_customer',
+                'customer',
+                ['warranty_started_at_formatted' => '07.07.2026'],
+                $actor,
+            ),
+        ];
+
+        $this->assertSame([2, 2, 2], array_map(fn (array $summary): int => $summary['queued'], $summaries));
+        foreach (['final_control_completed_customer', 'activation_code_customer', 'warranty_started_customer'] as $messageType) {
+            $this->assertDatabaseHas('technical_service_message_dispatches', [
+                'technical_service_request_id' => $request->id,
+                'message_type' => $messageType,
+                'recipient_role' => 'customer',
+                'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            ]);
+        }
+        $this->assertSame(6, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('message_type', ['final_control_completed_customer', 'activation_code_customer', 'warranty_started_customer'])
+            ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
+            ->count());
+    }
+
+    public function test_payment_link_send_button_and_amount_steps_are_queue_safe_in_frontend_source(): void
+    {
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+
+        $this->assertStringContainsString('Linki müşteriye gönder', $detailSource);
+        $this->assertStringContainsString('onMountPaymentSend(payment.id)', $detailSource);
+        $this->assertStringContainsString('/payments/${paymentId}/send-link', $pageSource);
+        $this->assertStringContainsString('step="1"', $detailSource);
+        $this->assertStringContainsString('step="1"', $pageSource);
+    }
+
     public function test_template_source_dispatch_uses_active_db_template_over_default_and_matches_preview(): void
     {
         $actor = $this->admin();
@@ -540,6 +870,33 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                     ], fn (mixed $value): bool => $value !== null),
                 ],
             ],
+        ]);
+    }
+
+    private function mountSession(string $serial = 'REL4E-SESSION'): TechnicalServiceMountSession
+    {
+        $link = TechnicalServiceQrLink::query()->create([
+            'token_hash' => TechnicalServiceQrLink::hashToken('qr-'.$serial),
+            'public_token' => 'qr-'.$serial,
+            'serial_number' => $serial,
+            'product_name' => 'REL4E Test Ürün',
+            'product_model' => 'REL4E-MODEL',
+            'brand' => 'EMAKS',
+            'link_type' => TechnicalServiceQrLink::TYPE_MANUAL_TEST,
+            'status' => TechnicalServiceQrLink::STATUS_ACTIVE,
+            'scan_count' => 0,
+            'metadata' => ['source' => 'rel4e10_test'],
+        ]);
+
+        return TechnicalServiceMountSession::query()->create([
+            'technical_service_qr_link_id' => $link->id,
+            'session_token_hash' => TechnicalServiceMountSession::hashSessionToken('token-'.$serial),
+            'serial_number' => $serial,
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PENDING,
+            'customer_entry_mode' => TechnicalServiceMountSession::ENTRY_SINGLE_PRODUCT,
+            'decision_status' => TechnicalServiceMountSession::DECISION_SUBMITTED,
+            'context_payload' => ['source' => 'rel4e10_test'],
         ]);
     }
 }
