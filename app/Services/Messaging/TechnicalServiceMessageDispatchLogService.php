@@ -68,6 +68,7 @@ class TechnicalServiceMessageDispatchLogService
         'payment_link_customer' => 'Ödeme bağlantısı',
         'customer_pays_technician_notice' => 'Ustaya ödeme bilgilendirmesi',
         'assignment_offer_technician' => 'Usta iş teklifi',
+        'appointment_proposed_ops' => 'OPS randevu önerisi',
         'earnings_message_technician' => 'Usta hakediş bilgilendirmesi',
         'completion_submitted_ops' => 'Usta işi tamamladı / OPS kontrol',
         'support_request_ops' => 'Destek talebi',

@@ -254,13 +254,41 @@ class PartnerServiceJobController extends Controller
                 'scheduled_at' => $job->scheduled_at?->toISOString(),
             ] : null;
 
-            return $this->recordAction($job, $partner, $user, $actionType, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
+            $action = $this->recordAction($job, $partner, $user, $actionType, TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW, [
                 'slots' => $slots,
                 'note' => $data['note'] ?? null,
                 'submitted_at' => now()->toISOString(),
                 'ops_review_required' => true,
                 'current_appointment' => $currentAppointment,
             ], $data['note'] ?? null, $job->workflow_status);
+
+            $dispatchSummary = $this->workflowMessages->queueWorkflowDispatches(
+                $job->refresh(),
+                'appointment_proposed_ops',
+                'ops',
+                $this->appointmentProposalMessageContext($job, $partner, $user, $slots, $data['note'] ?? null),
+                $user,
+                $action,
+                [
+                    'triggered_by' => 'partner_portal_appointment_proposed',
+                    'event_version' => 'appointment-proposed:'.$action->id,
+                    'metadata' => [
+                        'partner_id' => $partner->id,
+                        'partner_job_action_id' => $action->id,
+                    ],
+                ],
+            );
+
+            $payload = is_array($action->payload) ? $action->payload : [];
+            $action->forceFill([
+                'payload' => [
+                    ...$payload,
+                    'message_dispatch_summary' => $dispatchSummary,
+                    'message_dispatches' => array_values((array) ($dispatchSummary['dispatches'] ?? [])),
+                ],
+            ])->save();
+
+            return $action;
         });
 
         return response()->json([
@@ -1252,6 +1280,43 @@ class PartnerServiceJobController extends Controller
             'other' => 'Diğer',
             default => $reason,
         };
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $slots
+     * @return array<string, mixed>
+     */
+    private function appointmentProposalMessageContext(
+        TechnicalServiceRequest $job,
+        B2BPartner $partner,
+        User $user,
+        array $slots,
+        ?string $note,
+    ): array {
+        $proposedOptions = collect($slots)
+            ->map(fn (array $slot): string => (string) ($slot['label'] ?? trim((string) ($slot['date'] ?? '').' '.(string) ($slot['start_time'] ?? '').' - '.(string) ($slot['end_time'] ?? ''))))
+            ->filter(fn (string $value): bool => trim($value) !== '')
+            ->implode('; ');
+        $technician = $job->technicianRecord;
+
+        return [
+            'actor_name' => $user->name,
+            'technician_name' => $technician?->name ?: $job->technician_name ?: $partner->display_name,
+            'technician_phone' => $technician?->phone_e164 ?: ($technician?->phone_display ?: $technician?->phone),
+            'customer_name' => $job->customer_name,
+            'customer_phone' => $job->customer_phone,
+            'mrn' => $job->mrn,
+            'srv' => $job->service_code,
+            'internal_job_reference' => $job->service_code
+                ? 'SRV: '.$job->service_code.' / MRN: '.$job->mrn
+                : 'MRN: '.$job->mrn,
+            'proposed_appointment_options' => $proposedOptions,
+            'technician_note' => filled($note) ? $note : '-',
+            'ops_next_action_text' => 'Randevuyu onaylayın veya değişiklik isteyin.',
+            'next_action_text' => 'Randevuyu onaylayın veya değişiklik isteyin.',
+            'created_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
+            'partner_id' => $partner->id,
+        ];
     }
 
     private function supportTypeLabel(string $type): string

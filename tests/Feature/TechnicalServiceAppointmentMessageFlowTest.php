@@ -383,6 +383,94 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
     }
 
+    public function test_assignment_offer_current_modal_path_creates_technician_whatsapp_sms_dispatches_with_manual_e2e_metadata(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => false,
+            'manual_e2e_enabled' => true,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'nac_sms' => [
+                'enabled' => true,
+                'sender' => 'EMAKS PRIME',
+            ],
+            'message_types' => [
+                'assignment_offer_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            ],
+        ]);
+        $technician = $this->technician([
+            'name' => 'Test Usta',
+            'phone' => '0546 764 74 28',
+            'phone_e164' => '905467647428',
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E12-ASSIGN',
+            'technical_service_technician_id' => null,
+            'customer_name' => 'REL4E12 Müşteri',
+            'customer_phone' => '05372081633',
+            'service_address' => 'REL4E12 test adresi Kadıköy İstanbul',
+            'product_name' => 'REL4E12 Test Ürün',
+            'operation_control_payload' => [
+                'door_photos_checked' => 'compatible',
+            ],
+            'operation_control_checked_at' => now(),
+            'operation_control_checked_by_user_id' => $actor->id,
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/assign", [
+                'technical_service_technician_id' => $technician->id,
+                'confirm_assignment' => true,
+                'travel_round_trip_km' => 36,
+                'assignment_offer' => [
+                    'labor_amount' => 900,
+                    'route_fee_amount' => 350,
+                    'note' => 'REL4E12 atama testi.',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'assignment_offer_technician')
+            ->orderBy('channel')
+            ->get();
+
+        $this->assertCount(2, $dispatches);
+        $this->assertSame(['sms', 'whatsapp'], $dispatches->pluck('channel')->all());
+        $this->assertSame(['nac_sms', 'evo_whatsapp'], $dispatches->pluck('provider_key')->all());
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'recipient_role' => 'customer',
+            'message_type' => 'assignment_offer_technician',
+        ]);
+
+        foreach ($dispatches as $dispatch) {
+            $body = (string) ($dispatch->request_payload['body'] ?? '');
+            $this->assertSame('technician', $dispatch->recipient_role);
+            $this->assertSame('905467647428', $dispatch->target_phone);
+            $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
+            $this->assertTrue((bool) data_get($dispatch->metadata, 'allowlisted_target'));
+            $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
+            $this->assertStringContainsString('MRN-REL4E12-ASSIGN', $body);
+            $this->assertStringContainsString('REL4E12 Müşteri', $body);
+            $this->assertStringContainsString('905372081633', $body);
+            $this->assertStringContainsString('randevu saati öneriniz', mb_strtolower($body, 'UTF-8'));
+            $this->assertStringContainsString('job_id='.$request->id, $body);
+        }
+
+        $whatsappBody = (string) ($dispatches->firstWhere('channel', 'whatsapp')->request_payload['body'] ?? '');
+        $this->assertStringContainsString('Lütfen randevu saati öneriniz.', $whatsappBody);
+        $this->assertStringContainsString('Hakediş Özeti', $whatsappBody);
+        $this->assertStringContainsString('İşçilik/Montaj: 900,00 TL', $whatsappBody);
+        $this->assertStringContainsString('Yol: 350,00 TL', $whatsappBody);
+        $this->assertStringContainsString('Toplam: 1.250,00 TL', $whatsappBody);
+        Http::assertNothingSent();
+    }
+
     public function test_payment_link_send_creates_customer_whatsapp_and_sms_dispatches_without_provider_call(): void
     {
         Http::fake();

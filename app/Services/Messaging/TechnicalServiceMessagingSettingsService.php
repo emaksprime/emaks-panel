@@ -238,6 +238,11 @@ class TechnicalServiceMessagingSettingsService
             'recipient_role' => 'technician',
             'description' => 'Usta atama/teklif bilgilendirmesi; müşteri randevu mesajı değildir.',
         ],
+        'appointment_proposed_ops' => [
+            'label' => 'OPS randevu önerisi',
+            'recipient_role' => 'ops',
+            'description' => 'Usta randevu saati önerdiğinde OPS WhatsApp bilgilendirmesi.',
+        ],
         'earnings_message_technician' => [
             'label' => 'Usta hakediş mesajı',
             'recipient_role' => 'technician',

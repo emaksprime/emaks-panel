@@ -121,6 +121,13 @@ class TechnicalServiceMessageTypeRegistry
                 'address',
                 'technician_job_card_url',
             ],
+            'appointment_proposed_ops' => [
+                'technician_name',
+                'customer_name',
+                'mrn',
+                'proposed_appointment_options',
+                'ops_next_action_text',
+            ],
             'earnings_message_technician' => [
                 'mrn',
                 'technician_job_card_url',
@@ -259,6 +266,15 @@ class TechnicalServiceMessageTypeRegistry
                     'technician_earning_total_formatted',
                     'srv_line',
                     'technician_visible_note_block',
+                ],
+                'appointment_proposed_ops' => [
+                    'technician_name',
+                    'customer_name',
+                    'proposed_appointment_options',
+                    'technician_note',
+                    'ops_next_action_text',
+                    'internal_job_reference',
+                    'created_at_formatted',
                 ],
                 'appointment_cancelled_customer',
                 'final_control_completed_customer',
@@ -466,8 +482,11 @@ class TechnicalServiceMessageTypeRegistry
                 ? "EMAKS Prime\n{customer_reference_phrase}\nUstaya ödenecek tutar: {customer_payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar:\n\n{customer_payment_amount_formatted}\n\nRandevu aralığında adreste olunmasını rica ederiz.",
             'assignment_offer_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
-                ? "EMAKS Prime\nYeni iş ataması.\nMRN: {mrn}\nMüşteri: {customer_name}\nTel: {customer_phone}\nBölge: {sms_short_address}\nİş Kartı: {technician_job_card_short_url}"
-                : "EMAKS Prime Teknik Servis\n\nYeni iş ataması.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\n{maps_url_line}\n\nRandevu\n{appointment_assignment_timing_text}\n\nİş Kartı\n{technician_job_card_url}\n\n{technician_earning_summary_block}",
+                ? "EMAKS\nYeni iş teklifi {mrn}\nMüşteri {customer_name}\nTel {customer_phone}\nRandevu saati öneriniz.\nKart {technician_job_card_short_url}"
+                : "EMAKS Prime Teknik Servis\n\nYeni iş teklifi.\n\nServis Kaydı\nMRN: {mrn}\n{srv_line}\n\nMüşteri Bilgileri\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nAdres: {address}\nÜrün: {product_name}\n{maps_url_line}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}\n\nİş Kartı\n{technician_job_card_url}\n\nLütfen randevu saati öneriniz.",
+            'appointment_proposed_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nUsta randevu önerdi.\nMRN: {mrn}\nUsta: {technician_name}\nZaman: {proposed_appointment_options}"
+                : "EMAKS Prime Teknik Servis\n\nUsta randevu önerdi.\n\nUsta: {technician_name}\nMüşteri: {customer_name}\nMRN: {mrn}\nÖnerilen zaman: {proposed_appointment_options}\nNot: {technician_note}\n\nOPS aksiyonu: {ops_next_action_text}",
             'earnings_message_technician' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\nHakediş güncellendi.\nMRN: {mrn}\nToplam: {technician_earning_total_formatted}\nİş Kartı: {technician_job_card_short_url}"
                 : "EMAKS Prime Teknik Servis\n\nHakediş bilgisi güncellendi.\n\nMRN: {mrn}\n{srv_line}\nİş Kartı: {technician_job_card_url}\n\nHakediş Özeti\nİşçilik/Montaj: {labor_amount_formatted}\nYol: {route_fee_formatted}\nToplam: {technician_earning_total_formatted}",
@@ -515,6 +534,7 @@ class TechnicalServiceMessageTypeRegistry
             'appointment_approved_technician' => "Usta randevu bildirimi - {$channelLabel}",
             'appointment_updated_technician' => "Usta randevu güncelleme - {$channelLabel}",
             'assignment_offer_technician' => "Usta iş ataması - {$channelLabel}",
+            'appointment_proposed_ops' => "OPS randevu önerisi - {$channelLabel}",
             'earnings_message_technician' => "Usta hakediş bilgilendirme - {$channelLabel}",
             'price_revision_response_technician' => "Usta hakediş revizyon cevabı - {$channelLabel}",
             'final_control_completed_customer' => "Müşteri son kontrol tamamlandı - {$channelLabel}",
@@ -546,8 +566,12 @@ class TechnicalServiceMessageTypeRegistry
                 'mrn',
                 'customer_name',
                 'customer_phone',
-                'sms_short_address',
                 'technician_job_card_short_url',
+            ],
+            'appointment_proposed_ops' => [
+                'technician_name',
+                'mrn',
+                'proposed_appointment_options',
             ],
             'payment_link_customer',
             'part_fee_payment_link_customer' => [

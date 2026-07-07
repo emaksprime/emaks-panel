@@ -8376,6 +8376,66 @@ class B2BPartnerPanelAccessTest extends TestCase
         ]);
     }
 
+    public function test_appointment_proposed_ops_creates_whatsapp_without_ops_sms(): void
+    {
+        Http::fake();
+        $scope = $this->partnerPortalScopeFixture();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => false,
+            'manual_e2e_enabled' => true,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '0546 764 74 28',
+            'message_types' => [
+                'appointment_proposed_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            ],
+        ]);
+        $scope['jobA']->forceFill([
+            'mrn' => 'MRN-REL4E12-PROPOSE',
+            'customer_name' => 'REL4E12 Müşteri',
+            'customer_phone' => '05372081633',
+        ])->save();
+        $proposalDate = now()->addDay()->toDateString();
+
+        $this->actingAs($scope['userA'])
+            ->postJson("/api/partner/service-jobs/{$scope['jobA']->id}/appointment-proposal", [
+                'slots' => [
+                    ['date' => $proposalDate, 'slot' => '15:00-16:00'],
+                ],
+                'note' => '15:00 sonrası uygunum.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', TechnicalServicePartnerJobAction::STATUS_OPS_REVIEW);
+
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $scope['jobA']->id)
+            ->where('message_type', 'appointment_proposed_ops')
+            ->firstOrFail();
+
+        $body = (string) ($dispatch->request_payload['body'] ?? '');
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame('whatsapp', $dispatch->channel);
+        $this->assertSame('evo_whatsapp', $dispatch->provider_key);
+        $this->assertSame('ops', $dispatch->recipient_role);
+        $this->assertSame('905467647428', $dispatch->target_phone);
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'allowlisted_target'));
+        $this->assertStringContainsString('Usta randevu önerdi', $body);
+        $this->assertStringContainsString('MRN-REL4E12-PROPOSE', $body);
+        $this->assertStringContainsString('REL4E12 Müşteri', $body);
+        $this->assertStringContainsString(now()->addDay()->format('d.m.Y'), $body);
+        $this->assertStringContainsString('15:00 - 16:00', $body);
+        $this->assertStringContainsString('15:00 sonrası uygunum.', $body);
+        $this->assertStringContainsString('Randevuyu onaylayın veya değişiklik isteyin.', $body);
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $scope['jobA']->id,
+            'message_type' => 'appointment_proposed_ops',
+            'channel' => 'sms',
+        ]);
+        Http::assertNothingSent();
+    }
+
     public function test_ops_card_label_says_technician_proposed_appointment_and_approve_needed(): void
     {
         $scope = $this->partnerPortalScopeFixture();

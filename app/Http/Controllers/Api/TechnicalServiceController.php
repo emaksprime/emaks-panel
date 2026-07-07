@@ -2205,28 +2205,62 @@ class TechnicalServiceController extends Controller
             ],
         ]);
 
-        $dispatch = $this->workflowMessages->queueSystemMessage(
+        $dispatchSummary = $this->workflowMessages->queueWorkflowDispatches(
             $request,
             'assignment_offer_technician',
             'technician',
-            $messageText,
             [...$messagePayload, 'prepare_only' => true],
             $user,
             null,
             [
                 'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
                 'triggered_by' => 'technical_service_assignment_offer',
+                'fallback_body' => $messageText,
+                'event_version' => 'assignment-offer:'.$offer->id,
                 'metadata' => [
                     'assignment_offer_id' => $offer->id,
                     'manual_ui_send' => false,
                 ],
             ],
         );
+        if (($dispatchSummary['dispatches'] ?? []) === []) {
+            $fallbackDispatch = $this->workflowMessages->queueSystemMessage(
+                $request,
+                'assignment_offer_technician',
+                'technician',
+                $messageText,
+                [...$messagePayload, 'prepare_only' => true],
+                $user,
+                null,
+                [
+                    'recipient_phone' => $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone),
+                    'triggered_by' => 'technical_service_assignment_offer',
+                    'metadata' => [
+                        'assignment_offer_id' => $offer->id,
+                        'manual_ui_send' => false,
+                    ],
+                ],
+            );
+            $dispatchSummary['dispatches'][] = [
+                'id' => $fallbackDispatch->id,
+                'status' => $fallbackDispatch->status,
+                'message_type' => $fallbackDispatch->message_type,
+                'channel' => $fallbackDispatch->channel,
+                'provider_key' => $fallbackDispatch->provider_key,
+                'recipient_role' => $fallbackDispatch->recipient_role,
+                'target_masked' => $fallbackDispatch->effective_target_phone_mask,
+                'last_error_code' => $fallbackDispatch->last_error_code,
+                'last_error_message_redacted' => $fallbackDispatch->last_error_message_redacted,
+            ];
+        }
+        $firstDispatch = $dispatchSummary['dispatches'][0] ?? null;
         $metadata = is_array($offer->metadata) ? $offer->metadata : [];
-        $metadata['message_dispatch'] = [
-            'id' => $dispatch->id,
-            'status' => $dispatch->status,
-        ];
+        $metadata['message_dispatch_summary'] = $dispatchSummary;
+        $metadata['message_dispatches'] = array_values((array) ($dispatchSummary['dispatches'] ?? []));
+        $metadata['message_dispatch'] = is_array($firstDispatch) ? [
+            'id' => $firstDispatch['id'] ?? null,
+            'status' => $firstDispatch['status'] ?? null,
+        ] : null;
         $offer->forceFill(['metadata' => $metadata])->save();
 
         $this->assignmentSettlementService->persistForAssignment(
@@ -2336,17 +2370,18 @@ class TechnicalServiceController extends Controller
         $phone = $technician->phone_e164 ?: ($technician->phone_display ?: $technician->phone);
         $address = $request->location_formatted_address ?: $request->service_address;
         $mapsLink = $this->mapsLink($request, $address);
+        $jobLink = $this->partnerJobLink($request, $technician);
 
         return [
             'channel' => 'system_payload',
             'recipient' => 'technician',
             'technician_id' => $technician->id,
             'technician_name' => $technician->name,
-            'technician_phone' => $phone,
+            'technician_phone' => $this->normalizedMessagePhone($phone) ?: $phone,
             'technician_tel_link' => $this->telLink($phone),
             'mrn' => $request->mrn,
             'customer_name' => $request->customer_name,
-            'customer_phone' => $request->customer_phone,
+            'customer_phone' => $this->normalizedMessagePhone($request->customer_phone) ?: $request->customer_phone,
             'customer_tel_link' => $this->telLink($request->customer_phone),
             'address' => $address,
             'maps_link' => $mapsLink,
@@ -2357,7 +2392,9 @@ class TechnicalServiceController extends Controller
             'brand' => $request->brand,
             'serial_no' => $request->serial_number,
             'activation_code' => $request->activation_code,
-            'job_link' => $this->partnerJobLink($request, $technician),
+            'job_link' => $jobLink,
+            'technician_job_card_url' => $jobLink,
+            'technician_job_card_short_url' => $jobLink,
             'appointment_date' => $request->scheduled_date?->toDateString(),
             'appointment_time' => $request->scheduled_time,
             'labor_amount' => round((float) ($amounts['labor_amount'] ?? 0), 2),
@@ -2386,7 +2423,7 @@ class TechnicalServiceController extends Controller
         return trim(implode("\n", array_filter([
             'EMAKS Prime Teknik Servis',
             '',
-            'Yeni iş ataması yapıldı.',
+            'Yeni iş teklifi.',
             '',
             'MRN: '.($payload['mrn'] ?? '-'),
             'Müşteri: '.($payload['customer_name'] ?? '-'),
@@ -2405,6 +2442,7 @@ class TechnicalServiceController extends Controller
             '',
             'İş kartı:',
             $payload['job_link'] ?? '-',
+            'Lütfen randevu saati öneriniz.',
             $payload['note'] ?? null,
         ], fn ($line) => is_string($line) && trim($line) !== '')));
     }
@@ -2471,6 +2509,24 @@ class TechnicalServiceController extends Controller
         }
 
         return 'tel:+'.$digits;
+    }
+
+    private function normalizedMessagePhone(?string $phone): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $phone) ?: '';
+        if ($digits === '') {
+            return null;
+        }
+
+        if (str_starts_with($digits, '00')) {
+            $digits = substr($digits, 2);
+        }
+
+        if (str_starts_with($digits, '0')) {
+            $digits = '90'.substr($digits, 1);
+        }
+
+        return $digits;
     }
 
     private function mapsLink(TechnicalServiceRequest $request, ?string $address): ?string
