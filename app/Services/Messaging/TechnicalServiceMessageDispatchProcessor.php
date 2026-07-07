@@ -18,7 +18,7 @@ class TechnicalServiceMessageDispatchProcessor
     ) {}
 
     /**
-     * @param  array{limit?:int,provider?:string|null,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null}  $options
+     * @param  array{limit?:int,provider?:string|null,provider_keys?:array<int, string>,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null,manual_e2e_only?:bool,created_after?:string|null,guarded_batch?:bool}  $options
      * @return array<string, mixed>
      */
     public function dryRun(array $options = []): array
@@ -40,7 +40,7 @@ class TechnicalServiceMessageDispatchProcessor
     }
 
     /**
-     * @param  array{limit?:int,provider?:string|null,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null}  $options
+     * @param  array{limit?:int,provider?:string|null,provider_keys?:array<int, string>,channel?:string|null,dispatch_id?:int|null,only_test?:bool,no_external?:bool,allowlisted_phones?:array<int, string>,smoke_run_id?:string|null,smoke_started_at?:string|null,expected_body_token?:string|null,manual_e2e_only?:bool,created_after?:string|null,guarded_batch?:bool}  $options
      * @return array<string, mixed>
      */
     public function process(array $options = []): array
@@ -51,7 +51,8 @@ class TechnicalServiceMessageDispatchProcessor
 
         if (! (bool) ($options['no_external'] ?? false)
             && $allowlistedPhones !== []
-            && empty($options['dispatch_id'])) {
+            && empty($options['dispatch_id'])
+            && ! $this->guardedManualE2eBatchAllowed($options, $allowlistedPhones)) {
             return [
                 'dry_run' => false,
                 'count' => 0,
@@ -245,6 +246,11 @@ class TechnicalServiceMessageDispatchProcessor
             return false;
         }
 
+        if ((bool) ($options['manual_e2e_only'] ?? false)
+            && ! filter_var(data_get($dispatch->metadata, 'manual_e2e', false), FILTER_VALIDATE_BOOL)) {
+            return false;
+        }
+
         $smokeRunId = trim((string) ($options['smoke_run_id'] ?? ''));
         if ($smokeRunId !== '') {
             return (string) data_get($dispatch->metadata, 'smoke_run_id', '') === $smokeRunId;
@@ -268,6 +274,11 @@ class TechnicalServiceMessageDispatchProcessor
             $errors[] = 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.';
         }
 
+        if ((bool) ($options['manual_e2e_only'] ?? false)
+            && ! filter_var($metadata['manual_e2e'] ?? false, FILTER_VALIDATE_BOOL)) {
+            $errors[] = 'Manual E2E worker sadece dispatch metadata.manual_e2e=true kayıtlarını işler.';
+        }
+
         if ($smokeRunId === '') {
             $errors[] = 'Kontrollü gerçek smoke için --smoke-run-id zorunlu.';
         } elseif ((string) ($metadata['smoke_run_id'] ?? '') !== $smokeRunId) {
@@ -275,6 +286,10 @@ class TechnicalServiceMessageDispatchProcessor
         }
 
         $startedAt = trim((string) ($options['smoke_started_at'] ?? ''));
+        $createdAfter = trim((string) ($options['created_after'] ?? ''));
+        if ($startedAt === '' && $createdAfter !== '') {
+            $startedAt = $createdAfter;
+        }
         if ($startedAt !== '') {
             try {
                 $boundary = CarbonImmutable::parse($startedAt);
@@ -426,16 +441,75 @@ class TechnicalServiceMessageDispatchProcessor
      */
     private function candidateQuery(array $options)
     {
+        $providerKeys = array_values(array_filter(array_map('strval', (array) ($options['provider_keys'] ?? []))));
+        if ($providerKeys === [] && filled($options['provider'] ?? null)) {
+            $providerKeys = [(string) $options['provider']];
+        }
+
+        $createdAfter = null;
+        if (filled($options['created_after'] ?? null)) {
+            try {
+                $createdAfter = CarbonImmutable::parse((string) $options['created_after']);
+            } catch (Throwable) {
+                $createdAfter = CarbonImmutable::now()->addCentury();
+            }
+        }
+
+        $allowlistedTargets = array_values(array_filter(array_map(
+            fn (string $phone): string => $this->normalizePhone($phone),
+            (array) ($options['allowlisted_phones'] ?? []),
+        )));
+
         return TechnicalServiceMessageDispatch::query()
             ->whereIn('status', [TechnicalServiceMessageDispatch::STATUS_QUEUED, TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED])
             ->where(function ($query): void {
                 $query->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now());
             })
             ->when($options['dispatch_id'] ?? null, fn ($query, $id) => $query->whereKey((int) $id))
-            ->when($options['provider'] ?? null, fn ($query, $provider) => $query->where('provider_key', (string) $provider))
+            ->when($providerKeys !== [], fn ($query) => $query->whereIn('provider_key', $providerKeys))
             ->when($options['channel'] ?? null, fn ($query, $channel) => $query->where('channel', (string) $channel))
             ->when((bool) ($options['only_test'] ?? false), fn ($query) => $query->where('recipient_role', 'test'))
+            ->when($createdAfter !== null, fn ($query) => $query->where('created_at', '>=', $createdAfter))
+            ->when((bool) ($options['manual_e2e_only'] ?? false), function ($query): void {
+                $query->where(function ($nested): void {
+                    $nested
+                        ->where('metadata->manual_e2e', true)
+                        ->orWhere('metadata->manual_e2e', 1)
+                        ->orWhere('metadata->manual_e2e', 'true');
+                });
+            })
+            ->when($allowlistedTargets !== [], fn ($query) => $query->whereIn('target_phone', $allowlistedTargets))
             ->orderBy('next_attempt_at')
             ->orderBy('id');
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @param  array<int, string>  $allowlistedPhones
+     */
+    private function guardedManualE2eBatchAllowed(array $options, array $allowlistedPhones): bool
+    {
+        if (! (bool) ($options['guarded_batch'] ?? false)) {
+            return false;
+        }
+
+        if (! (bool) ($options['manual_e2e_only'] ?? false)) {
+            return false;
+        }
+
+        if (trim((string) ($options['created_after'] ?? '')) === '') {
+            return false;
+        }
+
+        if ($allowlistedPhones === []) {
+            return false;
+        }
+
+        $providers = array_values(array_filter(array_map('strval', (array) ($options['provider_keys'] ?? []))));
+        if ($providers === [] && filled($options['provider'] ?? null)) {
+            $providers = [(string) $options['provider']];
+        }
+
+        return $providers !== [] && array_diff($providers, ['evo_whatsapp', 'nac_sms']) === [];
     }
 }

@@ -41,6 +41,13 @@ class TechnicalServiceMessageProviderRouter
         }
 
         if ($provider === 'nac_sms') {
+            if (! $noExternal && $this->isManualE2eDispatch($dispatch)) {
+                $blockingReason = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones);
+                if ($blockingReason !== null) {
+                    return $this->blocked('manual_e2e_guard_blocked', $blockingReason);
+                }
+            }
+
             if (! $noExternal && $this->canRunControlledSmoke($dispatch, $allowlistedPhones)) {
                 return $this->sendNacSms($dispatch);
             }
@@ -49,6 +56,13 @@ class TechnicalServiceMessageProviderRouter
         }
 
         if ($provider === 'evo_whatsapp') {
+            if (! $noExternal && $this->isManualE2eDispatch($dispatch)) {
+                $blockingReason = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones);
+                if ($blockingReason !== null) {
+                    return $this->blocked('manual_e2e_guard_blocked', $blockingReason);
+                }
+            }
+
             if (! $noExternal && $this->canRunControlledSmoke($dispatch, $allowlistedPhones)) {
                 return $this->sendEvoWhatsApp($dispatch);
             }
@@ -128,6 +142,41 @@ class TechnicalServiceMessageProviderRouter
             && $this->targetIsAllowlisted($dispatch, $allowlistedPhones)
             && filter_var(data_get($dispatch->metadata, 'test_smoke', false), FILTER_VALIDATE_BOOL)
             && filled(data_get($dispatch->metadata, 'smoke_run_id'));
+    }
+
+    private function isManualE2eDispatch(TechnicalServiceMessageDispatch $dispatch): bool
+    {
+        return filter_var(data_get($dispatch->metadata, 'manual_e2e', false), FILTER_VALIDATE_BOOL);
+    }
+
+    /**
+     * @param  array<int, string>  $allowlistedPhones
+     */
+    private function manualE2eBlockingReason(TechnicalServiceMessageDispatch $dispatch, array $allowlistedPhones): ?string
+    {
+        $global = (array) ($this->settings->payload()['global'] ?? []);
+
+        if (! (bool) ($global['manual_e2e_enabled'] ?? false)) {
+            return 'Manual E2E kapalı; provider gönderimi engellendi.';
+        }
+
+        if ((bool) ($global['queue_paused'] ?? false)) {
+            return 'Mesaj kuyruğu duraklatılmış; manual E2E provider gönderimi engellendi.';
+        }
+
+        if (! (bool) ($global['real_send_enabled'] ?? false)) {
+            return 'Gerçek gönderim kapalı; manual E2E provider gönderimi engellendi.';
+        }
+
+        if (! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)) {
+            return 'Manual E2E sadece Evo WhatsApp veya NAC SMS provider ile çalışır.';
+        }
+
+        if (! $this->targetIsAllowlisted($dispatch, $allowlistedPhones)) {
+            return 'Manual E2E allowlist dışında hedef. Gönderim engellendi.';
+        }
+
+        return null;
     }
 
     /**
