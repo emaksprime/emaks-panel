@@ -104,10 +104,18 @@ class TechnicalServiceMessageContextBuilder
             'activation_code',
             'warranty_started_at_formatted',
             'warranty_ends_at_formatted',
+            'survey_link',
+            'survey_link_sms',
+            'payment_status_label',
+            'provider_payment_reference',
+            'provider_transaction_reference',
+            'provider_receipt_reference',
             'part_name',
             'part_code',
             'part_quantity',
             'part_reason',
+            'part_details',
+            'part_received_at_formatted',
         ] as $key) {
             if (! array_key_exists($key, $overrides)) {
                 unset($context[$key]);
@@ -251,6 +259,7 @@ class TechnicalServiceMessageContextBuilder
         $sampleContext = filter_var($context['__sample_context'] ?? false, FILTER_VALIDATE_BOOL);
         $context['payment_link_sms'] = $this->filledString($context['payment_link_sms'] ?? null) ?: $this->shortLink($context['payment_link'] ?? null, 'https://e.ms/pay/PR88', $sampleContext);
         $context['confirmation_link_sms'] = $this->filledString($context['confirmation_link_sms'] ?? null) ?: $this->shortLink($context['confirmation_link'] ?? null, 'https://e.ms/onay/PR88', $sampleContext);
+        $context['survey_link_sms'] = $this->filledString($context['survey_link_sms'] ?? null) ?: $this->shortLink($context['survey_link'] ?? null, 'https://e.ms/anket/PR88', $sampleContext);
         $context['technician_job_card_short_url'] = $this->filledString($context['technician_job_card_short_url'] ?? null) ?: $this->shortLink($context['technician_job_card_url'] ?? null, 'https://e.ms/job/PR88', $sampleContext);
         $context['payment_amount_formatted'] = $this->filledString($context['payment_amount_formatted'] ?? null)
             ?: $this->filledString($context['customer_payment_amount_formatted'] ?? null);
@@ -273,6 +282,11 @@ class TechnicalServiceMessageContextBuilder
         $context['requested_amount_formatted'] = $this->filledString($context['requested_amount_formatted'] ?? null) ?: '';
         $context['revision_reason'] = $this->filledString($context['revision_reason'] ?? null) ?: '';
         $context['completed_at_formatted'] = $this->filledString($context['completed_at_formatted'] ?? null) ?: '';
+        $context['payment_status_label'] = $this->filledString($context['payment_status_label'] ?? null)
+            ?: ($sampleContext ? 'Ödendi' : '');
+        $context['provider_payment_reference'] = $this->filledString($context['provider_payment_reference'] ?? null) ?: 'Sağlayıcı tarafından dönmedi';
+        $context['provider_transaction_reference'] = $this->filledString($context['provider_transaction_reference'] ?? null) ?: 'Sağlayıcı tarafından dönmedi';
+        $context['provider_receipt_reference'] = $this->filledString($context['provider_receipt_reference'] ?? null) ?: 'Sağlayıcı tarafından dönmedi';
         $context['next_action_text'] = $this->filledString($context['next_action_text'] ?? null)
             ?: 'OPS son kontrol / müşteri onayı';
         $context['activation_code'] = $this->filledString($context['activation_code'] ?? null)
@@ -289,8 +303,28 @@ class TechnicalServiceMessageContextBuilder
             ?: ($sampleContext ? '1' : '');
         $context['part_reason'] = $this->filledString($context['part_reason'] ?? null)
             ?: ($sampleContext ? 'Parça değişimi gerekiyor.' : '');
+        $context['part_details'] = $this->filledString($context['part_details'] ?? null)
+            ?: $this->partDetails($context);
+        $context['part_received_at_formatted'] = $this->filledString($context['part_received_at_formatted'] ?? null)
+            ?: ($sampleContext ? '08.07.2026 11:20' : '');
+        $context['survey_link'] = $this->filledString($context['survey_link'] ?? null)
+            ?: ($sampleContext ? 'https://panel.example.test/anket/PR88' : '');
 
         return $context;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function partDetails(array $context): string
+    {
+        $parts = array_filter([
+            $this->filledString($context['part_name'] ?? null),
+            $this->filledString($context['part_code'] ?? null),
+            $this->filledString($context['part_quantity'] ?? null) ? $this->filledString($context['part_quantity']).' adet' : null,
+        ]);
+
+        return $parts === [] ? '' : implode(' / ', $parts);
     }
 
     /**

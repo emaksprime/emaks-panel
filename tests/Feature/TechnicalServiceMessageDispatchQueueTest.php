@@ -222,6 +222,28 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_manual_e2e_worker_does_not_stop_on_idle_before_ttl_by_default(): void
+    {
+        Http::fake();
+
+        Artisan::call('technical-service:process-message-dispatches', [
+            '--worker-loop' => true,
+            '--dry-run' => true,
+            '--manual-e2e-only' => true,
+            '--created-after' => now()->subMinute()->toIso8601String(),
+            '--allowlisted-phone' => ['905372081633', '905467647428'],
+            '--provider' => 'evo_whatsapp,nac_sms',
+            '--max-seconds' => 1,
+            '--sleep-seconds' => 1,
+        ]);
+
+        $output = Artisan::output();
+        $this->assertStringContainsString('"idle_stop": "disabled"', $output);
+        $this->assertStringNotContainsString('idle_limit_reached', $output);
+        $this->assertStringContainsString('"stop_reason": "ttl_expired"', $output);
+        Http::assertNothingSent();
+    }
+
     public function test_manual_e2e_worker_requires_created_after(): void
     {
         Http::fake();

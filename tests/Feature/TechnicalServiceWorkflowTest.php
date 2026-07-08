@@ -2613,6 +2613,11 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('{customerChargeModal}', $source);
         $this->assertStringContainsString('Mesaj metnini kopyala', $source);
         $this->assertStringContainsString('WhatsApp mesajını aç', $source);
+        $this->assertStringContainsString('const renderPaymentLinkSendAction', $source);
+        $this->assertGreaterThanOrEqual(6, substr_count($source, 'renderPaymentLinkSendAction('));
+        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*latestCustomerCharge\\s*\\)/', $source);
+        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*extraMountPayment\\s*\\)/', $source);
+        $this->assertMatchesRegularExpression('/id:\\s*partRequest\\.payment_id\\s*\\?\\?\\s*partRequest\\.customer_charge\\?\\.id\\s*\\?\\?\\s*null/s', $source);
         $this->assertStringContainsString('Servis ödemesi', $source);
         $this->assertStringContainsString('Parça ödemesi', $source);
         $this->assertStringContainsString('Müşteriden alınan servis ücreti', $source);
@@ -2726,7 +2731,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
-        $this->assertStringContainsString('function paymentLinkCopyUrl(payment: ServiceRequestExtraMountPayment | null | undefined): string', $source);
+        $this->assertStringContainsString('function paymentLinkCopyUrl(payment: PaymentLinkSendTarget | null | undefined): string', $source);
         $this->assertStringContainsString('payment?.copy_url ?? payment?.payment_url', $source);
         $this->assertStringContainsString('function copyTextWithTextarea(text: string): boolean', $source);
         $this->assertStringContainsString('async function clipboardMatchesText(text: string): Promise<boolean | null>', $source);
@@ -2744,29 +2749,28 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('Provider işlem referansı', $source);
         $this->assertStringContainsString('Dekont referansı', $source);
         $this->assertStringContainsString('Sağlayıcı tarafından dönmedi', $source);
-        $this->assertStringContainsString("extraMountPayment.payment_action_kind === 'open_provider_url'", $source);
-        $this->assertStringContainsString('paymentActionLabel(extraMountPayment)', $source);
+        $this->assertStringContainsString('Ödeme linkini aç', $source);
+        $this->assertStringContainsString('renderPaymentLinkSendAction(extraMountPayment)', $source);
         $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}', $source);
         $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}', $source);
         $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(payment.payment_url ?? '')}", $source);
         $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}", $source);
     }
 
-    public function test_payment_link_modal_uses_top_layer_portal_and_iyzico_open_copy_wording(): void
+    public function test_payment_link_modal_stays_inside_detail_dialog_focus_scope_and_uses_iyzico_open_copy_wording(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
-        $this->assertStringContainsString("import { createPortal } from 'react-dom'", $source);
-        $this->assertStringContainsString('const paymentLinkEditorPortal = typeof document', $source);
-        $this->assertStringContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
+        $this->assertStringNotContainsString("import { createPortal } from 'react-dom'", $source);
+        $this->assertStringNotContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
         $this->assertStringContainsString('pointer-events-auto fixed inset-0 z-[110]', $source);
         $this->assertStringContainsString('z-[110]', $source);
         $this->assertStringContainsString('Iyzico Sandbox ödeme ekranı açılacak.', $source);
         $this->assertStringContainsString('Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.', $source);
         $this->assertStringContainsString('{renderPaymentProviderReferences(payment)}', $source);
-        $this->assertStringContainsString('{paymentLinkEditorPortal}', $source);
-        $this->assertStringNotContainsString('{paymentLinkEditorModal}', $source);
+        $this->assertStringContainsString('{paymentLinkEditorModal}', $source);
+        $this->assertStringNotContainsString('{paymentLinkEditorPortal}', $source);
     }
 
     public function test_pointer_events_restored_for_payment_modal_action_buttons(): void
@@ -2775,10 +2779,12 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertIsString($source);
         $this->assertStringContainsString('pointer-events-auto fixed inset-0 z-[110]', $source);
-        $this->assertStringContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
+        $this->assertStringNotContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
+        $this->assertStringContainsString('{paymentLinkEditorModal}', $source);
         $this->assertStringContainsString("payment.payment_action_kind === 'open_provider_url'", $source);
-        $this->assertStringContainsString('paymentActionLabel(payment)', $source);
+        $this->assertStringContainsString('Ödeme linkini aç', $source);
         $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}', $source);
+        $this->assertStringContainsString('renderPaymentLinkSendAction(payment)', $source);
         $this->assertStringContainsString('onClick={() => void handlePendingPaymentCancel(payment)}', $source);
     }
 
@@ -2800,7 +2806,8 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString("'provider_sync_attempts' => (int) (\$payment->provider_sync_attempts ?? 0)", $presenter);
         $this->assertStringContainsString("'provider_sync_message' => \$syncWaiting", $presenter);
         $this->assertStringContainsString("payment.payment_action_kind === 'open_provider_url'", $source);
-        $this->assertStringContainsString('paymentActionLabel(payment)', $source);
+        $this->assertStringContainsString('Ödeme linkini aç', $source);
+        $this->assertStringContainsString('renderPaymentLinkSendAction(payment)', $source);
         $this->assertStringContainsString('payment?.provider_sync_message', $source);
         $this->assertStringContainsString('handlePendingPaymentSync(payment)', $source);
         $this->assertStringContainsString('Durumu Kontrol Et', $source);

@@ -752,9 +752,39 @@ class PartnerServiceJobController extends Controller
         $result = $this->partRequests->receiveAndPrepareServiceVisit($partRequest, $user);
         $partRequest = $result['part_request'];
         $serviceVisit = $result['service_visit'];
+        $receivedAt = $partRequest->received_at ?: now();
+
+        $dispatchSummary = $this->workflowMessages->queueWorkflowDispatches(
+            $job->refresh(),
+            'part_received_ops',
+            'ops',
+            [
+                'technician_name' => $user->name,
+                'part_name' => $partRequest->part_name,
+                'part_code' => $partRequest->part_code,
+                'part_quantity' => $partRequest->quantity,
+                'part_reason' => $partRequest->reason ?: $partRequest->technician_note,
+                'part_received_at_formatted' => $receivedAt->timezone('Europe/Istanbul')->format('d.m.Y H:i'),
+                'next_action_text' => 'Parça sonrası servis randevusunu planlayın veya onaylayın.',
+            ],
+            $user,
+            null,
+            [
+                'triggered_by' => 'partner_portal_part_received',
+                'event_version' => 'part-received:'.$partRequest->id.':'.$receivedAt->timestamp,
+                'metadata' => [
+                    'part_request_id' => $partRequest->id,
+                    'service_visit_request_id' => $serviceVisit->id,
+                    'workflow_event' => 'part_received_ops',
+                ],
+            ],
+        );
 
         return response()->json([
             'status' => $partRequest->status,
+            'message_dispatches' => [
+                'part_received_ops' => $dispatchSummary,
+            ],
             'part_request' => $this->partRequests->serialize($partRequest, forPartner: true),
             'parent_job' => $this->portalData->safeServiceJobSummary($job->refresh(), $partner),
             'job' => $this->portalData->safeServiceJobSummary($serviceVisit->refresh(), $partner),

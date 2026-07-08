@@ -5790,6 +5790,9 @@ export function TechnicalServiceOperationCenter() {
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <DialogTitle className="text-base font-semibold text-slate-900">Talep Detayı</DialogTitle>
+                    <DialogDescription className="sr-only">
+                      Seçili teknik servis talebinin operasyon, ödeme, usta atama ve saha tamamlama detayları.
+                    </DialogDescription>
                   </div>
                   <DialogClose asChild>
                     <button

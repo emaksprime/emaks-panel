@@ -1,7 +1,6 @@
 import { CheckCircle2, ChevronDown, Pencil, XCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 import type { ReactNode, Ref } from 'react'
-import { createPortal } from 'react-dom'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -11,6 +10,14 @@ import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServiceP
 
 type OpsDoorPhotoType = 'ops_door_front_photo' | 'ops_door_side_photo' | 'ops_door_back_photo' | 'ops_door_photo'
 type OpsExtraDocumentType = 'ops_extra_photo' | OpsDoorPhotoType | 'ops_additional_document'
+
+type PaymentLinkSendTarget = {
+  id?: number | string | null
+  status?: string | null
+  payment_url?: string | null
+  copy_url?: string | null
+  amount?: number | null
+}
 
 const OPS_DOOR_PHOTO_FIELD_CODES = new Set<string>([
   'ops_door_front_photo',
@@ -1712,6 +1719,8 @@ export function ServiceRequestDetails({
   const [earningNoteInput, setEarningNoteInput] = useState('')
   const [earningMessageText, setEarningMessageText] = useState('')
   const [earningMessageUrl, setEarningMessageUrl] = useState('')
+  const [earningTotalOverrideByRequest, setEarningTotalOverrideByRequest] = useState<Record<string, string>>({})
+  const [earningTotalOverrideTouchedByRequest, setEarningTotalOverrideTouchedByRequest] = useState<Record<string, boolean>>({})
   const [appointmentReviewNote, setAppointmentReviewNote] = useState('')
   const [appointmentSelectedSlotByAction, setAppointmentSelectedSlotByAction] = useState<Record<string, number>>({})
   const [completionReviewNote, setCompletionReviewNote] = useState('')
@@ -1999,7 +2008,13 @@ export function ServiceRequestDetails({
   const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
   const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
   const customerChargeTotalAmount = roundTwo(customerServiceChargeAmount + customerPartChargeAmount)
-  const canCreateCustomerCharge = Boolean(onExtraMountPaymentCreate && customerChargeTotalAmount > 0)
+  const customerChargeAddressLabel = [
+    request.address,
+    [request.district, request.city].filter(Boolean).join(' / '),
+  ].filter((value) => typeof value === 'string' && value.trim() !== '').join(' - ')
+  const hasCustomerChargeAddress = customerChargeAddressLabel.trim() !== ''
+  const customerChargeAddressError = 'Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.'
+  const canCreateCustomerCharge = Boolean(onExtraMountPaymentCreate && customerChargeTotalAmount > 0 && hasCustomerChargeAddress)
   const customerChargePurpose = customerServiceChargeAmount > 0 && customerPartChargeAmount > 0
     ? 'service_and_part_payment'
     : customerPartChargeAmount > 0
@@ -2351,7 +2366,11 @@ export function ServiceRequestDetails({
     : technicianLaborCostAmount !== null
       ? roundTwo(technicianLaborCostAmount + (hasRouteCostEvidence && routeFeeAmount !== null ? routeFeeAmount : 0))
       : null
-  const earningTotalAmount = totalTechnicianCostAmount
+  const requestStateKey = String(request.id)
+  const earningTotalOverride = earningTotalOverrideByRequest[requestStateKey] ?? ''
+  const earningTotalOverrideTouched = Boolean(earningTotalOverrideTouchedByRequest[requestStateKey])
+  const parsedEarningTotalOverride = parseNumericInput(earningTotalOverride)
+  const earningTotalAmount = earningTotalOverrideTouched ? parsedEarningTotalOverride : totalTechnicianCostAmount
   const totalTechnicianCostLabel = !hasPayoutTechnicianContext
     ? 'Usta seçilmedi'
     : hasCanonicalPayout
@@ -2772,7 +2791,7 @@ export function ServiceRequestDetails({
       setPaymentSyncInFlight(null)
     }
   }
-  const handlePendingPaymentSend = async (payment: NonNullable<typeof pendingMountPaymentRecords[number]>) => {
+  const handlePendingPaymentSend = async (payment: PaymentLinkSendTarget) => {
     if (!payment.id) {
       setPaymentCancelError('Gönderilecek ödeme kaydı bulunamadı.')
 
@@ -2796,6 +2815,42 @@ export function ServiceRequestDetails({
     } finally {
       setPaymentSendInFlight(null)
     }
+  }
+  const paymentLinkSendBlocker = (payment: PaymentLinkSendTarget | null | undefined): string | null => {
+    if (!payment?.id) {
+      return 'Gönderilecek ödeme kaydı bulunamadı.'
+    }
+
+    if (!paymentLinkCopyUrl(payment)) {
+      return 'Ödeme linki olmadan müşteriye mesaj kuyruğu oluşturulamaz.'
+    }
+
+    if (Number(payment.amount ?? 0) <= 0) {
+      return 'Ödeme tutarı olmadan müşteriye mesaj kuyruğu oluşturulamaz.'
+    }
+
+    if (payment.status && payment.status !== 'pending') {
+      return 'Yalnızca bekleyen ödeme linki müşteriye gönderilebilir.'
+    }
+
+    return null
+  }
+  const renderPaymentLinkSendAction = (payment: PaymentLinkSendTarget | null | undefined) => {
+    const blocker = paymentLinkSendBlocker(payment)
+    const paymentId = payment?.id ?? null
+
+    return (
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={Boolean(blocker) || paymentSendInFlight === paymentId}
+        title={blocker ?? 'Ödeme linkini müşteriye WhatsApp ve SMS kuyruğuna al'}
+        onClick={() => payment && void handlePendingPaymentSend(payment)}
+      >
+        {paymentSendInFlight === paymentId ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
+      </Button>
+    )
   }
   const handleCreatePaymentLinkAction = () => {
     scrollToNextActionSection('assignment')
@@ -2881,6 +2936,12 @@ export function ServiceRequestDetails({
       return
     }
 
+    if (!hasCustomerChargeAddress) {
+      setRouteFeeEditorMessage(customerChargeAddressError)
+
+      return
+    }
+
     await onExtraMountPaymentCreate({
       service_amount: customerServiceChargeAmount,
       part_amount: customerPartChargeAmount,
@@ -2943,6 +3004,12 @@ export function ServiceRequestDetails({
       return
     }
 
+    if (partCreateMode === 'chargeable' && !hasCustomerChargeAddress) {
+      setPartCreateError(customerChargeAddressError)
+
+      return
+    }
+
     if (partCreateMode === 'chargeable' && message.length < 3) {
       setPartCreateError('Ücretli parça için müşteriye gönderilecek mesaj zorunludur.')
 
@@ -2990,6 +3057,12 @@ export function ServiceRequestDetails({
 
     if (partDecisionMode === 'chargeable' && partAmount <= 0) {
       setRouteFeeEditorMessage('Ücretli parça kararında parça bedeli 0 TL üzerinde olmalı.')
+
+      return
+    }
+
+    if (partDecisionMode === 'chargeable' && !hasCustomerChargeAddress) {
+      setRouteFeeEditorMessage(customerChargeAddressError)
 
       return
     }
@@ -3045,7 +3118,7 @@ export function ServiceRequestDetails({
       total_amount: earningTotalAmount,
       note: earningNoteInput.trim() || null,
       message_text: earningMessageText.trim() || null,
-      manual_override: false,
+      manual_override: earningTotalOverrideTouched,
     })
 
     if (response && typeof response === 'object') {
@@ -3089,14 +3162,17 @@ export function ServiceRequestDetails({
           <div className="grid gap-3 sm:grid-cols-3">
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Servis ücreti
-              <Input type="number" min="0" step="1" value={customerServiceChargeInput} onChange={(event) => setCustomerServiceChargeInput(event.target.value)} />
+              <Input type="number" inputMode="decimal" min="0" step="1" value={customerServiceChargeInput} onChange={(event) => setCustomerServiceChargeInput(event.target.value)} />
             </label>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Parça ücreti
-              <Input type="number" min="0" step="1" value={customerPartChargeInput} onChange={(event) => setCustomerPartChargeInput(event.target.value)} />
+              <Input type="number" inputMode="decimal" min="0" step="1" value={customerPartChargeInput} onChange={(event) => setCustomerPartChargeInput(event.target.value)} />
             </label>
             <MiniMetric label="Toplam" value={formatMoneyValue(customerChargeTotalAmount)} />
           </div>
+          <p className={['rounded-xl border px-3 py-2 text-xs font-semibold', hasCustomerChargeAddress ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-800'].join(' ')}>
+            {hasCustomerChargeAddress ? `Ödeme linkinde müşteri adresi kullanılacak: ${customerChargeAddressLabel}` : customerChargeAddressError}
+          </p>
           <label className="grid gap-1 text-xs font-semibold text-slate-600">
             Açıklama
             <Input value={customerChargeNoteInput} onChange={(event) => setCustomerChargeNoteInput(event.target.value)} placeholder="İç operasyon notu" />
@@ -3130,17 +3206,7 @@ export function ServiceRequestDetails({
                     <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerChargePaymentUrl, 'Link kopyalandı.')}>
                       Linki kopyala
                     </Button>
-                    {latestCustomerCharge.id ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={paymentSendInFlight === latestCustomerCharge.id}
-                        onClick={() => void handlePendingPaymentSend(latestCustomerCharge)}
-                      >
-                        {paymentSendInFlight === latestCustomerCharge.id ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
-                      </Button>
-                    ) : null}
+                    {renderPaymentLinkSendAction(latestCustomerCharge)}
                     <Button asChild type="button" size="sm" variant="outline">
                       <a href={latestCustomerChargePaymentUrl} target="_blank" rel="noreferrer">Linki aç</a>
                     </Button>
@@ -3303,27 +3369,15 @@ export function ServiceRequestDetails({
                       ) : null}
                       {renderPaymentProviderReferences(payment)}
                       <div className="flex flex-wrap gap-2">
-                        {payment.payment_action_kind === 'open_provider_url' ? (
-                          <Button asChild type="button" size="sm" variant="outline">
-                            <a href={paymentLinkCopyUrl(payment)} target="_blank" rel="noreferrer">
-                              {paymentActionLabel(payment)}
-                            </a>
-                          </Button>
-                        ) : null}
+                        <Button asChild type="button" size="sm" variant="outline">
+                          <a href={paymentLinkCopyUrl(payment)} target="_blank" rel="noreferrer">
+                            Ödeme linkini aç
+                          </a>
+                        </Button>
                         <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}>
                           Linki kopyala
                         </Button>
-                        {payment.id ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={paymentSendInFlight === payment.id}
-                            onClick={() => void handlePendingPaymentSend(payment)}
-                          >
-                            {paymentSendInFlight === payment.id ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
-                          </Button>
-                        ) : null}
+                        {renderPaymentLinkSendAction(payment)}
                         {payment.is_external_provider ? (
                           <Button
                             type="button"
@@ -3401,7 +3455,7 @@ export function ServiceRequestDetails({
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px]">
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               {pendingOnlinePaymentLink ? 'Bekleyen / yeni ödeme linki tutarı' : 'Yeni ek ödeme linki tutarı'}
-              <Input type="number" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+              <Input type="number" inputMode="decimal" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
               <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
             </label>
             <MiniMetric label="Durum" value={paidOnlinePaymentLink ? 'Ödeme düzenleme' : pendingOnlinePaymentLink ? 'Bekleyen link' : 'Yeni link'} />
@@ -3430,9 +3484,6 @@ export function ServiceRequestDetails({
       </div>
     </div>
   ) : null
-  const paymentLinkEditorPortal = typeof document === 'undefined' || paymentLinkEditorModal === null
-    ? paymentLinkEditorModal
-    : createPortal(paymentLinkEditorModal, document.body)
   const partCreateModal = partCreateModalOpen ? (
     <div className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Parça talebi oluştur">
       <div className="grid max-h-[92vh] w-full max-w-2xl gap-4 overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
@@ -3476,14 +3527,17 @@ export function ServiceRequestDetails({
               <div className="grid gap-3 sm:grid-cols-3">
                 <label className="grid gap-1 text-xs font-semibold text-slate-600">
                   Servis bedeli
-                  <Input type="number" min="0" step="1" value={partCreateServiceAmount} onChange={(event) => setPartCreateServiceAmount(event.target.value)} />
+                  <Input type="number" inputMode="decimal" min="0" step="1" value={partCreateServiceAmount} onChange={(event) => setPartCreateServiceAmount(event.target.value)} />
                 </label>
                 <label className="grid gap-1 text-xs font-semibold text-slate-600">
                   Parça bedeli
-                  <Input type="number" min="0" step="1" value={partCreatePartAmount} onChange={(event) => setPartCreatePartAmount(event.target.value)} />
+                  <Input type="number" inputMode="decimal" min="0" step="1" value={partCreatePartAmount} onChange={(event) => setPartCreatePartAmount(event.target.value)} />
                 </label>
                 <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partCreateServiceAmount) ?? 0) + (parseNumericInput(partCreatePartAmount) ?? 0)))} />
               </div>
+              <p className={['rounded-xl border px-3 py-2 text-xs font-semibold', hasCustomerChargeAddress ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-800'].join(' ')}>
+                {hasCustomerChargeAddress ? `Ücretli parça ödeme linkinde müşteri adresi kullanılacak: ${customerChargeAddressLabel}` : customerChargeAddressError}
+              </p>
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 Müşteri mesajı
                 <textarea value={partCreateMessage} onChange={(event) => setPartCreateMessage(event.target.value)} className="min-h-24 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" placeholder="Parça bedeli ve ödeme linki için mesaj" />
@@ -3532,14 +3586,17 @@ export function ServiceRequestDetails({
             <div className="grid gap-3 sm:grid-cols-3">
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 Servis bedeli
-                <Input type="number" min="0" step="1" value={partDecisionServiceAmount} onChange={(event) => setPartDecisionServiceAmount(event.target.value)} />
+                <Input type="number" inputMode="decimal" min="0" step="1" value={partDecisionServiceAmount} onChange={(event) => setPartDecisionServiceAmount(event.target.value)} />
               </label>
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 Parça bedeli
-                <Input type="number" min="0" step="1" value={partDecisionPartAmount} onChange={(event) => setPartDecisionPartAmount(event.target.value)} />
+                <Input type="number" inputMode="decimal" min="0" step="1" value={partDecisionPartAmount} onChange={(event) => setPartDecisionPartAmount(event.target.value)} />
               </label>
               <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partDecisionServiceAmount) ?? 0) + (parseNumericInput(partDecisionPartAmount) ?? 0)))} />
             </div>
+            <p className={['rounded-xl border px-3 py-2 text-xs font-semibold', hasCustomerChargeAddress ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-800'].join(' ')}>
+              {hasCustomerChargeAddress ? `Ücretli parça ödeme linkinde müşteri adresi kullanılacak: ${customerChargeAddressLabel}` : customerChargeAddressError}
+            </p>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Müşteri mesajı
               <textarea value={partDecisionMessage} onChange={(event) => setPartDecisionMessage(event.target.value)} className="min-h-24 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" placeholder="Parça/servis bedeli ve ödeme linki mesajı" />
@@ -4165,16 +4222,12 @@ export function ServiceRequestDetails({
     return copied
   }
 
-  function paymentLinkCopyUrl(payment: ServiceRequestExtraMountPayment | null | undefined): string {
+  function paymentLinkCopyUrl(payment: PaymentLinkSendTarget | null | undefined): string {
     return String(payment?.copy_url ?? payment?.payment_url ?? '').trim()
   }
 
   function paymentProviderLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string {
     return String(payment?.provider_display_label ?? payment?.provider_label ?? (payment?.is_fake_provider ? 'Fake/Yerel ödeme simülasyonu' : 'Ödeme sağlayıcısı')).trim()
-  }
-
-  function paymentActionLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string {
-    return String(payment?.payment_action_label ?? (payment?.payment_action_kind === 'open_provider_url' ? 'Ödeme ekranını aç' : 'Ödeme linkini aç')).trim()
   }
 
   function paymentProviderReferenceValue(value: string | null | undefined): string {
@@ -4770,6 +4823,7 @@ export function ServiceRequestDetails({
                     <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
                   </Button>
                   <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                  {renderPaymentLinkSendAction(latestCustomerCharge)}
                 </div>
               ) : null}
             </div>
@@ -4778,7 +4832,7 @@ export function ServiceRequestDetails({
         ) : null}
         {customerChargeModal}
         {otherTechniciansModal}
-        {paymentLinkEditorPortal}
+        {paymentLinkEditorModal}
         {partCreateModal}
         {partDecisionModal}
         {historyRecordModal}
@@ -5067,6 +5121,7 @@ export function ServiceRequestDetails({
                           <a href={latestCustomerCharge.payment_url} target="_blank" rel="noreferrer">Ödeme linkini aç</a>
                         </Button>
                         <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(latestCustomerCharge.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                        {renderPaymentLinkSendAction(latestCustomerCharge)}
                       </div>
                     ) : null}
                   </div>
@@ -5274,7 +5329,19 @@ export function ServiceRequestDetails({
                       <MiniMetric
                         label="Bekleyen link"
                         value={<span className="break-all">{paymentLinkCopyUrl(extraMountPayment)}</span>}
-                        hint={<button type="button" className="font-semibold text-amber-900 underline-offset-4 hover:underline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>Linki kopyala</button>}
+                        hint={(
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button asChild type="button" size="sm" variant="outline">
+                              <a href={paymentLinkCopyUrl(extraMountPayment)} target="_blank" rel="noreferrer">
+                                Ödeme linkini aç
+                              </a>
+                            </Button>
+                            <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>
+                              Linki kopyala
+                            </Button>
+                            {renderPaymentLinkSendAction(extraMountPayment)}
+                          </div>
+                        )}
                       />
                     ) : null}
                   </div>
@@ -5412,6 +5479,12 @@ export function ServiceRequestDetails({
                                 <div className="flex flex-wrap items-center gap-2">
                                   <a href={partRequest.payment_url} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline-offset-4 hover:underline">Ödeme linkini aç</a>
                                   <Button type="button" size="sm" variant="outline" onClick={() => void copyCustomerChargeValue(partRequest.payment_url, 'Link kopyalandı.')}>Linki kopyala</Button>
+                                  {renderPaymentLinkSendAction({
+                                    id: partRequest.payment_id ?? partRequest.customer_charge?.id ?? null,
+                                    status: partRequest.customer_charge?.status ?? 'pending',
+                                    payment_url: partRequest.payment_url,
+                                    amount: partRequest.customer_charge?.amount ?? ((Number(partRequest.service_amount ?? 0) || 0) + (Number(partRequest.part_amount ?? 0) || 0)),
+                                  })}
                                 </div>
                               ) : null}
                             </div>
@@ -5983,7 +6056,7 @@ export function ServiceRequestDetails({
                       </label>
                       <label className="grid gap-1 text-xs font-semibold text-slate-600">
                         Ödeme linki tutarı
-                        <Input type="number" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
+                        <Input type="number" inputMode="decimal" min="0" step="1" value={routeFeeExtraPaymentInput} onChange={(event) => setRouteFeeExtraPaymentInput(event.target.value)} />
                         <span className="font-medium text-slate-500">{paymentLinkAmountSourceLabel}</span>
                       </label>
                     </div>
@@ -6006,27 +6079,15 @@ export function ServiceRequestDetails({
                           <p className="mt-1 text-emerald-800">Iyzico Sandbox ödeme ekranı açılacak. Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.</p>
                         ) : null}
                         <div className="mt-2 flex flex-wrap gap-2">
-                          {extraMountPayment.payment_action_kind === 'open_provider_url' ? (
-                            <Button asChild type="button" size="sm" variant="outline">
-                              <a href={paymentLinkCopyUrl(extraMountPayment)} target="_blank" rel="noreferrer">
-                                {paymentActionLabel(extraMountPayment)}
-                              </a>
-                            </Button>
-                          ) : null}
-                          <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>
-                            Linki kopyala
-                          </Button>
-                          {extraMountPayment.id && extraMountPayment.status === 'pending' ? (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={paymentSendInFlight === extraMountPayment.id}
-                              onClick={() => void handlePendingPaymentSend(extraMountPayment)}
-                            >
-                              {paymentSendInFlight === extraMountPayment.id ? 'Kuyruğa alınıyor...' : 'Linki müşteriye gönder'}
-                            </Button>
-                          ) : null}
+                        <Button asChild type="button" size="sm" variant="outline">
+                          <a href={paymentLinkCopyUrl(extraMountPayment)} target="_blank" rel="noreferrer">
+                            Ödeme linkini aç
+                          </a>
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}>
+                          Linki kopyala
+                        </Button>
+                        {renderPaymentLinkSendAction(extraMountPayment)}
                           {extraMountPayment.is_external_provider && extraMountPayment.status === 'pending' ? (
                             <Button
                               type="button"
@@ -6162,10 +6223,15 @@ export function ServiceRequestDetails({
                     Toplam hakediş
                     <Input
                       type="number"
+                      inputMode="decimal"
                       min="0"
                       step="1"
-                      value={earningTotalAmount !== null ? numericInputValue(earningTotalAmount) : ''}
-                      readOnly
+                      value={earningTotalOverrideTouched ? earningTotalOverride : earningTotalAmount !== null ? numericInputValue(earningTotalAmount) : ''}
+                      onChange={(event) => {
+                        const nextValue = event.target.value
+                        setEarningTotalOverrideByRequest((current) => ({ ...current, [requestStateKey]: nextValue }))
+                        setEarningTotalOverrideTouchedByRequest((current) => ({ ...current, [requestStateKey]: true }))
+                      }}
                       placeholder={totalTechnicianCostAmount !== null ? String(totalTechnicianCostAmount) : '0'}
                     />
                   </label>

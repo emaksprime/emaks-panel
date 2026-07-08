@@ -228,6 +228,11 @@ class TechnicalServiceMessagingSettingsService
             'recipient_role' => 'customer',
             'description' => 'Açık aksiyonla gönderilir; link oluşturmak tek başına mesaj göndermez.',
         ],
+        'payment_received_ops' => [
+            'label' => 'Ödeme alındı / OPS bildirimi',
+            'recipient_role' => 'ops',
+            'description' => 'Trusted ödeme reconcile sonrası OPS WhatsApp bilgilendirmesi.',
+        ],
         'customer_pays_technician_notice' => [
             'label' => 'Ustaya ödeme bilgilendirmesi',
             'recipient_role' => 'customer',
@@ -268,6 +273,11 @@ class TechnicalServiceMessagingSettingsService
             'recipient_role' => 'customer',
             'description' => 'Garanti başlangıcı netleştiğinde müşteriye gider.',
         ],
+        'activation_warranty_customer' => [
+            'label' => 'Aktivasyon ve garanti bilgilendirmesi',
+            'recipient_role' => 'customer',
+            'description' => 'Final kontrol sonrası aktivasyon, garanti ve anket bilgisini tek mesajda verir.',
+        ],
         'completion_submitted_ops' => [
             'label' => 'OPS tamamlandı bildirimi',
             'recipient_role' => 'ops',
@@ -277,6 +287,11 @@ class TechnicalServiceMessagingSettingsService
             'label' => 'OPS parça talebi',
             'recipient_role' => 'ops',
             'description' => 'Parça talebi oluştuğunda OPS bilgilendirmesi.',
+        ],
+        'part_received_ops' => [
+            'label' => 'Parça teslim alındı / OPS bildirimi',
+            'recipient_role' => 'ops',
+            'description' => 'Usta parçayı teslim aldığında OPS WhatsApp bilgilendirmesi.',
         ],
         'part_fee_payment_link_customer' => [
             'label' => 'Parça ücreti ödeme bağlantısı',
@@ -843,6 +858,26 @@ class TechnicalServiceMessagingSettingsService
     private function defaultMessageTypeSettings(): array
     {
         $defaults = [];
+        $coreWorkflowDefaults = [
+            'payment_received_ops' => [
+                'enabled' => true,
+                'channel_policy' => 'whatsapp_only',
+                'whatsapp_mode' => 'test',
+                'sms_mode' => 'disabled',
+            ],
+            'part_received_ops' => [
+                'enabled' => true,
+                'channel_policy' => 'whatsapp_only',
+                'whatsapp_mode' => 'test',
+                'sms_mode' => 'disabled',
+            ],
+            'activation_warranty_customer' => [
+                'enabled' => true,
+                'channel_policy' => 'whatsapp_and_sms',
+                'whatsapp_mode' => 'test',
+                'sms_mode' => 'test',
+            ],
+        ];
 
         foreach (self::MESSAGE_TYPES as $key => $definition) {
             $defaults[$key] = [
@@ -862,6 +897,10 @@ class TechnicalServiceMessagingSettingsService
                 $defaults[$key]['test_send_allowed'] = false;
                 $defaults[$key]['channel_policy'] = 'disabled';
                 $defaults[$key]['whatsapp_mode'] = 'disabled';
+            }
+
+            if (isset($coreWorkflowDefaults[$key])) {
+                $defaults[$key] = array_replace($defaults[$key], $coreWorkflowDefaults[$key]);
             }
         }
 

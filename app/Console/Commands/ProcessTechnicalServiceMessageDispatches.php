@@ -26,7 +26,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
         {--created-after= : ISO timestamp; dispatch must be created at or after this time}
         {--worker-loop : Run a bounded worker loop}
         {--sleep-seconds=10 : Worker loop sleep seconds}
-        {--stop-after-idle-cycles=60 : Stop worker after this many idle cycles}
+        {--stop-after-idle-cycles=0 : Stop worker after this many idle cycles; 0 disables idle stop}
         {--require-real-send-enabled : Stop unless real_send_enabled=true}
         {--require-queue-not-paused : Stop unless queue_paused=false}
         {--print-start-command : Print the safe manual E2E worker command and exit}
@@ -111,7 +111,8 @@ class ProcessTechnicalServiceMessageDispatches extends Command
         }
 
         $sleepSeconds = max(0, min(60, (int) $this->option('sleep-seconds')));
-        $idleLimit = max(1, (int) $this->option('stop-after-idle-cycles'));
+        $idleLimitOption = (int) $this->option('stop-after-idle-cycles');
+        $idleLimit = $idleLimitOption > 0 ? $idleLimitOption : null;
         $startedAt = CarbonImmutable::now();
         $expiresAt = $startedAt->addSeconds($maxSeconds);
         $idleCycles = 0;
@@ -124,6 +125,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
             'manual_e2e_worker_expires_at' => $expiresAt->toIso8601String(),
             'allowlist' => $this->maskPhones((array) ($options['allowlisted_phones'] ?? [])),
             'filters' => $this->filterSummary($options),
+            'idle_stop' => $idleLimit === null ? 'disabled' : $idleLimit,
             'stop_command' => 'Stop-Process -Id <PID>',
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
@@ -143,7 +145,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
 
             if ($count === 0) {
                 $idleCycles++;
-                if ($idleCycles >= $idleLimit) {
+                if ($idleLimit !== null && $idleCycles >= $idleLimit) {
                     $stopReason = 'idle_limit_reached';
                     break;
                 }
@@ -265,7 +267,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
                 '--require-queue-not-paused',
                 '--max-seconds=14400',
                 '--sleep-seconds=10',
-                '--stop-after-idle-cycles=60',
+                '--stop-after-idle-cycles=0',
             ]),
         ];
     }

@@ -5,13 +5,15 @@ namespace Tests\Feature;
 use App\Mail\TechnicalServicePaymentAuditMail;
 use App\Models\MailTransportProfile;
 use App\Models\PageConfig;
+use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
 use App\Models\TechnicalServiceRequest;
+use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
+use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
-use App\Services\Payments\TechnicalServiceMailTransportSettingsService;
 use App\Services\TechnicalService\TechnicalServicePaymentOwnershipService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -227,6 +229,16 @@ class PaymentProviderReconciliationContractTest extends TestCase
         Mail::fake();
         $this->enablePaymentNotification('payment-audit@example.test');
         $this->configureReadySmtpProfile();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '0546 764 74 28',
+            'message_types' => [
+                'payment_received_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            ],
+        ]);
 
         $request = $this->technicalServiceRequest([
             'mrn' => 'PR88-REL3C9-MRN',
@@ -293,6 +305,35 @@ class PaymentProviderReconciliationContractTest extends TestCase
 
         $this->assertSame(1, $request->events()->where('event_type', 'payment_receipt_notification_sent')->count());
         $this->assertSame(1, $request->events()->where('event_type', 'mount_payment_paid')->count());
+        $this->assertDatabaseHas('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'payment_received_ops',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'ops',
+            'provider_key' => 'evo_whatsapp',
+            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+        ]);
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'payment_received_ops',
+            'channel' => 'sms',
+        ]);
+
+        $opsBody = (string) TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_received_ops')
+            ->where('channel', 'whatsapp')
+            ->firstOrFail()
+            ->request_payload['body'];
+
+        $this->assertStringContainsString('PR88-REL3C9-MRN', $opsBody);
+        $this->assertStringContainsString('PR88 REL3C9 Müşteri', $opsBody);
+        $this->assertStringContainsString('5550000001', $opsBody);
+        $this->assertStringContainsString('PR88-REL3C9-SERIAL', $opsBody);
+        $this->assertStringContainsString('1.234,50 TRY', $opsBody);
+        $this->assertStringContainsString('25236546', $opsBody);
+        $this->assertStringContainsString('27225634', $opsBody);
+        $this->assertStringContainsString('Sağlayıcı tarafından dönmedi', $opsBody);
     }
 
     public function test_pending_and_cancelled_sync_do_not_send_payment_notification(): void

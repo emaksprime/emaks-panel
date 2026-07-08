@@ -19,6 +19,7 @@ use App\Services\TechnicalService\TechnicalServiceServiceVisitService;
 use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\TechnicalService\WarrantyService;
 use App\Support\PartnerPortalPublicUrl;
+use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -337,6 +338,7 @@ class TechnicalServicePartnerPortalOpsController extends Controller
                 ],
             ]);
 
+            $warranty = null;
             if ($job->serial_number && $job->service_type === 'Montaj') {
                 try {
                     $warranty = app(WarrantyService::class)->statusForSerial((string) $job->serial_number);
@@ -371,62 +373,47 @@ class TechnicalServicePartnerPortalOpsController extends Controller
             $completionVersion = $job->updated_at?->timestamp ?? 'missing';
             $warrantyStartedAt = $job->installation_completed_at ?: $job->completed_at ?: $job->field_completed_at;
             $warrantyVersion = $warrantyStartedAt?->timestamp ?? 'missing';
+            $warrantyStartedAtFormatted = $this->formatWarrantyDate($warranty['warranty_started_at'] ?? $warrantyStartedAt?->toDateString());
+            $warrantyEndsAtFormatted = $this->formatWarrantyDate($warranty['warranty_ends_at'] ?? null);
+            $surveyLink = $this->completionSurveyLink($job->refresh());
+            if ($surveyLink !== null) {
+                $job->events()->create([
+                    'event_type' => 'customer_completion_survey_link_logged',
+                    'title' => 'Müşteri kapanış anket linki loglandı',
+                    'note' => null,
+                    'from_status' => $job->workflow_status,
+                    'to_status' => $job->workflow_status,
+                    'author_user_id' => $request->user()?->id,
+                    'metadata' => [
+                        'partner_job_action_id' => $partnerJobAction->id,
+                        'survey_link' => $surveyLink,
+                        'source' => 'activation_warranty_customer',
+                    ],
+                ]);
+            }
 
             $messageSummaries = [
-                'final_control_completed_customer' => $this->workflowMessages->queueWorkflowDispatches(
+                'activation_warranty_customer' => $this->workflowMessages->queueWorkflowDispatches(
                     $job->refresh(),
-                    'final_control_completed_customer',
+                    'activation_warranty_customer',
                     'customer',
                     [
                         'completed_at_formatted' => now('Europe/Istanbul')->format('d.m.Y H:i'),
-                    ],
-                    $request->user(),
-                    $partnerJobAction,
-                    [
-                        'recipient_phone' => $job->customer_phone,
-                        'triggered_by' => 'ops_final_control_completed',
-                        'event_version' => 'final-control:'.$partnerJobAction->id.':'.$completionVersion,
-                        'metadata' => [
-                            'partner_job_action_id' => $partnerJobAction->id,
-                            'workflow_event' => 'final_control_completed',
-                        ],
-                    ],
-                ),
-                'activation_code_customer' => $this->workflowMessages->queueWorkflowDispatches(
-                    $job->refresh(),
-                    'activation_code_customer',
-                    'customer',
-                    [
                         'activation_code' => $job->activation_code,
+                        'warranty_started_at_formatted' => $warrantyStartedAtFormatted,
+                        'warranty_ends_at_formatted' => $warrantyEndsAtFormatted,
+                        'survey_link' => $surveyLink,
                     ],
                     $request->user(),
                     $partnerJobAction,
                     [
                         'recipient_phone' => $job->customer_phone,
-                        'triggered_by' => 'ops_activation_code_ready',
-                        'event_version' => 'activation:'.$partnerJobAction->id.':'.($job->activation_code ?: 'missing'),
+                        'triggered_by' => 'ops_activation_warranty_ready',
+                        'event_version' => 'activation-warranty:'.$partnerJobAction->id.':'.$completionVersion.':'.($job->activation_code ?: 'missing').':'.$warrantyVersion,
                         'metadata' => [
                             'partner_job_action_id' => $partnerJobAction->id,
-                            'workflow_event' => 'activation_code_ready',
-                        ],
-                    ],
-                ),
-                'warranty_started_customer' => $this->workflowMessages->queueWorkflowDispatches(
-                    $job->refresh(),
-                    'warranty_started_customer',
-                    'customer',
-                    [
-                        'warranty_started_at_formatted' => $warrantyStartedAt?->timezone('Europe/Istanbul')->format('d.m.Y'),
-                    ],
-                    $request->user(),
-                    $partnerJobAction,
-                    [
-                        'recipient_phone' => $job->customer_phone,
-                        'triggered_by' => 'ops_warranty_started',
-                        'event_version' => 'warranty:'.$partnerJobAction->id.':'.$warrantyVersion,
-                        'metadata' => [
-                            'partner_job_action_id' => $partnerJobAction->id,
-                            'workflow_event' => 'warranty_started',
+                            'workflow_event' => 'activation_warranty_customer',
+                            'survey_link_logged' => $surveyLink !== null,
                         ],
                     ],
                 ),
@@ -440,6 +427,38 @@ class TechnicalServicePartnerPortalOpsController extends Controller
         });
 
         return response()->json($result);
+    }
+
+    private function formatWarrantyDate(mixed $value): ?string
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->timezone('Europe/Istanbul')->format('d.m.Y');
+        }
+
+        $text = trim((string) $value);
+        if ($text === '') {
+            return null;
+        }
+
+        try {
+            return CarbonImmutable::parse($text)->timezone('Europe/Istanbul')->format('d.m.Y');
+        } catch (Throwable) {
+            return $text;
+        }
+    }
+
+    private function completionSurveyLink(TechnicalServiceRequest $job): ?string
+    {
+        $confirmation = TechnicalServiceCustomerConfirmation::query()
+            ->where('technical_service_request_id', $job->id)
+            ->latest('id')
+            ->first();
+
+        if (! $confirmation instanceof TechnicalServiceCustomerConfirmation) {
+            return null;
+        }
+
+        return PartnerPortalPublicUrl::route('service-job-confirmation.show', ['token' => $confirmation->token]).'?survey=1';
     }
 
     /**

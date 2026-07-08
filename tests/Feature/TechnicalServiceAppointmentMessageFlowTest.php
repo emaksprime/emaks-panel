@@ -16,6 +16,7 @@ use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
 use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
+use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -107,7 +108,6 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $actor,
             ['slot' => ['date' => '2026-07-08', 'start_time' => '14:00', 'end_time' => '16:00']],
         );
-
         $this->assertSame(2, $summary['queued']);
         $this->assertSame(['sms', 'whatsapp'], TechnicalServiceMessageDispatch::query()
             ->where('technical_service_request_id', $request->id)
@@ -532,6 +532,196 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_srv_payment_link_customer_uses_srv_reference_without_internal_mrn(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E13B-INTERNAL',
+            'service_code' => 'SRV-REL4E13B-PAY',
+            'service_type' => 'Servis',
+            'customer_phone' => '05372081633',
+        ]);
+        $session = $this->mountSession('REL4E13B-PAYMENT');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'pay-rel4e13b',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 140,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/service/rel4e13b',
+            'raw_payload' => ['source' => 'rel4e13b_srv_payment_test'],
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 2)
+            ->assertJsonPath('dispatches.blocked', 0);
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_link_customer')
+            ->orderBy('channel')
+            ->get();
+
+        $this->assertCount(2, $dispatches);
+        foreach ($dispatches as $dispatch) {
+            $body = (string) ($dispatch->request_payload['body'] ?? '');
+
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+            $this->assertStringContainsString('SRV-REL4E13B-PAY numaralı servis', $body);
+            $this->assertStringNotContainsString('MRN-REL4E13B-INTERNAL', $body);
+            $this->assertStringNotContainsString('MRN:', $body);
+            $this->assertSame($body, $dispatch->bodyForProvider());
+            $this->assertSame(hash('sha256', $body), $dispatch->providerBodyHash());
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_part_fee_payment_link_send_uses_part_fee_type_and_duplicate_guard(): void
+    {
+        Http::fake();
+        $actor = $this->admin();
+        $this->configureMessaging([
+            'part_fee_payment_link_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+        ]);
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E13C-INTERNAL',
+            'service_code' => 'SRV-REL4E13C-PART',
+            'service_type' => 'Servis',
+            'customer_phone' => '05372081633',
+        ]);
+        $session = $this->mountSession('REL4E13C-PART');
+        $request->forceFill(['mount_session_id' => $session->id])->save();
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'pay-rel4e13c-part',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 700,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/service/rel4e13c-part',
+            'raw_payload' => [
+                'source' => 'operation_customer_charge',
+                'purpose' => 'part_payment',
+                'charge_type' => 'part_payment',
+                'part_request_id' => 987,
+            ],
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 2)
+            ->assertJsonPath('dispatches.blocked', 0);
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'part_fee_payment_link_customer')
+            ->orderBy('channel')
+            ->get();
+
+        $this->assertCount(2, $dispatches);
+        foreach ($dispatches as $dispatch) {
+            $body = (string) ($dispatch->request_payload['body'] ?? '');
+
+            $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+            $this->assertStringContainsString('SRV-REL4E13C-PART numaralı servis', $body);
+            $this->assertStringContainsString('700,00 TL', $body);
+            $this->assertStringContainsString('https://pay.example.test/service/rel4e13c-part', $body);
+            $this->assertStringNotContainsString('MRN-REL4E13C-INTERNAL', $body);
+            $this->assertSame($body, $dispatch->bodyForProvider());
+        }
+
+        $this->assertDatabaseMissing('technical_service_message_dispatches', [
+            'technical_service_request_id' => $request->id,
+            'message_type' => 'payment_link_customer',
+        ]);
+
+        $this->actingAs($actor)
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/{$payment->id}/send-link")
+            ->assertOk()
+            ->assertJsonPath('dispatches.queued', 0)
+            ->assertJsonPath('dispatches.duplicate_blocked', 2);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_payment_received_ops_trusted_paid_queues_ops_whatsapp_only(): void
+    {
+        Http::fake();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'test_mode_enabled' => true,
+            'shared_test_phone' => '0546 764 74 28',
+            'ops_whatsapp_enabled' => true,
+            'ops_whatsapp_phone' => '0546 764 74 28',
+            'message_types' => [
+                'payment_received_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            ],
+        ]);
+        $session = $this->mountSession('REL4E13B-PAID');
+        $request = $this->technicalServiceRequest([
+            'mrn' => 'MRN-REL4E13B-PAID',
+            'service_code' => 'SRV-REL4E13B-PAID-001',
+            'serial_number' => 'SN-REL4E13B-PAID',
+            'customer_name' => 'REL4E13B Ödeme Müşteri',
+            'customer_phone' => '05372081633',
+            'mount_session_id' => $session->id,
+        ]);
+        $payment = TechnicalServiceMountPayment::query()->create([
+            'technical_service_mount_session_id' => $session->id,
+            'technical_service_request_id' => $request->id,
+            'provider' => 'fake',
+            'provider_reference' => 'pay-rel4e13b-paid',
+            'status' => TechnicalServiceMountPayment::STATUS_PENDING,
+            'amount' => 140,
+            'currency' => 'TRY',
+            'payment_url' => 'https://pay.example.test/service/rel4e13b-paid',
+            'raw_payload' => ['source' => 'rel4e13b_payment_received_ops_test'],
+        ]);
+
+        app(TechnicalServicePaymentProviderReconciliationService::class)->markPaidFromTrustedProvider($payment, [
+            'provider' => 'fake',
+            'provider_status' => 'paid',
+            'payment_id' => 'provider-payment-rel4e13b',
+            'conversation_id' => 'provider-conversation-rel4e13b',
+        ]);
+
+        $dispatches = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_received_ops')
+            ->orderBy('channel')
+            ->get();
+
+        $this->assertCount(1, $dispatches);
+        $dispatch = $dispatches->first();
+        $this->assertSame('whatsapp', $dispatch->channel);
+        $this->assertSame('ops', $dispatch->recipient_role);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertStringContainsString('MRN-REL4E13B-PAID', $dispatch->bodyForProvider());
+        $this->assertStringContainsString('REL4E13B Ödeme Müşteri', $dispatch->bodyForProvider());
+        $this->assertStringContainsString('05372081633', $dispatch->bodyForProvider());
+        $this->assertStringContainsString('SN-REL4E13B-PAID', $dispatch->bodyForProvider());
+        $this->assertStringContainsString('140,00 TRY', $dispatch->bodyForProvider());
+        $this->assertStringNotContainsString('Dekont: -', $dispatch->bodyForProvider());
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'payment_received_ops')
+            ->where('channel', 'sms')
+            ->count());
+        Http::assertNothingSent();
+    }
+
     public function test_customer_approval_blocks_provider_dispatch_without_public_url(): void
     {
         $this->configureMessaging([
@@ -630,57 +820,62 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_final_control_activation_and_warranty_customer_messages_use_queue_only(): void
+    public function test_final_control_activation_warranty_customer_message_is_single_queue_message(): void
     {
         $actor = $this->admin();
         $this->configureMessaging([
-            'final_control_completed_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
-            'activation_code_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
-            'warranty_started_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
+            'activation_warranty_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
         $request = $this->technicalServiceRequest([
-            'mrn' => 'MRN-REL4E10-FINAL',
+            'mrn' => 'MRN-REL4E13-FINAL',
             'customer_phone' => '05372081633',
+            'serial_number' => 'REL4E13-SERIAL',
+            'activation_code' => 'ACT-REL4E13',
         ]);
 
-        $summaries = [
-            app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
-                $request,
-                'final_control_completed_customer',
-                'customer',
-                ['completed_at_formatted' => '07.07.2026 11:30'],
-                $actor,
-            ),
-            app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
-                $request,
-                'activation_code_customer',
-                'customer',
-                ['activation_code' => 'ACT-REL4E10'],
-                $actor,
-            ),
-            app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
-                $request,
-                'warranty_started_customer',
-                'customer',
-                ['warranty_started_at_formatted' => '07.07.2026'],
-                $actor,
-            ),
-        ];
+        $summary = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueWorkflowDispatches(
+            $request,
+            'activation_warranty_customer',
+            'customer',
+            [
+                'activation_code' => 'ACT-REL4E13',
+                'warranty_started_at_formatted' => '08.07.2026',
+                'warranty_ends_at_formatted' => '08.07.2028',
+                'survey_link' => 'https://portal.example.test/service-job-confirmation/token?survey=1',
+                'survey_link_sms' => 'https://e.ms/anket/13',
+            ],
+            $actor,
+        );
 
-        $this->assertSame([2, 2, 2], array_map(fn (array $summary): int => $summary['queued'], $summaries));
-        foreach (['final_control_completed_customer', 'activation_code_customer', 'warranty_started_customer'] as $messageType) {
-            $this->assertDatabaseHas('technical_service_message_dispatches', [
-                'technical_service_request_id' => $request->id,
-                'message_type' => $messageType,
-                'recipient_role' => 'customer',
-                'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
-            ]);
-        }
-        $this->assertSame(6, TechnicalServiceMessageDispatch::query()
+        $this->assertSame(2, $summary['queued']);
+        $this->assertSame(2, TechnicalServiceMessageDispatch::query()
             ->where('technical_service_request_id', $request->id)
-            ->whereIn('message_type', ['final_control_completed_customer', 'activation_code_customer', 'warranty_started_customer'])
+            ->where('message_type', 'activation_warranty_customer')
             ->whereIn('provider_key', ['evo_whatsapp', 'nac_sms'])
             ->count());
+        $this->assertSame(0, TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->whereIn('message_type', ['final_control_completed_customer', 'activation_code_customer', 'warranty_started_customer'])
+            ->count());
+
+        $body = (string) TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'activation_warranty_customer')
+            ->where('channel', 'whatsapp')
+            ->firstOrFail()
+            ->request_payload['body'];
+
+        $this->assertStringContainsString('ACT-REL4E13', $body);
+        $this->assertStringContainsString('REL4E13-SERIAL', $body);
+        $this->assertStringContainsString('08.07.2026', $body);
+        $this->assertStringContainsString('08.07.2028', $body);
+        $this->assertStringContainsString('https://portal.example.test/service-job-confirmation/token?survey=1', $body);
+
+        $controllerSource = file_get_contents(app_path('Http/Controllers/Api/TechnicalServicePartnerPortalOpsController.php')) ?: '';
+        $this->assertStringContainsString("'activation_warranty_customer' =>", $controllerSource);
+        $this->assertStringNotContainsString("'final_control_completed_customer' => $".'this->workflowMessages->queueWorkflowDispatches', $controllerSource);
+        $this->assertStringNotContainsString("'activation_code_customer' => $".'this->workflowMessages->queueWorkflowDispatches', $controllerSource);
+        $this->assertStringNotContainsString("'warranty_started_customer' => $".'this->workflowMessages->queueWorkflowDispatches', $controllerSource);
     }
 
     public function test_payment_link_send_button_and_amount_steps_are_queue_safe_in_frontend_source(): void
@@ -692,7 +887,50 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertStringContainsString('onMountPaymentSend(payment.id)', $detailSource);
         $this->assertStringContainsString('/payments/${paymentId}/send-link', $pageSource);
         $this->assertStringContainsString('step="1"', $detailSource);
+        $this->assertStringContainsString('inputMode="decimal"', $detailSource);
+        $this->assertStringContainsString('Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.', $detailSource);
+        $this->assertStringContainsString('setEarningTotalOverrideByRequest((current) => ({ ...current, [requestStateKey]: nextValue }))', $detailSource);
         $this->assertStringContainsString('step="1"', $pageSource);
+    }
+
+    public function test_payment_card_actions_standard_pending_link_card_shows_open_copy_send_actions(): void
+    {
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $standardPendingCardStart = strpos($detailSource, 'label="Bekleyen link"');
+
+        $this->assertNotFalse($standardPendingCardStart);
+
+        $standardPendingCard = substr($detailSource, (int) $standardPendingCardStart, 1200);
+
+        $this->assertStringContainsString('Ödeme linkini aç', $standardPendingCard);
+        $this->assertStringContainsString('Linki kopyala', $standardPendingCard);
+        $this->assertStringContainsString('renderPaymentLinkSendAction(extraMountPayment)', $standardPendingCard);
+    }
+
+    public function test_technical_service_detail_dialog_has_accessible_description(): void
+    {
+        $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+        $detailDialogStart = strpos($pageSource, 'DialogTitle className="text-base font-semibold text-slate-900">Talep Detayı');
+
+        $this->assertNotFalse($detailDialogStart);
+
+        $detailDialogSource = substr($pageSource, (int) $detailDialogStart, 500);
+
+        $this->assertStringContainsString('DialogDescription className="sr-only"', $detailDialogSource);
+        $this->assertStringContainsString('operasyon, ödeme, usta atama ve saha tamamlama detayları', $detailDialogSource);
+    }
+
+    public function test_part_received_ops_hook_is_queue_only_and_whatsapp_only_in_source(): void
+    {
+        $controllerSource = file_get_contents(app_path('Http/Controllers/Api/PartnerServiceJobController.php')) ?: '';
+        $registrySource = file_get_contents(app_path('Services/Messaging/TechnicalServiceMessagingSettingsService.php')) ?: '';
+
+        $this->assertStringContainsString("'part_received_ops'", $controllerSource);
+        $this->assertStringContainsString("'triggered_by' => 'partner_portal_part_received'", $controllerSource);
+        $this->assertStringContainsString("'part_received_ops' => [", $registrySource);
+        $this->assertStringContainsString("'recipient_role' => 'ops'", $registrySource);
+        $this->assertStringNotContainsString('sendMessage(', $controllerSource);
+        $this->assertStringNotContainsString('sendSms(', $controllerSource);
     }
 
     public function test_template_source_dispatch_uses_active_db_template_over_default_and_matches_preview(): void

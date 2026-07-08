@@ -3,8 +3,8 @@
 namespace App\Services\TechnicalService;
 
 use App\Models\TechnicalServiceMountPayment;
-use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServicePartnerJobAction;
+use App\Models\TechnicalServicePartRequest;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\User;
@@ -633,6 +633,13 @@ class TechnicalServicePartRequestService
             ]);
         }
 
+        $customerAddress = trim((string) ($request->location_formatted_address ?: $request->service_address));
+        if ($customerAddress === '') {
+            throw ValidationException::withMessages([
+                'customer_address' => 'Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.',
+            ]);
+        }
+
         $totalAmount = round($serviceAmount + $partAmount, 2);
         $purpose = $serviceAmount > 0 && $partAmount > 0
             ? 'service_and_part_payment'
@@ -653,6 +660,12 @@ class TechnicalServicePartRequestService
                 'root_request_id' => $request->parent_request_id ?: $request->id,
                 'mrn' => $request->mrn,
                 'service_code' => $request->service_code,
+                'serial_number' => $request->serial_number,
+                'customer_name' => $request->customer_name,
+                'customer_phone' => $request->customer_phone,
+                'customer_address' => $customerAddress,
+                'customer_city' => $request->customer_city,
+                'customer_district' => $request->customer_district,
                 'purpose' => $purpose,
                 'charge_type' => $purpose,
                 'service_amount' => $serviceAmount,

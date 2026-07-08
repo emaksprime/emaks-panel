@@ -197,6 +197,64 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertSame('nac_sms', $customer['sms_provider']);
     }
 
+    public function test_core_workflow_message_type_defaults_are_enabled_without_real_send(): void
+    {
+        $types = collect($this->actingAs($this->admin())
+            ->getJson('/api/technical-service/messaging-settings')
+            ->assertOk()
+            ->json('messaging_settings.message_types'))
+            ->keyBy('key');
+
+        $paymentReceived = $types->get('payment_received_ops');
+        $partReceived = $types->get('part_received_ops');
+        $activationWarranty = $types->get('activation_warranty_customer');
+
+        $this->assertTrue($paymentReceived['enabled']);
+        $this->assertSame('whatsapp_only', $paymentReceived['channel_policy']);
+        $this->assertFalse($paymentReceived['real_send_allowed']);
+        $this->assertSame('disabled', $paymentReceived['sms_mode']);
+
+        $this->assertTrue($partReceived['enabled']);
+        $this->assertSame('whatsapp_only', $partReceived['channel_policy']);
+        $this->assertFalse($partReceived['real_send_allowed']);
+        $this->assertSame('disabled', $partReceived['sms_mode']);
+
+        $this->assertTrue($activationWarranty['enabled']);
+        $this->assertSame('whatsapp_and_sms', $activationWarranty['channel_policy']);
+        $this->assertFalse($activationWarranty['real_send_allowed']);
+        $this->assertSame('test', $activationWarranty['sms_mode']);
+    }
+
+    public function test_legacy_settings_normalize_new_core_workflow_message_types(): void
+    {
+        PageConfig::query()->create([
+            'page_code' => TechnicalServiceMessagingSettingsService::PAGE_CODE,
+            'layout_json' => [
+                'technical_service' => [
+                    'messaging' => [
+                        'messaging_enabled' => true,
+                        'message_types' => [
+                            'payment_link_customer' => [
+                                'enabled' => true,
+                                'channel_policy' => 'whatsapp_and_sms',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $types = collect(app(TechnicalServiceMessagingSettingsService::class)->payload()['message_types'])
+            ->keyBy('key');
+
+        $this->assertTrue($types->get('payment_received_ops')['enabled']);
+        $this->assertSame('whatsapp_only', $types->get('payment_received_ops')['channel_policy']);
+        $this->assertTrue($types->get('part_received_ops')['enabled']);
+        $this->assertSame('whatsapp_only', $types->get('part_received_ops')['channel_policy']);
+        $this->assertTrue($types->get('activation_warranty_customer')['enabled']);
+        $this->assertSame('whatsapp_and_sms', $types->get('activation_warranty_customer')['channel_policy']);
+    }
+
     public function test_admin_can_save_safe_test_mode_settings(): void
     {
         config(['services.evolution.n8n_webhook_url' => 'https://n8n.example.test/webhook/emaks/evo/send-message']);

@@ -109,6 +109,13 @@ class TechnicalServiceMessageTypeRegistry
                 'payment_link',
                 'payment_amount_formatted',
             ],
+            'payment_received_ops' => [
+                'internal_job_reference',
+                'customer_name',
+                'customer_phone',
+                'payment_amount_formatted',
+                'payment_status_label',
+            ],
             'customer_pays_technician_notice' => [
                 'customer_name',
                 'customer_reference_phrase',
@@ -156,6 +163,16 @@ class TechnicalServiceMessageTypeRegistry
                 'customer_reference_phrase',
                 'warranty_started_at_formatted',
             ],
+            'activation_warranty_customer' => [
+                'customer_name',
+                'customer_reference_phrase',
+                'product_name',
+                'serial_no',
+                'activation_code',
+                'warranty_started_at_formatted',
+                'warranty_ends_at_formatted',
+                'survey_link',
+            ],
             'completion_submitted_ops' => [
                 'internal_job_reference',
                 'technician_name',
@@ -166,6 +183,13 @@ class TechnicalServiceMessageTypeRegistry
                 'actor_name',
                 'part_name',
                 'part_reason',
+                'next_action_text',
+            ],
+            'part_received_ops' => [
+                'internal_job_reference',
+                'technician_name',
+                'part_name',
+                'part_received_at_formatted',
                 'next_action_text',
             ],
             'part_fee_payment_link_customer' => [
@@ -280,6 +304,7 @@ class TechnicalServiceMessageTypeRegistry
                 'final_control_completed_customer',
                 'activation_code_customer',
                 'warranty_started_customer',
+                'activation_warranty_customer',
                 'part_fee_payment_link_customer' => [
                     'customer_reference_code',
                     'customer_job_type_label',
@@ -290,6 +315,7 @@ class TechnicalServiceMessageTypeRegistry
                     'activation_code',
                     'warranty_started_at_formatted',
                     'warranty_ends_at_formatted',
+                    'survey_link',
                     'customer_visible_note',
                     'customer_visible_note_block',
                 ],
@@ -331,11 +357,23 @@ class TechnicalServiceMessageTypeRegistry
                 ],
                 'completion_submitted_ops',
                 'part_request_ops',
+                'part_received_ops',
+                'payment_received_ops',
                 'support_request_ops',
                 'job_rejected_ops',
                 'price_revision_requested_ops' => [
                     'internal_job_reference',
                     'actor_name',
+                    'technician_name',
+                    'customer_name',
+                    'customer_phone',
+                    'serial_no',
+                    'payment_link',
+                    'payment_amount_formatted',
+                    'payment_status_label',
+                    'provider_payment_reference',
+                    'provider_transaction_reference',
+                    'provider_receipt_reference',
                     'support_subject',
                     'support_note',
                     'created_at_formatted',
@@ -350,6 +388,8 @@ class TechnicalServiceMessageTypeRegistry
                     'part_code',
                     'part_quantity',
                     'part_reason',
+                    'part_details',
+                    'part_received_at_formatted',
                 ],
                 default => [],
             },
@@ -439,12 +479,15 @@ class TechnicalServiceMessageTypeRegistry
                 'appointment_updated_technician' => 'Merhaba {technician_name}. İş kartı randevusu güncellendi. İş {internal_job_reference}. Müşteri {customer_name}. Yeni randevu {appointment_date_formatted} {appointment_exact_time_range}. İş kartı bağlantısı {technician_job_card_url}. Bu sadece sesli arama script önizlemesidir.',
                 'customer_approval_request' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için servis tamamlandı bilgisi alınmıştır. Onay bağlantısı mesaj olarak paylaşılır. Bu sadece sesli arama script önizlemesidir.',
                 'payment_link_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için ödeme bağlantısı mesaj olarak paylaşılır. Tutar {payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
+                'payment_received_ops' => 'Ödeme alındı. İş {internal_job_reference}. Müşteri {customer_name}. Tutar {payment_amount_formatted}. Bu sadece OPS script önizlemesidir.',
                 'customer_pays_technician_notice' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizde randevu sırasında ustaya ödenecek tutar {customer_payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
                 'appointment_cancelled_customer' => 'Merhaba {customer_name}. EMAKS Prime Teknik Servis’ten arıyoruz. {customer_reference_phrase} randevunuz iptal edilmiştir. Detay için operasyon ekibimiz sizinle iletişime geçecektir. Bu sadece sesli arama script önizlemesidir.',
                 'final_control_completed_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizin son kontrolü tamamlanmıştır. Bu sadece sesli arama script önizlemesidir.',
                 'activation_code_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için aktivasyon kodunuz mesaj olarak paylaşılır. Bu sadece sesli arama script önizlemesidir.',
                 'warranty_started_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizin garanti başlangıç bilgisi mesaj olarak paylaşılır. Bu sadece sesli arama script önizlemesidir.',
+                'activation_warranty_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminizin aktivasyon ve garanti bilgileri tek mesajda paylaşılır. Bu sadece sesli arama script önizlemesidir.',
                 'part_fee_payment_link_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz için parça ücreti ödeme bağlantısı mesaj olarak paylaşılır. Tutar {payment_amount_formatted}. Bu sadece sesli arama script önizlemesidir.',
+                'part_received_ops' => 'Parça teslim alındı. İş {internal_job_reference}. Usta {technician_name}. Parça {part_name}. Bu sadece OPS script önizlemesidir.',
                 'future_survey_customer' => 'Merhaba {customer_name}. {customer_reference_phrase} işleminiz sonrası memnuniyet anketi bağlantısı paylaşılır. Bu sadece gelecek Voibot script önizlemesidir.',
                 default => 'Merhaba. EMAKS Prime Teknik Servis operasyon bilgilendirme script önizlemesi. İş referansı {internal_job_reference}. Gerçek Voibot çağrısı yapılmaz.',
             };
@@ -475,6 +518,9 @@ class TechnicalServiceMessageTypeRegistry
             'payment_link_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} için ödeme bağlantınız:\n{payment_link_sms}\nTutar: {payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için ödeme bağlantınız aşağıdadır.\n\nTutar: {payment_amount_formatted}\nÖdeme Bağlantısı:\n{payment_link}",
+            'payment_received_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nÖdeme alındı.\nİş: {internal_job_reference}\nTutar: {payment_amount_formatted}\nDurum: {payment_status_label}"
+                : "EMAKS Prime Teknik Servis\n\nÖdeme alındı.\n\nİş: {internal_job_reference}\nMüşteri: {customer_name}\nTelefon: {customer_phone}\nSeri No: {serial_no}\nTutar: {payment_amount_formatted}\nÖdeme Linki:\n{payment_link}\nProvider Ödeme No: {provider_payment_reference}\nProvider İşlem No: {provider_transaction_reference}\nDekont/Referans: {provider_receipt_reference}\nDurum: {payment_status_label}",
             'part_fee_payment_link_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} parça ücreti ödeme linki:\n{payment_link_sms}\nTutar: {payment_amount_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz için parça ücreti ödeme bağlantınız aşağıdadır.\n\nTutar: {payment_amount_formatted}\nÖdeme Bağlantısı:\n{payment_link}",
@@ -502,12 +548,18 @@ class TechnicalServiceMessageTypeRegistry
             'warranty_started_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS Prime\n{customer_reference_phrase} garanti başlangıcı: {warranty_started_at_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} için garanti başlangıç tarihi:\n\n{warranty_started_at_formatted}\n{warranty_ends_at_formatted}",
+            'activation_warranty_customer' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS Prime\n{customer_reference_phrase}\nAktivasyon: {activation_code}\nGaranti: {warranty_started_at_formatted} - {warranty_ends_at_formatted}\nAnket: {survey_link_sms}"
+                : "EMAKS Prime Teknik Servis\n\nSayın {customer_name},\n{customer_reference_phrase} işleminiz tamamlanmıştır.\n\nÜrün Bilgileri\nÜrün: {product_name}\nSeri No: {serial_no}\nAktivasyon Kodu: {activation_code}\n\nGaranti Bilgileri\nBaşlangıç: {warranty_started_at_formatted}\nBitiş: {warranty_ends_at_formatted}\n\nMemnuniyet anketi:\n{survey_link}",
             'completion_submitted_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nUsta işi tamamladı.\nİş: {internal_job_reference}\nUsta: {technician_name}\nTarih: {completed_at_formatted}"
                 : "EMAKS Prime Teknik Servis\n\nUsta işi tamamladığını bildirdi.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nTamamlama Tarihi: {completed_at_formatted}\nSonraki Aksiyon: OPS son kontrol / müşteri onayı",
             'part_request_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nParça talebi.\nİş: {internal_job_reference}\nParça: {part_name}\nAksiyon: {next_action_text}"
                 : "EMAKS Prime Teknik Servis\n\nParça talebi oluştu.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nParça: {part_name}\nAdet: {part_quantity}\nNeden: {part_reason}\nSonraki Aksiyon: {next_action_text}",
+            'part_received_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
+                ? "EMAKS OPS\nParça teslim alındı.\nİş: {internal_job_reference}\nParça: {part_name}\nAksiyon: {next_action_text}"
+                : "EMAKS Prime Teknik Servis\n\nUsta parçayı teslim aldı.\n\nİş: {internal_job_reference}\nUsta: {technician_name}\nParça: {part_name}\nDetay: {part_details}\nTeslim Alma: {part_received_at_formatted}\nSonraki Aksiyon: {next_action_text}",
             'support_request_ops' => $channel === TechnicalServiceMessageTemplate::CHANNEL_SMS
                 ? "EMAKS OPS\nDestek talebi.\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nKonu: {support_subject}"
                 : "EMAKS Prime Teknik Servis\n\nDestek talebi oluştu.\n\nİş: {internal_job_reference}\nTalep Eden: {actor_name}\nKonu: {support_subject}\nAçıklama: {support_note}\nTarih: {created_at_formatted}",
@@ -535,12 +587,15 @@ class TechnicalServiceMessageTypeRegistry
             'appointment_updated_technician' => "Usta randevu güncelleme - {$channelLabel}",
             'assignment_offer_technician' => "Usta iş ataması - {$channelLabel}",
             'appointment_proposed_ops' => "OPS randevu önerisi - {$channelLabel}",
+            'payment_received_ops' => "Ödeme alındı / OPS bildirimi - {$channelLabel}",
             'earnings_message_technician' => "Usta hakediş bilgilendirme - {$channelLabel}",
             'price_revision_response_technician' => "Usta hakediş revizyon cevabı - {$channelLabel}",
             'final_control_completed_customer' => "Müşteri son kontrol tamamlandı - {$channelLabel}",
             'activation_code_customer' => "Müşteri aktivasyon kodu - {$channelLabel}",
             'warranty_started_customer' => "Müşteri garanti başlangıcı - {$channelLabel}",
+            'activation_warranty_customer' => "Aktivasyon ve garanti bilgilendirmesi - {$channelLabel}",
             'part_request_ops' => "OPS parça talebi - {$channelLabel}",
+            'part_received_ops' => "Parça teslim alındı / OPS bildirimi - {$channelLabel}",
             'part_fee_payment_link_customer' => "Parça ücreti ödeme bağlantısı - {$channelLabel}",
             default => "{$fallback} - {$channelLabel}",
         };
@@ -601,6 +656,13 @@ class TechnicalServiceMessageTypeRegistry
                 'customer_reference_phrase',
                 'warranty_started_at_formatted',
             ],
+            'activation_warranty_customer' => [
+                'customer_reference_phrase',
+                'activation_code',
+                'warranty_started_at_formatted',
+                'warranty_ends_at_formatted',
+                'survey_link_sms',
+            ],
             default => $requiredVariables,
         };
     }
@@ -613,6 +675,7 @@ class TechnicalServiceMessageTypeRegistry
         return [
             'payment_link_sms',
             'confirmation_link_sms',
+            'survey_link_sms',
             'technician_job_card_short_url',
             'sms_payment_line',
             'sms_short_address',

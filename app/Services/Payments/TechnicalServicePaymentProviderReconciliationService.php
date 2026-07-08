@@ -4,6 +4,8 @@ namespace App\Services\Payments;
 
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
+use App\Models\TechnicalServiceRequest;
+use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\TechnicalService\TechnicalServicePaymentSettlementService;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -16,6 +18,7 @@ class TechnicalServicePaymentProviderReconciliationService
         private readonly TechnicalServicePaymentProviderGateway $gateway,
         private readonly TechnicalServicePaymentSettlementService $settlementService,
         private readonly TechnicalServicePaymentReceiptNotificationService $receiptNotificationService,
+        private readonly TechnicalServiceWorkflowMessageDispatchService $workflowMessages,
     ) {}
 
     /**
@@ -108,7 +111,53 @@ class TechnicalServicePaymentProviderReconciliationService
             'provider_response_redacted' => $providerResponse['provider_response_redacted'] ?? [],
         ]);
 
+        $this->queuePaymentReceivedOpsDispatch($paidPayment->fresh(), $providerResponse);
+
         return $this->receiptNotificationService->notifyTrustedPaid($paidPayment, $providerResponse);
+    }
+
+    /**
+     * @param  array<string, mixed>  $providerResponse
+     */
+    private function queuePaymentReceivedOpsDispatch(
+        TechnicalServiceMountPayment $payment,
+        array $providerResponse,
+    ): void {
+        $request = $payment->technicalServiceRequest()->first();
+        if (! $request instanceof TechnicalServiceRequest) {
+            return;
+        }
+
+        $currency = strtoupper((string) ($payment->currency ?: 'TRY'));
+        $amountLabel = number_format(round((float) $payment->amount, 2), 2, ',', '.').' '.$currency;
+        $paidAt = $payment->paid_at ?: $payment->provider_paid_at;
+
+        $this->workflowMessages->queueWorkflowDispatches(
+            $request->refresh(),
+            'payment_received_ops',
+            'ops',
+            [
+                'payment_link' => $payment->payment_url,
+                'payment_amount_formatted' => $amountLabel,
+                'payment_status_label' => 'Ödendi',
+                'provider_payment_reference' => $payment->provider_payment_reference,
+                'provider_transaction_reference' => $payment->provider_transaction_reference,
+                'provider_receipt_reference' => $payment->provider_receipt_reference,
+            ],
+            null,
+            null,
+            [
+                'triggered_by' => 'provider_payment_reconciliation_paid',
+                'event_version' => 'payment-received:'.$payment->id.':'.($paidAt?->timestamp ?? 'missing'),
+                'metadata' => [
+                    'payment_id' => $payment->id,
+                    'provider' => $payment->provider,
+                    'provider_reference' => $payment->provider_reference,
+                    'provider_status' => $this->rawProviderStatus($providerResponse),
+                    'workflow_event' => 'payment_received_ops',
+                ],
+            ],
+        );
     }
 
     /**

@@ -760,6 +760,13 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
+        $customerAddress = trim((string) ($technicalServiceRequest->location_formatted_address ?: $technicalServiceRequest->service_address));
+        if ($isCustomerCharge && $customerAddress === '') {
+            throw ValidationException::withMessages([
+                'customer_address' => 'Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.',
+            ]);
+        }
+
         $source = $isCustomerCharge ? 'operation_customer_charge' : 'operation_extra_mount_fee';
         $selectedSerialIds = $validSerialIds->sort()->values()->all();
         $paymentPayload = [
@@ -774,6 +781,7 @@ class TechnicalServiceController extends Controller
             'serial_number' => $technicalServiceRequest->serial_number,
             'customer_name' => $technicalServiceRequest->customer_name,
             'customer_phone' => $technicalServiceRequest->customer_phone,
+            'customer_address' => $customerAddress !== '' ? $customerAddress : null,
             'customer_city' => $technicalServiceRequest->customer_city,
             'customer_district' => $technicalServiceRequest->customer_district,
             'route_quote_id' => $validated['route_quote_id'] ?? null,
@@ -964,9 +972,18 @@ class TechnicalServiceController extends Controller
         }
 
         $amountLabel = number_format($amount, 2, ',', '.').' TL';
+        $rawPayload = is_array($payment->raw_payload) ? $payment->raw_payload : [];
+        $purpose = (string) ($rawPayload['purpose'] ?? $rawPayload['charge_type'] ?? '');
+        $partRequestId = $rawPayload['part_request_id'] ?? null;
+        $isPartFeePayment = $partRequestId !== null || in_array($purpose, ['part_payment', 'service_and_part_payment'], true);
+        $messageType = $isPartFeePayment ? 'part_fee_payment_link_customer' : 'payment_link_customer';
+        $triggeredBy = $isPartFeePayment ? 'ops_part_fee_payment_link_manual_send' : 'ops_payment_link_send';
+        $eventVersion = $isPartFeePayment && $partRequestId !== null
+            ? 'part-fee-link:'.$partRequestId.':'.hash('sha256', $paymentUrl)
+            : 'payment-link:'.$payment->id.':'.$payment->status.':'.hash('sha256', $paymentUrl);
         $summary = $this->workflowMessages->queueWorkflowDispatches(
             $technicalServiceRequest->refresh(),
-            'payment_link_customer',
+            $messageType,
             'customer',
             [
                 'payment_link' => $paymentUrl,
@@ -979,13 +996,15 @@ class TechnicalServiceController extends Controller
             null,
             [
                 'recipient_phone' => $technicalServiceRequest->customer_phone,
-                'triggered_by' => 'ops_payment_link_send',
-                'event_version' => 'payment-link:'.$payment->id.':'.$payment->status.':'.hash('sha256', $paymentUrl),
+                'triggered_by' => $triggeredBy,
+                'event_version' => $eventVersion,
                 'requires_public_url' => $paymentUrl,
                 'metadata' => [
                     'payment_id' => $payment->id,
+                    'part_request_id' => $partRequestId,
                     'payment_provider' => $payment->provider,
                     'manual_ui_send' => true,
+                    'workflow_event' => $isPartFeePayment ? 'part_fee_payment_link' : 'payment_link',
                 ],
             ],
         );
