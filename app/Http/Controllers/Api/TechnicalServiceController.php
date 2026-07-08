@@ -27,6 +27,7 @@ use App\Models\TechnicalServiceTechnician;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\PaymentProviderManager;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MikroSerialNumberService;
 use App\Services\TechnicalService\MountRequestSubmitService;
@@ -689,6 +690,7 @@ class TechnicalServiceController extends Controller
     public function createExtraMountFeePayment(
         Request $request,
         TechnicalServiceRequest $technicalServiceRequest,
+        TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
         PaymentProviderManager $paymentProviderManager
     ): JsonResponse {
         $validated = $request->validate([
@@ -760,12 +762,11 @@ class TechnicalServiceController extends Controller
             ]);
         }
 
-        $customerAddress = trim((string) ($technicalServiceRequest->location_formatted_address ?: $technicalServiceRequest->service_address));
-        if ($isCustomerCharge && $customerAddress === '') {
-            throw ValidationException::withMessages([
-                'customer_address' => 'Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.',
-            ]);
+        if ($paymentProviderManager->providerName() !== 'fake') {
+            $paymentProviderSettings->assertCompanyRecipientAddressReady();
         }
+        $companyRecipient = $paymentProviderSettings->companyRecipientForPayment();
+        $customerServiceAddress = trim((string) ($technicalServiceRequest->location_formatted_address ?: $technicalServiceRequest->service_address));
 
         $source = $isCustomerCharge ? 'operation_customer_charge' : 'operation_extra_mount_fee';
         $selectedSerialIds = $validSerialIds->sort()->values()->all();
@@ -781,7 +782,12 @@ class TechnicalServiceController extends Controller
             'serial_number' => $technicalServiceRequest->serial_number,
             'customer_name' => $technicalServiceRequest->customer_name,
             'customer_phone' => $technicalServiceRequest->customer_phone,
-            'customer_address' => $customerAddress !== '' ? $customerAddress : null,
+            'payment_recipient' => $companyRecipient,
+            'payment_recipient_address' => $companyRecipient['company_address'] ?? null,
+            'payment_recipient_address_source' => 'technical_service_payment_provider_settings',
+            'customer_address' => $customerServiceAddress !== '' ? $customerServiceAddress : null,
+            'customer_service_address' => $customerServiceAddress !== '' ? $customerServiceAddress : null,
+            'customer_address_role' => 'service_address',
             'customer_city' => $technicalServiceRequest->customer_city,
             'customer_district' => $technicalServiceRequest->customer_district,
             'route_quote_id' => $validated['route_quote_id'] ?? null,

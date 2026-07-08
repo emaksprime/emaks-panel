@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 
 type Technician = {
   id: number | string
@@ -257,6 +258,7 @@ export default function TechnicalServiceEarnings() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [whatsappText, setWhatsappText] = useState('')
   const [whatsappOpen, setWhatsappOpen] = useState(false)
+  const [whatsappCopyMessage, setWhatsappCopyMessage] = useState<string | null>(null)
   const [payoutOpen, setPayoutOpen] = useState(false)
   const [payoutEarning, setPayoutEarning] = useState<Earning | null>(null)
   const [payoutAmount, setPayoutAmount] = useState('')
@@ -1026,7 +1028,18 @@ export default function TechnicalServiceEarnings() {
             readOnly
             value={whatsappText}
           />
-          <Button type="button" onClick={() => void navigator.clipboard?.writeText(whatsappText)}>Kopyala</Button>
+          <Button
+            type="button"
+            onClick={async () => {
+              const result = await copyTextToClipboard(whatsappText)
+              setWhatsappCopyMessage(result.copied ? 'Kopyalandı' : 'Otomatik kopyalanamadı; metni manuel kopyalayın.')
+            }}
+          >
+            Kopyala
+          </Button>
+          {whatsappCopyMessage ? (
+            <p className="text-xs font-semibold text-slate-600">{whatsappCopyMessage}</p>
+          ) : null}
         </DialogContent>
       </Dialog>
     </>

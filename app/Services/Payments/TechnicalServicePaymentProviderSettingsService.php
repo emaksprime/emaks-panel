@@ -22,6 +22,22 @@ class TechnicalServicePaymentProviderSettingsService
 
     public const PAYMENT_NOTIFICATION_RECIPIENTS_KEY = 'technical_service.payment.notification.recipients';
 
+    public const COMPANY_RECIPIENT_KEY = 'technical_service.payment.company_recipient';
+
+    public const COMPANY_RECIPIENT_ADDRESS_MISSING_MESSAGE = 'Firma tahsilat adresi eksik. Ödeme linki oluşturmak için Teknik Servis Admin > Ödeme/Firma bilgileri alanından firma adresini girin.';
+
+    private const COMPANY_RECIPIENT_FIELDS = [
+        'company_title' => 'Ünvan',
+        'tax_office' => 'Vergi dairesi',
+        'tax_number' => 'VKN',
+        'trade_registry_no' => 'Ticaret sicil no',
+        'company_address' => 'Firma tahsilat adresi',
+        'company_phone' => 'Firma telefonu',
+        'company_email' => 'Firma e-posta',
+        'iban_try' => 'IBAN TRY',
+        'iban_usd' => 'IBAN USD',
+    ];
+
     public const CREDENTIAL_SOURCE_DISABLED = 'disabled';
 
     public const CREDENTIAL_SOURCE_LARAVEL_ENCRYPTED = 'laravel_encrypted';
@@ -206,6 +222,61 @@ class TechnicalServicePaymentProviderSettingsService
         return $this->parseRecipients(Arr::get($this->layout(), self::PAYMENT_NOTIFICATION_RECIPIENTS_KEY, ''));
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function companyRecipientPayload(): array
+    {
+        $stored = Arr::get($this->layout(), self::COMPANY_RECIPIENT_KEY, []);
+        $stored = is_array($stored) ? $stored : [];
+        $values = [];
+
+        foreach (self::COMPANY_RECIPIENT_FIELDS as $field => $label) {
+            $values[$field] = $this->nullableTrimmedString($stored[$field] ?? null);
+        }
+
+        $missingFields = [];
+        if ($values['company_address'] === null) {
+            $missingFields[] = 'company_address';
+        }
+
+        return $values + [
+            'ready' => $missingFields === [],
+            'missing_fields' => $missingFields,
+            'status_label' => $missingFields === [] ? 'Hazır' : 'Eksik bilgi',
+            'message' => $missingFields === []
+                ? 'Firma tahsilat adresi ödeme linki oluşturma akışı için hazır.'
+                : self::COMPANY_RECIPIENT_ADDRESS_MISSING_MESSAGE,
+            'helper_text' => 'Firma tahsilat adresi, ödeme alan/EMAKS Prime firma adresidir. Müşteri servis adresinden farklıdır.',
+        ];
+    }
+
+    /**
+     * @return array<string, string|null>
+     */
+    public function companyRecipientForPayment(): array
+    {
+        $payload = $this->companyRecipientPayload();
+
+        return collect(array_keys(self::COMPANY_RECIPIENT_FIELDS))
+            ->mapWithKeys(fn (string $field): array => [$field => $payload[$field] ?? null])
+            ->all();
+    }
+
+    public function companyRecipientAddressReady(): bool
+    {
+        return (bool) ($this->companyRecipientPayload()['ready'] ?? false);
+    }
+
+    public function assertCompanyRecipientAddressReady(): void
+    {
+        if (! $this->companyRecipientAddressReady()) {
+            throw ValidationException::withMessages([
+                'company_address' => self::COMPANY_RECIPIENT_ADDRESS_MISSING_MESSAGE,
+            ]);
+        }
+    }
+
     public function credentialSource(?string $mode = null): string
     {
         return $this->laravelEncryptedCredentialsReady($mode ?? $this->providerMode())
@@ -263,6 +334,7 @@ class TechnicalServicePaymentProviderSettingsService
                 'real_provider_enabled' => self::REAL_PROVIDER_ENABLED_KEY,
                 'provider' => self::PROVIDER_KEY,
                 'provider_mode' => self::PROVIDER_MODE_KEY,
+                'company_recipient' => self::COMPANY_RECIPIENT_KEY,
             ],
             'real_provider_enabled' => $realEnabled,
             'provider' => $realEnabled ? 'iyzico' : 'fake',
@@ -293,6 +365,7 @@ class TechnicalServicePaymentProviderSettingsService
             'disabled_reason' => $disabledReason,
             'health_status' => $this->healthStatus(),
             'payment_notification' => $this->paymentNotificationPayload(),
+            'company_recipient' => $this->companyRecipientPayload(),
             'secret_source' => $credentialBridge['source'],
             'warning' => 'Gerçek ödeme aktifken fake ödeme kullanılmaz.',
         ];
@@ -333,6 +406,17 @@ class TechnicalServicePaymentProviderSettingsService
 
         if (array_key_exists('payment_notification_recipients', $values)) {
             Arr::set($layout, self::PAYMENT_NOTIFICATION_RECIPIENTS_KEY, implode(',', $notificationRecipients));
+        }
+
+        if (array_key_exists('company_recipient', $values)) {
+            $companyRecipient = is_array($values['company_recipient']) ? $values['company_recipient'] : [];
+            $nextCompanyRecipient = [];
+
+            foreach (array_keys(self::COMPANY_RECIPIENT_FIELDS) as $field) {
+                $nextCompanyRecipient[$field] = $this->nullableTrimmedString($companyRecipient[$field] ?? null);
+            }
+
+            Arr::set($layout, self::COMPANY_RECIPIENT_KEY, $nextCompanyRecipient);
         }
 
         $config = PageConfig::query()->firstOrCreate(
@@ -508,6 +592,8 @@ class TechnicalServicePaymentProviderSettingsService
             'gateway_ready' => false,
             'provider_send_enabled' => $this->providerSendEnabled($providerMode),
             'provider_send_ready' => $this->providerSendReady($providerMode),
+            'company_recipient_address_ready' => $this->companyRecipientAddressReady(),
+            'company_recipient_status' => $this->companyRecipientPayload()['status_label'],
             'live_send_approved' => $this->liveSendApproved(),
             'sandbox_base_url' => DirectIyzicoLinkProviderClient::SANDBOX_BASE_URL,
             'live_base_url' => DirectIyzicoLinkProviderClient::LIVE_BASE_URL,
@@ -574,6 +660,11 @@ class TechnicalServicePaymentProviderSettingsService
                 'key' => 'provider_send',
                 'label' => 'Sandbox gönderimi seçili mod için uygun',
                 'ready' => (bool) ($readiness['provider_send_ready'] ?? false),
+            ],
+            [
+                'key' => 'company_recipient_address',
+                'label' => 'Firma tahsilat adresi admin ayarlarında tanımlı',
+                'ready' => $this->companyRecipientAddressReady(),
             ],
             [
                 'key' => 'live_guard',
@@ -805,6 +896,17 @@ class TechnicalServicePaymentProviderSettingsService
             ->value('layout_json');
 
         return is_array($layout) ? $layout : [];
+    }
+
+    private function nullableTrimmedString(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $trimmed = trim((string) $value);
+
+        return $trimmed === '' ? null : $trimmed;
     }
 
     /**

@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import type { MikroMountCheckResult, ServicePriority, ServiceRequest, ServiceRequestEvent, ServiceRequestExtraMountPayment, ServiceRequestExtraMountPaymentPayload, ServiceRequestInvoiceSerial, ServiceRequestRouteQuote, ServiceRequestRouteQuoteManualPayload, ServiceRequestTechnicianEarningMessagePayload, WarrantySerialResponse } from './types'
 import { formatTechnicalServiceDate, formatTechnicalServiceDateTime, getServicePaymentInfo } from './utils'
 
@@ -2008,13 +2009,15 @@ export function ServiceRequestDetails({
   const customerServiceChargeAmount = parseNumericInput(customerServiceChargeInput) ?? 0
   const customerPartChargeAmount = parseNumericInput(customerPartChargeInput) ?? 0
   const customerChargeTotalAmount = roundTwo(customerServiceChargeAmount + customerPartChargeAmount)
-  const customerChargeAddressLabel = [
+  const customerServiceAddressLabel = [
     request.address,
     [request.district, request.city].filter(Boolean).join(' / '),
   ].filter((value) => typeof value === 'string' && value.trim() !== '').join(' - ')
-  const hasCustomerChargeAddress = customerChargeAddressLabel.trim() !== ''
-  const customerChargeAddressError = 'Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.'
-  const canCreateCustomerCharge = Boolean(onExtraMountPaymentCreate && customerChargeTotalAmount > 0 && hasCustomerChargeAddress)
+  const companyRecipientAddressHint = 'Firma tahsilat adresi, ödeme alan/EMAKS Prime firma adresidir. Müşteri servis adresinden farklıdır.'
+  const customerServiceAddressHint = customerServiceAddressLabel.trim() !== ''
+    ? `Müşteri servis adresi: ${customerServiceAddressLabel}`
+    : 'Müşteri servis adresi bu ödeme akışında ödeme alıcısı değildir; gerekiyorsa müşteri bilgilerinden ayrı tamamlanır.'
+  const canCreateCustomerCharge = Boolean(onExtraMountPaymentCreate && customerChargeTotalAmount > 0)
   const customerChargePurpose = customerServiceChargeAmount > 0 && customerPartChargeAmount > 0
     ? 'service_and_part_payment'
     : customerPartChargeAmount > 0
@@ -2936,12 +2939,6 @@ export function ServiceRequestDetails({
       return
     }
 
-    if (!hasCustomerChargeAddress) {
-      setRouteFeeEditorMessage(customerChargeAddressError)
-
-      return
-    }
-
     await onExtraMountPaymentCreate({
       service_amount: customerServiceChargeAmount,
       part_amount: customerPartChargeAmount,
@@ -3004,12 +3001,6 @@ export function ServiceRequestDetails({
       return
     }
 
-    if (partCreateMode === 'chargeable' && !hasCustomerChargeAddress) {
-      setPartCreateError(customerChargeAddressError)
-
-      return
-    }
-
     if (partCreateMode === 'chargeable' && message.length < 3) {
       setPartCreateError('Ücretli parça için müşteriye gönderilecek mesaj zorunludur.')
 
@@ -3057,12 +3048,6 @@ export function ServiceRequestDetails({
 
     if (partDecisionMode === 'chargeable' && partAmount <= 0) {
       setRouteFeeEditorMessage('Ücretli parça kararında parça bedeli 0 TL üzerinde olmalı.')
-
-      return
-    }
-
-    if (partDecisionMode === 'chargeable' && !hasCustomerChargeAddress) {
-      setRouteFeeEditorMessage(customerChargeAddressError)
 
       return
     }
@@ -3170,8 +3155,11 @@ export function ServiceRequestDetails({
             </label>
             <MiniMetric label="Toplam" value={formatMoneyValue(customerChargeTotalAmount)} />
           </div>
-          <p className={['rounded-xl border px-3 py-2 text-xs font-semibold', hasCustomerChargeAddress ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-800'].join(' ')}>
-            {hasCustomerChargeAddress ? `Ödeme linkinde müşteri adresi kullanılacak: ${customerChargeAddressLabel}` : customerChargeAddressError}
+          <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+            {companyRecipientAddressHint}
+          </p>
+          <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+            {customerServiceAddressHint}
           </p>
           <label className="grid gap-1 text-xs font-semibold text-slate-600">
             Açıklama
@@ -3535,8 +3523,11 @@ export function ServiceRequestDetails({
                 </label>
                 <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partCreateServiceAmount) ?? 0) + (parseNumericInput(partCreatePartAmount) ?? 0)))} />
               </div>
-              <p className={['rounded-xl border px-3 py-2 text-xs font-semibold', hasCustomerChargeAddress ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-800'].join(' ')}>
-                {hasCustomerChargeAddress ? `Ücretli parça ödeme linkinde müşteri adresi kullanılacak: ${customerChargeAddressLabel}` : customerChargeAddressError}
+              <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+                {companyRecipientAddressHint}
+              </p>
+              <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+                {customerServiceAddressHint}
               </p>
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 Müşteri mesajı
@@ -3594,8 +3585,11 @@ export function ServiceRequestDetails({
               </label>
               <MiniMetric label="Toplam" value={formatMoneyValue(roundTwo((parseNumericInput(partDecisionServiceAmount) ?? 0) + (parseNumericInput(partDecisionPartAmount) ?? 0)))} />
             </div>
-            <p className={['rounded-xl border px-3 py-2 text-xs font-semibold', hasCustomerChargeAddress ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-800'].join(' ')}>
-              {hasCustomerChargeAddress ? `Ücretli parça ödeme linkinde müşteri adresi kullanılacak: ${customerChargeAddressLabel}` : customerChargeAddressError}
+            <p className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+              {companyRecipientAddressHint}
+            </p>
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+              {customerServiceAddressHint}
             </p>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Müşteri mesajı
@@ -4139,70 +4133,10 @@ export function ServiceRequestDetails({
     }, 80)
   }
 
-  function copyTextWithTextarea(text: string): boolean {
-    try {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.setAttribute('readonly', 'true')
-      textarea.style.position = 'fixed'
-      textarea.style.left = '0'
-      textarea.style.top = '0'
-      textarea.style.width = '1px'
-      textarea.style.height = '1px'
-      textarea.style.padding = '0'
-      textarea.style.border = '0'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.focus()
-      textarea.select()
-      textarea.setSelectionRange(0, textarea.value.length)
-      const copied = document.execCommand('copy')
-      document.body.removeChild(textarea)
-
-      return copied
-    } catch {
-      return false
-    }
-  }
-
-  async function clipboardMatchesText(text: string): Promise<boolean | null> {
-    try {
-      if (!navigator.clipboard?.readText) {
-        return null
-      }
-
-      return (await navigator.clipboard.readText()) === text
-    } catch {
-      return null
-    }
-  }
-
-  async function verifiedCopyResult(copied: boolean, text: string): Promise<boolean> {
-    if (!copied) {
-      return false
-    }
-
-    const verified = await clipboardMatchesText(text)
-
-    return verified ?? true
-  }
-
   async function writeTextToClipboard(text: string): Promise<boolean> {
-    if (window.location.protocol !== 'https:') {
-      return verifiedCopyResult(copyTextWithTextarea(text), text)
-    }
+    const result = await copyTextToClipboard(text)
 
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text)
-
-        return verifiedCopyResult(true, text)
-      }
-    } catch {
-      // Fall back below for denied clipboard permissions or unsupported browsers.
-    }
-
-    return verifiedCopyResult(copyTextWithTextarea(text), text)
+    return result.copied
   }
 
   async function copyPaymentLinkValue(value: string | null | undefined, successMessage = 'Link kopyalandı.') {
@@ -4319,6 +4253,19 @@ export function ServiceRequestDetails({
 
     const copied = await writeTextToClipboard(text)
     setCustomerChargeCopyMessage(copied ? successMessage : 'Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
+  }
+
+  async function copyReferenceValue(value: string | null | undefined, successMessage: string, manualLabel = 'bilgiyi') {
+    const text = String(value ?? '').trim()
+
+    if (text === '') {
+      setNextActionNavigationMessage('Kopyalanacak bilgi yok.')
+
+      return
+    }
+
+    const result = await copyTextToClipboard(text)
+    setNextActionNavigationMessage(result.copied ? successMessage : `Otomatik kopyalanamadı; ${manualLabel} manuel kopyalayın.`)
   }
 
   const handleNextActionClick = () => {
@@ -4486,7 +4433,7 @@ export function ServiceRequestDetails({
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void navigator.clipboard?.writeText(displayMrn ?? request.mrn)}
+                  onClick={() => void copyReferenceValue(displayMrn ?? request.mrn, 'MRN kopyalandı.', 'MRN bilgisini')}
                   className="text-left text-xl font-bold text-slate-950 underline-offset-4 hover:underline"
                   title="MRN kopyala"
                 >
@@ -4501,6 +4448,15 @@ export function ServiceRequestDetails({
               >
                 Seri No Sorgu: {displayOrEmpty(request.serialNumber, '-')}
               </button>
+              {optionalMetricValue(request.serialNumber) ? (
+                <button
+                  type="button"
+                  onClick={() => void copyReferenceValue(request.serialNumber, 'Seri no kopyalandı.', 'seri no bilgisini')}
+                  className="mt-1 block text-left text-xs font-semibold text-slate-500 underline-offset-4 hover:text-blue-700 hover:underline"
+                >
+                  Seri noyu kopyala
+                </button>
+              ) : null}
             </div>
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Müşteri</p>
@@ -4512,6 +4468,15 @@ export function ServiceRequestDetails({
               ) : (
                 <p className="mt-1 text-xs text-slate-500">{displayOrEmpty(request.phone, 'Bilgi yok')}</p>
               )}
+              {optionalMetricValue(request.phone) ? (
+                <button
+                  type="button"
+                  onClick={() => void copyReferenceValue(request.phone, 'Telefon kopyalandı.', 'telefonu')}
+                  className="mt-1 text-left text-xs font-semibold text-slate-500 underline-offset-4 hover:text-blue-700 hover:underline"
+                >
+                  Telefonu kopyala
+                </button>
+              ) : null}
             </div>
             <div>
               <p className="text-[11px] font-semibold uppercase text-slate-400">Randevu</p>
@@ -4914,9 +4879,18 @@ export function ServiceRequestDetails({
               <MiniMetric
                 label="Konum paylaşıldı"
                 value={locationInfo.map_url ? (
-                  <a className="text-blue-700 underline-offset-4 hover:underline" href={locationInfo.map_url} target="_blank" rel="noreferrer">
-                    Haritada aç
-                  </a>
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    <a className="text-blue-700 underline-offset-4 hover:underline" href={locationInfo.map_url} target="_blank" rel="noreferrer">
+                      Haritada aç
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => void copyReferenceValue(locationInfo.map_url, 'Harita linki kopyalandı.', 'harita linkini')}
+                      className="text-xs font-semibold text-slate-500 underline-offset-4 hover:text-blue-700 hover:underline"
+                    >
+                      Harita linkini kopyala
+                    </button>
+                  </span>
                 ) : 'Evet'}
                 hint={displayOrEmpty(locationInfo.formatted_address, 'Konum adresi yok')}
               />
@@ -6249,7 +6223,7 @@ export function ServiceRequestDetails({
                     <summary className="cursor-pointer font-semibold">Hakediş mesajını göster</summary>
                     <pre className="mt-3 whitespace-pre-wrap break-words font-sans">{displayedEarningMessageText}</pre>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(displayedEarningMessageText)}>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void copyReferenceValue(displayedEarningMessageText, 'Hakediş mesajı kopyalandı.', 'hakediş mesajını')}>
                         Mesajı kopyala
                       </Button>
                       {displayedEarningWhatsappUrl ? (

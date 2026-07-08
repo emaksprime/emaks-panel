@@ -9,6 +9,8 @@ use Illuminate\Console\Command;
 
 class ProcessTechnicalServiceMessageDispatches extends Command
 {
+    private const MANUAL_E2E_SMOKE_RUN_ID = 'MANUAL-E2E-LIVE-TEST';
+
     protected $signature = 'technical-service:process-message-dispatches
         {--limit=10 : Maximum dispatch count}
         {--provider= : Provider key filter, comma separated when needed}
@@ -77,6 +79,11 @@ class ProcessTechnicalServiceMessageDispatches extends Command
     private function processorOptions(): array
     {
         $providerKeys = $this->csvValues($this->option('provider') ?: null);
+        $manualE2eOnly = (bool) $this->option('manual-e2e-only');
+        $smokeRunId = trim((string) ($this->option('smoke-run-id') ?: ''));
+        if ($manualE2eOnly && $smokeRunId === '') {
+            $smokeRunId = self::MANUAL_E2E_SMOKE_RUN_ID;
+        }
 
         return [
             'limit' => (int) $this->option('limit'),
@@ -88,10 +95,10 @@ class ProcessTechnicalServiceMessageDispatches extends Command
             'no_external' => (bool) $this->option('no-external'),
             'allowlisted_phones' => $this->csvValues((array) $this->option('allowlisted-phone')),
             'role_target_phones' => $this->roleTargetPhones((array) $this->option('role-target')),
-            'smoke_run_id' => $this->option('smoke-run-id') ?: null,
+            'smoke_run_id' => $smokeRunId !== '' ? $smokeRunId : null,
             'smoke_started_at' => $this->option('smoke-started-at') ?: null,
             'expected_body_token' => $this->option('expected-body-token') ?: null,
-            'manual_e2e_only' => (bool) $this->option('manual-e2e-only'),
+            'manual_e2e_only' => $manualE2eOnly,
             'created_after' => $this->option('created-after') ?: null,
             'guarded_batch' => (bool) $this->option('worker-loop'),
         ];
@@ -239,6 +246,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
             'manual_e2e_only' => (bool) ($options['manual_e2e_only'] ?? false),
             'created_after' => $options['created_after'] ?? null,
             'provider_keys' => $options['provider_keys'] ?? [],
+            'smoke_run_id' => $options['smoke_run_id'] ?? null,
             'channel' => $options['channel'] ?? null,
             'limit' => $options['limit'] ?? null,
             'dry_run' => (bool) $this->option('dry-run'),
@@ -259,7 +267,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
                 '--worker-loop',
                 '--manual-e2e-only',
                 '--created-after="'.$createdAfter.'"',
-                '--smoke-run-id=MANUAL-E2E-LIVE-TEST',
+                '--smoke-run-id='.self::MANUAL_E2E_SMOKE_RUN_ID,
                 '--allowlisted-phone=905372081633',
                 '--allowlisted-phone=905467647428',
                 '--provider=evo_whatsapp,nac_sms',

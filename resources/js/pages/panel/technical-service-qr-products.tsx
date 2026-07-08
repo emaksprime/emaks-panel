@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { apiRequest } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 
 type SerialContext = {
   serial_number: string | null
@@ -463,8 +464,8 @@ export default function TechnicalServiceQrProducts() {
   }
 
   const copyText = async (value: string, label: string) => {
-    await navigator.clipboard?.writeText(value)
-    setMessage({ type: 'success', text: `${label} kopyalandı.` })
+    const result = await copyTextToClipboard(value)
+    setMessage({ type: result.copied ? 'success' : 'error', text: result.copied ? `${label} kopyalandı.` : 'Otomatik kopyalanamadı; metni manuel kopyalayın.' })
   }
 
   const markPrintedAndPrint = async () => {

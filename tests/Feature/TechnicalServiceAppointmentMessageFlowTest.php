@@ -888,7 +888,18 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertStringContainsString('/payments/${paymentId}/send-link', $pageSource);
         $this->assertStringContainsString('step="1"', $detailSource);
         $this->assertStringContainsString('inputMode="decimal"', $detailSource);
-        $this->assertStringContainsString('Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.', $detailSource);
+        $this->assertStringContainsString('Firma tahsilat adresi, ödeme alan/EMAKS Prime firma adresidir. Müşteri servis adresinden farklıdır.', $detailSource);
+        $this->assertStringContainsString('Müşteri servis adresi bu ödeme akışında ödeme alıcısı değildir', $detailSource);
+        $blockedRecipientPhrases = [
+            'Ürün tutarı için '.implode('', ['alıcı', 'nızın adresini almak zorunludur']),
+            implode('', ['alıcı', 'nızın adresi']),
+            implode(' ', ['alıcı', 'adresi']),
+            implode(' ', ['Müşteri', 'adresi eksik']),
+        ];
+        foreach ($blockedRecipientPhrases as $blockedRecipientPhrase) {
+            $this->assertStringNotContainsString($blockedRecipientPhrase, $detailSource);
+            $this->assertStringNotContainsString($blockedRecipientPhrase, $pageSource);
+        }
         $this->assertStringContainsString('setEarningTotalOverrideByRequest((current) => ({ ...current, [requestStateKey]: nextValue }))', $detailSource);
         $this->assertStringContainsString('step="1"', $pageSource);
     }

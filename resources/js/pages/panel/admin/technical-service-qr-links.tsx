@@ -1,6 +1,7 @@
 import { Head } from '@inertiajs/react';
 import { useState } from 'react';
 import { apiRequest } from '@/lib/api';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import { AdminFrame } from './AdminFrame.jsx';
 
 type SerialContext = {
@@ -134,8 +135,11 @@ export default function TechnicalServiceQrLinks() {
             return;
         }
 
-        await navigator.clipboard?.writeText(created.public_url);
-        setStatus({ type: 'success', message: 'Public URL kopyalandı.' });
+        const result = await copyTextToClipboard(created.public_url);
+        setStatus({
+            type: result.copied ? 'success' : 'error',
+            message: result.copied ? 'Public URL kopyalandı.' : 'Otomatik kopyalanamadı; metni manuel kopyalayın.',
+        });
     };
 
     return (

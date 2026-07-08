@@ -28,6 +28,16 @@ class TechnicalServicePaymentProviderSettingsController extends Controller
             'provider_mode' => ['sometimes', 'required', 'string', 'in:sandbox,live'],
             'payment_notification_enabled' => ['sometimes', 'required', 'boolean'],
             'payment_notification_recipients' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'company_recipient' => ['sometimes', 'array'],
+            'company_recipient.company_title' => ['nullable', 'string', 'max:255'],
+            'company_recipient.tax_office' => ['nullable', 'string', 'max:120'],
+            'company_recipient.tax_number' => ['nullable', 'string', 'max:64'],
+            'company_recipient.trade_registry_no' => ['nullable', 'string', 'max:64'],
+            'company_recipient.company_address' => ['nullable', 'string', 'max:1000'],
+            'company_recipient.company_phone' => ['nullable', 'string', 'max:64'],
+            'company_recipient.company_email' => ['nullable', 'email', 'max:255'],
+            'company_recipient.iban_try' => ['nullable', 'string', 'max:64'],
+            'company_recipient.iban_usd' => ['nullable', 'string', 'max:64'],
         ]);
 
         return response()->json([

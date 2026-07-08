@@ -3,6 +3,7 @@ import { ChevronDown } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 
 type Capability = 'dealer' | 'locksmith' | 'manufacturer' | 'seller'
 type ViewKey = 'dashboard' | 'settings' | 'orders' | 'stock' | 'service-jobs' | 'earnings'
@@ -1703,12 +1704,8 @@ function ServiceJobDetail({
       return
     }
 
-    try {
-      await navigator.clipboard.writeText(approvalUrl)
-      onMessage('Onay linki kopyalandı.')
-    } catch {
-      onMessage('Onay linki kopyalanamadı.')
-    }
+    const result = await copyTextToClipboard(approvalUrl)
+    onMessage(result.copied ? 'Onay linki kopyalandı.' : 'Otomatik kopyalanamadı; metni manuel kopyalayın.')
   }
 
   const submitCustomerOtpRequest = async () => {

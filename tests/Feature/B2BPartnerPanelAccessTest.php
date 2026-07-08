@@ -8109,7 +8109,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('Onay linkini kopyala', $source);
         $this->assertStringContainsString('Mesaj metnini kopyala', $source);
         $this->assertStringContainsString('WhatsApp mesajını aç', $source);
-        $this->assertStringContainsString('Kopyalama başarısız', $source);
+        $this->assertStringContainsString('Otomatik kopyalanamadı;', $source);
     }
 
     public function test_ops_customer_approval_inline_is_compact(): void

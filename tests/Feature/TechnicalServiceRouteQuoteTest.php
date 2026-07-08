@@ -3,21 +3,22 @@
 namespace Tests\Feature;
 
 use App\Models\PageConfig;
-use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceMountPayment;
 use App\Models\TechnicalServiceMountSession;
 use App\Models\TechnicalServiceQrLink;
+use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
-use App\Services\TechnicalService\TechnicalServiceRouteCostService;
-use App\Services\TechnicalService\TechnicalServiceUiLabelService;
-use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use App\Services\Payments\PaymentProviderGatewayClient;
 use App\Services\Payments\PaymentProviderGatewayRequest;
 use App\Services\Payments\PaymentProviderGatewayResponse;
 use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
+use App\Services\TechnicalService\TechnicalServiceRouteCostService;
+use App\Services\TechnicalService\TechnicalServiceUiLabelService;
+use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -684,8 +685,14 @@ class TechnicalServiceRouteQuoteTest extends TestCase
 
         app(TechnicalServicePaymentProviderCredentialService::class)
             ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY');
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'company_recipient' => [
+                'company_address' => 'Route quote firma tahsilat adresi',
+            ],
+        ]);
 
-        $client = new class implements PaymentProviderGatewayClient {
+        $client = new class implements PaymentProviderGatewayClient
+        {
             public bool $called = false;
 
             public ?PaymentProviderGatewayRequest $lastRequest = null;
@@ -837,6 +844,15 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             'payments.gateway.health_verified' => false,
             'payments.gateway.http_enabled' => false,
         ]);
+        $config = PageConfig::query()->firstOrCreate(
+            ['page_code' => TechnicalServicePaymentProviderSettingsService::PAGE_CODE],
+            ['layout_json' => []],
+        );
+        $layout = is_array($config->layout_json) ? $config->layout_json : [];
+        data_set($layout, TechnicalServicePaymentProviderSettingsService::COMPANY_RECIPIENT_KEY, [
+            'company_address' => 'Route quote firma tahsilat adresi',
+        ]);
+        $config->forceFill(['layout_json' => $layout])->save();
 
         $user = $this->adminUser();
         [$request, , $serial] = $this->technicalServiceRequestWithSessionAndSerial();
@@ -1249,7 +1265,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technicalServiceRequest(array $overrides = []): TechnicalServiceRequest
     {
@@ -1322,7 +1338,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technicianWithLocation(array $overrides = []): TechnicalServiceTechnician
     {

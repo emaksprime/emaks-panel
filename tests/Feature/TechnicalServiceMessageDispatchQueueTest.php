@@ -244,6 +244,99 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_manual_e2e_worker_defaults_smoke_run_id_when_omitted(): void
+    {
+        Http::fake();
+
+        Artisan::call('technical-service:process-message-dispatches', [
+            '--worker-loop' => true,
+            '--dry-run' => true,
+            '--manual-e2e-only' => true,
+            '--created-after' => now()->subMinute()->toIso8601String(),
+            '--allowlisted-phone' => ['905372081633', '905467647428'],
+            '--provider' => 'evo_whatsapp,nac_sms',
+            '--max-seconds' => 1,
+            '--sleep-seconds' => 1,
+        ]);
+
+        $output = Artisan::output();
+        $this->assertStringContainsString('"smoke_run_id": "MANUAL-E2E-LIVE-TEST"', $output);
+        $this->assertStringContainsString('"manual_e2e_only": true', $output);
+        Http::assertNothingSent();
+    }
+
+    public function test_earnings_message_technician_manual_e2e_with_matching_run_id_reaches_router_guard(): void
+    {
+        Http::fake();
+        $this->actingAs($this->admin());
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'manual_e2e_enabled' => true,
+            'queue_paused' => false,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+        ]);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'earnings_message_technician',
+            'message_type' => 'earnings_message_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'target_phone' => '05467647428',
+            'payload' => ['body' => 'Usta hakediş bilgilendirmesi. Hakediş: 1.111,00 TL.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'manual_e2e' => true,
+                'allowlisted_target' => true,
+                'smoke_run_id' => 'MANUAL-E2E-LIVE-TEST',
+            ],
+        ]);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)
+            ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905467647428'], options: [
+                'manual_e2e_only' => true,
+                'smoke_run_id' => 'MANUAL-E2E-LIVE-TEST',
+            ]);
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
+        $this->assertSame('manual_e2e_guard_blocked', $dispatch->last_error_code);
+        $this->assertNotSame('stale_or_invalid_smoke_dispatch', $dispatch->last_error_code);
+        $this->assertStringNotContainsString('--smoke-run-id zorunlu', (string) $dispatch->last_error_message_redacted);
+        Http::assertNothingSent();
+    }
+
+    public function test_earnings_message_technician_manual_e2e_wrong_run_id_is_blocked_before_provider_call(): void
+    {
+        Http::fake();
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'earnings_message_technician',
+            'message_type' => 'earnings_message_technician',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_role' => 'technician',
+            'target_phone' => '05467647428',
+            'payload' => ['body' => 'Usta hakediş bilgilendirmesi. Hakediş: 1.111,00 TL.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'manual_e2e' => true,
+                'allowlisted_target' => true,
+                'smoke_run_id' => 'WRONG-RUN',
+            ],
+        ]);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)
+            ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905467647428'], options: [
+                'manual_e2e_only' => true,
+                'smoke_run_id' => 'MANUAL-E2E-LIVE-TEST',
+            ]);
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_BLOCKED, $result['status']);
+        $this->assertSame('stale_or_invalid_smoke_dispatch', $dispatch->last_error_code);
+        $this->assertStringContainsString('current smoke_run_id ile eşleşmiyor', (string) $dispatch->last_error_message_redacted);
+        Http::assertNothingSent();
+    }
+
     public function test_manual_e2e_worker_requires_created_after(): void
     {
         Http::fake();

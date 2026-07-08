@@ -85,6 +85,82 @@ class TechnicalServicePaymentProviderSettingsTest extends TestCase
             ->assertJsonValidationErrors(['payment_notification_recipients']);
     }
 
+    public function test_company_payment_settings_can_save_fake_company_info(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'company_recipient' => [
+                    'company_title' => 'EMAKS Test Ltd.',
+                    'tax_office' => 'TEST VERGI DAIRESI',
+                    'tax_number' => '1111111111',
+                    'trade_registry_no' => 'TEST-REG-001',
+                    'company_address' => 'Test Firma Adresi No:1 Test / Istanbul',
+                    'company_phone' => '+90 212 000 0000',
+                    'company_email' => 'test-company@example.test',
+                    'iban_try' => 'TR000000000000000000000000',
+                    'iban_usd' => 'TR000000000000000000000999',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('settings.company_recipient.ready', true)
+            ->assertJsonPath('settings.company_recipient.company_address', 'Test Firma Adresi No:1 Test / Istanbul')
+            ->assertJsonPath('settings.company_recipient.status_label', 'Hazır');
+
+        $payload = $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/payment-provider-settings')
+            ->assertOk()
+            ->json('settings.company_recipient');
+
+        $this->assertSame('EMAKS Test Ltd.', $payload['company_title']);
+        $this->assertSame('Test Firma Adresi No:1 Test / Istanbul', $payload['company_address']);
+        $this->assertSame('Firma tahsilat adresi ödeme linki oluşturma akışı için hazır.', $payload['message']);
+    }
+
+    public function test_company_payment_settings_readiness_missing_address(): void
+    {
+        $payload = $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/payment-provider-settings')
+            ->assertOk()
+            ->json('settings.company_recipient');
+
+        $this->assertFalse($payload['ready']);
+        $this->assertSame(['company_address'], $payload['missing_fields']);
+        $this->assertSame(TechnicalServicePaymentProviderSettingsService::COMPANY_RECIPIENT_ADDRESS_MISSING_MESSAGE, $payload['message']);
+    }
+
+    public function test_company_payment_settings_do_not_require_real_company_values(): void
+    {
+        $this->actingAs($this->admin())
+            ->patchJson('/api/technical-service/payment-provider-settings', [
+                'company_recipient' => [
+                    'company_title' => 'Fixture Company Ltd.',
+                    'tax_office' => 'TEST VERGI DAIRESI',
+                    'tax_number' => '1111111111',
+                    'trade_registry_no' => 'TEST-REG-001',
+                    'company_address' => 'Test Firma Adresi No:1 Test / Istanbul',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('settings.company_recipient.ready', true);
+    }
+
+    public function test_no_real_company_values_in_test_fixtures(): void
+    {
+        $source = file_get_contents(__FILE__).file_get_contents(base_path('tests/Feature/TechnicalServiceWorkflowTest.php'));
+
+        $this->assertIsString($source);
+
+        foreach ([
+            '333'.'153'.'3368',
+            '149086'.'-'.'5',
+            'Selah'.'addin',
+            implode('', ['15', '80']).' Sk',
+            'muhasebe'.'@'.'emaksprime.com',
+        ] as $forbidden) {
+            $this->assertStringNotContainsString($forbidden, $source);
+        }
+    }
+
     public function test_readiness_defaults_to_fake_disabled(): void
     {
         $payload = $this->actingAs($this->admin())

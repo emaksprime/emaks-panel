@@ -9,6 +9,7 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestSerial;
 use App\Models\User;
 use App\Services\Payments\PaymentProviderManager;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -18,6 +19,7 @@ class TechnicalServicePartRequestService
     public function __construct(
         private readonly TechnicalServiceServiceVisitService $serviceVisits,
         private readonly PaymentProviderManager $paymentProviderManager,
+        private readonly TechnicalServicePaymentProviderSettingsService $paymentProviderSettings,
     ) {}
 
     /**
@@ -633,12 +635,11 @@ class TechnicalServicePartRequestService
             ]);
         }
 
-        $customerAddress = trim((string) ($request->location_formatted_address ?: $request->service_address));
-        if ($customerAddress === '') {
-            throw ValidationException::withMessages([
-                'customer_address' => 'Müşteri adresi eksik. Ödeme linki oluşturmak için müşteri adresini girin.',
-            ]);
+        if ($this->paymentProviderManager->providerName() !== 'fake') {
+            $this->paymentProviderSettings->assertCompanyRecipientAddressReady();
         }
+        $companyRecipient = $this->paymentProviderSettings->companyRecipientForPayment();
+        $customerServiceAddress = trim((string) ($request->location_formatted_address ?: $request->service_address));
 
         $totalAmount = round($serviceAmount + $partAmount, 2);
         $purpose = $serviceAmount > 0 && $partAmount > 0
@@ -663,7 +664,12 @@ class TechnicalServicePartRequestService
                 'serial_number' => $request->serial_number,
                 'customer_name' => $request->customer_name,
                 'customer_phone' => $request->customer_phone,
-                'customer_address' => $customerAddress,
+                'payment_recipient' => $companyRecipient,
+                'payment_recipient_address' => $companyRecipient['company_address'] ?? null,
+                'payment_recipient_address_source' => 'technical_service_payment_provider_settings',
+                'customer_address' => $customerServiceAddress !== '' ? $customerServiceAddress : null,
+                'customer_service_address' => $customerServiceAddress !== '' ? $customerServiceAddress : null,
+                'customer_address_role' => 'service_address',
                 'customer_city' => $request->customer_city,
                 'customer_district' => $request->customer_district,
                 'purpose' => $purpose,

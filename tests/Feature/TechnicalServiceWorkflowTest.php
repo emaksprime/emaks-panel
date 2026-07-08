@@ -23,6 +23,8 @@ use App\Models\TechnicalServiceRouteQuote;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\B2B\B2BPartnerPortalDataService;
+use App\Services\Payments\TechnicalServicePaymentProviderCredentialService;
+use App\Services\Payments\TechnicalServicePaymentProviderSettingsService;
 use App\Services\TechnicalService\MikroInvoiceSerialsService;
 use App\Services\TechnicalService\MountRequestSubmitService;
 use App\Services\TechnicalService\TechnicalServiceOperationalStatePresenter;
@@ -2406,6 +2408,12 @@ class TechnicalServiceWorkflowTest extends TestCase
 
     public function test_extra_payment_multiple_payment_state_can_create_additional_pending_link_without_increasing_collected_total(): void
     {
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'company_recipient' => [
+                'company_address' => 'Test firma tahsilat adresi',
+            ],
+        ]);
+
         $request = $this->technicalServiceRequest([
             'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
             'mount_payment_status' => TechnicalServiceMountSession::PAYMENT_PAID,
@@ -2455,6 +2463,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame($request->serial_number, $pendingPayment->raw_payload['serial_number']);
         $this->assertSame($request->customer_name, $pendingPayment->raw_payload['customer_name']);
         $this->assertSame($request->customer_phone, $pendingPayment->raw_payload['customer_phone']);
+        $this->assertSame('Test firma tahsilat adresi', $pendingPayment->raw_payload['payment_recipient']['company_address']);
+        $this->assertSame('technical_service_payment_provider_settings', $pendingPayment->raw_payload['payment_recipient_address_source']);
+        $this->assertSame('service_address', $pendingPayment->raw_payload['customer_address_role']);
 
         $payload = $response->json('request');
 
@@ -2464,6 +2475,72 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame($paidPayment->id, $payload['sale_and_payment']['mount_payments']['latest_paid']['id']);
         $this->assertSame($pendingPayment->id, $payload['sale_and_payment']['mount_payments']['latest_pending']['id']);
         $this->assertSame(TechnicalServiceMountPayment::STATUS_PAID, $paidPayment->fresh()->status);
+    }
+
+    public function test_payment_recipient_company_address_is_used_and_customer_address_stays_service_address(): void
+    {
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'company_recipient' => [
+                'company_title' => 'EMAKS Test Ltd.',
+                'company_address' => 'Firma tahsilat test adresi',
+                'tax_number' => '1111111111',
+            ],
+        ]);
+
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+            'service_address' => 'Müşteri servis adresi',
+        ]);
+        $this->mountSessionForRequest($request);
+
+        $response = $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'amount' => 140,
+                'currency' => 'TRY',
+                'purpose' => 'manual_mount_payment',
+                'reason' => 'manual_extra',
+            ])
+            ->assertCreated();
+
+        $payment = TechnicalServiceMountPayment::query()->findOrFail($response->json('payment.id'));
+
+        $this->assertSame('Firma tahsilat test adresi', $payment->raw_payload['payment_recipient']['company_address']);
+        $this->assertSame('1111111111', $payment->raw_payload['payment_recipient']['tax_number']);
+        $this->assertSame('technical_service_payment_provider_settings', $payment->raw_payload['payment_recipient_address_source']);
+        $this->assertSame('Müşteri servis adresi', $payment->raw_payload['customer_service_address']);
+        $this->assertSame('service_address', $payment->raw_payload['customer_address_role']);
+    }
+
+    public function test_missing_company_address_blocks_real_payment_link_before_provider_call(): void
+    {
+        app(TechnicalServicePaymentProviderCredentialService::class)
+            ->saveIyzicoCredentials('sandbox', 'TEST_SANDBOX_API_KEY', 'TEST_SANDBOX_SECRET_KEY', $this->adminUser());
+        app(TechnicalServicePaymentProviderSettingsService::class)->update([
+            'real_provider_enabled' => true,
+            'provider_mode' => 'sandbox',
+        ]);
+        Http::fake();
+
+        $request = $this->technicalServiceRequest([
+            'sale_mount_status' => TechnicalServiceMountSession::SALE_MONTAJ_HARIC,
+        ]);
+        $this->mountSessionForRequest($request);
+
+        $this->actingAs($this->adminUser())
+            ->postJson("/api/technical-service/requests/{$request->id}/payments/mount-extra-payment", [
+                'amount' => 140,
+                'currency' => 'TRY',
+                'purpose' => 'manual_mount_payment',
+                'reason' => 'manual_extra',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['company_address'])
+            ->assertJsonFragment([
+                'company_address' => [TechnicalServicePaymentProviderSettingsService::COMPANY_RECIPIENT_ADDRESS_MISSING_MESSAGE],
+            ]);
+
+        Http::assertNothingSent();
+        $this->assertSame(0, TechnicalServiceMountPayment::query()->count());
     }
 
     public function test_missing_paid_payment_falls_back_safely_without_fake_collection(): void
@@ -2729,19 +2806,25 @@ class TechnicalServiceWorkflowTest extends TestCase
     public function test_payment_link_copy_button_uses_copy_url_and_clipboard_fallback(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $clipboardSource = file_get_contents(resource_path('js/lib/clipboard.ts'));
 
         $this->assertIsString($source);
+        $this->assertIsString($clipboardSource);
+        $this->assertStringContainsString("import { copyTextToClipboard } from '@/lib/clipboard'", $source);
         $this->assertStringContainsString('function paymentLinkCopyUrl(payment: PaymentLinkSendTarget | null | undefined): string', $source);
         $this->assertStringContainsString('payment?.copy_url ?? payment?.payment_url', $source);
-        $this->assertStringContainsString('function copyTextWithTextarea(text: string): boolean', $source);
-        $this->assertStringContainsString('async function clipboardMatchesText(text: string): Promise<boolean | null>', $source);
-        $this->assertStringContainsString('async function verifiedCopyResult(copied: boolean, text: string): Promise<boolean>', $source);
-        $this->assertStringContainsString("window.location.protocol !== 'https:'", $source);
-        $this->assertStringContainsString("document.execCommand('copy')", $source);
-        $this->assertStringContainsString('textarea.setSelectionRange(0, textarea.value.length)', $source);
+        $this->assertStringContainsString('function copyTextWithTextarea(text: string): boolean', $clipboardSource);
+        $this->assertStringContainsString('async function clipboardMatchesText(text: string): Promise<boolean | null>', $clipboardSource);
+        $this->assertStringContainsString('async function verifiedCopyResult(', $clipboardSource);
+        $this->assertStringContainsString('copied: boolean,', $clipboardSource);
+        $this->assertStringContainsString('navigator.clipboard?.writeText', $clipboardSource);
+        $this->assertStringContainsString("document.execCommand('copy')", $clipboardSource);
+        $this->assertStringContainsString('textarea.setSelectionRange(0, textarea.value.length)', $clipboardSource);
+        $this->assertStringContainsString("status: 'manual'", $clipboardSource);
         $this->assertStringContainsString("setPaymentLinkCopyMessage('Kopyalanacak link yok.')", $source);
         $this->assertStringContainsString('Link kopyalanamadı. Bağlantıyı aşağıdaki alandan manuel kopyalayın.', $source);
         $this->assertStringContainsString('paymentLinkManualCopyValue', $source);
+        $this->assertStringContainsString('Otomatik kopyalanamadı;', $source);
         $this->assertStringContainsString('Manuel kopyalama', $source);
         $this->assertStringContainsString('function paymentProviderLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string', $source);
         $this->assertStringContainsString('function paymentProviderReferenceRows(payment: ServiceRequestExtraMountPayment | null | undefined)', $source);
@@ -2755,6 +2838,30 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}', $source);
         $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(payment.payment_url ?? '')}", $source);
         $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}", $source);
+    }
+
+    public function test_copy_actions_use_global_clipboard_helper(): void
+    {
+        $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
+        $hookSource = file_get_contents(resource_path('js/hooks/use-clipboard.ts'));
+        $portalSource = file_get_contents(resource_path('js/pages/partner/portal-shell.tsx'));
+
+        $this->assertIsString($detailSource);
+        $this->assertIsString($hookSource);
+        $this->assertIsString($portalSource);
+        $this->assertStringContainsString("import { copyTextToClipboard } from '@/lib/clipboard'", $detailSource);
+        $this->assertStringContainsString("import { copyTextToClipboard } from '@/lib/clipboard';", $hookSource);
+        $this->assertStringContainsString("import { copyTextToClipboard } from '@/lib/clipboard'", $portalSource);
+        $this->assertStringNotContainsString('navigator.clipboard?.writeText', $detailSource);
+        $this->assertStringNotContainsString('navigator.clipboard.writeText', $detailSource);
+        $this->assertStringContainsString('copyReferenceValue(displayMrn ?? request.mrn', $detailSource);
+        $this->assertStringContainsString("copyReferenceValue(request.serialNumber, 'Seri no kopyalandı.'", $detailSource);
+        $this->assertStringContainsString("copyReferenceValue(request.phone, 'Telefon kopyalandı.'", $detailSource);
+        $this->assertStringContainsString("copyReferenceValue(locationInfo.map_url, 'Harita linki kopyalandı.'", $detailSource);
+        $this->assertStringContainsString('Seri noyu kopyala', $detailSource);
+        $this->assertStringContainsString('Telefonu kopyala', $detailSource);
+        $this->assertStringContainsString('Harita linkini kopyala', $detailSource);
+        $this->assertStringContainsString('copyReferenceValue(displayedEarningMessageText', $detailSource);
     }
 
     public function test_payment_link_modal_stays_inside_detail_dialog_focus_scope_and_uses_iyzico_open_copy_wording(): void

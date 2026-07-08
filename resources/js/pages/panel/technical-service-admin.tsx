@@ -264,6 +264,22 @@ type PaymentProviderSettings = {
         status_label: string;
         helper_text: string;
     };
+    company_recipient: {
+        company_title: string | null;
+        tax_office: string | null;
+        tax_number: string | null;
+        trade_registry_no: string | null;
+        company_address: string | null;
+        company_phone: string | null;
+        company_email: string | null;
+        iban_try: string | null;
+        iban_usd: string | null;
+        ready: boolean;
+        missing_fields: string[];
+        status_label: string;
+        message: string;
+        helper_text: string;
+    };
     secret_source: string;
     warning: string;
 };
@@ -1173,6 +1189,22 @@ export default function TechnicalServiceAdmin({
         enabled: paymentProviderSettings.payment_notification.enabled,
         recipients:
             paymentProviderSettings.payment_notification.recipients_text ?? '',
+    });
+    const [companyRecipientInputs, setCompanyRecipientInputs] = useState({
+        company_title:
+            paymentProviderSettings.company_recipient.company_title ?? '',
+        tax_office: paymentProviderSettings.company_recipient.tax_office ?? '',
+        tax_number: paymentProviderSettings.company_recipient.tax_number ?? '',
+        trade_registry_no:
+            paymentProviderSettings.company_recipient.trade_registry_no ?? '',
+        company_address:
+            paymentProviderSettings.company_recipient.company_address ?? '',
+        company_phone:
+            paymentProviderSettings.company_recipient.company_phone ?? '',
+        company_email:
+            paymentProviderSettings.company_recipient.company_email ?? '',
+        iban_try: paymentProviderSettings.company_recipient.iban_try ?? '',
+        iban_usd: paymentProviderSettings.company_recipient.iban_usd ?? '',
     });
     const [outgoingMailInputs, setOutgoingMailInputs] = useState({
         enabled: mailTransportSettings.outgoing.enabled,
@@ -2518,6 +2550,7 @@ export default function TechnicalServiceAdmin({
             provider_mode?: 'sandbox' | 'live';
             payment_notification_enabled?: boolean;
             payment_notification_recipients?: string;
+            company_recipient?: typeof companyRecipientInputs;
         },
         rollback: () => void,
         successMessage: string,
@@ -2773,6 +2806,18 @@ export default function TechnicalServiceAdmin({
             },
             () => setPaymentSettings(previous),
             'Ödeme bildirimi mail ayarı kaydedildi.',
+        );
+    };
+
+    const saveCompanyRecipientSettings = async () => {
+        const previous = paymentSettings;
+
+        await updatePaymentSettings(
+            {
+                company_recipient: companyRecipientInputs,
+            },
+            () => setPaymentSettings(previous),
+            'Firma tahsilat bilgileri kaydedildi.',
         );
     };
 
@@ -3114,6 +3159,11 @@ export default function TechnicalServiceAdmin({
                 paymentSettings.provider_mode !== 'live' ||
                 paymentSettings.back_url.ready,
         },
+        {
+            label: 'Firma adresi',
+            value: paymentSettings.company_recipient.status_label,
+            ok: paymentSettings.company_recipient.ready,
+        },
     ];
     const providerModeDisabled = paymentSaving;
     const paymentNextRequiredAction =
@@ -3124,6 +3174,35 @@ export default function TechnicalServiceAdmin({
         paymentSettings.back_url.callback_route_exists;
     const paymentNotificationHelperText =
         paymentSettings.payment_notification.helper_text;
+    const companyRecipientFields: Array<{
+        key: keyof typeof companyRecipientInputs;
+        label: string;
+        type?: 'text' | 'email' | 'textarea';
+        placeholder?: string;
+    }> = [
+        { key: 'company_title', label: 'Ünvan' },
+        { key: 'tax_office', label: 'Vergi dairesi' },
+        { key: 'tax_number', label: 'VKN' },
+        { key: 'trade_registry_no', label: 'Ticaret sicil no' },
+        {
+            key: 'company_address',
+            label: 'Firma tahsilat adresi',
+            type: 'textarea',
+            placeholder: 'Ödeme alan EMAKS Prime firma adresi',
+        },
+        { key: 'company_phone', label: 'Firma telefonu' },
+        { key: 'company_email', label: 'Firma e-posta', type: 'email' },
+        { key: 'iban_try', label: 'IBAN TRY' },
+        { key: 'iban_usd', label: 'IBAN USD' },
+    ];
+    const updateCompanyRecipientInput = (
+        key: keyof typeof companyRecipientInputs,
+        value: string,
+    ) =>
+        setCompanyRecipientInputs((current) => ({
+            ...current,
+            [key]: value,
+        }));
 
     return (
         <>
@@ -4158,6 +4237,103 @@ export default function TechnicalServiceAdmin({
                                     </p>
                                 </div>
                             ))}
+                        </div>
+
+                        <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                    <p className="text-xs font-semibold tracking-[0.12em] text-slate-500 uppercase">
+                                        Firma / Tahsilat Bilgileri
+                                    </p>
+                                    <h3 className="mt-1 text-base font-bold text-slate-950">
+                                        Ödeme alan firma adresi
+                                    </h3>
+                                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                                        {
+                                            paymentSettings.company_recipient
+                                                .helper_text
+                                        }
+                                    </p>
+                                    <p
+                                        className={[
+                                            'mt-3 rounded-lg border px-3 py-2 text-sm font-semibold',
+                                            paymentSettings.company_recipient
+                                                .ready
+                                                ? 'border-emerald-100 bg-emerald-50 text-emerald-900'
+                                                : 'border-amber-100 bg-amber-50 text-amber-900',
+                                        ].join(' ')}
+                                    >
+                                        {
+                                            paymentSettings.company_recipient
+                                                .message
+                                        }
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    disabled={paymentSaving}
+                                    onClick={() => {
+                                        void saveCompanyRecipientSettings();
+                                    }}
+                                    className="rounded-lg border border-slate-900 bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {paymentSaving
+                                        ? 'Kaydediliyor'
+                                        : 'Firma bilgilerini kaydet'}
+                                </button>
+                            </div>
+                            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                {companyRecipientFields.map((field) => (
+                                    <label
+                                        key={field.key}
+                                        className={
+                                            field.type === 'textarea'
+                                                ? 'grid gap-1 text-xs font-semibold tracking-[0.12em] text-slate-500 uppercase md:col-span-2 xl:col-span-3'
+                                                : 'grid gap-1 text-xs font-semibold tracking-[0.12em] text-slate-500 uppercase'
+                                        }
+                                    >
+                                        <span>{field.label}</span>
+                                        {field.type === 'textarea' ? (
+                                            <textarea
+                                                value={
+                                                    companyRecipientInputs[
+                                                        field.key
+                                                    ]
+                                                }
+                                                onChange={(event) =>
+                                                    updateCompanyRecipientInput(
+                                                        field.key,
+                                                        event.target.value,
+                                                    )
+                                                }
+                                                placeholder={field.placeholder}
+                                                className="min-h-20 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-900 normal-case focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
+                                            />
+                                        ) : (
+                                            <input
+                                                type={
+                                                    field.type === 'email'
+                                                        ? 'email'
+                                                        : 'text'
+                                                }
+                                                value={
+                                                    companyRecipientInputs[
+                                                        field.key
+                                                    ]
+                                                }
+                                                onChange={(event) =>
+                                                    updateCompanyRecipientInput(
+                                                        field.key,
+                                                        event.target.value,
+                                                    )
+                                                }
+                                                placeholder={field.placeholder}
+                                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold tracking-normal text-slate-900 normal-case focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none"
+                                            />
+                                        )}
+                                    </label>
+                                ))}
+                            </div>
                         </div>
 
                         <div className="mt-5 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
