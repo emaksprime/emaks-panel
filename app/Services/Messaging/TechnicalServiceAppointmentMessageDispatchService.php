@@ -258,6 +258,8 @@ class TechnicalServiceAppointmentMessageDispatchService
 
         if ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED) {
             $summary['duplicate_blocked']++;
+        } elseif ($dispatch->status === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED) {
+            $summary['suppressed']++;
         } else {
             $summary['queued']++;
         }

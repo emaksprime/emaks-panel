@@ -21,6 +21,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_ops_active_section_is_ordered_before_information_sections(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
         $this->assertStringContainsString("return 'order-30'", $source);
         $this->assertStringContainsString("product: 'order-60'", $source);
@@ -30,24 +31,25 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
         $this->assertStringContainsString("assignment: 'order-40'", $source);
         $this->assertStringContainsString("operation: 'order-70'", $source);
         $this->assertStringContainsString("history: 'order-[90]'", $source);
-        $this->assertStringContainsString('className={opsSectionClass(\'fieldCompletion\', activeOpsSection)}', $source);
-        $this->assertStringContainsString('className={opsSectionClass(\'assignment\', activeOpsSection)}', $source);
+        $this->assertMatchesRegularExpression("/className=\\{opsSectionClass\\('fieldCompletion',activeOpsSection,?\\)\\}/", $compactSource);
+        $this->assertMatchesRegularExpression("/className=\\{opsSectionClass\\('assignment',activeOpsSection,?\\)\\}/", $compactSource);
     }
 
     public function test_ops_assigned_jobs_use_neutral_info_order_instead_of_operation_control(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $nextActionService = $this->source('app/Services/TechnicalService/TechnicalServiceNextActionService.php');
 
         $this->assertStringContainsString('const isAssignedTechnicianStage', $source);
         $this->assertStringContainsString("return isAssignedTechnicianStage(context) ? null : 'assignment'", $source);
         $this->assertStringNotContainsString("return new Set(['product', 'customer', 'assignment'])", $source);
-        $this->assertStringContainsString('const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || shouldShowRouteQuoteLoading', $source);
-        $this->assertStringContainsString("Usta fotoğrafları ve müşteri onayını tamamlayacak.", $source);
-        $this->assertStringContainsString("displayedNextActionHeader = isAssignedPartnerActionStage ? 'Süreç Bilgisi'", $source);
-        $this->assertStringContainsString("displayedNextActionSeverity = isAssignedPartnerActionStage ? 'neutral'", $source);
-        $this->assertStringContainsString('const hasSupportRequestDetail = supportRequests.length > 0', $source);
-        $this->assertStringContainsString('const hasSparePartDetail = partRequests.length > 0', $source);
+        $this->assertStringContainsString('constassignmentDetailsExpandedByDefault=!hasAssignedTechnician||hasAssignmentChange||shouldShowRouteQuoteLoading', $compactSource);
+        $this->assertStringContainsString('Usta fotoğrafları ve müşteri onayını tamamlayacak.', $source);
+        $this->assertStringContainsString("displayedNextActionHeader=isAssignedPartnerActionStage?'SüreçBilgisi'", $compactSource);
+        $this->assertStringContainsString("displayedNextActionSeverity=isAssignedPartnerActionStage?'neutral'", $compactSource);
+        $this->assertStringContainsString('consthasSupportRequestDetail=supportRequests.length>0', $compactSource);
+        $this->assertStringContainsString('consthasSparePartDetail=partRequests.length>0', $compactSource);
         $this->assertStringContainsString("'field_process'", $nextActionService);
         $this->assertStringContainsString("'İş ustada'", $nextActionService);
         $this->assertStringContainsString("'neutral'", $nextActionService);
@@ -156,10 +158,12 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_earning_summary_displays_selected_locksmith_name(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
         $this->assertStringContainsString('const earningSummaryTechnicianName', $source);
         $this->assertStringContainsString('Usta Hakedişi / Operasyon Maliyeti', $source);
-        $this->assertStringContainsString('{financeSummaryTitle} — {earningSummaryTechnicianName}', $source);
+        $this->assertStringContainsString('{financeSummaryTitle}—{earningSummaryTechnicianName}', $compactSource);
+        $this->assertStringContainsString('{earningSummaryTechnicianName}', $source);
         $this->assertStringContainsString("selectedTechnician?.name || request.technicianName || 'Usta seçilmedi'", $source);
     }
 
@@ -173,7 +177,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
             $this->assertStringNotContainsString('Bilinmeyen işlem', $source);
         }
 
-        $genericFallback = 'Operasyon ' . 'kaydı';
+        $genericFallback = 'Operasyon '.'kaydı';
         $this->assertStringContainsString('Kayıt detayı', $opsSource);
         $this->assertStringContainsString($genericFallback, $partnerSource);
         $this->assertStringContainsString($genericFallback, $labelService);
@@ -186,9 +190,10 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_detail_ui_hides_empty_cards(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
         $this->assertStringContainsString('const optionalMetricValue =', $source);
-        $this->assertStringContainsString('const shouldRenderProductInfoPanel = hasProductIdentityDetail || shouldRenderHeaderPaymentSummary || hasMultiProductRequest', $source);
+        $this->assertStringContainsString('constshouldRenderProductInfoPanel=hasProductIdentityDetail||shouldRenderHeaderPaymentSummary||hasMultiProductRequest', $compactSource);
         $this->assertStringContainsString('const hasCustomerDetail = Boolean(', $source);
         $this->assertStringContainsString('{shouldRenderProductInfoPanel ? (', $source);
         $this->assertStringContainsString('{hasCustomerDetail ? (', $source);
@@ -199,8 +204,9 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_detail_ui_hides_missing_part_section(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
-        $this->assertStringContainsString('const shouldShowPartCreateAction = canCreatePartRequest && (partRequests.length > 0 || servicePartChargeSectionVisible || activePartRequests.length > 0)', $source);
+        $this->assertStringContainsString('constshouldShowPartCreateAction=canCreatePartRequest&&(partRequests.length>0||servicePartChargeSectionVisible||activePartRequests.length>0)', $compactSource);
         $this->assertStringContainsString('{shouldShowPartCreateAction ? (', $source);
         $this->assertStringContainsString('{partRequests.length > 0 ? (', $source);
         $this->assertStringNotContainsString('{canCreatePartRequest ? (', $source);
@@ -209,18 +215,20 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_detail_ui_collapses_history_by_default(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
-        $this->assertStringContainsString('const shouldRenderHistoryPanel = Boolean((request.auditLogs ?? []).length > 0 || events.length > 0)', $source);
+        $this->assertStringContainsString('constshouldRenderHistoryPanel=Boolean((request.auditLogs??[]).length>0||events.length>0)', $compactSource);
         $this->assertStringContainsString('{shouldRenderHistoryPanel ? (', $source);
-        $this->assertStringContainsString('<DetailPanel title="Operasyon Geçmişi"', $source);
-        $this->assertStringContainsString('order-[85] rounded-3xl border border-violet-100', $source);
+        $this->assertStringContainsString('<DetailPaneltitle="OperasyonGeçmişi"', $compactSource);
+        $this->assertStringContainsString("history:'order-[90]'", $compactSource);
     }
 
     public function test_assigned_request_collapses_suggestions(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
-        $this->assertStringContainsString('const assignmentDetailsExpandedByDefault = !hasAssignedTechnician || hasAssignmentChange || shouldShowRouteQuoteLoading', $source);
+        $this->assertStringContainsString('constassignmentDetailsExpandedByDefault=!hasAssignedTechnician||hasAssignmentChange||shouldShowRouteQuoteLoading', $compactSource);
         $this->assertStringContainsString("return isAssignedTechnicianStage(context) ? null : 'assignment'", $source);
         $this->assertStringNotContainsString("return new Set(['product', 'customer', 'assignment'])", $source);
     }
@@ -228,21 +236,23 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_completed_request_is_read_only_compact(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
-        $this->assertStringContainsString('const visibleFooterWorkflowActions = isActionDisabled ? [] : footerWorkflowActions', $source);
+        $this->assertStringContainsString('constvisibleFooterWorkflowActions=isActionDisabled?[]:footerWorkflowActions', $compactSource);
         $this->assertStringContainsString('!isActionDisabled && finalCheckCompletionAction', $source);
         $this->assertStringContainsString('!isActionDisabled && canReassignAfterReview', $source);
         $this->assertStringContainsString('Salt okunur belge özeti', $source);
-        $this->assertStringContainsString("isActionDisabled ? 'Kayıt yok' : 'Bekliyor'", $source);
+        $this->assertStringContainsString("isActionDisabled?'Kayıtyok':'Bekliyor'", $compactSource);
     }
 
     public function test_srv_child_does_not_show_parent_gate(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
-        $this->assertStringContainsString('const isServiceVisitDetail = visibleSections?.is_service_visit === true', $source);
-        $this->assertStringContainsString('const showMountOperationControls = (visibleSections?.operation_mount_controls ?? operationControl.show_mount_controls ?? !isServiceVisitDetail) === true', $source);
-        $this->assertStringContainsString('SRV kaydı parent montaj kapı/ödeme kontrolünü devralmaz.', $source);
+        $this->assertStringContainsString('constisServiceVisitDetail=visibleSections?.is_service_visit===true||operationControl.is_service_visit===true||Boolean(serviceVisitHistory?.service_code||serviceVisitHistory?.reason)', $compactSource);
+        $this->assertStringContainsString('constshowMountOperationControls=(visibleSections?.operation_mount_controls??operationControl.show_mount_controls??!isServiceVisitDetail)===true', $compactSource);
+        $this->assertStringContainsString('SRVkaydıparentmontajkapı/ödemekontrolünüdevralmaz.', $compactSource);
         $this->assertStringContainsString('order-[85] rounded-3xl border border-violet-100', $source);
     }
 
@@ -260,7 +270,7 @@ class TechnicalServiceDetailActionFirstLayoutTest extends TestCase
     public function test_no_generic_islem_kaydi_in_detail_history(): void
     {
         $source = $this->source('resources/js/components/technical-service/ServiceRequestDetails.tsx');
-        $genericFallback = 'İşlem ' . 'kaydı';
+        $genericFallback = 'İşlem '.'kaydı';
 
         $this->assertStringContainsString('Kayıt detayı', $source);
         $this->assertStringNotContainsString("return '{$genericFallback}'", $source);

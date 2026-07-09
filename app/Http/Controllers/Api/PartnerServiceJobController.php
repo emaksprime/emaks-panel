@@ -1790,6 +1790,13 @@ class PartnerServiceJobController extends Controller
             return 'WhatsApp gönderimi güvenlik limiti nedeniyle bastırıldı. Biraz sonra tekrar deneyin.';
         }
 
+        if (
+            ($summary['dispatch_status'] ?? null) === TechnicalServiceMessageDispatch::STATUS_SUPPRESSED
+            && in_array(($summary['dispatch_provider'] ?? null), ['null_local', 'system'], true)
+        ) {
+            return 'Müşteri onay mesajı sistem kaydı olarak tutuldu.';
+        }
+
         if (in_array(($summary['dispatch_status'] ?? null), [
             TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TEST_FIXTURE,
             TechnicalServiceMessageDispatch::STATUS_SUPPRESSED_TESTING_ENVIRONMENT,

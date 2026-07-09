@@ -1042,6 +1042,8 @@ class TechnicalServiceRouteQuoteTest extends TestCase
         $this->assertIsString($cardSource);
         $this->assertIsString($techniciansSource);
 
+        $normalizedDetailsSource = preg_replace('/\s+/', ' ', $detailsSource) ?? $detailsSource;
+
         foreach ([
             'için usta yol hakedişi henüz hesaplanmadı.',
             'Usta yol hakedişini hesaplamak için seçili usta ve müşteri konumu kullanılacak.',
@@ -1068,7 +1070,7 @@ class TechnicalServiceRouteQuoteTest extends TestCase
             "hasRouteCostEvidence ? numericInputValue(routeBillableKm) : '0'",
             'Usta yol hakedişi kaydedildi',
         ] as $expectedText) {
-            $this->assertStringContainsString($expectedText, $detailsSource);
+            $this->assertStringContainsString($expectedText, $normalizedDetailsSource);
         }
 
         foreach ([

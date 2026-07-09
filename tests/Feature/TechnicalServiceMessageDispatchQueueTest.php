@@ -627,6 +627,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     public function test_queue_logs_mask_phone_hide_secrets_and_admin_queue_summary_visible(): void
     {
         $dispatch = $this->enqueueDispatch([
+            'provider_key' => 'evo_whatsapp',
             'payload' => ['body' => 'Merhaba', 'password' => 'hidden'],
         ]);
 
@@ -1056,14 +1057,19 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ['triggered_by' => 'partner_portal_job_rejected'],
         );
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $dispatch->status);
         $this->assertSame('system', $dispatch->channel);
         $this->assertSame('null_local', $dispatch->provider_key);
         $this->assertSame('ops', $dispatch->recipient_role);
         $this->assertSame('905467647428', $dispatch->target_phone);
+        $this->assertNull($dispatch->queued_at);
+        $this->assertSame('no_external_provider', $dispatch->provider_status);
+        $this->assertSame('null_local_system_no_external_provider', $dispatch->last_error_code);
         $this->assertTrue((bool) $dispatch->test_mode);
         $this->assertTrue((bool) data_get($dispatch->metadata, 'workflow_message_queue_only'));
         $this->assertFalse((bool) data_get($dispatch->metadata, 'external_provider_call'));
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'null_local_system_recorded'));
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
         $this->assertStringContainsString('Saat uygun değil', (string) data_get($dispatch->request_payload, 'body'));
         Http::assertNothingSent();
     }
@@ -1107,6 +1113,48 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame('Parça ücreti ödeme bağlantısı', $labels['part_fee_payment_link_customer']);
         $this->assertSame('Müşteri randevu iptali', $labels['appointment_cancelled_customer']);
         $this->assertSame('Usta randevu iptali', $labels['appointment_cancelled_technician']);
+    }
+
+    public function test_queue_readiness_provider_worker_ignores_null_local_system_dispatch_not_counted_as_pending_provider(): void
+    {
+        Http::fake();
+
+        $systemDispatch = $this->enqueueDispatch([
+            'message_type' => 'support_request_ops',
+            'event' => 'support_request_ops',
+            'channel' => 'system',
+            'provider_key' => 'null_local',
+            'recipient_role' => 'ops',
+            'payload' => ['body' => 'Sistem kaydı; dış sağlayıcı işi yok.'],
+            'metadata' => [
+                'workflow_message_queue_only' => true,
+                'external_provider_call' => false,
+            ],
+        ]);
+        $externalDispatch = $this->enqueueDispatch([
+            'message_type' => 'appointment_approved_customer',
+            'channel' => 'sms',
+            'provider_key' => 'nac_sms',
+            'recipient_role' => 'customer',
+            'target_phone' => '05321112299',
+            'payload' => ['body' => 'Dış sağlayıcı kuyruğu.'],
+        ]);
+
+        $payload = $this->actingAs($this->admin())
+            ->getJson('/api/technical-service/message-dispatches')
+            ->assertOk()
+            ->json('message_dispatch_queue');
+
+        $systemRow = collect($payload['recent'])->firstWhere('id', $systemDispatch->id);
+        $externalRow = collect($payload['recent'])->firstWhere('id', $externalDispatch->id);
+
+        $this->assertSame(1, $payload['summary']['queued']);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $systemDispatch->status);
+        $this->assertSame('Sistem kaydı', $systemRow['status_label']);
+        $this->assertSame('Dış sağlayıcı yok', $systemRow['provider_label']);
+        $this->assertSame('Kuyrukta', $externalRow['status_label']);
+        $this->assertSame('NAC SMS', $externalRow['provider_label']);
+        Http::assertNothingSent();
     }
 
     public function test_workflow_coverage_matrix_lists_known_events_with_queue_or_documented_gap(): void
@@ -1166,7 +1214,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ->where('triggered_by', 'rel4e3_modal_flow_test')
             ->where('provider_key', 'null_local')
             ->where('channel', 'system')
-            ->where('status', TechnicalServiceMessageDispatch::STATUS_QUEUED)
+            ->where('status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)
             ->count());
         Http::assertNothingSent();
     }
@@ -1840,7 +1888,8 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ->json('dispatch');
 
         $this->assertSame('Parça ücreti ödeme bağlantısı', $detail['message_type_label']);
-        $this->assertSame('Null Local', $detail['provider_label']);
+        $this->assertSame('Sistem kaydı', $detail['status_label']);
+        $this->assertSame('Dış sağlayıcı yok', $detail['provider_label']);
         $this->assertStringContainsString('canlı mesaj göndermez', $detail['rendered_message_content']);
         Http::assertNothingSent();
     }

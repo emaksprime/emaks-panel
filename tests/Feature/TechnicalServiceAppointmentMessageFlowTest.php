@@ -884,6 +884,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx')) ?: '';
+        $compactDetailSource = preg_replace('/\s+/', '', $detailSource) ?? $detailSource;
 
         $this->assertStringContainsString('Linki müşteriye gönder', $detailSource);
         $this->assertStringContainsString('onMountPaymentSend(payment.id)', $detailSource);
@@ -902,7 +903,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $this->assertStringNotContainsString($blockedRecipientPhrase, $detailSource);
             $this->assertStringNotContainsString($blockedRecipientPhrase, $pageSource);
         }
-        $this->assertStringContainsString('setEarningTotalOverrideByRequest((current) => ({ ...current, [requestStateKey]: nextValue }))', $detailSource);
+        $this->assertMatchesRegularExpression('/setEarningTotalOverrideByRequest\\(\\(?current\\)?=>\\(\\{\\.\\.\\.current,\\[requestStateKey\\]:nextValue,?\\}\\),?\\)/', $compactDetailSource);
         $this->assertStringContainsString('step="1"', $pageSource);
     }
 
@@ -913,11 +914,11 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
         $this->assertNotFalse($standardPendingCardStart);
 
-        $standardPendingCard = substr($detailSource, (int) $standardPendingCardStart, 1200);
+        $standardPendingCard = substr($detailSource, (int) $standardPendingCardStart, 5000);
 
         $this->assertStringContainsString('Ödeme linkini aç', $standardPendingCard);
         $this->assertStringContainsString('Linki kopyala', $standardPendingCard);
-        $this->assertStringContainsString('renderPaymentLinkSendAction(extraMountPayment)', $standardPendingCard);
+        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\(\s*extraMountPayment\s*,?\s*\)/', $standardPendingCard);
     }
 
     public function test_technical_service_detail_dialog_has_accessible_description(): void

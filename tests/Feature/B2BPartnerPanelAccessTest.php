@@ -7057,11 +7057,11 @@ class B2BPartnerPanelAccessTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED)
-            ->assertJsonPath('dispatch.dispatch_status', 'queued')
+            ->assertJsonPath('dispatch.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)
             ->assertJsonPath('dispatch.target_phone', '905467647428')
             ->assertJsonPath('job.completion_requirements.customer_confirmation_ready', false)
-            ->assertJsonPath('job.customer_otp_request.payload.message_payload.dispatch_status', 'queued')
-            ->assertJsonPath('message', 'Müşteri onay mesajı kuyruğa alındı.');
+            ->assertJsonPath('job.customer_otp_request.payload.message_payload.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)
+            ->assertJsonPath('message', 'Müşteri onay mesajı sistem kaydı olarak tutuldu.');
 
         $this->assertDatabaseHas('technical_service_customer_confirmations', [
             'id' => $oldConfirmation->id,
@@ -7089,14 +7089,14 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringNotContainsString('127.0.0.1', $messageText);
         $this->assertArrayHasKey('approval_url', $confirmation->payload['message_payload'] ?? []);
         $this->assertSame("https://portal.test/service-job-confirmation/{$confirmation->token}", $confirmation->payload['message_payload']['confirmation_url'] ?? null);
-        $this->assertSame('queued', $confirmation->payload['message_payload']['dispatch_status'] ?? null);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $confirmation->payload['message_payload']['dispatch_status'] ?? null);
         $this->assertDatabaseHas('technical_service_message_dispatches', [
             'technical_service_request_id' => $job->id,
             'event' => 'customer_approval_request',
             'target_type' => 'customer',
             'target_phone' => '905467647428',
             'test_mode' => true,
-            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
             'provider_key' => 'null_local',
         ]);
         Http::assertNothingSent();
@@ -8117,9 +8117,10 @@ class B2BPartnerPanelAccessTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', ' ', $source) ?? $source;
         $this->assertStringContainsString('setCustomerApprovalModalOpen(true)', $source);
-        $this->assertStringContainsString('{customerApprovalModalOpen && latestCustomerApprovalUrl ? (', $source);
-        $this->assertStringContainsString('{customerApprovalModalOpen && latestCustomerApprovalMessageText ? (', $source);
+        $this->assertStringContainsString('{customerApprovalModalOpen && latestCustomerApprovalUrl ? (', $compactSource);
+        $this->assertStringContainsString('{customerApprovalModalOpen && latestCustomerApprovalMessageText ? (', $compactSource);
         $this->assertStringContainsString('Onay mesajını tekrar gönder', $source);
     }
 
@@ -8156,7 +8157,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'Ops linki tekrar istedi.',
             ])
             ->assertOk()
-            ->assertJsonPath('dispatch.dispatch_status', 'queued')
+            ->assertJsonPath('dispatch.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)
             ->assertJsonPath('request.partner_portal_actions.0.action', TechnicalServicePartnerJobAction::ACTION_CUSTOMER_OTP_REQUESTED);
 
         $messagePayload = $response->json('request.partner_portal_actions.0.payload.message_payload');
@@ -8276,7 +8277,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'note' => 'Müşteriye tekrar gönder.',
             ])
             ->assertOk()
-            ->assertJsonPath('dispatch.dispatch_status', 'queued')
+            ->assertJsonPath('dispatch.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)
             ->assertJsonPath('dispatch.target_phone', '905467647428');
 
         $this->assertDatabaseHas('technical_service_customer_confirmations', [
@@ -8992,7 +8993,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             'target_type' => 'technician',
             'target_phone' => '905467647428',
             'test_mode' => true,
-            'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
+            'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
             'provider_key' => 'null_local',
             'channel' => 'system',
         ]);
@@ -9022,7 +9023,7 @@ class B2BPartnerPanelAccessTest extends TestCase
             ->assertJsonPath('request.assignment_offer.message_payload.route_fee_amount', 1000)
             ->assertJsonPath('request.assignment_offer.message_payload.total_amount', 3000)
             ->assertJsonPath('request.assignment_offer.job_link', $offer->metadata['message_payload']['job_link'])
-            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_QUEUED)
+            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED)
             ->assertJsonPath('request.travel_fee_amount', '1000.00')
             ->assertJsonPath('request.technician_payment_amount', '2000.00');
 

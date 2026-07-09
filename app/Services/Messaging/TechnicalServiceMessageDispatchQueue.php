@@ -76,6 +76,26 @@ class TechnicalServiceMessageDispatchQueue
             }
         }
 
+        if ($this->isSystemOnlyRecord($input)) {
+            $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
+                'status' => TechnicalServiceMessageDispatch::STATUS_SUPPRESSED,
+                'queued_at' => null,
+                'next_attempt_at' => null,
+                'provider_status' => 'no_external_provider',
+                'last_error_code' => 'null_local_system_no_external_provider',
+                'last_error_message_redacted' => 'Dış sağlayıcı yok; sistem kaydı olarak tutuldu.',
+                'metadata' => [
+                    ...((array) ($input['metadata'] ?? [])),
+                    'null_local_system_recorded' => true,
+                    'provider_send_attempted' => false,
+                    'external_provider_call' => false,
+                ],
+            ]);
+            $this->recordEvent($dispatch, 'message_system_recorded', 'Mesaj sistem kaydı olarak tutuldu.');
+
+            return $dispatch;
+        }
+
         $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
             'status' => TechnicalServiceMessageDispatch::STATUS_QUEUED,
             'queued_at' => now(),
@@ -265,6 +285,28 @@ class TechnicalServiceMessageDispatchQueue
         return TechnicalServiceMessageDispatch::query()
             ->where('idempotency_key', $idempotencyKey)
             ->exists();
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     */
+    private function isSystemOnlyRecord(array $input): bool
+    {
+        $providerKey = (string) ($input['provider_key'] ?? 'null_local');
+        $channel = (string) ($input['channel'] ?? 'system');
+        $metadata = (array) ($input['metadata'] ?? []);
+        $payload = $this->messagePayload($input);
+        $externalProviderCall = $metadata['external_provider_call'] ?? $payload['external_provider_call'] ?? null;
+
+        if ($providerKey === 'system') {
+            return true;
+        }
+
+        if ($providerKey === 'null_local' && $channel === 'system') {
+            return true;
+        }
+
+        return $providerKey === 'null_local' && $externalProviderCall === false;
     }
 
     /**

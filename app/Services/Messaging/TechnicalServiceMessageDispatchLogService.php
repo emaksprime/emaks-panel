@@ -47,6 +47,7 @@ class TechnicalServiceMessageDispatchLogService
         'evo_whatsapp' => 'Evo WhatsApp',
         'nac_sms' => 'NAC SMS',
         'null_local' => 'Null Local',
+        'system' => 'Sistem',
         'voibot_voice' => 'Voibot',
         'evolution_n8n' => 'Evo WhatsApp',
     ];
@@ -127,16 +128,32 @@ class TechnicalServiceMessageDispatchLogService
             ->pluck('aggregate', 'status')
             ->map(fn (mixed $value): int => (int) $value)
             ->all();
+        $externalCounts = $this->externalProviderQuery()
+            ->selectRaw('status, count(*) as aggregate')
+            ->groupBy('status')
+            ->pluck('aggregate', 'status')
+            ->map(fn (mixed $value): int => (int) $value)
+            ->all();
 
         return [
-            'queued' => $counts[TechnicalServiceMessageDispatch::STATUS_QUEUED] ?? 0,
-            'sending' => $counts[TechnicalServiceMessageDispatch::STATUS_SENDING] ?? 0,
+            'queued' => $externalCounts[TechnicalServiceMessageDispatch::STATUS_QUEUED] ?? 0,
+            'sending' => $externalCounts[TechnicalServiceMessageDispatch::STATUS_SENDING] ?? 0,
             'sent' => ($counts[TechnicalServiceMessageDispatch::STATUS_SENT] ?? 0) + ($counts[TechnicalServiceMessageDispatch::STATUS_TEST_SENT] ?? 0),
             'failed' => ($counts[TechnicalServiceMessageDispatch::STATUS_FAILED] ?? 0) + ($counts[TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR] ?? 0) + ($counts[TechnicalServiceMessageDispatch::STATUS_TEST_FAILED] ?? 0),
             'duplicate_blocked' => $counts[TechnicalServiceMessageDispatch::STATUS_DUPLICATE_BLOCKED] ?? 0,
-            'rate_limited' => ($counts[TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED] ?? 0) + ($counts[TechnicalServiceMessageDispatch::STATUS_COOLDOWN_BLOCKED] ?? 0),
+            'rate_limited' => ($externalCounts[TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED] ?? 0) + ($externalCounts[TechnicalServiceMessageDispatch::STATUS_COOLDOWN_BLOCKED] ?? 0),
             'cancelled' => $counts[TechnicalServiceMessageDispatch::STATUS_CANCELLED] ?? 0,
         ];
+    }
+
+    private function externalProviderQuery(): Builder
+    {
+        return TechnicalServiceMessageDispatch::query()
+            ->whereNotIn('provider_key', ['null_local', 'system'])
+            ->where(function (Builder $query): void {
+                $query->whereNull('channel')
+                    ->orWhere('channel', '!=', 'system');
+            });
     }
 
     /**
@@ -208,10 +225,10 @@ class TechnicalServiceMessageDispatchLogService
         return [
             'id' => $dispatch->id,
             'status' => $dispatch->status,
-            'status_label' => $this->statusLabel($dispatch->status),
+            'status_label' => $this->dispatchStatusLabel($dispatch, $providerKey, $channel),
             'status_badge_tone' => $this->statusBadgeTone($dispatch->status),
             'provider_key' => $providerKey,
-            'provider_label' => $this->providerLabel($providerKey),
+            'provider_label' => $this->dispatchProviderLabel($dispatch, $providerKey, $channel),
             'provider_missing_label' => $providerKey === null ? 'Eski kayıt / sağlayıcı bilgisi yok' : null,
             'channel' => $channel,
             'channel_label' => $this->channelLabel($channel),
@@ -296,10 +313,10 @@ class TechnicalServiceMessageDispatchLogService
         return [
             'id' => $dispatch->id,
             'status' => $dispatch->status,
-            'status_label' => $this->statusLabel($dispatch->status),
+            'status_label' => $this->dispatchStatusLabel($dispatch, $providerKey, $channel),
             'status_badge_tone' => $this->statusBadgeTone($dispatch->status),
             'provider_key' => $providerKey,
-            'provider_label' => $this->providerLabel($providerKey),
+            'provider_label' => $this->dispatchProviderLabel($dispatch, $providerKey, $channel),
             'channel' => $channel,
             'channel_label' => $this->channelLabel($channel),
             'message_type' => $messageType,
@@ -519,6 +536,15 @@ class TechnicalServiceMessageDispatchLogService
         return self::STATUS_LABELS[$value ?? ''] ?? $this->fallbackLabel($value);
     }
 
+    private function dispatchStatusLabel(TechnicalServiceMessageDispatch $dispatch, ?string $providerKey, ?string $channel): string
+    {
+        if ($this->isSystemOnlyDispatch($dispatch, $providerKey, $channel)) {
+            return 'Sistem kaydı';
+        }
+
+        return $this->statusLabel($dispatch->status);
+    }
+
     private function channelLabel(?string $value): string
     {
         if ($value === null || trim($value) === '') {
@@ -535,6 +561,32 @@ class TechnicalServiceMessageDispatchLogService
         }
 
         return self::PROVIDER_LABELS[$value] ?? $this->fallbackLabel($value);
+    }
+
+    private function dispatchProviderLabel(TechnicalServiceMessageDispatch $dispatch, ?string $providerKey, ?string $channel): string
+    {
+        if ($this->isSystemOnlyDispatch($dispatch, $providerKey, $channel)) {
+            return 'Dış sağlayıcı yok';
+        }
+
+        return $this->providerLabel($providerKey);
+    }
+
+    private function isSystemOnlyDispatch(TechnicalServiceMessageDispatch $dispatch, ?string $providerKey, ?string $channel): bool
+    {
+        $metadata = (array) $dispatch->metadata;
+        $payload = (array) $dispatch->request_payload;
+        $externalProviderCall = $metadata['external_provider_call'] ?? $payload['external_provider_call'] ?? null;
+
+        if ($providerKey === 'system') {
+            return true;
+        }
+
+        if ($providerKey === 'null_local' && $channel === 'system') {
+            return true;
+        }
+
+        return $providerKey === 'null_local' && $externalProviderCall === false;
     }
 
     private function roleLabel(?string $value): string

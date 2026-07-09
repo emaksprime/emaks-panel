@@ -164,7 +164,7 @@ class TechnicalServiceAssignmentSettlementTest extends TestCase
             'customer_direct_to_technician_amount' => 1000,
         ])
             ->assertOk()
-            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
+            ->assertJsonPath('request.assignment_offer.dispatch_status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED);
 
         $this->assertDatabaseCount('technical_service_earning_payments', 0);
         $this->assertSame(1, TechnicalServiceMessageDispatch::query()->where('technical_service_request_id', $request->id)->count());

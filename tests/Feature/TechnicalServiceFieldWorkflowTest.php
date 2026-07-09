@@ -192,6 +192,7 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
     public function test_ops_field_documents_ui_exposes_clear_review_and_final_completion_controls(): void
     {
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx')) ?: '';
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
 
         $this->assertStringContainsString('backendControlComplete', $source);
         $this->assertStringContainsString('finalCheckActionChecklistComplete', $source);
@@ -205,7 +206,7 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
         $this->assertStringContainsString('Son kontrolü tamamla', $source);
         $this->assertStringContainsString('Saha belgeleri uygunluk kararı bekliyor', $source);
         $this->assertStringContainsString('assignmentOfferStatusLabel', $source);
-        $this->assertStringContainsString('assignmentOfferStatusLabel(assignmentOffer.status)', $source);
+        $this->assertMatchesRegularExpression('/assignmentOfferStatusLabel\(assignmentOffer\.status,?\)/', $compactSource);
         $this->assertStringNotContainsString('value={assignmentOffer.status}', $source);
     }
 
@@ -367,7 +368,7 @@ class TechnicalServiceFieldWorkflowTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $overrides
+     * @param  array<string, mixed>  $overrides
      */
     private function technicalServiceRequest(array $overrides = []): TechnicalServiceRequest
     {

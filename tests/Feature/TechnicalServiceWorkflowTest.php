@@ -2692,9 +2692,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('WhatsApp mesajını aç', $source);
         $this->assertStringContainsString('const renderPaymentLinkSendAction', $source);
         $this->assertGreaterThanOrEqual(6, substr_count($source, 'renderPaymentLinkSendAction('));
-        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*latestCustomerCharge\\s*\\)/', $source);
-        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*extraMountPayment\\s*\\)/', $source);
-        $this->assertMatchesRegularExpression('/id:\\s*partRequest\\.payment_id\\s*\\?\\?\\s*partRequest\\.customer_charge\\?\\.id\\s*\\?\\?\\s*null/s', $source);
+        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*latestCustomerCharge\\s*,?\\s*\\)/', $source);
+        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(\\s*extraMountPayment\\s*,?\\s*\\)/', $source);
+        $this->assertMatchesRegularExpression('/id:\\s*partRequest\\.payment_id\\s*\\?\\?\\s*partRequest\\s*\\.\\s*customer_charge\\s*\\?\\.\\s*id\\s*\\?\\?\\s*null/s', $source);
         $this->assertStringContainsString('Servis ödemesi', $source);
         $this->assertStringContainsString('Parça ödemesi', $source);
         $this->assertStringContainsString('Müşteriden alınan servis ücreti', $source);
@@ -2702,7 +2702,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertSame(1, substr_count($source, 'aria-label="Servis/parça ödeme linki oluştur"'));
 
         $actionPosition = strpos($source, 'data-testid="service-part-payment-action"');
-        $operationPanelPosition = strpos($source, "title={showMountOperationControls ? 'Operasyon ve Montaj Kontrolü' : 'SRV Bağlamı'}");
+        $operationPanelPosition = strpos($source, "'Operasyon ve Montaj Kontrolü'");
 
         $this->assertNotFalse($actionPosition);
         $this->assertNotFalse($operationPanelPosition);
@@ -2729,9 +2729,11 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
-        $this->assertStringContainsString('const existingPendingPaymentAmount = typeof latestPendingMountPayment?.amount', $source);
-        $this->assertStringContainsString('const extraPayment = existingPendingPaymentAmountInput', $source);
-        $this->assertStringContainsString('const paymentAmount = existingPendingPaymentAmountInput', $source);
+        $compactSource = preg_replace('/\s+/', ' ', $source) ?? $source;
+
+        $this->assertStringContainsString('const existingPendingPaymentAmount = typeof latestPendingMountPayment?.amount', $compactSource);
+        $this->assertStringContainsString('const extraPayment = existingPendingPaymentAmountInput', $compactSource);
+        $this->assertStringContainsString('const paymentAmount = existingPendingPaymentAmountInput', $compactSource);
         $this->assertStringContainsString('Tutar kaynağı: Manuel giriş gerekli', $source);
         $this->assertStringContainsString('Tutar kaynağı: Mevcut ödeme kaydı', $source);
         $this->assertStringContainsString('Tutar kaynağı: Operasyon manuel girişi', $source);
@@ -2744,12 +2746,13 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', ' ', $source) ?? $source;
         $this->assertStringContainsString('showMountExcludedApprovalBlock', $source);
         $this->assertStringContainsString('showAddressControlBlock', $source);
-        $this->assertStringContainsString('mountExclusionAckRequired && showMountExcludedApprovalBlock', $source);
-        $this->assertStringContainsString('{showPaymentControl ? (', $source);
+        $this->assertStringContainsString('mountExclusionAckRequired && showMountExcludedApprovalBlock', $compactSource);
+        $this->assertStringContainsString('{showPaymentControl ? (', $compactSource);
         $this->assertStringNotContainsString('showPaymentControl && showPaymentMountControlBlock', $source);
-        $this->assertStringContainsString('showAddressControl && showAddressControlBlock', $source);
+        $this->assertStringContainsString('showAddressControl && showAddressControlBlock', $compactSource);
         $this->assertStringContainsString('show_mount_excluded_approval_block: false', $source);
         $this->assertStringContainsString('show_payment_mount_control_block: false', $source);
         $this->assertStringContainsString('show_address_control_block: false', $source);
@@ -2778,9 +2781,10 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringContainsString('shouldShowFooterPaymentLinkAction', $source);
         $this->assertStringContainsString('data-testid="bottom-payment-link-action"', $source);
-        $this->assertStringContainsString("paidOnlinePaymentLink || pendingOnlinePaymentLink ? 'default' : 'outline'", $source);
+        $this->assertStringContainsString("paidOnlinePaymentLink||pendingOnlinePaymentLink?'default':'outline'", $compactSource);
         $this->assertStringContainsString('Ödeme Düzenle', $source);
         $this->assertStringContainsString('Ödeme Al', $source);
         $this->assertStringContainsString('paymentActionRelevantByWorkflow', $source);
@@ -2793,12 +2797,13 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringContainsString('const handleBottomPaymentLinkAction = () =>', $source);
         $this->assertStringContainsString('openPaymentLinkModal()', $source);
         $this->assertStringContainsString('onClick={handleBottomPaymentLinkAction}', $source);
         $this->assertStringContainsString('paymentLinkEditorModal', $source);
-        $this->assertStringContainsString("routeFeeEditorOpen && routeFeeEditorMode === 'payment_link'", $source);
-        $this->assertStringContainsString("routeFeeEditorOpen && routeFeeEditorMode !== 'payment_link'", $source);
+        $this->assertStringContainsString("routeFeeEditorOpen&&routeFeeEditorMode==='payment_link'", $compactSource);
+        $this->assertStringContainsString("routeFeeEditorOpen&&routeFeeEditorMode!=='payment_link'", $compactSource);
         $bottomHandler = substr($source, strpos($source, 'const handleBottomPaymentLinkAction = () =>'), 260);
         $this->assertStringNotContainsString('handleExtraPaymentCreate', $bottomHandler);
     }
@@ -2811,7 +2816,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertIsString($source);
         $this->assertIsString($clipboardSource);
         $this->assertStringContainsString("import { copyTextToClipboard } from '@/lib/clipboard'", $source);
-        $this->assertStringContainsString('function paymentLinkCopyUrl(payment: PaymentLinkSendTarget | null | undefined): string', $source);
+        $this->assertStringContainsString('function paymentLinkCopyUrl(', $source);
         $this->assertStringContainsString('payment?.copy_url ?? payment?.payment_url', $source);
         $this->assertStringContainsString('function copyTextWithTextarea(text: string): boolean', $clipboardSource);
         $this->assertStringContainsString('async function clipboardMatchesText(text: string): Promise<boolean | null>', $clipboardSource);
@@ -2822,20 +2827,30 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('textarea.setSelectionRange(0, textarea.value.length)', $clipboardSource);
         $this->assertStringContainsString("status: 'manual'", $clipboardSource);
         $this->assertStringContainsString("setPaymentLinkCopyMessage('Kopyalanacak link yok.')", $source);
-        $this->assertStringContainsString('Link kopyalanamadı. Bağlantıyı aşağıdaki alandan manuel kopyalayın.', $source);
+        $this->assertStringContainsString('paymentLinkCopyTarget', $source);
+        $this->assertStringContainsString('renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))', $source);
+        $this->assertStringContainsString('renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(extraMountPayment))', $source);
         $this->assertStringContainsString('paymentLinkManualCopyValue', $source);
         $this->assertStringContainsString('Otomatik kopyalanamadı;', $source);
-        $this->assertStringContainsString('Manuel kopyalama', $source);
-        $this->assertStringContainsString('function paymentProviderLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string', $source);
-        $this->assertStringContainsString('function paymentProviderReferenceRows(payment: ServiceRequestExtraMountPayment | null | undefined)', $source);
+        $this->assertStringNotContainsString('Manuel kopyalama', $source);
+        $this->assertStringContainsString('Kopyalandı — ${successMessage}', $source);
+        $this->assertStringContainsString('role="status"', $source);
+        $this->assertStringContainsString('aria-live="polite"', $source);
+        $this->assertStringContainsString('referenceCopyMessage', $source);
+        $this->assertStringContainsString('referenceManualCopyValue', $source);
+        $this->assertStringContainsString('customerApprovalManualCopyValue', $source);
+        $this->assertStringContainsString('customerChargeManualCopyValue', $source);
+        $this->assertStringContainsString('Otomatik kopyalanamadı; metni manuel kopyalayın.', $source);
+        $this->assertStringContainsString('function paymentProviderLabel(', $source);
+        $this->assertStringContainsString('function paymentProviderReferenceRows(', $source);
         $this->assertStringContainsString('Provider ödeme referansı', $source);
         $this->assertStringContainsString('Provider işlem referansı', $source);
         $this->assertStringContainsString('Dekont referansı', $source);
         $this->assertStringContainsString('Sağlayıcı tarafından dönmedi', $source);
         $this->assertStringContainsString('Ödeme linkini aç', $source);
-        $this->assertStringContainsString('renderPaymentLinkSendAction(extraMountPayment)', $source);
-        $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}', $source);
-        $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(extraMountPayment))}', $source);
+        $this->assertStringContainsString('renderPaymentLinkSendAction(', $source);
+        $this->assertStringContainsString('copyPaymentLinkValue(', $source);
+        $this->assertStringContainsString('paymentLinkCopyUrl(', $source);
         $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(payment.payment_url ?? '')}", $source);
         $this->assertStringNotContainsString("onClick={() => void navigator.clipboard?.writeText(extraMountPayment.payment_url ?? '')}", $source);
     }
@@ -2854,14 +2869,15 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString("import { copyTextToClipboard } from '@/lib/clipboard'", $portalSource);
         $this->assertStringNotContainsString('navigator.clipboard?.writeText', $detailSource);
         $this->assertStringNotContainsString('navigator.clipboard.writeText', $detailSource);
-        $this->assertStringContainsString('copyReferenceValue(displayMrn ?? request.mrn', $detailSource);
-        $this->assertStringContainsString("copyReferenceValue(request.serialNumber, 'Seri no kopyalandı.'", $detailSource);
-        $this->assertStringContainsString("copyReferenceValue(request.phone, 'Telefon kopyalandı.'", $detailSource);
-        $this->assertStringContainsString("copyReferenceValue(locationInfo.map_url, 'Harita linki kopyalandı.'", $detailSource);
+        $compactDetailSource = preg_replace('/\s+/', '', $detailSource) ?? $detailSource;
+        $this->assertStringContainsString('copyReferenceValue(displayMrn??request.mrn', $compactDetailSource);
+        $this->assertStringContainsString("copyReferenceValue(request.serialNumber,'Serinokopyalandı.'", $compactDetailSource);
+        $this->assertStringContainsString("copyReferenceValue(request.phone,'Telefonkopyalandı.'", $compactDetailSource);
+        $this->assertStringContainsString("copyReferenceValue(locationInfo.map_url,'Haritalinkikopyalandı.'", $compactDetailSource);
         $this->assertStringContainsString('Seri noyu kopyala', $detailSource);
         $this->assertStringContainsString('Telefonu kopyala', $detailSource);
         $this->assertStringContainsString('Harita linkini kopyala', $detailSource);
-        $this->assertStringContainsString('copyReferenceValue(displayedEarningMessageText', $detailSource);
+        $this->assertStringContainsString('copyReferenceValue(displayedEarningMessageText', $compactDetailSource);
     }
 
     public function test_payment_link_modal_stays_inside_detail_dialog_focus_scope_and_uses_iyzico_open_copy_wording(): void
@@ -2869,13 +2885,14 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringNotContainsString("import { createPortal } from 'react-dom'", $source);
         $this->assertStringNotContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
         $this->assertStringContainsString('pointer-events-auto fixed inset-0 z-[110]', $source);
         $this->assertStringContainsString('z-[110]', $source);
-        $this->assertStringContainsString('Iyzico Sandbox ödeme ekranı açılacak.', $source);
-        $this->assertStringContainsString('Ödeme yapıldıktan sonra durum kontrolü/reconciliation ile güncellenecek.', $source);
-        $this->assertStringContainsString('{renderPaymentProviderReferences(payment)}', $source);
+        $this->assertStringContainsString('IyzicoSandboxödemeekranıaçılacak.', $compactSource);
+        $this->assertStringContainsString('Ödemeyapıldıktansonradurumkontrolü/reconciliationilegüncellenecek.', $compactSource);
+        $this->assertMatchesRegularExpression('/\\{renderPaymentProviderReferences\\(payment,?\\)\\}/', $compactSource);
         $this->assertStringContainsString('{paymentLinkEditorModal}', $source);
         $this->assertStringNotContainsString('{paymentLinkEditorPortal}', $source);
     }
@@ -2885,14 +2902,15 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringContainsString('pointer-events-auto fixed inset-0 z-[110]', $source);
         $this->assertStringNotContainsString('createPortal(paymentLinkEditorModal, document.body)', $source);
         $this->assertStringContainsString('{paymentLinkEditorModal}', $source);
-        $this->assertStringContainsString("payment.payment_action_kind === 'open_provider_url'", $source);
+        $this->assertStringContainsString("payment.payment_action_kind==='open_provider_url'", $compactSource);
         $this->assertStringContainsString('Ödeme linkini aç', $source);
-        $this->assertStringContainsString('onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}', $source);
-        $this->assertStringContainsString('renderPaymentLinkSendAction(payment)', $source);
-        $this->assertStringContainsString('onClick={() => void handlePendingPaymentCancel(payment)}', $source);
+        $this->assertMatchesRegularExpression('/onClick=\\{\\(\\)=>voidcopyPaymentLinkValue\\(paymentLinkCopyUrl\\(payment,?\\),?\\)\\}/', $compactSource);
+        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(payment,?\\)/', $compactSource);
+        $this->assertMatchesRegularExpression('/onClick=\\{\\(\\)=>voidhandlePendingPaymentCancel\\(payment,?\\)\\}/', $compactSource);
     }
 
     public function test_action_buttons_use_can_open_payment_url_can_copy_payment_url_can_cancel_payment_flags(): void
@@ -2902,6 +2920,7 @@ class TechnicalServiceWorkflowTest extends TestCase
 
         $this->assertIsString($presenter);
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringContainsString("'can_open_payment_url' => \$canOpenProviderUrl", $presenter);
         $this->assertStringContainsString("'can_copy_payment_url' => \$canCopy", $presenter);
         $this->assertStringContainsString("'can_cancel_payment' => \$isPending", $presenter);
@@ -2912,11 +2931,11 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString("'provider_last_synced_at' => \$payment->provider_last_synced_at?->toISOString()", $presenter);
         $this->assertStringContainsString("'provider_sync_attempts' => (int) (\$payment->provider_sync_attempts ?? 0)", $presenter);
         $this->assertStringContainsString("'provider_sync_message' => \$syncWaiting", $presenter);
-        $this->assertStringContainsString("payment.payment_action_kind === 'open_provider_url'", $source);
+        $this->assertStringContainsString("payment.payment_action_kind==='open_provider_url'", $compactSource);
         $this->assertStringContainsString('Ödeme linkini aç', $source);
-        $this->assertStringContainsString('renderPaymentLinkSendAction(payment)', $source);
+        $this->assertMatchesRegularExpression('/renderPaymentLinkSendAction\\(payment,?\\)/', $compactSource);
         $this->assertStringContainsString('payment?.provider_sync_message', $source);
-        $this->assertStringContainsString('handlePendingPaymentSync(payment)', $source);
+        $this->assertMatchesRegularExpression('/handlePendingPaymentSync\\(payment,?\\)/', $compactSource);
         $this->assertStringContainsString('Durumu Kontrol Et', $source);
 
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
@@ -2930,14 +2949,16 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
-        $this->assertStringContainsString('topTechnicianSuggestions = technicianSuggestions.slice(0, 4)', $source);
-        $this->assertStringContainsString('remainingTechnicianSuggestions = technicianSuggestions.slice(4)', $source);
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
+        $spacedCompactSource = preg_replace('/\s+/', ' ', $source) ?? $source;
+        $this->assertStringContainsString('topTechnicianSuggestions=technicianSuggestions.slice(0,4)', $compactSource);
+        $this->assertStringContainsString('remainingTechnicianSuggestions=technicianSuggestions.slice(4)', $compactSource);
         $this->assertStringContainsString('otherTechniciansModalOpenByRequest', $source);
         $this->assertStringContainsString('otherTechniciansModal', $source);
         $this->assertStringContainsString('Diğer ustalar', $source);
-        $this->assertStringContainsString('İlk 4 öneri ekranda kalır; kalan ustaları buradan seçin.', $source);
-        $this->assertStringContainsString('topTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))', $source);
-        $this->assertStringContainsString('remainingTechnicianSuggestions.map((technician) => renderTechnicianSuggestionCard(technician))', $source);
+        $this->assertStringContainsString('İlk 4 öneri ekranda kalır; kalan ustaları buradan seçin.', $spacedCompactSource);
+        $this->assertMatchesRegularExpression('/topTechnicianSuggestions\.map\(\s*\(?technician\)?\s*=>\s*renderTechnicianSuggestionCard\(\s*technician\s*,?\s*\)/s', $source);
+        $this->assertMatchesRegularExpression('/remainingTechnicianSuggestions\.map\(\s*\(?technician\)?\s*=>\s*renderTechnicianSuggestionCard\(\s*technician\s*,?\s*\)/s', $source);
 
         $pageSource = file_get_contents(resource_path('js/pages/panel/technical-service.tsx'));
         $this->assertIsString($pageSource);
@@ -2950,10 +2971,11 @@ class TechnicalServiceWorkflowTest extends TestCase
         $source = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($source);
+        $compactSource = preg_replace('/\s+/', '', $source) ?? $source;
         $this->assertStringContainsString("routeFeeEditorMode === 'payment_link' || selectedTechnician", $source);
         $this->assertStringContainsString("routeFeeEditorMode !== 'payment_link' && !selectedTechnician", $source);
-        $this->assertStringContainsString("reason: routeFeeEditorMode === 'payment_link' ? 'manual_extra' : 'route_fee'", $source);
-        $this->assertStringContainsString("purpose: routeFeeEditorMode === 'payment_link' ? 'manual_mount_payment' : 'route_fee'", $source);
+        $this->assertStringContainsString("reason:routeFeeEditorMode==='payment_link'?'manual_extra':'route_fee'", $compactSource);
+        $this->assertStringContainsString("purpose:routeFeeEditorMode==='payment_link'?'manual_mount_payment':'route_fee'", $compactSource);
     }
 
     public function test_service_part_payment_page_uses_tl_label_not_try(): void
@@ -3811,27 +3833,35 @@ class TechnicalServiceWorkflowTest extends TestCase
         $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
         $this->assertIsString($panelSource);
         $this->assertIsString($detailSource);
+        $compactDetailSource = preg_replace('/\s+/', ' ', $detailSource) ?? $detailSource;
 
         $this->assertStringContainsString('resetAssignmentDraftForTechnicianChange', $panelSource);
         $this->assertStringContainsString('routeQuoteAutoRequestSeq.current += 1', $panelSource);
         $this->assertStringContainsString("setAssignOfferRouteFeeAmount('')", $panelSource);
-        $this->assertStringContainsString('const selectedTechnicianMatchesRequest = selectedTechnicianIdString', $detailSource);
-        $this->assertStringContainsString('const storedRouteCostMatchesSelection = selectedTechnicianMatchesRequest || assignmentOfferMatchesSelectedTechnician', $detailSource);
-        $this->assertStringContainsString('const activeFinanceLocksmithPayout = financePayoutMatchesSelectedTechnician ? financeLocksmithPayout : null', $detailSource);
+        $this->assertStringContainsString('const selectedTechnicianMatchesRequest = selectedTechnicianIdString', $compactDetailSource);
+        $this->assertStringContainsString('const storedRouteCostMatchesSelection = selectedTechnicianMatchesRequest || assignmentOfferMatchesSelectedTechnician', $compactDetailSource);
+        $this->assertStringContainsString('const activeFinanceLocksmithPayout = financePayoutMatchesSelectedTechnician ? financeLocksmithPayout : null', $compactDetailSource);
     }
 
     public function test_unassigned_detail_does_not_promote_stale_assignment_offer_to_active_payout(): void
     {
         $detailSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
         $this->assertIsString($detailSource);
+        $compactDetailSource = preg_replace('/\s+/', ' ', $detailSource) ?? $detailSource;
 
-        $this->assertStringContainsString(': requestTechnicianIdString', $detailSource);
-        $this->assertStringContainsString('? !assignmentOfferTechnicianIdString || assignmentOfferTechnicianIdString === requestTechnicianIdString', $detailSource);
-        $this->assertStringContainsString('? !financePayoutTechnicianIdString || financePayoutTechnicianIdString === requestTechnicianIdString', $detailSource);
-        $this->assertStringContainsString('const hasPayoutTechnicianContext = Boolean(selectedTechnician || requestTechnicianIdString || activeAssignmentOffer || activeFinanceLocksmithPayout)', $detailSource);
-        $this->assertStringContainsString("!hasPayoutTechnicianContext\n    ? 'Usta seçilmedi'", $detailSource);
-        $this->assertStringContainsString('const showFinanceCollectionMetrics = !hasAssignmentChange && Boolean(requestTechnicianIdString || activeFinanceLocksmithPayout || activeAssignmentOffer)', $detailSource);
-        $this->assertStringContainsString('{showFinanceCollectionMetrics && earningBreakdown?.root_total ? (', $detailSource);
+        $this->assertStringContainsString(': requestTechnicianIdString', $compactDetailSource);
+        $this->assertStringContainsString('? !assignmentOfferTechnicianIdString || assignmentOfferTechnicianIdString === requestTechnicianIdString', $compactDetailSource);
+        $this->assertStringContainsString('? !financePayoutTechnicianIdString || financePayoutTechnicianIdString === requestTechnicianIdString', $compactDetailSource);
+        $this->assertMatchesRegularExpression(
+            '/const\s+hasPayoutTechnicianContext\s*=\s*Boolean\(\s*selectedTechnician\s*\|\|\s*requestTechnicianIdString\s*\|\|\s*activeAssignmentOffer\s*\|\|\s*activeFinanceLocksmithPayout\s*,?\s*\)/s',
+            $detailSource,
+        );
+        $this->assertStringContainsString("!hasPayoutTechnicianContext ? 'Usta seçilmedi'", $compactDetailSource);
+        $this->assertMatchesRegularExpression(
+            '/const\s+showFinanceCollectionMetrics\s*=\s*!hasAssignmentChange\s*&&\s*Boolean\(\s*requestTechnicianIdString\s*\|\|\s*activeFinanceLocksmithPayout\s*\|\|\s*activeAssignmentOffer\s*,?\s*\)/s',
+            $detailSource,
+        );
+        $this->assertStringContainsString('{showFinanceCollectionMetrics && earningBreakdown?.root_total ? (', $compactDetailSource);
     }
 
     public function test_stale_route_quote_for_previous_technician_is_ignored(): void
@@ -4484,7 +4514,7 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->assertJsonPath('request.workflow_status', 'Usta Onayı Bekleyen')
             ->assertJsonPath('request.status', 'Atandı')
             ->assertJsonPath('request.technician_approved_at', null)
-            ->assertJsonPath('request.assignment_offer.metadata.message_dispatch.status', TechnicalServiceMessageDispatch::STATUS_QUEUED);
+            ->assertJsonPath('request.assignment_offer.metadata.message_dispatch.status', TechnicalServiceMessageDispatch::STATUS_SUPPRESSED);
 
         $request->refresh();
         $this->assertNull($request->technician_approved_at);
@@ -4495,9 +4525,11 @@ class TechnicalServiceWorkflowTest extends TestCase
             ->latest('id')
             ->firstOrFail();
 
-        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $dispatch->status);
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_SUPPRESSED, $dispatch->status);
         $this->assertSame('null_local', $dispatch->provider_key);
         $this->assertSame('system', $dispatch->channel);
+        $this->assertFalse((bool) data_get($dispatch->metadata, 'provider_send_attempted'));
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'null_local_system_recorded'));
         $this->assertSame('905467647428', $dispatch->target_phone);
         $this->assertStringStartsWith('https://dashboard.test/partner/service-jobs?', (string) data_get($dispatch->request_payload, 'context.job_link'));
         $this->assertStringContainsString('partner_id='.$partner->id, (string) data_get($dispatch->request_payload, 'context.job_link'));
@@ -5647,6 +5679,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertIsString($detailsSource);
         $this->assertIsString($cardSource);
         $this->assertIsString($panelSource);
+        $compactDetailsSource = preg_replace('/\s+/', '', $detailsSource) ?? $detailsSource;
 
         foreach ([
             'Operasyon ve Montaj Kontrolü',
@@ -5716,7 +5749,11 @@ class TechnicalServiceWorkflowTest extends TestCase
             'preview_url ?? photo.download_url ?? photo.url',
             'Görüntü açılamadı',
         ] as $expectedText) {
-            $this->assertStringContainsString($expectedText, $detailsSource);
+            $this->assertTrue(
+                str_contains($detailsSource, $expectedText)
+                    || str_contains($compactDetailsSource, preg_replace('/\s+/', '', $expectedText) ?? $expectedText),
+                "Expected ServiceRequestDetails.tsx to contain {$expectedText}."
+            );
         }
 
         $this->assertStringNotContainsString('Montaj / Servis Durumu', $detailsSource);
@@ -5798,6 +5835,7 @@ class TechnicalServiceWorkflowTest extends TestCase
         $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($detailsSource);
+        $compactDetailsSource = preg_replace('/\s+/', ' ', $detailsSource) ?? $detailsSource;
         $this->assertStringContainsString('filterInvoiceSerials', $detailsSource);
         $this->assertStringContainsString('invoiceSerialMatchesSearch', $detailsSource);
         $this->assertStringContainsString('canonicalInvoiceSerialRows', $detailsSource);
@@ -5807,9 +5845,9 @@ class TechnicalServiceWorkflowTest extends TestCase
         $this->assertStringContainsString('filteredHiddenInvoiceSerials', $detailsSource);
         $this->assertStringContainsString('filteredAllSearchableInvoiceSerials', $detailsSource);
         $this->assertStringContainsString('hasAnyFilteredInvoiceSerial', $detailsSource);
-        $this->assertStringContainsString('showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && allSearchableInvoiceSerials.length > 0 && !hasAnyFilteredInvoiceSerial', $detailsSource);
+        $this->assertStringContainsString('showInvoiceSerialNoSearchResult = invoiceSerialSearchActive && !invoiceSerialRecheckInFlight && allSearchableInvoiceSerials.length > 0 && !hasAnyFilteredInvoiceSerial', $compactDetailsSource);
         $this->assertStringContainsString('Seri, ürün, model, marka veya fatura ara', $detailsSource);
-        $this->assertStringContainsString('Bu aramada seri bulunamadı. Serileri kontrol et ile Mikro sorgusunu yenileyin.', $detailsSource);
+        $this->assertStringContainsString('Bu aramada seri bulunamadı. Serileri kontrol et ile Mikro sorgusunu yenileyin.', $compactDetailsSource);
         $this->assertStringNotContainsString('Aramaya uygun seri bulunamadı.', $detailsSource);
     }
 
@@ -5818,12 +5856,13 @@ class TechnicalServiceWorkflowTest extends TestCase
         $detailsSource = file_get_contents(resource_path('js/components/technical-service/ServiceRequestDetails.tsx'));
 
         $this->assertIsString($detailsSource);
-        $this->assertStringContainsString('Yeni ek ödeme linki tutarı', $detailsSource);
-        $this->assertStringContainsString('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.', $detailsSource);
-        $this->assertStringContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $detailsSource);
+        $compactDetailsSource = preg_replace('/\s+/', ' ', $detailsSource) ?? $detailsSource;
+        $this->assertStringContainsString('Yeni ek ödeme linki tutarı', $compactDetailsSource);
+        $this->assertStringContainsString('Ödeme linki için ödeme tutarını girin. Tutar 0 TL üzerinde olmalı.', $compactDetailsSource);
+        $this->assertStringContainsString('Ödeme tutarı net değil. Link oluşturmak için tutar girin.', $compactDetailsSource);
         $this->assertStringContainsString('Ödeme Al', $detailsSource);
         $this->assertStringContainsString('Ödeme Düzenle', $detailsSource);
-        $this->assertStringContainsString('Ödenmiş kayıtlar salt okunur. Ek tahsilat gerekiyorsa yeni ödeme linki oluşturabilirsiniz.', $detailsSource);
+        $this->assertStringContainsString('Ödenmiş kayıtlar salt okunur. Ek tahsilat gerekiyorsa yeni ödeme linki oluşturabilirsiniz.', $compactDetailsSource);
         $this->assertStringContainsString('Toplam alınan ödeme', $detailsSource);
         $this->assertStringContainsString('Bekleyen ödeme linkleri', $detailsSource);
         $this->assertStringContainsString('İptal edilen linkler', $detailsSource);

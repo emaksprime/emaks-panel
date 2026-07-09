@@ -1691,6 +1691,7 @@ export function ServiceRequestDetails({
   }
   const [customerApprovalModalOpen, setCustomerApprovalModalOpen] = useState(false)
   const [customerApprovalCopyMessage, setCustomerApprovalCopyMessage] = useState<string | null>(null)
+  const [customerApprovalManualCopyValue, setCustomerApprovalManualCopyValue] = useState<string | null>(null)
   const [serialQueryOpen, setSerialQueryOpen] = useState(false)
   const [routeFeeEditorOpen, setRouteFeeEditorOpen] = useState(false)
   const [routeFeeEditorMode, setRouteFeeEditorMode] = useState<'route_fee' | 'payment_link'>('route_fee')
@@ -1709,12 +1710,16 @@ export function ServiceRequestDetails({
   const [paymentCancelError, setPaymentCancelError] = useState<string | null>(null)
   const [paymentLinkCopyMessage, setPaymentLinkCopyMessage] = useState<string | null>(null)
   const [paymentLinkManualCopyValue, setPaymentLinkManualCopyValue] = useState<string | null>(null)
+  const [paymentLinkCopyTarget, setPaymentLinkCopyTarget] = useState<string | null>(null)
+  const [referenceCopyMessage, setReferenceCopyMessage] = useState<string | null>(null)
+  const [referenceManualCopyValue, setReferenceManualCopyValue] = useState<string | null>(null)
   const [customerServiceChargeInput, setCustomerServiceChargeInput] = useState('')
   const [customerPartChargeInput, setCustomerPartChargeInput] = useState('')
   const [customerChargeNoteInput, setCustomerChargeNoteInput] = useState('')
   const [customerChargeMessageInput, setCustomerChargeMessageInput] = useState('')
   const [customerChargeModalOpen, setCustomerChargeModalOpen] = useState(false)
   const [customerChargeCopyMessage, setCustomerChargeCopyMessage] = useState<string | null>(null)
+  const [customerChargeManualCopyValue, setCustomerChargeManualCopyValue] = useState<string | null>(null)
   const [routeFeeManualAmountTouched, setRouteFeeManualAmountTouched] = useState(false)
   const [routeFeeEditorInitialSnapshot, setRouteFeeEditorInitialSnapshot] = useState('')
   const [earningNoteInput, setEarningNoteInput] = useState('')
@@ -2627,6 +2632,8 @@ export function ServiceRequestDetails({
     setRouteFeeEditorMessage(paymentAmount === '' ? 'Ödeme tutarı net değil. Link oluşturmak için tutar girin.' : null)
     setPaymentCancelError(null)
     setPaymentLinkCopyMessage(null)
+    setPaymentLinkManualCopyValue(null)
+    setPaymentLinkCopyTarget(null)
     setRouteFeeEditorOpen(true)
   }
   const handleRouteFeeOneWayChange = (value: string) => {
@@ -2733,6 +2740,7 @@ export function ServiceRequestDetails({
       setPaymentCancelError(null)
       setPaymentLinkCopyMessage(null)
       setPaymentLinkManualCopyValue(null)
+      setPaymentLinkCopyTarget(null)
       setRouteFeeEditorMessage('Ödeme linki oluşturuldu.')
     } catch (caught) {
       setRouteFeeEditorMessage(caught instanceof Error ? caught.message : 'Ödeme linki oluşturulamadı.')
@@ -2950,6 +2958,7 @@ export function ServiceRequestDetails({
       message_template: customerChargeMessageInput.trim() || null,
     })
     setCustomerChargeCopyMessage(null)
+    setCustomerChargeManualCopyValue(null)
     setCustomerChargeModalOpen(true)
     setRouteFeeEditorMessage('Müşteri servis/parça ödeme linki oluşturuldu.')
   }
@@ -3129,6 +3138,7 @@ export function ServiceRequestDetails({
   const customerChargeMessageText = customerChargeMessageInput.trim() || customerChargeDefaultMessage
   const openCustomerChargeModal = () => {
     setCustomerChargeCopyMessage(null)
+    setCustomerChargeManualCopyValue(null)
     setCustomerChargeModalOpen(true)
   }
   const customerChargeModal = customerChargeModalOpen ? (
@@ -3207,7 +3217,19 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
           {customerChargeCopyMessage ? (
-            <p className="text-xs font-semibold text-blue-800">{customerChargeCopyMessage}</p>
+            <p role="status" aria-live="polite" className="text-xs font-semibold text-blue-800">{customerChargeCopyMessage}</p>
+          ) : null}
+          {customerChargeManualCopyValue ? (
+            <label className="grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+              Otomatik kopyalanamadı; metni manuel kopyalayın.
+              <input
+                readOnly
+                value={customerChargeManualCopyValue}
+                onClick={(event) => event.currentTarget.select()}
+                onFocus={(event) => event.currentTarget.select()}
+                className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
+              />
+            </label>
           ) : null}
           {routeFeeEditorMessage ? (
             <p className="text-xs font-semibold text-slate-700">{routeFeeEditorMessage}</p>
@@ -3282,13 +3304,13 @@ export function ServiceRequestDetails({
             </div>
           ) : null}
           {paymentLinkCopyMessage ? (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900">
+            <div role="status" aria-live="polite" className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900">
               {paymentLinkCopyMessage}
             </div>
           ) : null}
           {paymentLinkManualCopyValue ? (
             <label className="grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
-              Manuel kopyalama
+              Otomatik kopyalanamadı; metni manuel kopyalayın.
               <input
                 readOnly
                 value={paymentLinkManualCopyValue}
@@ -3334,6 +3356,7 @@ export function ServiceRequestDetails({
                       <Button type="button" size="sm" variant="outline" onClick={() => void copyPaymentLinkValue(paymentLinkCopyUrl(payment))}>
                         Linki kopyala
                       </Button>
+                      {renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))}
                     </>
                   ) : null}
                 </div>
@@ -3387,6 +3410,7 @@ export function ServiceRequestDetails({
                           {paymentCancelInFlight === payment.id ? 'İptal ediliyor...' : 'İptal et'}
                         </Button>
                       </div>
+                      {renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(payment))}
                     </>
                   ) : (
                     <div className="flex flex-wrap gap-2">
@@ -4145,12 +4169,14 @@ export function ServiceRequestDetails({
     if (text === '') {
       setPaymentLinkCopyMessage('Kopyalanacak link yok.')
       setPaymentLinkManualCopyValue(null)
+      setPaymentLinkCopyTarget(null)
 
       return false
     }
 
+    setPaymentLinkCopyTarget(text)
     const copied = await writeTextToClipboard(text)
-    setPaymentLinkCopyMessage(copied ? successMessage : 'Link kopyalanamadı. Bağlantıyı aşağıdaki alandan manuel kopyalayın.')
+    setPaymentLinkCopyMessage(copied ? `Kopyalandı — ${successMessage}` : 'Otomatik kopyalanamadı; metni manuel kopyalayın.')
     setPaymentLinkManualCopyValue(copied ? null : text)
 
     return copied
@@ -4158,6 +4184,36 @@ export function ServiceRequestDetails({
 
   function paymentLinkCopyUrl(payment: PaymentLinkSendTarget | null | undefined): string {
     return String(payment?.copy_url ?? payment?.payment_url ?? '').trim()
+  }
+
+  function renderPaymentLinkCopyFeedback(value: string | null | undefined) {
+    const text = String(value ?? '').trim()
+
+    if (!text || text !== paymentLinkCopyTarget || (!paymentLinkCopyMessage && !paymentLinkManualCopyValue)) {
+      return null
+    }
+
+    return (
+      <div className="grid gap-2">
+        {paymentLinkCopyMessage ? (
+          <p role="status" aria-live="polite" className="text-xs font-semibold text-blue-800">
+            {paymentLinkCopyMessage}
+          </p>
+        ) : null}
+        {paymentLinkManualCopyValue ? (
+          <label className="grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+            Otomatik kopyalanamadı; metni manuel kopyalayın.
+            <input
+              readOnly
+              value={paymentLinkManualCopyValue}
+              onClick={(event) => event.currentTarget.select()}
+              onFocus={(event) => event.currentTarget.select()}
+              className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
+            />
+          </label>
+        ) : null}
+      </div>
+    )
   }
 
   function paymentProviderLabel(payment: ServiceRequestExtraMountPayment | null | undefined): string {
@@ -4234,12 +4290,14 @@ export function ServiceRequestDetails({
 
     if (text === '') {
       setCustomerApprovalCopyMessage('Kopyalanacak onay bilgisi yok.')
+      setCustomerApprovalManualCopyValue(null)
 
       return
     }
 
-    const copied = await writeTextToClipboard(text)
-    setCustomerApprovalCopyMessage(copied ? successMessage : 'Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
+    const result = await copyTextToClipboard(text)
+    setCustomerApprovalCopyMessage(result.copied ? `Kopyalandı — ${successMessage}` : 'Otomatik kopyalanamadı; metni manuel kopyalayın.')
+    setCustomerApprovalManualCopyValue(result.copied ? null : text)
   }
 
   async function copyCustomerChargeValue(value: string | null | undefined, successMessage: string) {
@@ -4247,25 +4305,29 @@ export function ServiceRequestDetails({
 
     if (text === '') {
       setCustomerChargeCopyMessage('Kopyalanacak ödeme bilgisi yok.')
+      setCustomerChargeManualCopyValue(null)
 
       return
     }
 
-    const copied = await writeTextToClipboard(text)
-    setCustomerChargeCopyMessage(copied ? successMessage : 'Kopyalama başarısız. Aşağıdaki alanı elle seçip kopyalayın.')
+    const result = await copyTextToClipboard(text)
+    setCustomerChargeCopyMessage(result.copied ? `Kopyalandı — ${successMessage}` : 'Otomatik kopyalanamadı; metni manuel kopyalayın.')
+    setCustomerChargeManualCopyValue(result.copied ? null : text)
   }
 
   async function copyReferenceValue(value: string | null | undefined, successMessage: string, manualLabel = 'bilgiyi') {
     const text = String(value ?? '').trim()
 
     if (text === '') {
-      setNextActionNavigationMessage('Kopyalanacak bilgi yok.')
+      setReferenceCopyMessage('Kopyalanacak bilgi yok.')
+      setReferenceManualCopyValue(null)
 
       return
     }
 
     const result = await copyTextToClipboard(text)
-    setNextActionNavigationMessage(result.copied ? successMessage : `Otomatik kopyalanamadı; ${manualLabel} manuel kopyalayın.`)
+    setReferenceCopyMessage(result.copied ? `Kopyalandı — ${successMessage}` : `Otomatik kopyalanamadı; ${manualLabel} manuel kopyalayın.`)
+    setReferenceManualCopyValue(result.copied ? null : text)
   }
 
   const handleNextActionClick = () => {
@@ -4708,6 +4770,23 @@ export function ServiceRequestDetails({
             <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
               {nextActionNavigationMessage}
             </p>
+          ) : null}
+          {referenceCopyMessage ? (
+            <p role="status" aria-live="polite" className="mt-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900">
+              {referenceCopyMessage}
+            </p>
+          ) : null}
+          {referenceManualCopyValue ? (
+            <label className="mt-3 grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+              Otomatik kopyalanamadı; metni manuel kopyalayın.
+              <input
+                readOnly
+                value={referenceManualCopyValue}
+                onClick={(event) => event.currentTarget.select()}
+                onFocus={(event) => event.currentTarget.select()}
+                className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
+              />
+            </label>
           ) : null}
           <div className="mt-4 flex flex-wrap gap-2">
             {visibleCompactControlChips.map((chip) => (
@@ -5314,6 +5393,7 @@ export function ServiceRequestDetails({
                               Linki kopyala
                             </Button>
                             {renderPaymentLinkSendAction(extraMountPayment)}
+                            {renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(extraMountPayment))}
                           </div>
                         )}
                       />
@@ -6074,6 +6154,7 @@ export function ServiceRequestDetails({
                             </Button>
                           ) : null}
                         </div>
+                        {renderPaymentLinkCopyFeedback(paymentLinkCopyUrl(extraMountPayment))}
                       </div>
                     ) : null}
                     <div className="flex flex-wrap justify-end gap-2">
@@ -6538,7 +6619,19 @@ export function ServiceRequestDetails({
                     </div>
                   ) : null}
                   {customerApprovalCopyMessage ? (
-                    <p className="mt-2 text-xs font-semibold text-violet-800">{customerApprovalCopyMessage}</p>
+                    <p role="status" aria-live="polite" className="mt-2 text-xs font-semibold text-violet-800">{customerApprovalCopyMessage}</p>
+                  ) : null}
+                  {customerApprovalManualCopyValue ? (
+                    <label className="mt-2 grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+                      Otomatik kopyalanamadı; metni manuel kopyalayın.
+                      <input
+                        readOnly
+                        value={customerApprovalManualCopyValue}
+                        onClick={(event) => event.currentTarget.select()}
+                        onFocus={(event) => event.currentTarget.select()}
+                        className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
+                      />
+                    </label>
                   ) : null}
                   {customerApprovalResendError ? (
                     <p className="mt-2 text-xs font-semibold text-rose-700">{customerApprovalResendError}</p>
@@ -6616,7 +6709,19 @@ export function ServiceRequestDetails({
                       </div>
                     ) : null}
                     {customerApprovalCopyMessage ? (
-                      <p className="text-xs font-semibold text-violet-800">{customerApprovalCopyMessage}</p>
+                      <p role="status" aria-live="polite" className="text-xs font-semibold text-violet-800">{customerApprovalCopyMessage}</p>
+                    ) : null}
+                    {customerApprovalManualCopyValue ? (
+                      <label className="grid gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
+                        Otomatik kopyalanamadı; metni manuel kopyalayın.
+                        <input
+                          readOnly
+                          value={customerApprovalManualCopyValue}
+                          onClick={(event) => event.currentTarget.select()}
+                          onFocus={(event) => event.currentTarget.select()}
+                          className="min-w-0 rounded-md border border-amber-200 bg-white px-2 py-1 font-mono text-[11px] font-medium text-amber-950"
+                        />
+                      </label>
                     ) : null}
                     {customerApprovalResendError ? (
                       <p className="text-xs font-semibold text-rose-700">{customerApprovalResendError}</p>
