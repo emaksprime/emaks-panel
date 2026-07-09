@@ -65,6 +65,15 @@ class TechnicalServiceMessageDispatchQueue
 
                 return $dispatch;
             }
+
+            if ($this->idempotencyKeyExists($idempotencyKey)) {
+                $input['metadata'] = [
+                    ...((array) ($input['metadata'] ?? [])),
+                    'terminal_idempotency_key' => $idempotencyKey,
+                    'terminal_idempotency_requeued' => true,
+                ];
+                $idempotencyKey = hash('sha256', $idempotencyKey.'|terminal-requeue|'.microtime(true));
+            }
         }
 
         $dispatch = $this->createDispatch($input, $targetPhone, $recipientHash, $effectiveHash, $payloadHash, $idempotencyKey, $actor, [
@@ -245,6 +254,17 @@ class TechnicalServiceMessageDispatchQueue
             'sent_by' => $actor?->id,
             ...$overrides,
         ]);
+    }
+
+    private function idempotencyKeyExists(string $idempotencyKey): bool
+    {
+        if ($idempotencyKey === '') {
+            return false;
+        }
+
+        return TechnicalServiceMessageDispatch::query()
+            ->where('idempotency_key', $idempotencyKey)
+            ->exists();
     }
 
     /**

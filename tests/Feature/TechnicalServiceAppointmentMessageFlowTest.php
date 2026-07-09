@@ -380,6 +380,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertSame('905467647428', $dispatch->target_phone);
         $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
         $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'smoke_run_id'));
+        $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'manual_e2e_run_id'));
         $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
     }
 
@@ -454,6 +455,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $this->assertSame('905467647428', $dispatch->target_phone);
             $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
             $this->assertTrue((bool) data_get($dispatch->metadata, 'allowlisted_target'));
+            $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'manual_e2e_run_id'));
             $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
             $this->assertStringContainsString('MRN-REL4E12-ASSIGN', $body);
             $this->assertStringContainsString('REL4E12 Müşteri', $body);

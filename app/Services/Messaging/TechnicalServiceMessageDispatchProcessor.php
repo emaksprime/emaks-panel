@@ -189,7 +189,15 @@ class TechnicalServiceMessageDispatchProcessor
                 'attempt_count' => (int) $dispatch->attempt_count + 1,
             ])->save();
 
-            $result = $this->router->dispatch($dispatch, $noExternal, $allowlistedPhones);
+            $result = $this->router->dispatch(
+                $dispatch,
+                $noExternal,
+                $allowlistedPhones,
+                TechnicalServiceManualE2ERunContext::effectiveRunId(
+                    $options['smoke_run_id'] ?? null,
+                    (bool) ($options['manual_e2e_only'] ?? false),
+                ),
+            );
             $status = (string) $result['status'];
 
             $dispatch->forceFill([
@@ -251,12 +259,16 @@ class TechnicalServiceMessageDispatchProcessor
             return false;
         }
 
-        $smokeRunId = trim((string) ($options['smoke_run_id'] ?? ''));
-        if ($smokeRunId !== '') {
-            return (string) data_get($dispatch->metadata, 'smoke_run_id', '') === $smokeRunId;
+        $smokeRunId = TechnicalServiceManualE2ERunContext::effectiveRunId(
+            $options['smoke_run_id'] ?? null,
+            (bool) ($options['manual_e2e_only'] ?? false),
+        );
+        $dispatchRunId = TechnicalServiceManualE2ERunContext::dispatchRunId((array) $dispatch->metadata);
+        if ($smokeRunId !== null) {
+            return $dispatchRunId === $smokeRunId;
         }
 
-        return filled(data_get($dispatch->metadata, 'smoke_run_id'));
+        return $dispatchRunId !== null;
     }
 
     /**
@@ -268,7 +280,11 @@ class TechnicalServiceMessageDispatchProcessor
         $errors = [];
         $body = $dispatch->bodyForProvider();
         $metadata = (array) $dispatch->metadata;
-        $smokeRunId = trim((string) ($options['smoke_run_id'] ?? ''));
+        $smokeRunId = TechnicalServiceManualE2ERunContext::effectiveRunId(
+            $options['smoke_run_id'] ?? null,
+            (bool) ($options['manual_e2e_only'] ?? false),
+        );
+        $dispatchRunId = TechnicalServiceManualE2ERunContext::dispatchRunId($metadata);
 
         if (! filter_var($metadata['test_smoke'] ?? false, FILTER_VALIDATE_BOOL)) {
             $errors[] = 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.';
@@ -279,9 +295,11 @@ class TechnicalServiceMessageDispatchProcessor
             $errors[] = 'Manual E2E worker sadece dispatch metadata.manual_e2e=true kayıtlarını işler.';
         }
 
-        if ($smokeRunId === '') {
+        if ($smokeRunId === null) {
             $errors[] = 'Kontrollü gerçek smoke için --smoke-run-id zorunlu.';
-        } elseif ((string) ($metadata['smoke_run_id'] ?? '') !== $smokeRunId) {
+        } elseif ($dispatchRunId === null) {
+            $errors[] = 'Dispatch manual E2E run id içermiyor; stale dispatch işlenmedi.';
+        } elseif ($dispatchRunId !== $smokeRunId) {
             $errors[] = 'Dispatch current smoke_run_id ile eşleşmiyor; stale dispatch işlenmedi.';
         }
 

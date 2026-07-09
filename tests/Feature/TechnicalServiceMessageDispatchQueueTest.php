@@ -7,6 +7,7 @@ use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestEvent;
 use App\Models\User;
+use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessageChannelPlanner;
 use App\Services\Messaging\TechnicalServiceMessageDispatchLogService;
 use App\Services\Messaging\TechnicalServiceMessageDispatchProcessor;
@@ -70,6 +71,40 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
             ->json('dispatch');
 
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $retry['status']);
+    }
+
+    public function test_stale_cancelled_manual_e2e_dispatch_does_not_block_new_dispatch(): void
+    {
+        $input = [
+            'event' => 'assignment_offer_technician',
+            'message_type' => 'assignment_offer_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'target_phone' => '05467647428',
+            'payload' => ['body' => 'MRN-REL4E15A yeni iş teklifi.'],
+            'idempotency_key' => 'rel4e15a-stale-manual-e2e-key',
+            'metadata' => [
+                'test_smoke' => true,
+                'manual_e2e' => true,
+                'allowlisted_target' => true,
+                'smoke_run_id' => TechnicalServiceManualE2ERunContext::defaultRunId(),
+                'manual_e2e_run_id' => TechnicalServiceManualE2ERunContext::defaultRunId(),
+            ],
+        ];
+
+        $stale = $this->enqueueDispatch($input);
+        $stale->forceFill([
+            'status' => TechnicalServiceMessageDispatch::STATUS_CANCELLED,
+            'last_error_code' => 'manual_e2e_stale_dispatch_reconciled',
+        ])->save();
+
+        $fresh = $this->enqueueDispatch($input);
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_QUEUED, $fresh->status);
+        $this->assertNotSame('rel4e15a-stale-manual-e2e-key', $fresh->idempotency_key);
+        $this->assertSame('rel4e15a-stale-manual-e2e-key', data_get($fresh->metadata, 'terminal_idempotency_key'));
+        $this->assertTrue((bool) data_get($fresh->metadata, 'terminal_idempotency_requeued'));
     }
 
     public function test_rate_limit_cooldown_blocks_same_recipient_message(): void
@@ -262,6 +297,84 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $output = Artisan::output();
         $this->assertStringContainsString('"smoke_run_id": "MANUAL-E2E-LIVE-TEST"', $output);
         $this->assertStringContainsString('"manual_e2e_only": true', $output);
+        Http::assertNothingSent();
+    }
+
+    public function test_manual_e2e_processor_uses_effective_default_run_id_when_option_omitted(): void
+    {
+        Http::fake();
+        $this->actingAs($this->admin());
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'manual_e2e_enabled' => true,
+            'queue_paused' => false,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+        ]);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'earnings_message_technician',
+            'message_type' => 'earnings_message_technician',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'technician',
+            'target_phone' => '05467647428',
+            'payload' => ['body' => 'Usta hakediş bilgilendirmesi. Hakediş: 1.111,00 TL.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'manual_e2e' => true,
+                'allowlisted_target' => true,
+                'smoke_run_id' => TechnicalServiceManualE2ERunContext::defaultRunId(),
+            ],
+        ]);
+
+        $result = app(TechnicalServiceMessageDispatchProcessor::class)
+            ->processOne($dispatch->id, noExternal: false, allowlistedPhones: ['905467647428'], options: [
+                'manual_e2e_only' => true,
+            ]);
+
+        $dispatch->refresh();
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
+        $this->assertSame('manual_e2e_guard_blocked', $dispatch->last_error_code);
+        $this->assertStringNotContainsString('--smoke-run-id zorunlu', (string) $dispatch->last_error_message_redacted);
+        Http::assertNothingSent();
+    }
+
+    public function test_earnings_message_technician_manual_e2e_dispatch_metadata_includes_run_ids(): void
+    {
+        Http::fake();
+        $admin = $this->admin();
+        $request = $this->technicalServiceRequest(['mrn' => 'MRN-REL4E15A-EARN']);
+        $this->configureEvoDirectApi();
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'messaging_enabled' => true,
+            'manual_e2e_enabled' => true,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'message_types' => [
+                'earnings_message_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
+            ],
+        ]);
+
+        app(TechnicalServiceWorkflowMessageDispatchService::class)->queueSystemMessage(
+            $request,
+            'earnings_message_technician',
+            'technician',
+            'Hakediş bilgisi güncellendi. MRN: MRN-REL4E15A-EARN Toplam: 1.111,00 TL',
+            ['technician_earning_total_formatted' => '1.111,00 TL'],
+            $admin,
+            null,
+            [
+                'recipient_phone' => '905467647428',
+                'triggered_by' => 'technical_service_earnings_message',
+            ],
+        );
+
+        $dispatch = TechnicalServiceMessageDispatch::query()
+            ->where('technical_service_request_id', $request->id)
+            ->where('message_type', 'earnings_message_technician')
+            ->firstOrFail();
+
+        $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
+        $this->assertSame(TechnicalServiceManualE2ERunContext::defaultRunId(), data_get($dispatch->metadata, 'smoke_run_id'));
+        $this->assertSame(TechnicalServiceManualE2ERunContext::defaultRunId(), data_get($dispatch->metadata, 'manual_e2e_run_id'));
         Http::assertNothingSent();
     }
 
@@ -1144,6 +1257,84 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
         $this->assertSame('manual_e2e_guard_blocked', $result['provider_status']);
         $this->assertStringContainsString('kuyruğu duraklatılmış', (string) $result['error']);
+        Http::assertNothingSent();
+    }
+
+    public function test_provider_router_blocks_manual_e2e_without_expected_run_id_metadata(): void
+    {
+        Http::fake();
+        $this->actingAs($this->admin());
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'manual_e2e_enabled' => true,
+            'queue_paused' => false,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+        ]);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'manual_e2e_missing_run_id_guard',
+            'message_type' => 'appointment_approved_customer',
+            'provider_key' => 'evo_whatsapp',
+            'channel' => 'whatsapp',
+            'recipient_role' => 'customer',
+            'target_phone' => '05372081633',
+            'payload' => ['body' => 'PR88 manual E2E müşteri WhatsApp mesajı.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'manual_e2e' => true,
+            ],
+        ]);
+
+        $result = app(TechnicalServiceMessageProviderRouter::class)
+            ->dispatch(
+                $dispatch,
+                noExternal: false,
+                allowlistedPhones: ['905372081633'],
+                expectedSmokeRunId: TechnicalServiceManualE2ERunContext::defaultRunId(),
+            );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
+        $this->assertSame('manual_e2e_guard_blocked', $result['provider_status']);
+        $this->assertStringContainsString('run id eksik', (string) $result['error']);
+        Http::assertNothingSent();
+    }
+
+    public function test_provider_router_accepts_matching_manual_e2e_run_id_before_send_guards(): void
+    {
+        Http::fake();
+        $this->actingAs($this->admin());
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'manual_e2e_enabled' => true,
+            'queue_paused' => false,
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+        ]);
+
+        $dispatch = $this->enqueueDispatch([
+            'event' => 'manual_e2e_matching_run_id_guard',
+            'message_type' => 'appointment_approved_customer',
+            'provider_key' => 'nac_sms',
+            'channel' => 'sms',
+            'recipient_role' => 'customer',
+            'target_phone' => '05372081633',
+            'payload' => ['body' => 'PR88 manual E2E müşteri SMS mesajı.'],
+            'metadata' => [
+                'test_smoke' => true,
+                'manual_e2e' => true,
+                'smoke_run_id' => TechnicalServiceManualE2ERunContext::defaultRunId(),
+                'manual_e2e_run_id' => TechnicalServiceManualE2ERunContext::defaultRunId(),
+            ],
+        ]);
+
+        $result = app(TechnicalServiceMessageProviderRouter::class)
+            ->dispatch(
+                $dispatch,
+                noExternal: false,
+                allowlistedPhones: ['905372081633'],
+                expectedSmokeRunId: TechnicalServiceManualE2ERunContext::defaultRunId(),
+            );
+
+        $this->assertSame(TechnicalServiceMessageDispatch::STATUS_PROVIDER_ERROR, $result['status']);
+        $this->assertSame('manual_e2e_guard_blocked', $result['provider_status']);
+        $this->assertStringContainsString('Gerçek gönderim kapalı', (string) $result['error']);
         Http::assertNothingSent();
     }
 

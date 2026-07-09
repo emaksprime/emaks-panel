@@ -385,15 +385,7 @@ class TechnicalServiceAppointmentMessageDispatchService
 
         $reference = $request->mrn ?: $request->service_code ?: (string) $request->id;
 
-        return [
-            'test_smoke' => true,
-            'manual_e2e' => true,
-            'allowlisted_target' => true,
-            'smoke_run_id' => 'MANUAL-E2E-LIVE-TEST',
-            'expected_body_token' => $reference,
-            'role_target_phone' => $normalizedTarget,
-            'recipient_role_expected' => $recipientRole,
-        ];
+        return TechnicalServiceManualE2ERunContext::dispatchMetadata($reference, $normalizedTarget, $recipientRole);
     }
 
     /**
