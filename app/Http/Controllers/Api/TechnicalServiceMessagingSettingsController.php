@@ -29,6 +29,7 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'real_send_enabled' => ['sometimes', 'required', 'boolean'],
             'test_mode_enabled' => ['sometimes', 'required', 'boolean'],
             'manual_e2e_enabled' => ['sometimes', 'required', 'boolean'],
+            'manual_e2e_ttl_seconds' => ['sometimes', 'required', 'integer', 'min:60', 'max:14400'],
             'manual_e2e_allowlisted_phones' => ['sometimes', 'array'],
             'manual_e2e_allowlisted_phones.*' => ['required', 'string', 'max:32'],
             'ops_whatsapp_enabled' => ['sometimes', 'required', 'boolean'],
@@ -118,6 +119,29 @@ class TechnicalServiceMessagingSettingsController extends Controller
         return response()->json([
             'messaging_settings' => $settings->reset(),
             'message' => 'Mesajlaşma sağlayıcı ayarları güvenli varsayılanlara döndürüldü.',
+        ]);
+    }
+
+    public function enableManualE2E(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    {
+        $data = $request->validate([
+            'manual_e2e_allowlisted_phones' => ['sometimes', 'array', 'min:1'],
+            'manual_e2e_allowlisted_phones.*' => ['required', 'string', 'max:32'],
+            'manual_e2e_ttl_seconds' => ['sometimes', 'integer', 'min:60', 'max:14400'],
+            'ops_whatsapp_enabled' => ['sometimes', 'boolean'],
+        ]);
+
+        return response()->json([
+            'messaging_settings' => $settings->enableManualE2E($data),
+            'message' => 'Manual E2E run context hazırlandı. Worker otomatik başlatılmadı.',
+        ]);
+    }
+
+    public function freezeManualE2E(TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    {
+        return response()->json([
+            'messaging_settings' => $settings->freezeManualE2E(),
+            'message' => 'Manual E2E durduruldu ve aktif run context kapatıldı.',
         ]);
     }
 

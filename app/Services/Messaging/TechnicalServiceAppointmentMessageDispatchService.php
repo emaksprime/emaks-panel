@@ -163,8 +163,9 @@ class TechnicalServiceAppointmentMessageDispatchService
             return $this->addBlocked($request, $actor, $summary, $messageType, $recipientRole, $channel, $providerKey, 'real_send_disabled', 'Gerçek gönderim kapalı.');
         }
 
-        $manualE2eMetadata = $this->manualE2eMetadata($global, $recipientRole, $targetPhone, $request);
-        if ((bool) ($global['manual_e2e_enabled'] ?? false) && $manualE2eMetadata === null) {
+        $manualE2e = $this->manualE2ePreparation($global, $recipientRole, $targetPhone, $request);
+        $manualE2eMetadata = $manualE2e['metadata'];
+        if ($manualE2e['blocker'] !== null) {
             return $this->addBlocked(
                 $request,
                 $actor,
@@ -173,8 +174,8 @@ class TechnicalServiceAppointmentMessageDispatchService
                 $recipientRole,
                 $channel,
                 $providerKey,
-                'manual_e2e_allowlist_blocked',
-                'Manuel E2E canlı test modunda allowlist dışı hedefe mesaj oluşturulmadı.',
+                $manualE2e['blocker']['code'],
+                $manualE2e['blocker']['message'],
             );
         }
 
@@ -367,27 +368,26 @@ class TechnicalServiceAppointmentMessageDispatchService
 
     /**
      * @param  array<string, mixed>  $global
-     * @return array<string, mixed>|null
+     * @return array{metadata:array<string, mixed>,blocker:array{code:string,message:string}|null}
      */
-    private function manualE2eMetadata(array $global, string $recipientRole, string $targetPhone, TechnicalServiceRequest $request): ?array
+    private function manualE2ePreparation(array $global, string $recipientRole, string $targetPhone, TechnicalServiceRequest $request): array
     {
         if (! (bool) ($global['manual_e2e_enabled'] ?? false)) {
-            return [];
+            return ['metadata' => [], 'blocker' => null];
         }
 
         $normalizedTarget = $this->idempotency->normalizePhone($targetPhone);
-        $allowlist = array_values(array_filter(array_map(
-            fn (mixed $phone): string => $this->idempotency->normalizePhone((string) $phone),
-            (array) ($global['manual_e2e_allowlisted_phones'] ?? []),
-        )));
-
-        if ($normalizedTarget === '' || ! in_array($normalizedTarget, $allowlist, true)) {
-            return null;
+        $runContext = TechnicalServiceManualE2ERunContext::fromSettings($global);
+        $blocker = $runContext->dispatchBlockingReason($normalizedTarget);
+        if ($blocker !== null) {
+            return ['metadata' => [], 'blocker' => $blocker];
         }
-
         $reference = $request->mrn ?: $request->service_code ?: (string) $request->id;
 
-        return TechnicalServiceManualE2ERunContext::dispatchMetadata($reference, $normalizedTarget, $recipientRole);
+        return [
+            'metadata' => $runContext->dispatchMetadata($reference, $normalizedTarget, $recipientRole),
+            'blocker' => null,
+        ];
     }
 
     /**

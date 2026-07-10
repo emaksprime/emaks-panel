@@ -15,6 +15,7 @@ class TechnicalServiceMessageDispatchProcessor
         private readonly TechnicalServiceMessageDispatchQueue $queue,
         private readonly TechnicalServiceMessageChannelPlanner $channelPlanner,
         private readonly TechnicalServiceMessageTemplateService $templates,
+        private readonly TechnicalServiceMessagingSettingsService $settings,
     ) {}
 
     /**
@@ -118,11 +119,11 @@ class TechnicalServiceMessageDispatchProcessor
             if (! $noExternal && $allowlistedPhones !== []) {
                 $smokeValidation = $this->controlledSmokeValidationErrors($dispatch, $options);
                 if ($smokeValidation !== []) {
-                    $reason = implode(' ', $smokeValidation);
+                    $reason = implode(' ', array_column($smokeValidation, 'message'));
                     $dispatch->forceFill([
                         'status' => TechnicalServiceMessageDispatch::STATUS_BLOCKED,
                         'failed_at' => now(),
-                        'last_error_code' => 'stale_or_invalid_smoke_dispatch',
+                        'last_error_code' => $smokeValidation[0]['code'],
                         'last_error_message_redacted' => $reason,
                     ])->save();
                     $this->queue->recordEvent($dispatch, 'message_smoke_blocked', 'Mesaj kontrollü smoke koşulu eksik olduğu için engellendi.');
@@ -193,10 +194,7 @@ class TechnicalServiceMessageDispatchProcessor
                 $dispatch,
                 $noExternal,
                 $allowlistedPhones,
-                TechnicalServiceManualE2ERunContext::effectiveRunId(
-                    $options['smoke_run_id'] ?? null,
-                    (bool) ($options['manual_e2e_only'] ?? false),
-                ),
+                TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null),
             );
             $status = (string) $result['status'];
 
@@ -259,11 +257,15 @@ class TechnicalServiceMessageDispatchProcessor
             return false;
         }
 
-        $smokeRunId = TechnicalServiceManualE2ERunContext::effectiveRunId(
-            $options['smoke_run_id'] ?? null,
-            (bool) ($options['manual_e2e_only'] ?? false),
-        );
+        $smokeRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null);
         $dispatchRunId = TechnicalServiceManualE2ERunContext::dispatchRunId((array) $dispatch->metadata);
+        if ((bool) ($options['manual_e2e_only'] ?? false)) {
+            $context = $this->settings->manualE2EContext();
+
+            return $context->workerBlockingReason($smokeRunId, $options['created_after'] ?? null) === null
+                && $context->matchesDispatch($dispatch);
+        }
+
         if ($smokeRunId !== null) {
             return $dispatchRunId === $smokeRunId;
         }
@@ -273,34 +275,57 @@ class TechnicalServiceMessageDispatchProcessor
 
     /**
      * @param  array<string, mixed>  $options
-     * @return array<int, string>
+     * @return array<int, array{code:string,message:string}>
      */
     private function controlledSmokeValidationErrors(TechnicalServiceMessageDispatch $dispatch, array $options): array
     {
         $errors = [];
         $body = $dispatch->bodyForProvider();
         $metadata = (array) $dispatch->metadata;
-        $smokeRunId = TechnicalServiceManualE2ERunContext::effectiveRunId(
-            $options['smoke_run_id'] ?? null,
-            (bool) ($options['manual_e2e_only'] ?? false),
-        );
+        $manualOnly = (bool) ($options['manual_e2e_only'] ?? false);
+        $smokeRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null);
         $dispatchRunId = TechnicalServiceManualE2ERunContext::dispatchRunId($metadata);
 
         if (! filter_var($metadata['test_smoke'] ?? false, FILTER_VALIDATE_BOOL)) {
-            $errors[] = 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.';
+            $errors[] = ['code' => 'test_smoke_required', 'message' => 'Kontrollü gerçek smoke için dispatch metadata.test_smoke=true olmalı.'];
         }
 
-        if ((bool) ($options['manual_e2e_only'] ?? false)
-            && ! filter_var($metadata['manual_e2e'] ?? false, FILTER_VALIDATE_BOOL)) {
-            $errors[] = 'Manual E2E worker sadece dispatch metadata.manual_e2e=true kayıtlarını işler.';
+        if ($manualOnly && ! filter_var($metadata['manual_e2e'] ?? false, FILTER_VALIDATE_BOOL)) {
+            $errors[] = ['code' => 'manual_e2e_active_run_missing', 'message' => 'Manual E2E worker sadece dispatch metadata.manual_e2e=true kayıtlarını işler.'];
         }
 
-        if ($smokeRunId === null) {
-            $errors[] = 'Kontrollü gerçek smoke için --smoke-run-id zorunlu.';
-        } elseif ($dispatchRunId === null) {
-            $errors[] = 'Dispatch manual E2E run id içermiyor; stale dispatch işlenmedi.';
-        } elseif ($dispatchRunId !== $smokeRunId) {
-            $errors[] = 'Dispatch current smoke_run_id ile eşleşmiyor; stale dispatch işlenmedi.';
+        $context = $manualOnly ? $this->settings->manualE2EContext() : null;
+        if ($manualOnly && $context !== null) {
+            $contextBlock = $context->contextBlockingReason();
+            if ($contextBlock !== null) {
+                $errors[] = $contextBlock;
+            } else {
+                $workerBlock = $context->workerBlockingReason($smokeRunId, $options['created_after'] ?? null);
+                if ($workerBlock !== null) {
+                    $errors[] = $workerBlock;
+                }
+
+                $dispatchBlock = $context->dispatchBlockingReason((string) $dispatch->target_phone);
+                if ($dispatchBlock !== null) {
+                    $errors[] = $dispatchBlock;
+                }
+
+                if ($dispatchRunId !== $context->activeRunId()) {
+                    $errors[] = ['code' => 'manual_e2e_run_id_mismatch', 'message' => 'Dispatch run id aktif Manual E2E run id ile eşleşmiyor.'];
+                }
+
+                if ($dispatch->created_at !== null && $context->createdAfter() !== null && $dispatch->created_at->lt($context->createdAfter()->subSecond())) {
+                    $errors[] = ['code' => 'manual_e2e_dispatch_before_run', 'message' => 'Dispatch aktif Manual E2E başlangıcından önce oluşturulmuş.'];
+                }
+
+                if ($dispatch->created_at !== null && $context->expiresAt() !== null && ! $dispatch->created_at->lt($context->expiresAt())) {
+                    $errors[] = ['code' => 'manual_e2e_run_expired', 'message' => 'Dispatch aktif Manual E2E run süresi dışında oluşturulmuş.'];
+                }
+            }
+        } elseif ($smokeRunId === null) {
+            $errors[] = ['code' => 'manual_e2e_active_run_missing', 'message' => 'Kontrollü gerçek smoke için --smoke-run-id zorunlu.'];
+        } elseif ($dispatchRunId === null || $dispatchRunId !== $smokeRunId) {
+            $errors[] = ['code' => 'manual_e2e_run_id_mismatch', 'message' => 'Dispatch smoke run id worker run id ile eşleşmiyor.'];
         }
 
         $startedAt = trim((string) ($options['smoke_started_at'] ?? ''));
@@ -312,28 +337,31 @@ class TechnicalServiceMessageDispatchProcessor
             try {
                 $boundary = CarbonImmutable::parse($startedAt);
                 if ($dispatch->created_at !== null && $dispatch->created_at->lt($boundary->subSecond())) {
-                    $errors[] = 'Dispatch smoke başlangıcından önce oluşturulmuş; stale dispatch işlenmedi.';
+                    $errors[] = ['code' => 'manual_e2e_dispatch_before_run', 'message' => 'Dispatch smoke başlangıcından önce oluşturulmuş; stale dispatch işlenmedi.'];
                 }
             } catch (Throwable) {
-                $errors[] = '--smoke-started-at geçerli ISO tarih olmalı.';
+                $errors[] = ['code' => 'manual_e2e_created_after_mismatch', 'message' => '--smoke-started-at geçerli ISO tarih olmalı.'];
             }
         }
 
         $expectedBodyToken = trim((string) ($options['expected_body_token'] ?? ($metadata['expected_body_token'] ?? '')));
         if ($expectedBodyToken !== '' && ! str_contains($body, $expectedBodyToken)) {
-            $errors[] = 'Dispatch body beklenen smoke referansını içermiyor; stale/yanlış içerik engellendi.';
+            $errors[] = ['code' => 'invalid_dispatch_body', 'message' => 'Dispatch body beklenen smoke referansını içermiyor; stale/yanlış içerik engellendi.'];
         }
 
         if (str_contains($body, 'MRN-REL4C') || str_contains($body, 'SRV-REL4C')) {
-            $errors[] = 'REL-4E smoke içinde eski REL-4C referanslı body engellendi.';
+            $errors[] = ['code' => 'invalid_dispatch_body', 'message' => 'REL-4E smoke içinde eski REL-4C referanslı body engellendi.'];
         }
 
         $roleTargetPhone = $this->roleTargetPhone($metadata, $options, (string) $dispatch->recipient_role);
         if ($roleTargetPhone !== null && $this->normalizePhone($dispatch->target_phone) !== $roleTargetPhone) {
-            $errors[] = 'Dispatch hedef telefonu rol için beklenen allowlist hedefiyle eşleşmiyor.';
+            $errors[] = ['code' => 'manual_e2e_target_not_allowlisted', 'message' => 'Dispatch hedef telefonu rol için beklenen allowlist hedefiyle eşleşmiyor.'];
         }
 
-        return array_values(array_unique($errors));
+        return collect($errors)
+            ->unique(fn (array $error): string => $error['code'].'|'.$error['message'])
+            ->values()
+            ->all();
     }
 
     /**
@@ -439,9 +467,17 @@ class TechnicalServiceMessageDispatchProcessor
             'metadata' => [
                 ...array_intersect_key((array) $dispatch->metadata, array_flip([
                     'test_smoke',
+                    'manual_e2e',
                     'allowlisted_target',
                     'pr88_rel',
                     'smoke_run_id',
+                    'manual_e2e_run_id',
+                    'manual_e2e_started_at',
+                    'manual_e2e_created_after',
+                    'manual_e2e_expires_at',
+                    'effective_target_phone',
+                    'role_target_phone',
+                    'recipient_role_expected',
                     'created_by_smoke_at',
                     'expected_body_token',
                     'prefix',
@@ -477,6 +513,9 @@ class TechnicalServiceMessageDispatchProcessor
             fn (string $phone): string => $this->normalizePhone($phone),
             (array) ($options['allowlisted_phones'] ?? []),
         )));
+        $manualRunId = (bool) ($options['manual_e2e_only'] ?? false)
+            ? TechnicalServiceManualE2ERunContext::normalizeRunId($options['smoke_run_id'] ?? null)
+            : null;
 
         return TechnicalServiceMessageDispatch::query()
             ->whereIn('status', [TechnicalServiceMessageDispatch::STATUS_QUEUED, TechnicalServiceMessageDispatch::STATUS_RATE_LIMITED])
@@ -494,6 +533,17 @@ class TechnicalServiceMessageDispatchProcessor
                         ->where('metadata->manual_e2e', true)
                         ->orWhere('metadata->manual_e2e', 1)
                         ->orWhere('metadata->manual_e2e', 'true');
+                });
+            })
+            ->when($manualRunId !== null, function ($query) use ($manualRunId): void {
+                $query->where(function ($nested) use ($manualRunId): void {
+                    $nested
+                        ->where('metadata->manual_e2e_run_id', $manualRunId)
+                        ->orWhere(function ($legacy) use ($manualRunId): void {
+                            $legacy
+                                ->whereNull('metadata->manual_e2e_run_id')
+                                ->where('metadata->smoke_run_id', $manualRunId);
+                        });
                 });
             })
             ->when($allowlistedTargets !== [], fn ($query) => $query->whereIn('target_phone', $allowlistedTargets))
@@ -520,6 +570,14 @@ class TechnicalServiceMessageDispatchProcessor
         }
 
         if ($allowlistedPhones === []) {
+            return false;
+        }
+
+        $context = $this->settings->manualE2EContext();
+        if ($context->workerBlockingReason(
+            $options['smoke_run_id'] ?? null,
+            $options['created_after'] ?? null,
+        ) !== null || ! $context->allowlistMatches($allowlistedPhones)) {
             return false;
         }
 

@@ -88,6 +88,12 @@ Route::middleware(['auth', 'panel.session'])
         Route::post('messaging-settings/reset', [TechnicalServiceMessagingSettingsController::class, 'reset'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.reset');
+        Route::post('messaging-settings/manual-e2e/enable', [TechnicalServiceMessagingSettingsController::class, 'enableManualE2E'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.manual-e2e.enable');
+        Route::post('messaging-settings/manual-e2e/freeze', [TechnicalServiceMessagingSettingsController::class, 'freezeManualE2E'])
+            ->middleware('panel.access:technical_service_admin')
+            ->name('api.technical-service.messaging-settings.manual-e2e.freeze');
         Route::post('messaging-settings/validate-phone', [TechnicalServiceMessagingSettingsController::class, 'validatePhone'])
             ->middleware('panel.access:technical_service_admin')
             ->name('api.technical-service.messaging-settings.validate-phone');

@@ -8381,7 +8381,7 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         Http::fake();
         $scope = $this->partnerPortalScopeFixture();
-        app(TechnicalServiceMessagingSettingsService::class)->update([
+        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
             'messaging_enabled' => true,
             'test_mode_enabled' => false,
             'manual_e2e_enabled' => true,
@@ -8392,6 +8392,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'appointment_proposed_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             ],
         ]);
+        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
         $scope['jobA']->forceFill([
             'mrn' => 'MRN-REL4E12-PROPOSE',
             'customer_name' => 'REL4E12 Müşteri',
@@ -8422,7 +8423,7 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertSame('905467647428', $dispatch->target_phone);
         $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
         $this->assertTrue((bool) data_get($dispatch->metadata, 'allowlisted_target'));
-        $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'manual_e2e_run_id'));
+        $this->assertSame($activeRunId, data_get($dispatch->metadata, 'manual_e2e_run_id'));
         $this->assertStringContainsString('Usta randevu önerdi', $body);
         $this->assertStringContainsString('MRN-REL4E12-PROPOSE', $body);
         $this->assertStringContainsString('REL4E12 Müşteri', $body);

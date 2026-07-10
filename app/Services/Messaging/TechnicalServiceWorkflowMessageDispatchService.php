@@ -72,7 +72,8 @@ class TechnicalServiceWorkflowMessageDispatchService
             ? $this->idempotency->normalizePhone((string) ($global['shared_test_phone'] ?? $global['test_phone'] ?? ''))
             : $recipientPhone;
         $testRedirectApplied = $testMode && $targetPhone !== '' && $targetPhone !== $recipientPhone;
-        $manualE2eMetadata = $this->manualE2eMetadata($global, $recipientRole, $targetPhone, $request);
+        $manualE2e = $this->manualE2ePreparation($global, $recipientRole, $targetPhone, $request);
+        $manualE2eMetadata = $manualE2e['metadata'];
 
         foreach ($plans as $plan) {
             $channel = (string) ($plan['channel'] ?? 'system');
@@ -107,8 +108,14 @@ class TechnicalServiceWorkflowMessageDispatchService
                 continue;
             }
 
-            if ((bool) ($global['manual_e2e_enabled'] ?? false) && $manualE2eMetadata === null) {
-                $summary = $this->addBlockedDispatch($summary, $baseInput, $actor, 'manual_e2e_allowlist_blocked', 'Manuel E2E canlı test modunda allowlist dışı hedefe mesaj oluşturulmadı.');
+            if ($manualE2e['blocker'] !== null) {
+                $summary = $this->addBlockedDispatch(
+                    $summary,
+                    $baseInput,
+                    $actor,
+                    $manualE2e['blocker']['code'],
+                    $manualE2e['blocker']['message'],
+                );
 
                 continue;
             }
@@ -251,9 +258,10 @@ class TechnicalServiceWorkflowMessageDispatchService
             : $recipientPhone;
         $businessEventId = $this->businessEventId($request, $messageType, $sourceAction, $body, $options);
         $opsWhatsappEnabled = $this->opsWhatsappEnabled($settings, $messageType, $recipientRole);
-        $manualE2eMetadata = $this->manualE2eMetadata($global, $recipientRole, $targetPhone, $request);
-        $channel = $opsWhatsappEnabled && $manualE2eMetadata !== null ? 'whatsapp' : 'system';
-        $providerKey = $opsWhatsappEnabled && $manualE2eMetadata !== null ? 'evo_whatsapp' : 'null_local';
+        $manualE2e = $this->manualE2ePreparation($global, $recipientRole, $targetPhone, $request);
+        $manualE2eMetadata = $manualE2e['metadata'];
+        $channel = $opsWhatsappEnabled && $manualE2e['blocker'] === null ? 'whatsapp' : 'system';
+        $providerKey = $opsWhatsappEnabled && $manualE2e['blocker'] === null ? 'evo_whatsapp' : 'null_local';
 
         return $this->dispatchQueue->enqueue([
             'event' => $messageType,
@@ -571,27 +579,26 @@ class TechnicalServiceWorkflowMessageDispatchService
 
     /**
      * @param  array<string, mixed>  $global
-     * @return array<string, mixed>|null
+     * @return array{metadata:array<string, mixed>,blocker:array{code:string,message:string}|null}
      */
-    private function manualE2eMetadata(array $global, string $recipientRole, string $targetPhone, TechnicalServiceRequest $request): ?array
+    private function manualE2ePreparation(array $global, string $recipientRole, string $targetPhone, TechnicalServiceRequest $request): array
     {
         if (! (bool) ($global['manual_e2e_enabled'] ?? false)) {
-            return [];
+            return ['metadata' => [], 'blocker' => null];
         }
 
         $target = $this->idempotency->normalizePhone($targetPhone);
-        $allowlist = array_values(array_filter(array_map(
-            fn (mixed $phone): string => $this->idempotency->normalizePhone((string) $phone),
-            (array) ($global['manual_e2e_allowlisted_phones'] ?? []),
-        )));
-
-        if ($target === '' || ! in_array($target, $allowlist, true)) {
-            return null;
+        $runContext = TechnicalServiceManualE2ERunContext::fromSettings($global);
+        $blocker = $runContext->dispatchBlockingReason($target);
+        if ($blocker !== null) {
+            return ['metadata' => [], 'blocker' => $blocker];
         }
-
         $reference = $request->mrn ?: $request->service_code ?: (string) $request->id;
 
-        return TechnicalServiceManualE2ERunContext::dispatchMetadata($reference, $target, $recipientRole);
+        return [
+            'metadata' => $runContext->dispatchMetadata($reference, $target, $recipientRole),
+            'blocker' => null,
+        ];
     }
 
     /**

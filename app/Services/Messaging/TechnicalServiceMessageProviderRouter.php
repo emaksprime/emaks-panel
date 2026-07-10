@@ -46,9 +46,9 @@ class TechnicalServiceMessageProviderRouter
 
         if ($provider === 'nac_sms') {
             if (! $noExternal && $this->isManualE2eDispatch($dispatch)) {
-                $blockingReason = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones, $expectedSmokeRunId);
-                if ($blockingReason !== null) {
-                    return $this->blocked('manual_e2e_guard_blocked', $blockingReason);
+                $blocking = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones, $expectedSmokeRunId);
+                if ($blocking !== null) {
+                    return $this->blocked($blocking['code'], $blocking['message']);
                 }
             }
 
@@ -61,9 +61,9 @@ class TechnicalServiceMessageProviderRouter
 
         if ($provider === 'evo_whatsapp') {
             if (! $noExternal && $this->isManualE2eDispatch($dispatch)) {
-                $blockingReason = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones, $expectedSmokeRunId);
-                if ($blockingReason !== null) {
-                    return $this->blocked('manual_e2e_guard_blocked', $blockingReason);
+                $blocking = $this->manualE2eBlockingReason($dispatch, $allowlistedPhones, $expectedSmokeRunId);
+                if ($blocking !== null) {
+                    return $this->blocked($blocking['code'], $blocking['message']);
                 }
             }
 
@@ -161,44 +161,62 @@ class TechnicalServiceMessageProviderRouter
 
     /**
      * @param  array<int, string>  $allowlistedPhones
+     * @return array{code:string,message:string}|null
      */
     private function manualE2eBlockingReason(
         TechnicalServiceMessageDispatch $dispatch,
         array $allowlistedPhones,
         ?string $expectedSmokeRunId = null,
-    ): ?string {
+    ): ?array {
         $global = (array) ($this->settings->payload()['global'] ?? []);
         $expectedSmokeRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($expectedSmokeRunId);
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($global);
 
-        if (! (bool) ($global['manual_e2e_enabled'] ?? false)) {
-            return 'Manual E2E kapalı; provider gönderimi engellendi.';
+        $contextBlock = $context->contextBlockingReason();
+        if ($contextBlock !== null) {
+            return $contextBlock;
         }
 
         if ((bool) ($global['queue_paused'] ?? false)) {
-            return 'Mesaj kuyruğu duraklatılmış; manual E2E provider gönderimi engellendi.';
+            return ['code' => 'queue_paused', 'message' => 'Mesaj kuyruğu duraklatılmış; Manual E2E provider gönderimi engellendi.'];
         }
 
         if (! in_array((string) $dispatch->provider_key, ['evo_whatsapp', 'nac_sms'], true)) {
-            return 'Manual E2E sadece Evo WhatsApp veya NAC SMS provider ile çalışır.';
+            return ['code' => 'manual_e2e_provider_not_allowed', 'message' => 'Manual E2E sadece Evo WhatsApp veya NAC SMS provider ile çalışır.'];
         }
 
-        if (! $this->targetIsAllowlisted($dispatch, $allowlistedPhones)) {
-            return 'Manual E2E allowlist dışında hedef. Gönderim engellendi.';
+        $targetBlock = $context->dispatchBlockingReason((string) $dispatch->target_phone);
+        if ($targetBlock !== null || ! $this->targetIsAllowlisted($dispatch, $allowlistedPhones)) {
+            return $targetBlock ?? ['code' => 'manual_e2e_target_not_allowlisted', 'message' => 'Manual E2E worker allowlist dışında hedef. Gönderim engellendi.'];
         }
 
-        if ($expectedSmokeRunId !== null) {
-            $dispatchRunId = TechnicalServiceManualE2ERunContext::dispatchRunId((array) $dispatch->metadata);
-            if ($dispatchRunId === null) {
-                return 'Manual E2E dispatch run id eksik; provider gönderimi engellendi.';
-            }
+        if ($expectedSmokeRunId === null || $expectedSmokeRunId !== $context->activeRunId()) {
+            return ['code' => 'manual_e2e_run_id_mismatch', 'message' => 'Worker run id aktif Manual E2E run id ile eşleşmiyor.'];
+        }
 
-            if ($dispatchRunId !== $expectedSmokeRunId) {
-                return 'Manual E2E dispatch run id current worker run id ile eşleşmiyor; provider gönderimi engellendi.';
-            }
+        if (! $context->matchesDispatch($dispatch)) {
+            return ['code' => 'manual_e2e_run_id_mismatch', 'message' => 'Dispatch run id aktif Manual E2E run id ile eşleşmiyor.'];
+        }
+
+        if ($dispatch->created_at !== null && $context->createdAfter() !== null && $dispatch->created_at->lt($context->createdAfter()->subSecond())) {
+            return ['code' => 'manual_e2e_dispatch_before_run', 'message' => 'Dispatch aktif Manual E2E run başlangıcından önce oluşturulmuş.'];
+        }
+
+        if ($dispatch->created_at !== null && $context->expiresAt() !== null && ! $dispatch->created_at->lt($context->expiresAt())) {
+            return ['code' => 'manual_e2e_run_expired', 'message' => 'Dispatch aktif Manual E2E run süresi dışında oluşturulmuş.'];
         }
 
         if (! (bool) ($global['real_send_enabled'] ?? false)) {
-            return 'Gerçek gönderim kapalı; manual E2E provider gönderimi engellendi.';
+            return ['code' => 'real_send_disabled', 'message' => 'Gerçek gönderim kapalı; Manual E2E provider gönderimi engellendi.'];
+        }
+
+        if (trim($dispatch->bodyForProvider()) === '') {
+            return ['code' => 'invalid_dispatch_body', 'message' => 'Provider mesaj gövdesi boş; gönderim engellendi.'];
+        }
+
+        $bodyErrors = [...$dispatch->providerBodyValidationErrors(), ...$dispatch->roleBodyValidationErrors()];
+        if ($bodyErrors !== []) {
+            return ['code' => 'invalid_dispatch_body', 'message' => implode(' ', $bodyErrors)];
         }
 
         return null;

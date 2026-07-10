@@ -284,7 +284,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_manual_e2e_dispatches_are_tagged_and_allowlist_blocks_wrong_target(): void
     {
         $actor = $this->admin();
-        app(TechnicalServiceMessagingSettingsService::class)->update([
+        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
             'messaging_enabled' => true,
             'test_mode_enabled' => true,
             'shared_test_phone' => '0546 764 74 28',
@@ -298,6 +298,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                 'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             ],
         ]);
+        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
         $request = $this->technicalServiceRequest([
             'customer_phone' => '05372081633',
             'mrn' => 'MRN-MANUAL-E2E-OK',
@@ -321,7 +322,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ->where('message_type', 'appointment_approved_customer')
             ->firstOrFail();
         $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
-        $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'smoke_run_id'));
+        $this->assertSame($activeRunId, data_get($dispatch->metadata, 'smoke_run_id'));
         $this->assertSame('905372081633', data_get($dispatch->metadata, 'role_target_phone'));
 
         $blockedRequest = $this->technicalServiceRequest([
@@ -342,13 +343,13 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
 
         $this->assertSame(0, $blocked['queued']);
         $this->assertSame(1, $blocked['blocked']);
-        $this->assertStringContainsString('allowlist dışı', json_encode($blocked['blockers'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        $this->assertStringContainsString('allowlist', json_encode($blocked['blockers'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
     }
 
     public function test_ops_workflow_message_uses_whatsapp_only_to_configured_ops_phone(): void
     {
         $actor = $this->admin();
-        app(TechnicalServiceMessagingSettingsService::class)->update([
+        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
             'messaging_enabled' => true,
             'test_mode_enabled' => true,
             'shared_test_phone' => '0546 764 74 28',
@@ -360,6 +361,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                 'job_rejected_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             ],
         ]);
+        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
         $request = $this->technicalServiceRequest(['mrn' => 'MRN-OPS-WP-UNIT']);
 
         $dispatch = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueSystemMessage(
@@ -379,8 +381,8 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
         $this->assertSame('ops', $dispatch->recipient_role);
         $this->assertSame('905467647428', $dispatch->target_phone);
         $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
-        $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'smoke_run_id'));
-        $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'manual_e2e_run_id'));
+        $this->assertSame($activeRunId, data_get($dispatch->metadata, 'smoke_run_id'));
+        $this->assertSame($activeRunId, data_get($dispatch->metadata, 'manual_e2e_run_id'));
         $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
     }
 
@@ -388,7 +390,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         Http::fake();
         $actor = $this->admin();
-        app(TechnicalServiceMessagingSettingsService::class)->update([
+        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
             'messaging_enabled' => true,
             'test_mode_enabled' => false,
             'manual_e2e_enabled' => true,
@@ -401,6 +403,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
                 'assignment_offer_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
             ],
         ]);
+        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
         $technician = $this->technician([
             'name' => 'Test Usta',
             'phone' => '0546 764 74 28',
@@ -455,7 +458,7 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             $this->assertSame('905467647428', $dispatch->target_phone);
             $this->assertTrue((bool) data_get($dispatch->metadata, 'manual_e2e'));
             $this->assertTrue((bool) data_get($dispatch->metadata, 'allowlisted_target'));
-            $this->assertSame('MANUAL-E2E-LIVE-TEST', data_get($dispatch->metadata, 'manual_e2e_run_id'));
+            $this->assertSame($activeRunId, data_get($dispatch->metadata, 'manual_e2e_run_id'));
             $this->assertSame('905467647428', data_get($dispatch->metadata, 'role_target_phone'));
             $this->assertStringContainsString('MRN-REL4E12-ASSIGN', $body);
             $this->assertStringContainsString('REL4E12 Müşteri', $body);

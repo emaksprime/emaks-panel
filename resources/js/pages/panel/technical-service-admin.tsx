@@ -412,6 +412,15 @@ type MessagingSettings = {
         messaging_enabled: boolean;
         real_send_enabled: boolean;
         test_mode_enabled: boolean;
+        manual_e2e_enabled: boolean;
+        manual_e2e_active_run_id: string | null;
+        manual_e2e_started_at: string | null;
+        manual_e2e_created_after: string | null;
+        manual_e2e_expires_at: string | null;
+        manual_e2e_last_run_id: string | null;
+        manual_e2e_last_stopped_at: string | null;
+        manual_e2e_ttl_seconds: number;
+        manual_e2e_allowlisted_phones: string[];
         test_phone: string | null;
         test_phone_masked: string | null;
         queue_paused: boolean;
@@ -451,12 +460,33 @@ type MessagingSettings = {
         active_provider_credentials_ready: boolean;
         active_provider_real_ready: boolean;
         queue_ready: boolean;
+        manual_e2e_active: boolean;
+        manual_e2e_worker_command_ready: boolean;
+        manual_e2e_blocker_code: string | null;
         can_send_test: boolean;
         can_send_real: boolean;
         effective_mode: string;
         disabled_reasons: string[];
         real_allowed_message_types: string[];
         test_allowed_message_types: string[];
+    };
+    manual_e2e: {
+        enabled: boolean;
+        active: boolean;
+        status: 'active' | 'expired' | 'not_started' | 'inactive';
+        status_label: string;
+        active_run_id: string | null;
+        started_at: string | null;
+        created_after: string | null;
+        expires_at: string | null;
+        remaining_ttl_seconds: number;
+        worker_command_ready: boolean;
+        worker_command: string | null;
+        allowlisted_phones: string[];
+        blocker_code: string | null;
+        blocker_message: string | null;
+        last_run_id: string | null;
+        last_stopped_at: string | null;
     };
     provider: {
         active_provider: string;
@@ -988,6 +1018,23 @@ function mikroApiInputsFromSettings(settings: MessagingSettings) {
         operation_catalog_status:
             settings.mikro_api.operation_catalog_status ?? 'missing',
     };
+}
+
+function formatManualE2ERunDate(value: string | null): string {
+    if (!value) {
+        return '—';
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return new Intl.DateTimeFormat('tr-TR', {
+        dateStyle: 'short',
+        timeStyle: 'medium',
+    }).format(date);
 }
 
 function csrfToken(): string {
@@ -5295,6 +5342,99 @@ export default function TechnicalServiceAdmin({
                                                 ? 'Test hazır'
                                                 : 'Hazırlık eksik'}
                                         </span>
+                                    </div>
+
+                                    <div
+                                        data-testid="manual-e2e-run-readiness"
+                                        className="mt-4 border-y border-slate-200 py-4"
+                                    >
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <p className="text-sm font-bold text-slate-950">
+                                                Manual E2E run
+                                            </p>
+                                            <span
+                                                className={`text-xs font-semibold ${
+                                                    messaging.manual_e2e.active
+                                                        ? 'text-emerald-700'
+                                                        : 'text-slate-500'
+                                                }`}
+                                            >
+                                                {
+                                                    messaging.manual_e2e
+                                                        .status_label
+                                                }
+                                            </span>
+                                        </div>
+                                        <dl className="mt-3 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
+                                            <div className="min-w-0">
+                                                <dt className="font-semibold text-slate-500">
+                                                    Aktif run id
+                                                </dt>
+                                                <dd className="mt-1 font-mono break-all text-slate-900">
+                                                    {messaging.manual_e2e
+                                                        .active_run_id ??
+                                                        'Aktif run yok'}
+                                                </dd>
+                                            </div>
+                                            <div>
+                                                <dt className="font-semibold text-slate-500">
+                                                    Worker komutu
+                                                </dt>
+                                                <dd className="mt-1 font-semibold text-slate-900">
+                                                    {messaging.manual_e2e
+                                                        .worker_command_ready
+                                                        ? 'Hazır'
+                                                        : 'Hazır değil'}
+                                                </dd>
+                                            </div>
+                                            <div>
+                                                <dt className="font-semibold text-slate-500">
+                                                    Başlangıç
+                                                </dt>
+                                                <dd className="mt-1 text-slate-900">
+                                                    {formatManualE2ERunDate(
+                                                        messaging.manual_e2e
+                                                            .started_at,
+                                                    )}
+                                                </dd>
+                                            </div>
+                                            <div>
+                                                <dt className="font-semibold text-slate-500">
+                                                    Created-after
+                                                </dt>
+                                                <dd className="mt-1 text-slate-900">
+                                                    {formatManualE2ERunDate(
+                                                        messaging.manual_e2e
+                                                            .created_after,
+                                                    )}
+                                                </dd>
+                                            </div>
+                                            <div>
+                                                <dt className="font-semibold text-slate-500">
+                                                    Bitiş
+                                                </dt>
+                                                <dd className="mt-1 text-slate-900">
+                                                    {formatManualE2ERunDate(
+                                                        messaging.manual_e2e
+                                                            .expires_at,
+                                                    )}
+                                                </dd>
+                                            </div>
+                                            <div>
+                                                <dt className="font-semibold text-slate-500">
+                                                    Allowlist
+                                                </dt>
+                                                <dd className="mt-1 break-words text-slate-900">
+                                                    {messaging.manual_e2e
+                                                        .allowlisted_phones
+                                                        .length > 0
+                                                        ? messaging.manual_e2e.allowlisted_phones.join(
+                                                              ', ',
+                                                          )
+                                                        : 'Yok'}
+                                                </dd>
+                                            </div>
+                                        </dl>
                                     </div>
 
                                     <div className="mt-4 grid gap-3 md:grid-cols-2">

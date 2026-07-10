@@ -7,6 +7,7 @@ use App\Services\Messaging\TechnicalServiceMessageDispatchProcessor;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 
 class ProcessTechnicalServiceMessageDispatches extends Command
 {
@@ -42,7 +43,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
         $options = $this->processorOptions();
 
         if ((bool) $this->option('print-start-command')) {
-            $this->line(json_encode($this->startCommandPreview(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $this->line(json_encode($this->startCommandPreview($settings), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
             return self::SUCCESS;
         }
@@ -79,10 +80,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
     {
         $providerKeys = $this->csvValues($this->option('provider') ?: null);
         $manualE2eOnly = (bool) $this->option('manual-e2e-only');
-        $smokeRunId = TechnicalServiceManualE2ERunContext::effectiveRunId(
-            $this->option('smoke-run-id') ?: null,
-            $manualE2eOnly,
-        );
+        $smokeRunId = TechnicalServiceManualE2ERunContext::normalizeRunId($this->option('smoke-run-id') ?: null);
 
         return [
             'limit' => (int) $this->option('limit'),
@@ -111,9 +109,21 @@ class ProcessTechnicalServiceMessageDispatches extends Command
         TechnicalServiceMessagingSettingsService $settings,
         array $options,
     ): int {
-        $maxSeconds = (int) $this->option('max-seconds');
-        if ($maxSeconds <= 0) {
-            $maxSeconds = 14400;
+        $initialContext = $settings->manualE2EContext();
+        $requestedMaxSeconds = (int) $this->option('max-seconds');
+        if ($requestedMaxSeconds <= 0) {
+            $requestedMaxSeconds = TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS;
+        }
+        $maxSeconds = min($requestedMaxSeconds, $initialContext->remainingTtlSeconds());
+        $initialBlock = $this->runtimeBlockReason($settings, $options, (bool) $this->option('dry-run'));
+        if ($initialBlock !== null || $maxSeconds <= 0) {
+            $this->line(json_encode([
+                'manual_e2e_worker_started' => false,
+                'stop_reason' => $initialBlock ?? 'manual_e2e_run_expired',
+                'active_run_id' => $initialContext->activeRunId(),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+            return self::SUCCESS;
         }
 
         $sleepSeconds = max(0, min(60, (int) $this->option('sleep-seconds')));
@@ -125,43 +135,61 @@ class ProcessTechnicalServiceMessageDispatches extends Command
         $cycles = 0;
         $processed = 0;
         $stopReason = 'ttl_expired';
+        $lock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, $maxSeconds + 60);
+        if (! $lock->get()) {
+            $this->line(json_encode([
+                'manual_e2e_worker_started' => false,
+                'stop_reason' => 'manual_e2e_worker_already_running',
+                'active_run_id' => $initialContext->activeRunId(),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+            return self::SUCCESS;
+        }
 
         $this->line(json_encode([
             'manual_e2e_worker_started_at' => $startedAt->toIso8601String(),
             'manual_e2e_worker_expires_at' => $expiresAt->toIso8601String(),
             'allowlist' => $this->maskPhones((array) ($options['allowlisted_phones'] ?? [])),
             'filters' => $this->filterSummary($options),
+            'active_run_id' => $initialContext->activeRunId(),
+            'manual_e2e_started_at' => $initialContext->startedAt()?->toIso8601String(),
+            'manual_e2e_created_after' => $initialContext->createdAfter()?->toIso8601String(),
+            'manual_e2e_expires_at' => $initialContext->expiresAt()?->toIso8601String(),
             'idle_stop' => $idleLimit === null ? 'disabled' : $idleLimit,
             'stop_command' => 'Stop-Process -Id <PID>',
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
-        while (CarbonImmutable::now()->lt($expiresAt)) {
-            $runtimeBlock = $this->runtimeBlockReason($settings, $options, (bool) $this->option('dry-run'));
-            if ($runtimeBlock !== null) {
-                $stopReason = $runtimeBlock;
-                break;
-            }
-
-            $result = $this->option('dry-run')
-                ? $processor->dryRun($options)
-                : $processor->process($options);
-            $count = (int) ($result['count'] ?? 0);
-            $processed += $count;
-            $cycles++;
-
-            if ($count === 0) {
-                $idleCycles++;
-                if ($idleLimit !== null && $idleCycles >= $idleLimit) {
-                    $stopReason = 'idle_limit_reached';
+        try {
+            while (CarbonImmutable::now()->lt($expiresAt)) {
+                $runtimeBlock = $this->runtimeBlockReason($settings, $options, (bool) $this->option('dry-run'));
+                if ($runtimeBlock !== null) {
+                    $stopReason = $runtimeBlock;
                     break;
                 }
-            } else {
-                $idleCycles = 0;
-            }
 
-            if ($sleepSeconds > 0 && CarbonImmutable::now()->lt($expiresAt)) {
-                sleep($sleepSeconds);
+                $result = $this->option('dry-run')
+                    ? $processor->dryRun($options)
+                    : $processor->process($options);
+                $count = (int) ($result['count'] ?? 0);
+                $processed += $count;
+                $cycles++;
+
+                if ($count === 0) {
+                    $idleCycles++;
+                    if ($idleLimit !== null && $idleCycles >= $idleLimit) {
+                        $stopReason = 'idle_limit_reached';
+                        break;
+                    }
+                } else {
+                    $idleCycles = 0;
+                }
+
+                if ($sleepSeconds > 0 && CarbonImmutable::now()->lt($expiresAt)) {
+                    sleep($sleepSeconds);
+                }
             }
+        } finally {
+            $lock->release();
         }
 
         $this->line(json_encode([
@@ -186,6 +214,7 @@ class ProcessTechnicalServiceMessageDispatches extends Command
     ): ?string {
         $allowlist = array_filter((array) ($options['allowlisted_phones'] ?? []));
         $manualE2eOnly = (bool) ($options['manual_e2e_only'] ?? false);
+        $manualWorker = (bool) $this->option('worker-loop') && $manualE2eOnly;
         $externalWorker = ! $dryRun && ! (bool) ($options['no_external'] ?? false) && $manualE2eOnly;
 
         if ((bool) $this->option('worker-loop') && $allowlist === []) {
@@ -202,6 +231,21 @@ class ProcessTechnicalServiceMessageDispatches extends Command
         }
 
         $global = (array) ($settings->payload()['global'] ?? []);
+
+        if ($manualWorker) {
+            $context = $settings->manualE2EContext();
+            $contextBlock = $context->workerBlockingReason(
+                $options['smoke_run_id'] ?? null,
+                $options['created_after'] ?? null,
+            );
+            if ($contextBlock !== null) {
+                return $contextBlock['code'];
+            }
+
+            if (! $context->allowlistMatches($allowlist)) {
+                return 'manual_e2e_allowlist_mismatch';
+            }
+        }
 
         if ($externalWorker && ! (bool) ($global['manual_e2e_enabled'] ?? false)) {
             return 'manual_e2e_disabled';
@@ -255,27 +299,20 @@ class ProcessTechnicalServiceMessageDispatches extends Command
     /**
      * @return array<string, mixed>
      */
-    private function startCommandPreview(): array
+    private function startCommandPreview(TechnicalServiceMessagingSettingsService $settings): array
     {
-        $createdAfter = CarbonImmutable::now()->toIso8601String();
+        $context = $settings->manualE2EContext();
+        $command = $context->workerCommand();
+        $block = $context->contextBlockingReason();
 
         return [
             'dry_run' => true,
-            'command' => implode(' ', [
-                'php artisan technical-service:process-message-dispatches',
-                '--worker-loop',
-                '--manual-e2e-only',
-                '--created-after="'.$createdAfter.'"',
-                '--smoke-run-id='.TechnicalServiceManualE2ERunContext::defaultRunId(),
-                '--allowlisted-phone=905372081633',
-                '--allowlisted-phone=905467647428',
-                '--provider=evo_whatsapp,nac_sms',
-                '--require-real-send-enabled',
-                '--require-queue-not-paused',
-                '--max-seconds=14400',
-                '--sleep-seconds=10',
-                '--stop-after-idle-cycles=0',
-            ]),
+            'blocked' => $command === null,
+            'stop_reason' => $command === null ? ($block['code'] ?? 'manual_e2e_worker_not_ready') : null,
+            'active_run_id' => $context->activeRunId(),
+            'created_after' => $context->createdAfter()?->toIso8601String(),
+            'expires_at' => $context->expiresAt()?->toIso8601String(),
+            'command' => $command,
         ];
     }
 
