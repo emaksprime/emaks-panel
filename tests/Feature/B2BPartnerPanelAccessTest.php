@@ -14,6 +14,7 @@ use App\Models\B2B\B2BPartnerUserProfile;
 use App\Models\DataSource;
 use App\Models\MenuGroup;
 use App\Models\Page;
+use App\Models\PageConfig;
 use App\Models\PageMenu;
 use App\Models\Resource;
 use App\Models\Role;
@@ -38,6 +39,7 @@ use App\Models\User;
 use App\Services\B2B\B2BPartnerAccessService;
 use App\Services\B2B\B2BPartnerPortalDataService;
 use App\Services\B2B\B2BPartnerServiceJobScopeService;
+use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\PanelAccessService;
 use App\Services\PanelNavigationService;
@@ -48,6 +50,7 @@ use App\Services\TechnicalService\TechnicalServiceWorkflowService;
 use Database\Seeders\B2BPartnerPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -8381,10 +8384,9 @@ class B2BPartnerPanelAccessTest extends TestCase
     {
         Http::fake();
         $scope = $this->partnerPortalScopeFixture();
-        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
+        app(TechnicalServiceMessagingSettingsService::class)->update([
             'messaging_enabled' => true,
             'test_mode_enabled' => false,
-            'manual_e2e_enabled' => true,
             'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
             'ops_whatsapp_enabled' => true,
             'ops_whatsapp_phone' => '0546 764 74 28',
@@ -8392,7 +8394,7 @@ class B2BPartnerPanelAccessTest extends TestCase
                 'appointment_proposed_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             ],
         ]);
-        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
+        $activeRunId = (string) $this->activateManualE2EFixture()['manual_e2e_active_run_id'];
         $scope['jobA']->forceFill([
             'mrn' => 'MRN-REL4E12-PROPOSE',
             'customer_name' => 'REL4E12 Müşteri',
@@ -9622,6 +9624,31 @@ class B2BPartnerPanelAccessTest extends TestCase
         $this->assertStringContainsString('...(job.previous_photos ?? [])', $source);
         $this->assertStringContainsString('job.is_completed_history_view && readOnlyHistoryPhotos.length > 0', $source);
         $this->assertStringContainsString('Aktif SRV eksik fotoğraf şartları bu karta yansımaz.', $source);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function activateManualE2EFixture(): array
+    {
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        $startedAt = now()->toImmutable();
+        foreach ([
+            'manual_e2e_enabled' => true,
+            'manual_e2e_active_run_id' => TechnicalServiceManualE2ERunContext::generateRunId($startedAt),
+            'manual_e2e_started_at' => $startedAt->toIso8601String(),
+            'manual_e2e_created_after' => $startedAt->toIso8601String(),
+            'manual_e2e_expires_at' => $startedAt->addHours(4)->toIso8601String(),
+        ] as $key => $value) {
+            Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.'.$key, $value);
+        }
+        $page->forceFill(['layout_json' => $layout])->save();
+
+        return $settings->payload()['global'];
     }
 
     /**

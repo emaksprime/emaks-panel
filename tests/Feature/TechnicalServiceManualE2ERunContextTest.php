@@ -31,28 +31,25 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
 
     public function test_enabling_manual_e2e_generates_unique_run_id_and_repeated_read_keeps_it(): void
     {
-        $settings = app(TechnicalServiceMessagingSettingsService::class);
-        $first = $settings->update([
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-        ]);
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+        $first = $settings->enableManualE2E();
         $runId = (string) $first['manual_e2e']['active_run_id'];
 
         $this->assertMatchesRegularExpression('/^MANUAL-E2E-FULL-\d{8}-\d{6}-[A-Z0-9]{4}$/', $runId);
         $this->assertSame($runId, $settings->payload()['manual_e2e']['active_run_id']);
-        $this->assertSame($runId, $settings->update(['manual_e2e_enabled' => true])['manual_e2e']['active_run_id']);
+        $this->assertSame($runId, $settings->payload()['manual_e2e']['active_run_id']);
         $this->assertNotNull($first['manual_e2e']['started_at']);
         $this->assertSame($first['manual_e2e']['started_at'], $first['manual_e2e']['created_after']);
         $this->assertNotNull($first['manual_e2e']['expires_at']);
+        Http::assertNothingSent();
     }
 
     public function test_freeze_deactivates_context_preserves_last_run_and_new_enable_gets_new_id(): void
     {
-        $settings = app(TechnicalServiceMessagingSettingsService::class);
-        $firstRunId = (string) $settings->update([
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-        ])['manual_e2e']['active_run_id'];
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+        $firstRunId = (string) $settings->enableManualE2E()['manual_e2e']['active_run_id'];
 
         $frozen = $settings->freezeManualE2E();
         $this->assertFalse($frozen['global']['manual_e2e_enabled']);
@@ -62,8 +59,9 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $this->assertSame($firstRunId, $frozen['manual_e2e']['last_run_id']);
         $this->assertNotNull($frozen['manual_e2e']['last_stopped_at']);
 
-        $secondRunId = (string) $settings->update(['manual_e2e_enabled' => true])['manual_e2e']['active_run_id'];
+        $secondRunId = (string) $settings->enableManualE2E()['manual_e2e']['active_run_id'];
         $this->assertNotSame($firstRunId, $secondRunId);
+        Http::assertNothingSent();
     }
 
     public function test_generated_worker_command_uses_active_unique_run_and_persisted_created_after(): void
@@ -83,21 +81,15 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
         $this->assertStringContainsString('--created-after=\\"'.$createdAfter.'\\"', $output);
         $this->assertStringContainsString('--manual-e2e-only', $output);
         $this->assertStringContainsString('--provider=evo_whatsapp,nac_sms', $output);
-        $this->assertSame(
-            $runId,
-            $settings->enableManualE2E()['manual_e2e']['active_run_id'],
-        );
+        $this->assertSame($runId, $settings->payload()['manual_e2e']['active_run_id']);
         Http::assertNothingSent();
     }
 
     public function test_worker_context_rejects_mismatched_created_after_and_freeze_invalidates_old_run(): void
     {
-        $settings = app(TechnicalServiceMessagingSettingsService::class);
-        $payload = $settings->update([
-            'manual_e2e_enabled' => true,
-            'queue_paused' => false,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-        ]);
+        Http::fake();
+        $settings = $this->readyControlledManualE2ESettings();
+        $payload = $settings->enableManualE2E();
         $runId = (string) $payload['manual_e2e']['active_run_id'];
         $createdAfter = (string) $payload['manual_e2e']['created_after'];
         $context = $settings->manualE2EContext();
@@ -114,11 +106,7 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
     public function test_worker_rejects_cli_run_id_not_matching_active_settings_before_processing(): void
     {
         Http::fake();
-        $payload = app(TechnicalServiceMessagingSettingsService::class)->update([
-            'manual_e2e_enabled' => true,
-            'queue_paused' => false,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-        ]);
+        $payload = $this->readyControlledManualE2ESettings()->enableManualE2E();
 
         $this->withoutMockingConsoleOutput();
         Artisan::call('technical-service:process-message-dispatches', [
@@ -143,15 +131,13 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
     public function test_dispatch_creation_blocks_when_manual_e2e_active_run_is_missing(): void
     {
         Http::fake();
-        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings = $this->readyControlledManualE2ESettings();
         $settings->update([
-            'messaging_enabled' => true,
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633'],
             'message_types' => [
                 'appointment_updated_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             ],
         ]);
+        $settings->enableManualE2E();
         $page = PageConfig::query()->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)->firstOrFail();
         $layout = (array) $page->layout_json;
         Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.manual_e2e_active_run_id', null);
@@ -204,10 +190,13 @@ class TechnicalServiceManualE2ERunContextTest extends TestCase
     {
         $this->actingAs($this->admin());
         $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->freezeManualE2E();
         $settings->update([
             'messaging_enabled' => true,
             'test_mode_enabled' => false,
             'shared_test_phone' => '905467647428',
+            'ops_whatsapp_phone' => '905467647428',
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
             'active_provider' => 'evo_whatsapp',
             'provider_key' => 'evo_whatsapp',
             'evo_whatsapp' => [

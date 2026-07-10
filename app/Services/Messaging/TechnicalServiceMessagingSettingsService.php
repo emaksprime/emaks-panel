@@ -5,17 +5,62 @@ namespace App\Services\Messaging;
 use App\Models\IntegrationProviderCredential;
 use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
+use App\Support\PartnerPortalPublicUrl;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 
 class TechnicalServiceMessagingSettingsService
 {
     public const PAGE_CODE = 'technical_service_admin';
 
     public const ROOT_KEY = 'technical_service.messaging';
+
+    public const GENERIC_LIFECYCLE_FIELDS = [
+        'manual_e2e_enabled',
+        'real_send_enabled',
+        'queue_paused',
+        'manual_e2e_active_run_id',
+        'manual_e2e_started_at',
+        'manual_e2e_created_after',
+        'manual_e2e_expires_at',
+        'manual_e2e_last_run_id',
+        'manual_e2e_last_stopped_at',
+        'manual_e2e_run_id',
+        'smoke_run_id',
+        'manual_e2e',
+    ];
+
+    private const ACTIVE_RUN_LOCKED_FIELDS = [
+        'messaging_enabled',
+        'test_mode_enabled',
+        'test_phone',
+        'shared_test_phone',
+        'manual_e2e_allowlisted_phones',
+        'manual_e2e_ttl_seconds',
+        'ops_whatsapp_enabled',
+        'ops_whatsapp_phone',
+        'provider_key',
+        'active_provider',
+        'default_provider',
+        'fallback_provider',
+        'provider_priority',
+        'nac_sms',
+        'evo_whatsapp',
+        'message_types',
+        'send_delay_seconds',
+        'duplicate_cooldown_minutes',
+        'hourly_limit',
+        'daily_limit',
+        'max_auto_retries',
+        'allow_browser_smoke_send',
+        'allow_test_fixture_send',
+    ];
 
     private const PROVIDER_CAPABILITY_DEFAULTS = [
         'supports_text' => false,
@@ -425,17 +470,76 @@ class TechnicalServiceMessagingSettingsService
      */
     public function update(array $values): array
     {
-        $current = $this->settings();
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            DB::transaction(function () use ($values): void {
+                $page = $this->lockedPageConfig();
+                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $next = $this->buildGenericSettingsUpdate($current, $values);
+                $this->persistSettingsToPage($page, $next);
+            });
+        } finally {
+            $lock->release();
+        }
+
+        return $this->payload();
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  array<string, mixed>|null  $current
+     */
+    public function assertGenericUpdateAllowed(array $values, ?array $current = null): void
+    {
+        $submittedFields = collect(array_keys(Arr::dot($values)))
+            ->map(fn (string $path): string => (string) str($path)->afterLast('.'))
+            ->merge(array_keys($values))
+            ->unique()
+            ->values()
+            ->all();
+        $lifecycleFields = array_values(array_intersect($submittedFields, self::GENERIC_LIFECYCLE_FIELDS));
+        if ($lifecycleFields !== []) {
+            $message = 'Manual E2E ve gerçek gönderim durumu genel ayarlar üzerinden değiştirilemez. Manual E2E kontrol panelindeki güvenli açma/dondurma aksiyonunu kullanın.';
+
+            throw ValidationException::withMessages(array_fill_keys($lifecycleFields, $message));
+        }
+
+        $current ??= $this->settings();
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+        if (! $context->enabled() && $context->activeRunId() === null) {
+            return;
+        }
+
+        $lockedFields = array_values(array_intersect(array_keys($values), self::ACTIVE_RUN_LOCKED_FIELDS));
+        if ($lockedFields !== []) {
+            throw new ConflictHttpException('Aktif Manual E2E oturumu varken gönderim güvenliği ayarları değiştirilemez. Önce gönderimleri dondurun.');
+        }
+    }
+
+    private function assertNoActiveRunMutation(?array $settings = null): void
+    {
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings ?? $this->settings());
+        if ($context->enabled() || $context->activeRunId() !== null) {
+            throw new ConflictHttpException('Aktif Manual E2E oturumu varken gönderim güvenliği ayarları değiştirilemez. Önce gönderimleri dondurun.');
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $current
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    private function buildGenericSettingsUpdate(array $current, array $values): array
+    {
+        $this->assertGenericUpdateAllowed($values, $current);
         $next = $current;
 
         foreach ([
             'messaging_enabled',
-            'real_send_enabled',
             'test_mode_enabled',
-            'queue_paused',
             'allow_browser_smoke_send',
             'allow_test_fixture_send',
-            'manual_e2e_enabled',
             'ops_whatsapp_enabled',
         ] as $key) {
             if (array_key_exists($key, $values)) {
@@ -508,18 +612,9 @@ class TechnicalServiceMessagingSettingsService
             $next['mikro_api'] = $this->mergeMikroApiSettings($current['mikro_api'], (array) $values['mikro_api']);
         }
 
-        $next = $this->applyManualE2ELifecycle($current, $next, $values);
         $this->validateSettings($next);
 
-        $layout = $this->layout();
-        Arr::set($layout, self::ROOT_KEY, $next);
-
-        PageConfig::query()->firstOrCreate(
-            ['page_code' => self::PAGE_CODE],
-            ['layout_json' => []],
-        )->forceFill(['layout_json' => $layout])->save();
-
-        return $this->payload();
+        return $next;
     }
 
     /**
@@ -528,61 +623,68 @@ class TechnicalServiceMessagingSettingsService
      */
     public function enableManualE2E(array $values = []): array
     {
-        $lock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, 15);
-        if (! $lock->get()) {
-            throw ValidationException::withMessages([
-                'manual_e2e' => 'Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.',
-            ]);
-        }
+        $lock = $this->acquireLifecycleLock();
 
         try {
-            $current = $this->settings();
-            $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
-            if ($context->isActive()) {
-                if (! (bool) ($current['real_send_enabled'] ?? false) || (bool) ($current['queue_paused'] ?? true)) {
+            DB::transaction(function () use ($values): void {
+                $page = $this->lockedPageConfig();
+                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $context = TechnicalServiceManualE2ERunContext::fromSettings($current);
+                if ($context->enabled() || $context->activeRunId() !== null) {
+                    throw new ConflictHttpException('Aktif Manual E2E oturumu zaten var. Yeni run için önce gönderimleri dondurun.');
+                }
+
+                $allowlist = array_key_exists('manual_e2e_allowlisted_phones', $values)
+                    ? array_values(array_unique(array_filter(array_map(
+                        fn (mixed $phone): string => $this->normalizePhone((string) $phone),
+                        (array) $values['manual_e2e_allowlisted_phones'],
+                    ))))
+                    : (array) ($current['manual_e2e_allowlisted_phones'] ?? []);
+                $ttl = max(60, min(
+                    TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
+                    (int) ($values['manual_e2e_ttl_seconds'] ?? $current['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
+                ));
+                $candidate = [
+                    ...$current,
+                    'manual_e2e_allowlisted_phones' => $allowlist,
+                    'manual_e2e_ttl_seconds' => $ttl,
+                ];
+                $readiness = $this->manualE2EReadinessForSettings($candidate, false);
+                if (! $readiness['eligible']) {
                     throw ValidationException::withMessages([
-                        'manual_e2e' => 'Aktif Manual E2E run gönderime hazır değil. Önce freeze edip yeni run başlatın.',
+                        'manual_e2e' => array_map(
+                            fn (array $blocker): string => $blocker['message'],
+                            $readiness['blockers'],
+                        ),
                     ]);
                 }
 
-                return $this->payload();
-            }
+                $startedAt = CarbonImmutable::now();
+                $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
+                while ($runId === ($current['manual_e2e_last_run_id'] ?? null)) {
+                    $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
+                }
 
-            $allowlist = array_key_exists('manual_e2e_allowlisted_phones', $values)
-                ? array_values(array_unique(array_filter(array_map(
-                    fn (mixed $phone): string => $this->normalizePhone((string) $phone),
-                    (array) $values['manual_e2e_allowlisted_phones'],
-                ))))
-                : (array) ($current['manual_e2e_allowlisted_phones'] ?? []);
-            $ttl = max(60, min(
-                TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
-                (int) ($values['manual_e2e_ttl_seconds'] ?? $current['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
-            ));
-            $candidate = [
-                ...$current,
-                'manual_e2e_allowlisted_phones' => $allowlist,
-                'manual_e2e_ttl_seconds' => $ttl,
-                'manual_e2e_enabled' => true,
-                'real_send_enabled' => true,
-                'test_mode_enabled' => false,
-                'queue_paused' => false,
-                'ops_whatsapp_enabled' => (bool) ($values['ops_whatsapp_enabled'] ?? $current['ops_whatsapp_enabled'] ?? false),
-            ];
-
-            $this->validateManualE2EEnableReadiness($candidate);
-
-            return $this->update([
-                'manual_e2e_allowlisted_phones' => $allowlist,
-                'manual_e2e_ttl_seconds' => $ttl,
-                'manual_e2e_enabled' => true,
-                'real_send_enabled' => true,
-                'test_mode_enabled' => false,
-                'queue_paused' => false,
-                'ops_whatsapp_enabled' => $candidate['ops_whatsapp_enabled'],
-            ]);
+                $next = [
+                    ...$candidate,
+                    'manual_e2e_enabled' => true,
+                    'real_send_enabled' => true,
+                    'test_mode_enabled' => false,
+                    'queue_paused' => false,
+                    'ops_whatsapp_enabled' => true,
+                    'manual_e2e_active_run_id' => $runId,
+                    'manual_e2e_started_at' => $startedAt->toIso8601String(),
+                    'manual_e2e_created_after' => $startedAt->toIso8601String(),
+                    'manual_e2e_expires_at' => $startedAt->addSeconds($ttl)->toIso8601String(),
+                ];
+                $this->validateSettings($next);
+                $this->persistSettingsToPage($page, $next);
+            });
         } finally {
             $lock->release();
         }
+
+        return $this->payload();
     }
 
     /**
@@ -590,24 +692,22 @@ class TechnicalServiceMessagingSettingsService
      */
     public function freezeManualE2E(): array
     {
-        $lock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, 15);
-        if (! $lock->get()) {
-            throw ValidationException::withMessages([
-                'manual_e2e' => 'Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.',
-            ]);
-        }
+        $lock = $this->acquireLifecycleLock();
 
         try {
-            return $this->update([
-                'manual_e2e_enabled' => false,
-                'real_send_enabled' => false,
-                'queue_paused' => true,
-                'ops_whatsapp_enabled' => false,
-                'test_mode_enabled' => false,
-            ]);
+            DB::transaction(function (): void {
+                $page = $this->lockedPageConfig();
+                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $next = $this->deactivateManualE2EContext($current, TechnicalServiceManualE2ERunContext::fromSettings($current));
+                $next['test_mode_enabled'] = false;
+                $this->validateSettings($next);
+                $this->persistSettingsToPage($page, $next);
+            });
         } finally {
             $lock->release();
         }
+
+        return $this->payload();
     }
 
     public function manualE2EContext(): TechnicalServiceManualE2ERunContext
@@ -618,15 +718,35 @@ class TechnicalServiceMessagingSettingsService
     /**
      * @return array<string, mixed>
      */
+    public function manualE2EReadiness(): array
+    {
+        return $this->manualE2EReadinessForSettings($this->settings(), true);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function reset(): array
     {
-        $layout = $this->layout();
-        Arr::set($layout, self::ROOT_KEY, $this->defaultSettings());
+        $lock = $this->acquireLifecycleLock();
 
-        PageConfig::query()->firstOrCreate(
-            ['page_code' => self::PAGE_CODE],
-            ['layout_json' => []],
-        )->forceFill(['layout_json' => $layout])->save();
+        try {
+            DB::transaction(function (): void {
+                $page = $this->lockedPageConfig();
+                $current = $this->settingsFromLayout((array) $page->layout_json);
+                $this->assertNoActiveRunMutation($current);
+                $defaults = $this->defaultSettings();
+                foreach (self::GENERIC_LIFECYCLE_FIELDS as $field) {
+                    if (array_key_exists($field, $current) && array_key_exists($field, $defaults)) {
+                        $defaults[$field] = $current[$field];
+                    }
+                }
+
+                $this->persistSettingsToPage($page, $defaults);
+            });
+        } finally {
+            $lock->release();
+        }
 
         return $this->payload();
     }
@@ -656,6 +776,17 @@ class TechnicalServiceMessagingSettingsService
      * @return array<string, mixed>
      */
     public function saveNacSmsCredentials(array $values): array
+    {
+        return $this->withActiveRunSafetyLock(
+            fn (): array => $this->persistNacSmsCredentials($values),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    private function persistNacSmsCredentials(array $values): array
     {
         $username = trim((string) ($values['username'] ?? ''));
         $password = (string) ($values['password'] ?? '');
@@ -738,6 +869,17 @@ class TechnicalServiceMessagingSettingsService
      */
     public function saveEvoWhatsappCredentials(array $values): array
     {
+        return $this->withActiveRunSafetyLock(
+            fn (): array => $this->persistEvoWhatsappCredentials($values),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    private function persistEvoWhatsappCredentials(array $values): array
+    {
         $apiKey = trim((string) ($values['api_key'] ?? ''));
         $token = trim((string) ($values['token'] ?? ''));
 
@@ -780,6 +922,20 @@ class TechnicalServiceMessagingSettingsService
     {
         $provider = $this->normalizeProviderKey($provider);
 
+        if (in_array($provider, ['nac_sms', 'evo_whatsapp'], true)) {
+            return $this->withActiveRunSafetyLock(
+                fn (): array => $this->deleteProviderCredentials($provider),
+            );
+        }
+
+        return $this->deleteProviderCredentials($provider);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function deleteProviderCredentials(string $provider): array
+    {
         if (! in_array($provider, ['nac_sms', 'mikro_api', 'evo_whatsapp'], true)) {
             throw ValidationException::withMessages([
                 'provider' => 'Bu sağlayıcının credential temizleme işlemi bu ekranda desteklenmiyor.',
@@ -819,7 +975,16 @@ class TechnicalServiceMessagingSettingsService
      */
     private function settings(): array
     {
-        $stored = Arr::get($this->layout(), self::ROOT_KEY, []);
+        return $this->settingsFromLayout($this->layout());
+    }
+
+    /**
+     * @param  array<string, mixed>  $layout
+     * @return array<string, mixed>
+     */
+    private function settingsFromLayout(array $layout): array
+    {
+        $stored = Arr::get($layout, self::ROOT_KEY, []);
         $defaults = $this->defaultSettings();
         $settings = is_array($stored) ? array_replace_recursive($defaults, $stored) : $defaults;
         $settings['message_types'] = $this->mergeMessageTypeSettings(
@@ -1123,58 +1288,6 @@ class TechnicalServiceMessagingSettingsService
     }
 
     /**
-     * @param  array<string, mixed>  $current
-     * @param  array<string, mixed>  $next
-     * @param  array<string, mixed>  $values
-     * @return array<string, mixed>
-     */
-    private function applyManualE2ELifecycle(array $current, array $next, array $values): array
-    {
-        $currentContext = TechnicalServiceManualE2ERunContext::fromSettings($current);
-        $explicitManualState = array_key_exists('manual_e2e_enabled', $values);
-        $freezeRequested = ($explicitManualState && ! (bool) $values['manual_e2e_enabled'])
-            || ((bool) ($current['manual_e2e_enabled'] ?? false)
-                && ((array_key_exists('real_send_enabled', $values) && ! (bool) $values['real_send_enabled'])
-                    || (array_key_exists('queue_paused', $values) && (bool) $values['queue_paused'])));
-
-        if ($freezeRequested) {
-            return $this->deactivateManualE2EContext($next, $currentContext);
-        }
-
-        if (! $explicitManualState || ! (bool) $values['manual_e2e_enabled']) {
-            return $next;
-        }
-
-        if ($currentContext->isActive()) {
-            return $next;
-        }
-
-        $startedAt = CarbonImmutable::now();
-        $ttl = max(60, min(
-            TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS,
-            (int) ($next['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
-        ));
-        $previousRunId = $currentContext->activeRunId();
-        $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
-        while ($runId === $previousRunId || $runId === ($current['manual_e2e_last_run_id'] ?? null)) {
-            $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
-        }
-
-        if ($previousRunId !== null) {
-            $next['manual_e2e_last_run_id'] = $previousRunId;
-            $next['manual_e2e_last_stopped_at'] = $startedAt->toIso8601String();
-        }
-
-        $next['manual_e2e_active_run_id'] = $runId;
-        $next['manual_e2e_started_at'] = $startedAt->toIso8601String();
-        $next['manual_e2e_created_after'] = $startedAt->toIso8601String();
-        $next['manual_e2e_expires_at'] = $startedAt->addSeconds($ttl)->toIso8601String();
-        $next['manual_e2e_ttl_seconds'] = $ttl;
-
-        return $next;
-    }
-
-    /**
      * @param  array<string, mixed>  $settings
      * @return array<string, mixed>
      */
@@ -1199,28 +1312,36 @@ class TechnicalServiceMessagingSettingsService
 
     /**
      * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
      */
-    private function validateManualE2EEnableReadiness(array $settings): void
+    private function manualE2EReadinessForSettings(array $settings, bool $checkLifecycleLock): array
     {
-        $errors = [];
+        $blockers = [];
         $allowlist = array_values(array_unique(array_filter(array_map(
             fn (mixed $phone): string => $this->normalizePhone((string) $phone),
             (array) ($settings['manual_e2e_allowlisted_phones'] ?? []),
         ))));
         if ($allowlist === [] || collect($allowlist)->contains(fn (string $phone): bool => ! $this->validPhone($phone))) {
-            $errors['manual_e2e_allowlisted_phones'] = 'Manual E2E için en az bir geçerli allowlist telefonu zorunlu.';
+            $blockers[] = ['code' => 'manual_e2e_allowlist_invalid', 'message' => 'Manual E2E için en az bir geçerli allowlist telefonu zorunlu.'];
+        }
+
+        $opsPhone = $this->normalizePhone((string) ($settings['ops_whatsapp_phone'] ?? ''));
+        if (! $this->validPhone($opsPhone) || ! in_array($opsPhone, $allowlist, true)) {
+            $blockers[] = ['code' => 'manual_e2e_ops_target_invalid', 'message' => 'Manual E2E için geçerli OPS telefonu allowlist içinde olmalı.'];
         }
 
         if (! (bool) ($settings['messaging_enabled'] ?? false)) {
-            $errors['messaging_enabled'] = 'Manual E2E için mesaj sistemi açık olmalı.';
+            $blockers[] = ['code' => 'messaging_disabled', 'message' => 'Manual E2E için mesaj sistemi açık olmalı.'];
         }
 
-        if (! $this->evoWhatsappReadiness($settings)['ready']) {
-            $errors['evo_whatsapp'] = 'Manual E2E için Direct Evo API readiness tamamlanmalı.';
+        $evoReady = (bool) $this->evoWhatsappReadiness($settings)['ready'];
+        if (! $evoReady) {
+            $blockers[] = ['code' => 'evo_not_ready', 'message' => 'Manual E2E için Direct Evo API readiness tamamlanmalı.'];
         }
 
-        if (! (bool) ($this->nacSmsPayload($settings)['test_ready'] ?? false)) {
-            $errors['nac_sms'] = 'Manual E2E için NAC Direct Laravel test readiness tamamlanmalı.';
+        $nacReady = (bool) ($this->nacSmsPayload($settings)['test_ready'] ?? false);
+        if (! $nacReady) {
+            $blockers[] = ['code' => 'nac_not_ready', 'message' => 'Manual E2E için NAC Direct Laravel test readiness tamamlanmalı.'];
         }
 
         $pendingStatuses = [
@@ -1234,7 +1355,7 @@ class TechnicalServiceMessagingSettingsService
             ->whereIn('provider_key', $providers)
             ->count();
         if ($pending > 0) {
-            $errors['pending_provider_dispatch'] = 'Manual E2E açılmadan önce external provider kuyruğu boş olmalı.';
+            $blockers[] = ['code' => 'pending_provider_dispatch', 'message' => 'Manual E2E açılmadan önce external provider kuyruğu boş olmalı.'];
         }
 
         $unsafe = TechnicalServiceMessageDispatch::query()
@@ -1243,19 +1364,76 @@ class TechnicalServiceMessagingSettingsService
             ->whereNotIn('target_phone', $allowlist ?: ['__manual_e2e_allowlist_missing__'])
             ->count();
         if ($unsafe > 0) {
-            $errors['unsafe_provider_dispatch'] = 'Allowlist dışı pending provider dispatch bulundu.';
+            $blockers[] = ['code' => 'unsafe_provider_dispatch', 'message' => 'Allowlist dışı pending provider dispatch bulundu.'];
         }
 
-        $lock = Cache::lock(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY, 5);
-        if (! $lock->get()) {
-            $errors['manual_e2e_worker'] = 'Başka bir Manual E2E worker çalışıyor.';
-        } else {
-            $lock->release();
+        $workerLockAvailable = $this->lockAvailable(TechnicalServiceManualE2ERunContext::WORKER_LOCK_KEY);
+        if (! $workerLockAvailable) {
+            $blockers[] = ['code' => 'manual_e2e_worker_active', 'message' => 'Başka bir Manual E2E worker çalışıyor.'];
         }
 
-        if ($errors !== []) {
-            throw ValidationException::withMessages($errors);
+        $lifecycleLockAvailable = ! $checkLifecycleLock || $this->lockAvailable(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY);
+        if (! $lifecycleLockAvailable) {
+            $blockers[] = ['code' => 'manual_e2e_lifecycle_busy', 'message' => 'Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.'];
         }
+
+        $context = TechnicalServiceManualE2ERunContext::fromSettings($settings);
+        if ($context->enabled() || $context->activeRunId() !== null) {
+            $blockers[] = ['code' => 'manual_e2e_active_run_exists', 'message' => 'Aktif Manual E2E oturumu zaten var. Önce gönderimleri dondurun.'];
+        }
+        if ((bool) ($settings['real_send_enabled'] ?? false)) {
+            $blockers[] = ['code' => 'manual_e2e_real_send_not_frozen', 'message' => 'Gerçek gönderim açık. Yeni run öncesinde gönderimler dondurulmalı.'];
+        }
+        if (! (bool) ($settings['queue_paused'] ?? true)) {
+            $blockers[] = ['code' => 'manual_e2e_queue_not_frozen', 'message' => 'Kuyruk duraklatılmamış. Yeni run öncesinde gönderimler dondurulmalı.'];
+        }
+        if ((bool) ($settings['ops_whatsapp_enabled'] ?? false)) {
+            $blockers[] = ['code' => 'manual_e2e_ops_not_frozen', 'message' => 'OPS WhatsApp açık. Yeni run öncesinde gönderimler dondurulmalı.'];
+        }
+
+        $publicWarnings = [];
+        $publicUrl = PartnerPortalPublicUrl::normalizeBaseUrl((string) (config('services.partner_portal.public_url') ?: config('services.public_urls.app_url') ?: config('app.url')));
+        if ($publicUrl === null) {
+            $publicWarnings[] = ['code' => 'public_url_missing', 'message' => 'Partner/müşteri public URL tanımlı değil; telefon linkleri canlı akışta açılamaz.'];
+        } elseif (PartnerPortalPublicUrl::isLocalUrl($publicUrl)) {
+            $publicWarnings[] = ['code' => 'public_url_private', 'message' => 'Partner/müşteri URL yerel veya özel ağ adresi; telefon erişimi ayrıca doğrulanmalı.'];
+        }
+
+        $channelPolicies = collect((array) ($settings['message_types'] ?? []))
+            ->filter(fn (mixed $type): bool => is_array($type) && (bool) ($type['enabled'] ?? false))
+            ->map(fn (array $type, string $key): array => [
+                'message_type' => $key,
+                'channel_policy' => (string) ($type['channel_policy'] ?? 'disabled'),
+                'whatsapp_mode' => (string) ($type['whatsapp_mode'] ?? 'disabled'),
+                'sms_mode' => (string) ($type['sms_mode'] ?? 'disabled'),
+            ])
+            ->values()
+            ->all();
+
+        return [
+            'eligible' => $blockers === [],
+            'blockers' => $blockers,
+            'warnings' => $publicWarnings,
+            'evo_ready' => $evoReady,
+            'nac_ready' => $nacReady,
+            'allowlisted_phones' => $allowlist,
+            'allowlisted_phone_masks' => array_map(fn (string $phone): string => $this->maskPhone($phone), $allowlist),
+            'customer_allowlisted_phone_masks' => array_map(
+                fn (string $phone): string => $this->maskPhone($phone),
+                array_values(array_filter($allowlist, fn (string $phone): bool => $phone !== $opsPhone)),
+            ),
+            'ops_whatsapp_phone_mask' => $opsPhone !== '' ? $this->maskPhone($opsPhone) : null,
+            'ops_whatsapp_enabled' => (bool) ($settings['ops_whatsapp_enabled'] ?? false),
+            'ops_sms_enabled' => false,
+            'pending_external_count' => $pending,
+            'unsafe_external_count' => $unsafe,
+            'worker_lock_available' => $workerLockAvailable,
+            'lifecycle_lock_available' => $lifecycleLockAvailable,
+            'active_run_id' => $context->activeRunId(),
+            'active_run_status' => $context->payload()['status'],
+            'ttl_seconds' => (int) ($settings['manual_e2e_ttl_seconds'] ?? TechnicalServiceManualE2ERunContext::DEFAULT_TTL_SECONDS),
+            'channel_policies' => $channelPolicies,
+        ];
     }
 
     /**
@@ -2303,6 +2481,67 @@ class TechnicalServiceMessagingSettingsService
             ->value('layout_json');
 
         return is_array($layout) ? $layout : [];
+    }
+
+    private function lockedPageConfig(): PageConfig
+    {
+        $page = PageConfig::query()->firstOrCreate(
+            ['page_code' => self::PAGE_CODE],
+            ['layout_json' => []],
+        );
+
+        return PageConfig::query()->whereKey($page->getKey())->lockForUpdate()->firstOrFail();
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    private function persistSettingsToPage(PageConfig $page, array $settings): void
+    {
+        $layout = is_array($page->layout_json) ? $page->layout_json : [];
+        Arr::set($layout, self::ROOT_KEY, $settings);
+        $page->forceFill(['layout_json' => $layout])->save();
+    }
+
+    private function acquireLifecycleLock(): Lock
+    {
+        $lock = Cache::lock(TechnicalServiceManualE2ERunContext::LIFECYCLE_LOCK_KEY, 15);
+        if (! $lock->get()) {
+            throw new ConflictHttpException('Manual E2E yaşam döngüsü başka bir işlem tarafından güncelleniyor.');
+        }
+
+        return $lock;
+    }
+
+    /**
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    private function withActiveRunSafetyLock(callable $callback): mixed
+    {
+        $lock = $this->acquireLifecycleLock();
+
+        try {
+            $this->assertNoActiveRunMutation();
+
+            return $callback();
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function lockAvailable(string $key): bool
+    {
+        $lock = Cache::lock($key, 5);
+        if (! $lock->get()) {
+            return false;
+        }
+
+        $lock->release();
+
+        return true;
     }
 
     private function normalizePhone(?string $phone): string

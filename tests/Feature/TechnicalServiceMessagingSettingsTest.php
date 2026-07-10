@@ -264,7 +264,6 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
                 'messaging_enabled' => true,
                 'test_mode_enabled' => true,
                 'test_phone' => '0546 764 74 28',
-                'real_send_enabled' => false,
                 'active_provider' => 'evo_whatsapp',
                 'default_provider' => 'null_local',
                 'fallback_provider' => 'evo_whatsapp',
@@ -664,7 +663,11 @@ class TechnicalServiceMessagingSettingsTest extends TestCase
         $this->assertStringContainsString('Mikro API', $source);
         $this->assertStringContainsString('admin_sections', $source);
         $this->assertStringContainsString('Test telefon numarası', $source);
-        $this->assertStringContainsString('Gerçek gönderim aktif', $source);
+        $this->assertStringContainsString('Manual E2E kontrol paneli', $source);
+        $this->assertStringContainsString('Manual E2E Readiness Kontrolü', $source);
+        $this->assertStringContainsString('Manual E2E’yi Aç', $source);
+        $this->assertStringContainsString('Gönderimleri Dondur', $source);
+        $this->assertStringNotContainsString("['real_send_enabled', 'Gerçek gönderim aktif']", $source);
         $this->assertStringContainsString('Duplicate cooldown dakika', $source);
         $this->assertStringContainsString('Queue sender', $source);
         $this->assertStringContainsString('Mesaj tipi', $source);

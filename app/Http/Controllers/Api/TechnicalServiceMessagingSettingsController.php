@@ -20,15 +20,15 @@ class TechnicalServiceMessagingSettingsController extends Controller
 
     public function update(Request $request, TechnicalServiceMessagingSettingsService $settings): JsonResponse
     {
+        $settings->assertGenericUpdateAllowed($request->all());
+
         $providerKeys = array_keys(TechnicalServiceMessagingSettingsService::PROVIDERS);
         $channelPolicies = TechnicalServiceMessagingSettingsService::SMS_CHANNEL_POLICIES;
         $channelModes = TechnicalServiceMessagingSettingsService::CHANNEL_MODES;
 
         $data = $request->validate([
             'messaging_enabled' => ['sometimes', 'required', 'boolean'],
-            'real_send_enabled' => ['sometimes', 'required', 'boolean'],
             'test_mode_enabled' => ['sometimes', 'required', 'boolean'],
-            'manual_e2e_enabled' => ['sometimes', 'required', 'boolean'],
             'manual_e2e_ttl_seconds' => ['sometimes', 'required', 'integer', 'min:60', 'max:14400'],
             'manual_e2e_allowlisted_phones' => ['sometimes', 'array'],
             'manual_e2e_allowlisted_phones.*' => ['required', 'string', 'max:32'],
@@ -36,7 +36,6 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'ops_whatsapp_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'shared_test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'test_phone' => ['sometimes', 'nullable', 'string', 'max:32'],
-            'queue_paused' => ['sometimes', 'required', 'boolean'],
             'provider_key' => ['sometimes', 'required', 'string', Rule::in($providerKeys)],
             'active_provider' => ['sometimes', 'required', 'string', Rule::in($providerKeys)],
             'default_provider' => ['sometimes', 'required', 'string', Rule::in($providerKeys)],
@@ -128,12 +127,18 @@ class TechnicalServiceMessagingSettingsController extends Controller
             'manual_e2e_allowlisted_phones' => ['sometimes', 'array', 'min:1'],
             'manual_e2e_allowlisted_phones.*' => ['required', 'string', 'max:32'],
             'manual_e2e_ttl_seconds' => ['sometimes', 'integer', 'min:60', 'max:14400'],
-            'ops_whatsapp_enabled' => ['sometimes', 'boolean'],
         ]);
 
         return response()->json([
             'messaging_settings' => $settings->enableManualE2E($data),
             'message' => 'Manual E2E run context hazırlandı. Worker otomatik başlatılmadı.',
+        ]);
+    }
+
+    public function manualE2EReadiness(TechnicalServiceMessagingSettingsService $settings): JsonResponse
+    {
+        return response()->json([
+            'manual_e2e_readiness' => $settings->manualE2EReadiness(),
         ]);
     }
 

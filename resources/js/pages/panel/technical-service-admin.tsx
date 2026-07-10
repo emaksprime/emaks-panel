@@ -2,6 +2,14 @@ import { Head } from '@inertiajs/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Heading from '@/components/heading';
 import { TechnicalServicePageLinks } from '@/components/technical-service/TechnicalServicePageLinks';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 
 const adminItems = [
     [
@@ -405,6 +413,33 @@ type MessagingAdminSection = {
     label: string;
     ready: boolean;
     summary: string;
+};
+
+type ManualE2EReadiness = {
+    eligible: boolean;
+    blockers: Array<{ code: string; message: string }>;
+    warnings: Array<{ code: string; message: string }>;
+    evo_ready: boolean;
+    nac_ready: boolean;
+    allowlisted_phones: string[];
+    allowlisted_phone_masks: string[];
+    customer_allowlisted_phone_masks: string[];
+    ops_whatsapp_phone_mask: string | null;
+    ops_whatsapp_enabled: boolean;
+    ops_sms_enabled: boolean;
+    pending_external_count: number;
+    unsafe_external_count: number;
+    worker_lock_available: boolean;
+    lifecycle_lock_available: boolean;
+    active_run_id: string | null;
+    active_run_status: string;
+    ttl_seconds: number;
+    channel_policies: Array<{
+        message_type: string;
+        channel_policy: string;
+        whatsapp_mode: string;
+        sms_mode: string;
+    }>;
 };
 
 type MessagingSettings = {
@@ -1086,6 +1121,9 @@ export default function TechnicalServiceAdmin({
         qrPublicFlowSettings.pre_form_payment_for_mount_excluded_enabled,
     );
     const [messaging, setMessaging] = useState(messagingSettings);
+    const manualE2EContextLocked =
+        messaging.global.manual_e2e_enabled ||
+        messaging.manual_e2e.active_run_id !== null;
     const [messageTemplates, setMessageTemplates] = useState(
         messageTemplateSettings,
     );
@@ -1142,6 +1180,14 @@ export default function TechnicalServiceAdmin({
     const [mailSaving, setMailSaving] = useState(false);
     const [mailTesting, setMailTesting] = useState(false);
     const [messagingSaving, setMessagingSaving] = useState(false);
+    const [manualE2EReadinessChecking, setManualE2EReadinessChecking] =
+        useState(false);
+    const [manualE2ELifecycleBusy, setManualE2ELifecycleBusy] =
+        useState(false);
+    const [manualE2EReadiness, setManualE2EReadiness] =
+        useState<ManualE2EReadiness | null>(null);
+    const [manualE2EEnableConfirmationOpen, setManualE2EEnableConfirmationOpen] =
+        useState(false);
     const [templateSaving, setTemplateSaving] = useState(false);
     const [templatePreviewing, setTemplatePreviewing] = useState(false);
     const [templateTestSending, setTemplateTestSending] = useState(false);
@@ -1188,10 +1234,8 @@ export default function TechnicalServiceAdmin({
     });
     const [messagingInputs, setMessagingInputs] = useState({
         messaging_enabled: messagingSettings.global.messaging_enabled,
-        real_send_enabled: messagingSettings.global.real_send_enabled,
         test_mode_enabled: messagingSettings.global.test_mode_enabled,
         test_phone: messagingSettings.global.test_phone ?? '',
-        queue_paused: messagingSettings.global.queue_paused,
         active_provider: messagingSettings.global.active_provider,
         default_provider: messagingSettings.global.default_provider,
         fallback_provider: messagingSettings.global.fallback_provider,
@@ -1668,10 +1712,8 @@ export default function TechnicalServiceAdmin({
         setMessaging(nextSettings);
         setMessagingInputs({
             messaging_enabled: nextSettings.global.messaging_enabled,
-            real_send_enabled: nextSettings.global.real_send_enabled,
             test_mode_enabled: nextSettings.global.test_mode_enabled,
             test_phone: nextSettings.global.test_phone ?? '',
-            queue_paused: nextSettings.global.queue_paused,
             active_provider: nextSettings.global.active_provider,
             default_provider: nextSettings.global.default_provider,
             fallback_provider: nextSettings.global.fallback_provider,
@@ -2025,10 +2067,8 @@ export default function TechnicalServiceAdmin({
                     credentials: 'same-origin',
                     body: JSON.stringify({
                         messaging_enabled: messagingInputs.messaging_enabled,
-                        real_send_enabled: messagingInputs.real_send_enabled,
                         test_mode_enabled: messagingInputs.test_mode_enabled,
                         test_phone: messagingInputs.test_phone,
-                        queue_paused: messagingInputs.queue_paused,
                         provider_key: messagingInputs.active_provider,
                         active_provider: messagingInputs.active_provider,
                         default_provider: messagingInputs.default_provider,
@@ -2131,6 +2171,162 @@ export default function TechnicalServiceAdmin({
             );
         } finally {
             setMessagingSaving(false);
+        }
+    };
+
+    const checkManualE2EReadiness = async (): Promise<ManualE2EReadiness | null> => {
+        setManualE2EReadinessChecking(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/manual-e2e/readiness',
+                {
+                    method: 'GET',
+                    headers: { Accept: 'application/json' },
+                    credentials: 'same-origin',
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Manual E2E readiness kontrolü tamamlanamadı.',
+                    ),
+                );
+
+                return null;
+            }
+
+            const payload = await response.json();
+            const readiness =
+                payload.manual_e2e_readiness as ManualE2EReadiness;
+            setManualE2EReadiness(readiness);
+            setMessagingMessage(
+                readiness.eligible
+                    ? 'Manual E2E readiness kontrolleri tamamlandı.'
+                    : 'Manual E2E açılamaz; readiness bloklarını giderin.',
+            );
+
+            return readiness;
+        } catch {
+            setMessagingMessage(
+                'Manual E2E readiness kontrolü tamamlanamadı.',
+            );
+
+            return null;
+        } finally {
+            setManualE2EReadinessChecking(false);
+        }
+    };
+
+    const enableManualE2E = async () => {
+        if (!manualE2EReadiness?.eligible) {
+            setMessagingMessage(
+                'Manual E2E açılmadan önce readiness kontrolü başarılı olmalı.',
+            );
+
+            return;
+        }
+
+        setManualE2ELifecycleBusy(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/manual-e2e/enable',
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        manual_e2e_allowlisted_phones:
+                            manualE2EReadiness.allowlisted_phones,
+                        manual_e2e_ttl_seconds:
+                            manualE2EReadiness.ttl_seconds,
+                    }),
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Manual E2E güvenli biçimde açılamadı.',
+                    ),
+                );
+
+                return;
+            }
+
+            const payload = await response.json();
+            applyMessagingSettings(payload.messaging_settings);
+            setManualE2EEnableConfirmationOpen(false);
+            setManualE2EReadiness(null);
+            setMessagingMessage(
+                payload.message ?? 'Manual E2E run context hazırlandı.',
+            );
+        } catch {
+            setMessagingMessage('Manual E2E güvenli biçimde açılamadı.');
+        } finally {
+            setManualE2ELifecycleBusy(false);
+        }
+    };
+
+    const freezeManualE2E = async () => {
+        if (
+            typeof window !== 'undefined' &&
+            !window.confirm(
+                'Manual E2E ve gerçek gönderimler dondurulsun mu?',
+            )
+        ) {
+            return;
+        }
+
+        setManualE2ELifecycleBusy(true);
+        setMessagingMessage('');
+
+        try {
+            const response = await fetch(
+                '/api/technical-service/messaging-settings/manual-e2e/freeze',
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken(),
+                    },
+                    credentials: 'same-origin',
+                },
+            );
+
+            if (!response.ok) {
+                setMessagingMessage(
+                    await errorMessageFromResponse(
+                        response,
+                        'Gönderimler dondurulamadı.',
+                    ),
+                );
+
+                return;
+            }
+
+            const payload = await response.json();
+            applyMessagingSettings(payload.messaging_settings);
+            setManualE2EEnableConfirmationOpen(false);
+            setManualE2EReadiness(null);
+            setMessagingMessage(
+                payload.message ?? 'Gönderimler donduruldu.',
+            );
+        } catch {
+            setMessagingMessage('Gönderimler dondurulamadı.');
+        } finally {
+            setManualE2ELifecycleBusy(false);
         }
     };
 
@@ -4838,7 +5034,10 @@ export default function TechnicalServiceAdmin({
                             <div className="flex flex-wrap gap-2">
                                 <button
                                     type="button"
-                                    disabled={messagingSaving}
+                                    disabled={
+                                        messagingSaving ||
+                                        manualE2EContextLocked
+                                    }
                                     onClick={() => {
                                         void saveMessagingSettings();
                                     }}
@@ -4850,7 +5049,10 @@ export default function TechnicalServiceAdmin({
                                 </button>
                                 <button
                                     type="button"
-                                    disabled={messagingSaving}
+                                    disabled={
+                                        messagingSaving ||
+                                        manualE2EContextLocked
+                                    }
                                     onClick={() => {
                                         void resetMessagingSettings();
                                     }}
@@ -5342,99 +5544,6 @@ export default function TechnicalServiceAdmin({
                                                 ? 'Test hazır'
                                                 : 'Hazırlık eksik'}
                                         </span>
-                                    </div>
-
-                                    <div
-                                        data-testid="manual-e2e-run-readiness"
-                                        className="mt-4 border-y border-slate-200 py-4"
-                                    >
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <p className="text-sm font-bold text-slate-950">
-                                                Manual E2E run
-                                            </p>
-                                            <span
-                                                className={`text-xs font-semibold ${
-                                                    messaging.manual_e2e.active
-                                                        ? 'text-emerald-700'
-                                                        : 'text-slate-500'
-                                                }`}
-                                            >
-                                                {
-                                                    messaging.manual_e2e
-                                                        .status_label
-                                                }
-                                            </span>
-                                        </div>
-                                        <dl className="mt-3 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
-                                            <div className="min-w-0">
-                                                <dt className="font-semibold text-slate-500">
-                                                    Aktif run id
-                                                </dt>
-                                                <dd className="mt-1 font-mono break-all text-slate-900">
-                                                    {messaging.manual_e2e
-                                                        .active_run_id ??
-                                                        'Aktif run yok'}
-                                                </dd>
-                                            </div>
-                                            <div>
-                                                <dt className="font-semibold text-slate-500">
-                                                    Worker komutu
-                                                </dt>
-                                                <dd className="mt-1 font-semibold text-slate-900">
-                                                    {messaging.manual_e2e
-                                                        .worker_command_ready
-                                                        ? 'Hazır'
-                                                        : 'Hazır değil'}
-                                                </dd>
-                                            </div>
-                                            <div>
-                                                <dt className="font-semibold text-slate-500">
-                                                    Başlangıç
-                                                </dt>
-                                                <dd className="mt-1 text-slate-900">
-                                                    {formatManualE2ERunDate(
-                                                        messaging.manual_e2e
-                                                            .started_at,
-                                                    )}
-                                                </dd>
-                                            </div>
-                                            <div>
-                                                <dt className="font-semibold text-slate-500">
-                                                    Created-after
-                                                </dt>
-                                                <dd className="mt-1 text-slate-900">
-                                                    {formatManualE2ERunDate(
-                                                        messaging.manual_e2e
-                                                            .created_after,
-                                                    )}
-                                                </dd>
-                                            </div>
-                                            <div>
-                                                <dt className="font-semibold text-slate-500">
-                                                    Bitiş
-                                                </dt>
-                                                <dd className="mt-1 text-slate-900">
-                                                    {formatManualE2ERunDate(
-                                                        messaging.manual_e2e
-                                                            .expires_at,
-                                                    )}
-                                                </dd>
-                                            </div>
-                                            <div>
-                                                <dt className="font-semibold text-slate-500">
-                                                    Allowlist
-                                                </dt>
-                                                <dd className="mt-1 break-words text-slate-900">
-                                                    {messaging.manual_e2e
-                                                        .allowlisted_phones
-                                                        .length > 0
-                                                        ? messaging.manual_e2e.allowlisted_phones.join(
-                                                              ', ',
-                                                          )
-                                                        : 'Yok'}
-                                                </dd>
-                                            </div>
-                                        </dl>
                                     </div>
 
                                     <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -6137,6 +6246,198 @@ export default function TechnicalServiceAdmin({
                         {activeAdminSection === 'messaging' &&
                         activeMessagingSection === 'general' ? (
                             <div className="mt-5 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+                                <div
+                                    data-testid="manual-e2e-lifecycle-panel"
+                                    className="border-y border-slate-200 bg-white py-4 xl:col-span-2"
+                                >
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                        <div>
+                                            <p className="text-sm font-bold text-slate-950">
+                                                Manual E2E kontrol paneli
+                                            </p>
+                                            <p className="mt-1 text-sm leading-6 text-slate-600">
+                                                Gerçek gönderim yaşam döngüsü yalnızca
+                                                bu güvenli açma ve dondurma
+                                                aksiyonlarıyla değiştirilebilir.
+                                            </p>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button
+                                                type="button"
+                                                data-testid="manual-e2e-readiness-button"
+                                                disabled={
+                                                    manualE2EReadinessChecking ||
+                                                    manualE2ELifecycleBusy
+                                                }
+                                                onClick={() => {
+                                                    void checkManualE2EReadiness();
+                                                }}
+                                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                                {manualE2EReadinessChecking
+                                                    ? 'Kontrol ediliyor'
+                                                    : 'Manual E2E Readiness Kontrolü'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                data-testid="manual-e2e-enable-button"
+                                                disabled={
+                                                    manualE2ELifecycleBusy ||
+                                                    messaging.manual_e2e.active ||
+                                                    !manualE2EReadiness?.eligible
+                                                }
+                                                onClick={() =>
+                                                    setManualE2EEnableConfirmationOpen(
+                                                        true,
+                                                    )
+                                                }
+                                                className="rounded-lg border border-red-700 bg-red-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                            >
+                                                Manual E2E’yi Aç
+                                            </button>
+                                            <button
+                                                type="button"
+                                                data-testid="manual-e2e-freeze-button"
+                                                disabled={manualE2ELifecycleBusy}
+                                                onClick={() => {
+                                                    void freezeManualE2E();
+                                                }}
+                                                className="rounded-lg border border-slate-900 bg-slate-950 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                                Gönderimleri Dondur
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <dl className="mt-4 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                                        {[
+                                            [
+                                                'Manual E2E',
+                                                messaging.global
+                                                    .manual_e2e_enabled
+                                                    ? 'Açık'
+                                                    : 'Kapalı',
+                                            ],
+                                            [
+                                                'Gerçek gönderim',
+                                                messaging.global
+                                                    .real_send_enabled
+                                                    ? 'Açık'
+                                                    : 'Kapalı',
+                                            ],
+                                            [
+                                                'Queue',
+                                                messaging.global.queue_paused
+                                                    ? 'Duraklatıldı'
+                                                    : 'Açık',
+                                            ],
+                                            [
+                                                'Aktif run id',
+                                                messaging.manual_e2e
+                                                    .active_run_id ??
+                                                    'Aktif run yok',
+                                            ],
+                                            [
+                                                'Başlangıç',
+                                                formatManualE2ERunDate(
+                                                    messaging.manual_e2e
+                                                        .started_at,
+                                                ),
+                                            ],
+                                            [
+                                                'Bitiş',
+                                                formatManualE2ERunDate(
+                                                    messaging.manual_e2e
+                                                        .expires_at,
+                                                ),
+                                            ],
+                                            [
+                                                'Pending provider',
+                                                String(
+                                                    manualE2EReadiness?.pending_external_count ??
+                                                        0,
+                                                ),
+                                            ],
+                                            [
+                                                'Unsafe dispatch',
+                                                String(
+                                                    manualE2EReadiness?.unsafe_external_count ??
+                                                        0,
+                                                ),
+                                            ],
+                                        ].map(([label, value]) => (
+                                            <div key={label} className="min-w-0">
+                                                <dt className="font-semibold text-slate-500">
+                                                    {label}
+                                                </dt>
+                                                <dd className="mt-1 break-all font-semibold text-slate-950">
+                                                    {value}
+                                                </dd>
+                                            </div>
+                                        ))}
+                                    </dl>
+
+                                    {manualE2EReadiness ? (
+                                        <div
+                                            data-testid="manual-e2e-readiness-result"
+                                            className={`mt-4 border-l-4 px-4 py-3 text-sm ${
+                                                manualE2EReadiness.eligible
+                                                    ? 'border-emerald-500 bg-emerald-50 text-emerald-950'
+                                                    : 'border-amber-500 bg-amber-50 text-amber-950'
+                                            }`}
+                                        >
+                                            <p className="font-bold">
+                                                {manualE2EReadiness.eligible
+                                                    ? 'Readiness hazır'
+                                                    : 'Readiness bloklu'}
+                                            </p>
+                                            <p className="mt-1">
+                                                Evo:{' '}
+                                                {manualE2EReadiness.evo_ready
+                                                    ? 'Hazır'
+                                                    : 'Eksik'}{' '}
+                                                / NAC:{' '}
+                                                {manualE2EReadiness.nac_ready
+                                                    ? 'Hazır'
+                                                    : 'Eksik'}{' '}
+                                                / OPS SMS: Kapalı / TTL:{' '}
+                                                {manualE2EReadiness.ttl_seconds}{' '}
+                                                saniye
+                                            </p>
+                                            <p className="mt-1 break-words">
+                                                Allowlist:{' '}
+                                                {manualE2EReadiness
+                                                    .allowlisted_phone_masks
+                                                    .length > 0
+                                                    ? manualE2EReadiness.allowlisted_phone_masks.join(
+                                                          ', ',
+                                                      )
+                                                    : 'Yok'}
+                                            </p>
+                                            {manualE2EReadiness.blockers.map(
+                                                (blocker) => (
+                                                    <p
+                                                        key={blocker.code}
+                                                        className="mt-1"
+                                                    >
+                                                        {blocker.message}
+                                                    </p>
+                                                ),
+                                            )}
+                                            {manualE2EReadiness.warnings.map(
+                                                (warning) => (
+                                                    <p
+                                                        key={warning.code}
+                                                        className="mt-1"
+                                                    >
+                                                        Uyarı: {warning.message}
+                                                    </p>
+                                                ),
+                                            )}
+                                        </div>
+                                    ) : null}
+                                </div>
+
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                                     <p className="text-sm font-bold text-slate-950">
                                         Genel ayarlar
@@ -6155,14 +6456,6 @@ export default function TechnicalServiceAdmin({
                                             ],
                                             ['test_mode_enabled', 'Test modu'],
                                             [
-                                                'real_send_enabled',
-                                                'Gerçek gönderim aktif',
-                                            ],
-                                            [
-                                                'queue_paused',
-                                                'Kuyruk duraklatıldı',
-                                            ],
-                                            [
                                                 'allow_browser_smoke_send',
                                                 'Browser smoke gönderimine izin',
                                             ],
@@ -6177,6 +6470,9 @@ export default function TechnicalServiceAdmin({
                                             >
                                                 <input
                                                     type="checkbox"
+                                                    disabled={
+                                                        manualE2EContextLocked
+                                                    }
                                                     checked={Boolean(
                                                         messagingInputs[
                                                             key as keyof typeof messagingInputs
@@ -6202,6 +6498,9 @@ export default function TechnicalServiceAdmin({
                                             <div className="flex flex-col gap-2 sm:flex-row">
                                                 <input
                                                     type="text"
+                                                    disabled={
+                                                        manualE2EContextLocked
+                                                    }
                                                     value={
                                                         messagingInputs.test_phone
                                                     }
@@ -6219,6 +6518,7 @@ export default function TechnicalServiceAdmin({
                                                 <button
                                                     type="button"
                                                     disabled={
+                                                        manualE2EContextLocked ||
                                                         messagingPhoneChecking ||
                                                         messagingInputs.test_phone.trim() ===
                                                             ''
@@ -6264,6 +6564,9 @@ export default function TechnicalServiceAdmin({
                                                 <span>{label}</span>
                                                 <input
                                                     type="number"
+                                                    disabled={
+                                                        manualE2EContextLocked
+                                                    }
                                                     min={Number(min)}
                                                     value={String(
                                                         messagingInputs[
@@ -8585,6 +8888,176 @@ export default function TechnicalServiceAdmin({
                         </p>
                     </section>
                 ) : null}
+
+                <Dialog
+                    open={manualE2EEnableConfirmationOpen}
+                    onOpenChange={setManualE2EEnableConfirmationOpen}
+                >
+                    <DialogContent
+                        data-testid="manual-e2e-enable-confirmation"
+                        className="max-h-[90vh] overflow-y-auto sm:max-w-xl"
+                    >
+                        <DialogHeader>
+                            <DialogTitle>Manual E2E’yi aç</DialogTitle>
+                            <DialogDescription>
+                                Bu işlem gerçek Evo WhatsApp ve NAC SMS
+                                gönderimlerini yalnızca aşağıdaki allowlist için
+                                etkinleştirir. HTTP isteği worker başlatmaz.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        {manualE2EReadiness ? (
+                            <div className="grid gap-4">
+                                <div className="border-l-4 border-red-600 bg-red-50 px-4 py-3 text-sm font-semibold leading-6 text-red-950">
+                                    Onaydan sonra gerçek provider mesajları
+                                    gönderilebilir. Worker yalnızca oluşan aktif
+                                    run komutuyla ayrıca başlatılmalıdır.
+                                </div>
+
+                                <dl className="grid gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            Müşteri allowlist
+                                        </dt>
+                                        <dd className="mt-1 break-words font-semibold text-slate-950">
+                                            {manualE2EReadiness
+                                                .customer_allowlisted_phone_masks
+                                                .length >
+                                            0
+                                                ? manualE2EReadiness.customer_allowlisted_phone_masks.join(
+                                                      ', ',
+                                                  )
+                                                : 'Yok'}
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            Test Usta / OPS telefonu
+                                        </dt>
+                                        <dd className="mt-1 break-words font-semibold text-slate-950">
+                                            {manualE2EReadiness.ops_whatsapp_phone_mask ??
+                                                'Yok'}
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            Provider readiness
+                                        </dt>
+                                        <dd className="mt-1 font-semibold text-slate-950">
+                                            Evo:{' '}
+                                            {manualE2EReadiness.evo_ready
+                                                ? 'Hazır'
+                                                : 'Eksik'}{' '}
+                                            / NAC:{' '}
+                                            {manualE2EReadiness.nac_ready
+                                                ? 'Hazır'
+                                                : 'Eksik'}
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            OPS SMS
+                                        </dt>
+                                        <dd className="mt-1 font-semibold text-slate-950">
+                                            Kapalı
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            TTL
+                                        </dt>
+                                        <dd className="mt-1 font-semibold text-slate-950">
+                                            {manualE2EReadiness.ttl_seconds}{' '}
+                                            saniye
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            Pending provider
+                                        </dt>
+                                        <dd className="mt-1 font-semibold text-slate-950">
+                                            {
+                                                manualE2EReadiness.pending_external_count
+                                            }
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-semibold text-slate-500">
+                                            Unsafe dispatch
+                                        </dt>
+                                        <dd className="mt-1 font-semibold text-slate-950">
+                                            {
+                                                manualE2EReadiness.unsafe_external_count
+                                            }
+                                        </dd>
+                                    </div>
+                                </dl>
+
+                                <div>
+                                    <p className="text-sm font-semibold text-slate-950">
+                                        Aktif kanal politikaları
+                                    </p>
+                                    <div className="mt-2 max-h-32 overflow-y-auto border-y border-slate-200 py-2 text-xs leading-5 text-slate-700">
+                                        {manualE2EReadiness.channel_policies
+                                            .length > 0
+                                            ? manualE2EReadiness.channel_policies.map(
+                                                  (policy) => (
+                                                      <p
+                                                          key={
+                                                              policy.message_type
+                                                          }
+                                                      >
+                                                          {
+                                                              policy.message_type
+                                                          }
+                                                          :{' '}
+                                                          {
+                                                              policy.channel_policy
+                                                          }
+                                                      </p>
+                                                  ),
+                                              )
+                                            : 'Aktif mesaj politikası yok.'}
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <p className="text-sm font-semibold text-amber-800">
+                                Readiness sonucu yok. Modalı kapatıp önce
+                                readiness kontrolünü çalıştırın.
+                            </p>
+                        )}
+
+                        <DialogFooter>
+                            <button
+                                type="button"
+                                disabled={manualE2ELifecycleBusy}
+                                onClick={() =>
+                                    setManualE2EEnableConfirmationOpen(false)
+                                }
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                Vazgeç
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="manual-e2e-confirm-enable-button"
+                                disabled={
+                                    manualE2ELifecycleBusy ||
+                                    !manualE2EReadiness?.eligible
+                                }
+                                onClick={() => {
+                                    void enableManualE2E();
+                                }}
+                                className="rounded-lg border border-red-700 bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                {manualE2ELifecycleBusy
+                                    ? 'Hazırlanıyor'
+                                    : 'Gerçek gönderim riskini kabul et ve aç'}
+                            </button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             </div>
         </>
     );

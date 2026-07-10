@@ -3,10 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\IntegrationProviderCredential;
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceRequestEvent;
 use App\Models\User;
+use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessageChannelPlanner;
 use App\Services\Messaging\TechnicalServiceMessageDispatchLogService;
 use App\Services\Messaging\TechnicalServiceMessageDispatchProcessor;
@@ -18,6 +20,7 @@ use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -174,8 +177,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
 
     public function test_rate_limit_queue_paused_blocks_processing(): void
     {
-        $this->actingAs($this->admin());
-        app(TechnicalServiceMessagingSettingsService::class)->update(['queue_paused' => true]);
+        app(TechnicalServiceMessagingSettingsService::class)->freezeManualE2E();
 
         $dispatch = $this->enqueueDispatch();
         $result = app(TechnicalServiceMessageDispatchProcessor::class)->processOne($dispatch->id, noExternal: true);
@@ -347,15 +349,15 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
         $admin = $this->admin();
         $request = $this->technicalServiceRequest(['mrn' => 'MRN-REL4E15A-EARN']);
         $this->configureEvoDirectApi();
-        $payload = app(TechnicalServiceMessagingSettingsService::class)->update([
+        app(TechnicalServiceMessagingSettingsService::class)->update([
             'messaging_enabled' => true,
-            'manual_e2e_enabled' => true,
             'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'ops_whatsapp_phone' => '905467647428',
             'message_types' => [
                 'earnings_message_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
             ],
         ]);
-        $activeRunId = (string) $payload['global']['manual_e2e_active_run_id'];
+        $activeRunId = (string) $this->activateManualE2EContext()['manual_e2e_active_run_id'];
 
         app(TechnicalServiceWorkflowMessageDispatchService::class)->queueSystemMessage(
             $request,
@@ -557,12 +559,9 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     {
         Http::fake();
         $this->actingAs($this->admin());
-        $payload = app(TechnicalServiceMessagingSettingsService::class)->update([
+        $global = $this->activateManualE2EContext([
             'queue_paused' => true,
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
         ]);
-        $global = $payload['global'];
 
         Artisan::call('technical-service:process-message-dispatches', [
             '--worker-loop' => true,
@@ -1243,11 +1242,7 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     {
         Http::fake();
         $this->actingAs($this->admin());
-        $payload = app(TechnicalServiceMessagingSettingsService::class)->update([
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-        ]);
-        $global = $payload['global'];
+        $global = $this->activateManualE2EContext();
 
         $dispatch = $this->enqueueDispatch([
             'event' => 'manual_e2e_real_send_guard',
@@ -1283,12 +1278,10 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
     {
         Http::fake();
         $this->actingAs($this->admin());
-        $payload = app(TechnicalServiceMessagingSettingsService::class)->update([
+        $global = $this->activateManualE2EContext([
             'queue_paused' => true,
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
         ]);
-        $activeRunId = (string) $payload['global']['manual_e2e_active_run_id'];
+        $activeRunId = (string) $global['manual_e2e_active_run_id'];
 
         $dispatch = $this->enqueueDispatch([
             'event' => 'manual_e2e_queue_guard',
@@ -2151,15 +2144,33 @@ class TechnicalServiceMessageDispatchQueueTest extends TestCase
      */
     private function activateManualE2EContext(array $overrides = []): array
     {
-        $payload = app(TechnicalServiceMessagingSettingsService::class)->update([
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->update([
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'ops_whatsapp_phone' => '905467647428',
+        ]);
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        $startedAt = CarbonImmutable::now();
+        $runId = TechnicalServiceManualE2ERunContext::generateRunId($startedAt);
+        $context = [
             'manual_e2e_enabled' => true,
             'queue_paused' => false,
             'real_send_enabled' => false,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'manual_e2e_active_run_id' => $runId,
+            'manual_e2e_started_at' => $startedAt->toIso8601String(),
+            'manual_e2e_created_after' => $startedAt->toIso8601String(),
+            'manual_e2e_expires_at' => $startedAt->addHours(4)->toIso8601String(),
             ...$overrides,
-        ]);
+        ];
+        foreach ($context as $key => $value) {
+            Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.'.$key, $value);
+        }
+        $page->forceFill(['layout_json' => $layout])->save();
 
-        return $payload['global'];
+        return $settings->payload()['global'];
     }
 
     /**

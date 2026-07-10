@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\B2B\B2BPartner;
+use App\Models\PageConfig;
 use App\Models\TechnicalServiceMessageDispatch;
 use App\Models\TechnicalServiceMessageTemplate;
 use App\Models\TechnicalServiceMountPayment;
@@ -13,11 +14,13 @@ use App\Models\TechnicalServiceRequest;
 use App\Models\TechnicalServiceTechnician;
 use App\Models\User;
 use App\Services\Messaging\TechnicalServiceAppointmentMessageDispatchService;
+use App\Services\Messaging\TechnicalServiceManualE2ERunContext;
 use App\Services\Messaging\TechnicalServiceMessageTemplateService;
 use App\Services\Messaging\TechnicalServiceMessagingSettingsService;
 use App\Services\Messaging\TechnicalServiceWorkflowMessageDispatchService;
 use App\Services\Payments\TechnicalServicePaymentProviderReconciliationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -284,21 +287,10 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_manual_e2e_dispatches_are_tagged_and_allowlist_blocks_wrong_target(): void
     {
         $actor = $this->admin();
-        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
-            'messaging_enabled' => true,
-            'test_mode_enabled' => true,
-            'shared_test_phone' => '0546 764 74 28',
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-            'nac_sms' => [
-                'enabled' => true,
-                'sender' => 'EMAKS PRIME',
-            ],
-            'message_types' => [
-                'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
-            ],
+        $this->configureMessaging([
+            'appointment_approved_customer' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ]);
-        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
+        $activeRunId = (string) $this->activateManualE2EFixture()['manual_e2e_active_run_id'];
         $request = $this->technicalServiceRequest([
             'customer_phone' => '05372081633',
             'mrn' => 'MRN-MANUAL-E2E-OK',
@@ -349,19 +341,12 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     public function test_ops_workflow_message_uses_whatsapp_only_to_configured_ops_phone(): void
     {
         $actor = $this->admin();
-        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
-            'messaging_enabled' => true,
-            'test_mode_enabled' => true,
-            'shared_test_phone' => '0546 764 74 28',
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-            'ops_whatsapp_enabled' => true,
-            'ops_whatsapp_phone' => '0546 764 74 28',
-            'message_types' => [
-                'job_rejected_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
-            ],
+        $this->configureMessaging([
+            'job_rejected_ops' => ['enabled' => true, 'channel_policy' => 'whatsapp_only'],
         ]);
-        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
+        $activeRunId = (string) $this->activateManualE2EFixture([
+            'ops_whatsapp_enabled' => true,
+        ])['manual_e2e_active_run_id'];
         $request = $this->technicalServiceRequest(['mrn' => 'MRN-OPS-WP-UNIT']);
 
         $dispatch = app(TechnicalServiceWorkflowMessageDispatchService::class)->queueSystemMessage(
@@ -390,20 +375,13 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
     {
         Http::fake();
         $actor = $this->admin();
-        $settingsPayload = app(TechnicalServiceMessagingSettingsService::class)->update([
-            'messaging_enabled' => true,
-            'test_mode_enabled' => false,
-            'manual_e2e_enabled' => true,
-            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
-            'nac_sms' => [
-                'enabled' => true,
-                'sender' => 'EMAKS PRIME',
-            ],
-            'message_types' => [
-                'assignment_offer_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
-            ],
+        $this->configureMessaging([
+            'assignment_offer_technician' => ['enabled' => true, 'channel_policy' => 'whatsapp_and_sms'],
         ]);
-        $activeRunId = (string) $settingsPayload['global']['manual_e2e_active_run_id'];
+        app(TechnicalServiceMessagingSettingsService::class)->update([
+            'test_mode_enabled' => false,
+        ]);
+        $activeRunId = (string) $this->activateManualE2EFixture()['manual_e2e_active_run_id'];
         $technician = $this->technician([
             'name' => 'Test Usta',
             'phone' => '0546 764 74 28',
@@ -1133,6 +1111,38 @@ class TechnicalServiceAppointmentMessageFlowTest extends TestCase
             ],
             'message_types' => $messageTypes,
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function activateManualE2EFixture(array $overrides = []): array
+    {
+        $settings = app(TechnicalServiceMessagingSettingsService::class);
+        $settings->update([
+            'manual_e2e_allowlisted_phones' => ['905372081633', '905467647428'],
+            'ops_whatsapp_phone' => '905467647428',
+        ]);
+        $page = PageConfig::query()
+            ->where('page_code', TechnicalServiceMessagingSettingsService::PAGE_CODE)
+            ->firstOrFail();
+        $layout = (array) $page->layout_json;
+        $startedAt = now()->toImmutable();
+        $context = [
+            'manual_e2e_enabled' => true,
+            'manual_e2e_active_run_id' => TechnicalServiceManualE2ERunContext::generateRunId($startedAt),
+            'manual_e2e_started_at' => $startedAt->toIso8601String(),
+            'manual_e2e_created_after' => $startedAt->toIso8601String(),
+            'manual_e2e_expires_at' => $startedAt->addHours(4)->toIso8601String(),
+            ...$overrides,
+        ];
+        foreach ($context as $key => $value) {
+            Arr::set($layout, TechnicalServiceMessagingSettingsService::ROOT_KEY.'.'.$key, $value);
+        }
+        $page->forceFill(['layout_json' => $layout])->save();
+
+        return $settings->payload()['global'];
     }
 
     private function admin(): User
